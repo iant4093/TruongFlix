@@ -18,12 +18,14 @@ import ActorModal from './components/modals/ActorModal';
 import WrappedModal from './components/modals/WrappedModal';
 import HistoryModal from './components/modals/HistoryModal';
 import RenameModal from './components/modals/RenameModal';
+import HealthModal from './components/modals/HealthModal';
 import { autoPurgeTrash } from './services/files';
 import { invoke } from '@tauri-apps/api/core';
 import { engineStatus, initPlayerEvents, playBuiltin, syncAudioFilters, syncMiniLayout, syncSubtitleStyle } from './services/player';
 import { autoCheckForUpdates } from './services/updates';
 import { startBackgroundAnalysis } from './services/enrich';
 import { startFolderWatch } from './services/watch';
+import { initMediaSession } from './services/mediasession';
 
 export default function App() {
   const ready = useLibraryStore((s) => s.ready);
@@ -59,6 +61,7 @@ export default function App() {
     // Warm up the player engine so the first Play starts instantly.
     void engineStatus();
     initPlayerEvents().catch((e) => console.warn('Player events unavailable', e));
+    initMediaSession().catch((e) => console.warn('Media keys unavailable', e));
   }, [init]);
 
   // Lock page scroll behind overlays.
@@ -152,6 +155,7 @@ export default function App() {
           {pageOverlay === 'wrapped' && <WrappedModal key="wrapped" />}
           {pageOverlay === 'history' && <HistoryModal key="history" />}
           {pageOverlay === 'rename' && <RenameModal key="rename" />}
+          {pageOverlay === 'health' && <HealthModal key="health" />}
         </AnimatePresence>
       </div>
       <MiniPlayer />

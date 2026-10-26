@@ -58,6 +58,7 @@ export interface MovieRow extends TechInfo, ImdbInfo {
   segments: string | null;
   probed_mtime: number | null;
   enriched_at: string | null;
+  probe_error: string | null;
 }
 
 export interface SeriesRow extends ImdbInfo {
@@ -108,6 +109,7 @@ export interface EpisodeRow extends TechInfo, ImdbInfo {
   segments: string | null;
   probed_mtime: number | null;
   intro_checked: number | null;
+  probe_error: string | null;
 }
 
 /** Real stream information read by the Rust `media_probe` command. */
@@ -121,6 +123,10 @@ export interface MediaInfo {
   primaries: string | null;
   dv_profile: number | null;
   size?: number | null;
+  /** False when the end of the file can't be decoded (truncated / incomplete download). */
+  tail_ok?: boolean | null;
+  /** The file exists but couldn't be opened or decoded. */
+  error?: string;
   audio: { lang: string | null; title: string | null; codec: string | null; profile: string | null; channels: number | null; default: boolean }[];
   subs: { lang: string | null; title: string | null; codec: string | null; forced: boolean }[];
   chapters: { title: string; time: number }[];
@@ -337,7 +343,11 @@ export interface Settings {
   /** Show the "Who's watching?" screen at launch when there are several profiles. */
   ask_profile: boolean;
   active_profile: number;
+  /** Pause and ask "Are you still watching?" after this many episodes in a row without input (0 = never). */
+  still_watching_after: number;
 }
+
+export type SleepTimer = { mode: 'minutes'; minutes: number; endsAt: number } | { mode: 'episode' };
 
 export interface SubtitleStyle {
   size: 'small' | 'medium' | 'large' | 'xlarge';

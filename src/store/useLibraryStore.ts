@@ -15,6 +15,7 @@ import type {
   ScanState,
   SeriesRow,
   Settings,
+  SleepTimer,
 } from '../types/media';
 import { allowedForMaturity, buildItems, groupEpisodes } from './selectors';
 
@@ -50,7 +51,7 @@ export interface AnalysisState {
   message: string;
 }
 
-export type Overlay = 'wrapped' | 'history' | 'rename' | null;
+export type Overlay = 'wrapped' | 'history' | 'rename' | 'health' | null;
 
 export interface Toast {
   id: number;
@@ -78,6 +79,9 @@ interface LibraryState {
   actor: ActorRef | null;
   overlay: Overlay;
   playerMini: boolean;
+  sleepTimer: SleepTimer | null;
+  /** What's showing over the player: "Are you still watching?" or "Sleep timer ended". */
+  playerPrompt: 'still-watching' | 'sleep-ended' | null;
   analysis: AnalysisState;
 
   view: View;
@@ -129,6 +133,8 @@ interface LibraryState {
   openActor: (a: ActorRef | null) => void;
   setOverlay: (o: Overlay) => void;
   setPlayerMini: (mini: boolean) => void;
+  setSleepTimer: (t: SleepTimer | null) => void;
+  setPlayerPrompt: (p: 'still-watching' | 'sleep-ended' | null) => void;
   setAnalysis: (a: AnalysisState) => void;
   toast: (message: string, kind?: Toast['kind']) => void;
   dismissToast: (id: number) => void;
@@ -166,6 +172,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     hover_stills: true,
     ask_profile: true,
     active_profile: 0,
+    still_watching_after: 3,
   },
   movies: [],
   series: [],
@@ -182,6 +189,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   actor: null,
   overlay: null,
   playerMini: false,
+  sleepTimer: null,
+  playerPrompt: null,
   analysis: { running: false, message: '' },
 
   view: 'home',
@@ -272,6 +281,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   openActor: (actor) => set({ actor, hover: null }),
   setOverlay: (overlay) => set({ overlay, hover: null }),
   setPlayerMini: (playerMini) => set({ playerMini, hover: null }),
+  setSleepTimer: (sleepTimer) => set({ sleepTimer }),
+  setPlayerPrompt: (playerPrompt) => set({ playerPrompt }),
   setAnalysis: (analysis) => set({ analysis }),
 
   updateSettings: async (patch) => {

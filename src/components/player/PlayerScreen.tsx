@@ -13,6 +13,7 @@ import {
   Play,
   SkipForward,
   Speech,
+  Timer,
   Volume1,
   Volume2,
   VolumeX,
@@ -22,8 +23,13 @@ import { useLibraryStore } from '../../store/useLibraryStore';
 import { formatTimestamp } from '../../store/selectors';
 import { languageName } from '../../services/subtitles';
 import {
+  autoAdvance,
   closeBuiltin,
+  dismissPrompt,
   enterMini,
+  noteUserActivity,
+  setSleepTimer,
+  stopForSleep,
   openCurrentInVlc,
   playBuiltin,
   playerCommand,
@@ -43,7 +49,7 @@ const THUMB_WIDTH = 320;
 const MAX_THUMBS = 400;
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5];
 
-type Panel = 'tracks' | 'speed' | null;
+type Panel = 'tracks' | 'speed' | 'sleep' | null;
 
 /** Full-window Netflix-style player chrome drawn over the native video surface. */
 export default function PlayerScreen() {
@@ -61,9 +67,19 @@ function useAutoAdvance(session: PlayerSession | null) {
   useEffect(() => {
     if (!session || !eof || advancedFor.current === session.target.id) return;
     advancedFor.current = session.target.id;
-    if (session.next) void playBuiltin(session.next);
+    if (stopForSleep()) return;
+    if (session.next) autoAdvance(session.next);
     else window.setTimeout(() => void closeBuiltin(), 1200);
   }, [eof, session]);
+
+  // Sleep timer "end of episode": stop as the credits begin rather than after them.
+  const row = usePlayingRow(session);
+  const creditsStart = useMemo(() => parseSegments(row?.segments).find((x) => x.kind === 'credits')?.start ?? null, [row?.segments]);
+  const pastCredits = useLibraryStore((s) => creditsStart != null && !!s.playerState?.loaded && s.playerState.time >= creditsStart);
+  const sleepAtEnd = useLibraryStore((s) => s.sleepTimer?.mode === 'episode');
+  useEffect(() => {
+    if (pastCredits && sleepAtEnd) stopForSleep();
+  }, [pastCredits, sleepAtEnd]);
 }
 
 /** Library row (segments, media info, mtime) for what's playing. */
@@ -158,6 +174,7 @@ function ControlButton({ label, onClick, children, active }: { label: string; on
       aria-label={label}
       onClick={(e) => {
         e.stopPropagation();
+        noteUserActivity();
         onClick();
       }}
       className={`flex h-12 w-12 items-center justify-center rounded-full text-white transition-transform duration-150 hover:scale-125 ${
@@ -224,6 +241,7 @@ function Scrubber({
         if (drag == null) return;
         const r = ratioAt(e.clientX);
         setDrag(null);
+        noteUserActivity();
         if (duration) onSeek(r * duration);
       }}
       className="group/scrub relative flex h-6 flex-1 cursor-pointer items-center"
@@ -490,6 +508,109 @@ function SpeedPanel({ speed }: { speed: number }) {
   );
 }
 
+const SLEEP_CHOICES = [15, 30, 45, 60, 90];
+
+function SleepPanel({ isEpisode, onPick }: { isEpisode: boolean; onPick: () => void }) {
+  const timer = useLibraryStore((s) => s.sleepTimer);
+  const remaining = useCountdown(timer?.mode === 'minutes' ? timer.endsAt : null);
+  const pick = (c: number | 'episode' | null) => {
+    setSleepTimer(c);
+    onPick();
+  };
+  const chip = (on: boolean) =>
+    `rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${on ? 'border-white bg-white text-black' : 'border-white/30 text-white hover:border-white'}`;
+  return (
+    <div className="w-[min(520px,90vw)] rounded-md bg-[#262626]/95 p-6 shadow-2xl backdrop-blur">
+      <h3 className="text-2xl font-bold">Sleep Timer</h3>
+      <p className="mb-5 mt-1 text-sm text-[#b3b3b3]">
+        {timer?.mode === 'minutes'
+          ? `Pausing in ${formatTimestamp(remaining)}. The sound fades out first.`
+          : timer?.mode === 'episode'
+            ? `Stopping when this ${isEpisode ? 'episode' : 'movie'} ends.`
+            : 'Fade out and pause after a while, or stop at the end.'}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={() => pick(null)} className={chip(!timer)}>
+          Off
+        </button>
+        {SLEEP_CHOICES.map((m) => (
+          <button key={m} type="button" onClick={() => pick(m)} className={chip(timer?.mode === 'minutes' && timer.minutes === m)}>
+            {m} min
+          </button>
+        ))}
+        <button type="button" onClick={() => pick('episode')} className={chip(timer?.mode === 'episode')}>
+          End of {isEpisode ? 'episode' : 'movie'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Seconds left until `endsAt` (updates every second). */
+function useCountdown(endsAt: number | null) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (endsAt == null) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [endsAt]);
+  return endsAt == null ? 0 : Math.max(0, (endsAt - now) / 1000);
+}
+
+/** "Are you still watching?" / "Sleep timer ended" over the paused video. */
+function PlayerPrompt({ session }: { session: PlayerSession }) {
+  const prompt = useLibraryStore((s) => s.playerPrompt);
+  return (
+    <AnimatePresence>
+      {prompt && (
+        <motion.div
+          key={prompt}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.4 }}
+          onClick={(e) => e.stopPropagation()}
+          className="absolute inset-0 z-20 flex items-center bg-black/75 px-[8%]"
+        >
+          <div className="max-w-xl space-y-6">
+            {prompt === 'still-watching' ? (
+              <>
+                <h2 className="text-5xl font-bold leading-tight">Are you still watching {session.title}?</h2>
+                <p className="text-lg text-[#b3b3b3]">We paused so you don’t miss anything.</p>
+              </>
+            ) : (
+              <>
+                <h2 className="flex items-center gap-4 text-5xl font-bold">
+                  <Moon className="h-12 w-12" /> Sleep timer ended
+                </h2>
+                <p className="text-lg text-[#b3b3b3]">{session.title} is paused. Good night.</p>
+              </>
+            )}
+            <div className="flex flex-col gap-3 sm:w-72">
+              <button
+                type="button"
+                autoFocus
+                onClick={dismissPrompt}
+                className="flex items-center justify-center gap-2 rounded bg-white px-6 py-3 text-lg font-semibold text-black hover:bg-white/80"
+              >
+                <Play className="h-5 w-5 fill-black" strokeWidth={0} />
+                {prompt === 'still-watching' ? 'Continue Watching' : 'Resume'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void closeBuiltin()}
+                className="rounded border border-white/40 px-6 py-3 text-lg font-semibold text-white hover:border-white"
+              >
+                Back to Browse
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main chrome
 // ---------------------------------------------------------------------------
@@ -501,6 +622,9 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
   const autoSkip = useLibraryStore((s) => s.settings.skip_intro_auto);
   const liveChapters = useLibraryStore((s) => s.playerChapters);
   const toast = useLibraryStore((s) => s.toast);
+  const prompt = useLibraryStore((s) => s.playerPrompt);
+  const sleepTimer = useLibraryStore((s) => s.sleepTimer);
+  const sleepLeft = useCountdown(sleepTimer?.mode === 'minutes' ? sleepTimer.endsAt : null);
   const row = usePlayingRow(session);
   const segments = useMemo(() => parseSegments(row?.segments), [row?.segments]);
   const chapters = useMemo(
@@ -542,12 +666,12 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
   const credits = segments.find((x) => x.kind === 'credits' && x.start < duration - 5);
   const nextFrom = credits ? credits.start : duration - NEXT_EPISODE_WINDOW_S;
   const nextUntil = credits ? Math.min(credits.start + CREDITS_COUNTDOWN_S, duration) : duration;
-  const showNext = !!session.next && duration > 0 && time >= nextFrom && !nextDismissed;
+  const showNext = !!session.next && duration > 0 && time >= nextFrom && !nextDismissed && !prompt && sleepTimer?.mode !== 'episode';
   const nextProgress = showNext ? Math.min(1, Math.max(0, (time - nextFrom) / Math.max(1, nextUntil - nextFrom))) : 0;
   useEffect(() => {
     if (!showNext || !credits || state?.paused || time < nextUntil || creditsAdvanced.current === session.target.id) return;
     creditsAdvanced.current = session.target.id;
-    void playBuiltin(session.next!);
+    autoAdvance(session.next!);
   }, [showNext, credits, time, nextUntil, state?.paused, session]);
 
   // Reset per-item UI when the next episode starts.
@@ -575,7 +699,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
 
   // Netflix's "You're watching" screen after a few idle seconds paused.
   useEffect(() => {
-    if (!state?.paused || panel) {
+    if (!state?.paused || panel || prompt) {
       setPausedIdle(false);
       return;
     }
@@ -584,7 +708,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
       setVisible(false);
     }, 6000);
     return () => window.clearTimeout(t);
-  }, [state?.paused, panel, visible]);
+  }, [state?.paused, panel, visible, prompt]);
 
   // Track window fullscreen state.
   useEffect(() => {
@@ -612,6 +736,15 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+      noteUserActivity();
+      if (useLibraryStore.getState().playerPrompt) {
+        if (e.key === 'Enter' || e.key === ' ') dismissPrompt();
+        else if (e.key === 'Escape') void closeBuiltin();
+        else return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
       let handled = true;
       switch (e.key) {
         case ' ':
@@ -682,7 +815,11 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
       exit={{ opacity: 0 }}
       transition={{ duration: 0.25 }}
       onMouseMove={poke}
-      onClick={() => (panel ? setPanel(null) : togglePause())}
+      onClick={() => {
+        noteUserActivity();
+        if (panel) setPanel(null);
+        else togglePause();
+      }}
       onDoubleClick={() => void toggleFullscreen().then(setFullscreen)}
       className={`fixed inset-0 z-[200] select-none overflow-hidden text-white ${controlsShown || pausedIdle ? '' : 'cursor-none'}`}
     >
@@ -755,6 +892,17 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
             <ArrowLeft className="h-9 w-9" />
           </ControlButton>
           <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+            {sleepTimer && (
+              <button
+                type="button"
+                onClick={() => setPanel('sleep')}
+                title="Sleep timer"
+                className="flex items-center gap-1.5 rounded-full bg-black/40 px-3 py-1 text-xs font-semibold tabular-nums text-white/90"
+              >
+                <Timer className="h-3.5 w-3.5" />
+                {sleepTimer.mode === 'minutes' ? `Sleep in ${formatTimestamp(sleepLeft)}` : `Stopping after this ${session.target.type === 'episode' ? 'episode' : 'movie'}`}
+              </button>
+            )}
             {isHdr && (
               <span className="rounded-[3px] border border-white/50 px-1.5 py-[1px] text-xs font-semibold tracking-wide">HDR</span>
             )}
@@ -819,6 +967,9 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
               <ControlButton label="Playback Speed" onClick={() => setPanel(panel === 'speed' ? null : 'speed')} active={panel === 'speed'}>
                 <Gauge className="h-8 w-8" />
               </ControlButton>
+              <ControlButton label="Sleep timer" onClick={() => setPanel(panel === 'sleep' ? null : 'sleep')} active={panel === 'sleep'}>
+                <Timer className={`h-8 w-8 ${sleepTimer ? 'text-nf-red' : ''}`} />
+              </ControlButton>
               <ControlButton label="Mini player (I) — keep browsing while you watch" onClick={() => void enterMini()}>
                 <PictureInPicture2 className="h-8 w-8" />
               </ControlButton>
@@ -835,7 +986,13 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
                     transition={{ duration: 0.15 }}
                     className="absolute bottom-full right-0 mb-3"
                   >
-                    {panel === 'tracks' ? <TracksPanel tracks={tracks} state={state} /> : <SpeedPanel speed={state?.speed ?? 1} />}
+                    {panel === 'tracks' ? (
+                      <TracksPanel tracks={tracks} state={state} />
+                    ) : panel === 'sleep' ? (
+                      <SleepPanel isEpisode={session.target.type === 'episode'} onPick={() => setPanel(null)} />
+                    ) : (
+                      <SpeedPanel speed={state?.speed ?? 1} />
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -844,9 +1001,11 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         </div>
       </motion.div>
 
+      <PlayerPrompt session={session} />
+
       {/* Skip Intro / Skip Recap */}
       <AnimatePresence>
-        {skippable && !showNext && !panel && (
+        {skippable && !showNext && !panel && !prompt && (
           <motion.button
             key={skippable.kind}
             type="button"
@@ -885,7 +1044,10 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
             </button>
             <button
               type="button"
-              onClick={() => void playBuiltin(session.next!)}
+              onClick={() => {
+                noteUserActivity();
+                void playBuiltin(session.next!);
+              }}
               className="relative overflow-hidden rounded bg-white/40 px-6 py-3 text-lg font-semibold text-black"
             >
               <span

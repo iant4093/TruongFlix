@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
-import { CheckCircle2, DatabaseZap, Download, FilePen, Loader2, RefreshCw, RotateCcw, Trash2, Undo2, Users, X } from 'lucide-react';
+import { CheckCircle2, DatabaseZap, Download, FilePen, HeartPulse, Loader2, RefreshCw, RotateCcw, Trash2, Undo2, Users, X } from 'lucide-react';
 import { appVersion, availableUpdate, checkForUpdate, installUpdate, onUpdateChange, type AvailableUpdate } from '../../services/updates';
 import type { EngineStatus, SubtitleStyle, TrashRow } from '../../types/media';
 import { engineStatus } from '../../services/player';
@@ -535,6 +535,15 @@ export default function SidebarSettings() {
             >
               <FilePen className="h-4 w-4" /> Rename files Plex-style…
             </button>
+            <button
+              onClick={() => {
+                setOpen(false);
+                useLibraryStore.getState().setOverlay('health');
+              }}
+              className="nf-btn-ghost"
+            >
+              <HeartPulse className="h-4 w-4" /> Library health…
+            </button>
           </Section>
 
           <Section title="IMDb Ratings">
@@ -588,6 +597,25 @@ export default function SidebarSettings() {
 
           <Section title="Playback">
             <PlaybackEngine />
+            <div className="flex items-center justify-between gap-3 rounded-md bg-black/20 p-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">Ask “Are you still watching?”</div>
+                <div className="mt-0.5 text-xs leading-relaxed text-nf-muted">Pauses after several episodes play in a row with no key presses, clicks or media buttons.</div>
+              </div>
+              <Dropdown
+                value={settings.still_watching_after}
+                onChange={(v) => updateSettings({ still_watching_after: v })}
+                align="right"
+                options={[
+                  { value: 0, label: 'Never' },
+                  { value: 2, label: 'After 2 episodes' },
+                  { value: 3, label: 'After 3 episodes' },
+                  { value: 4, label: 'After 4 episodes' },
+                  { value: 5, label: 'After 5 episodes' },
+                ]}
+                className="min-w-[170px] shrink-0"
+              />
+            </div>
             <ToggleRow
               label="Dialogue boost"
               description="Lifts the centre channel on surround tracks (or speech frequencies on stereo) so voices are easier to follow."

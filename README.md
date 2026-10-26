@@ -85,6 +85,8 @@ Library screenshots use the development preview with sample metadata and artwork
 - Mini-player: shrink the video into a corner and keep browsing
 - Scrub-bar thumbnails and chapter marks, generated in the background by a second, hidden player
 - Next-episode countdown that starts with the credits, the paused "You're watching" screen, fullscreen and keyboard shortcuts
+- Sleep timer (15–90 minutes with a gentle fade-out, or "end of this episode") and Netflix's "Are you still watching?" after several episodes in a row
+- Media keys, AirPods and headphone buttons, the macOS Now Playing widget and the Windows media overlay, with artwork and a live progress bar
 - Subtitle appearance settings (size, colour, background box, font), dialogue boost and night mode
 - Netflix-style controls: scrubbing, ±10 s, volume, speed, audio and subtitle tracks, and subtitle/audio timing
 - Resume points saved as you watch; anything 90% watched is marked complete
@@ -95,6 +97,7 @@ Library screenshots use the development preview with sample metadata and artwork
 - Optional OpenSubtitles integration: search by file hash for perfectly synced results, downloaded next to the video
 - Optional Plex-style renaming (`Movie (Year)/Movie (Year).mkv`, `Show/Season 01/Show - S01E01.mkv`) with a full preview and undo
 - Loose videos are organized into their own folders, along with their subtitles and artwork
+- Library health page: disk use per title, duplicate copies, unplayable or incomplete downloads, low-quality files worth upgrading, and anything missing subtitles
 - Delete movies, shows or single episodes to Recently Deleted, with full restore for 30 days
 - Show in Finder / File Explorer, and offline drives are never pruned from the library
 

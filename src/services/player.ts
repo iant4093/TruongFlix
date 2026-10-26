@@ -71,6 +71,7 @@ function mediaInfoFor(target: PlayTarget) {
 
 /** Plays a movie/episode in the built-in player when available, otherwise in VLC. */
 export async function play(target: PlayTarget) {
+  noteUserActivity(); // a title picked by hand starts a fresh "still watching" count
   const { settings, toast } = useLibraryStore.getState();
   if (settings.player_engine !== 'vlc') {
     const status = await engineStatus();
@@ -254,7 +255,7 @@ export async function stopPlayback() {
 function describe(target: PlayTarget): PlayerSession {
   const { items, episodes, episodesBySeries } = useLibraryStore.getState();
   if (target.type === 'movie') {
-    const item = items.find((i) => i.kind === 'movie' && i.id === target.id) ?? null;
+    const item = items.find((i) => i.kind === 'movie' && (i.id === target.id || i.versions.some((v) => v.id === target.id))) ?? null;
     return {
       target,
       itemKey: item?.key ?? null,
@@ -305,6 +306,7 @@ export async function playBuiltin(target: PlayTarget) {
   store.setPlayerState(null);
   store.setPlayerTracks([]);
   store.setPlayerChapters([]);
+  store.setPlayerPrompt(null);
   try {
     const { settings } = useLibraryStore.getState();
     appliedAf = audioFilterChain(settings, mediaInfoFor(target)?.audio.find((a) => a.default)?.channels ?? 2);
@@ -354,6 +356,10 @@ function finishSession() {
   const store = useLibraryStore.getState();
   if (!store.playerSession) return;
   tick = null;
+  autoStreak = 0;
+  pendingNext = null;
+  setSleepTimer(null);
+  store.setPlayerPrompt(null);
   store.setPlayerMini(false);
   store.setPlayerSession(null);
   store.setPlayerState(null);
@@ -363,6 +369,113 @@ function finishSession() {
     void getCurrentWindow().setFullscreen(false);
   }
   void store.reload();
+}
+
+// ---------------------------------------------------------------------------
+// "Are you still watching?" and the sleep timer
+// ---------------------------------------------------------------------------
+
+/** Episodes that started on their own since the last key press, click or media button. */
+let autoStreak = 0;
+let pendingNext: PlayTarget | null = null;
+
+export function noteUserActivity() {
+  autoStreak = 0;
+}
+
+/**
+ * Called when an episode ends (or its credits countdown finishes) and the next one would start.
+ * Honors "stop after this episode" and asks "Are you still watching?" after a run of episodes.
+ */
+export function autoAdvance(next: PlayTarget) {
+  const store = useLibraryStore.getState();
+  if (stopForSleep()) return;
+  autoStreak += 1;
+  const limit = store.settings.still_watching_after;
+  if (limit > 0 && autoStreak >= limit) {
+    pendingNext = next;
+    void pauseForPrompt('still-watching');
+    return;
+  }
+  void playBuiltin(next);
+}
+
+/** "Stop at the end of this episode/movie": called when its credits start (or it ends). */
+export function stopForSleep() {
+  const store = useLibraryStore.getState();
+  if (store.sleepTimer?.mode !== 'episode') return false;
+  store.setSleepTimer(null);
+  void pauseForPrompt('sleep-ended');
+  return true;
+}
+
+async function pauseForPrompt(prompt: 'still-watching' | 'sleep-ended') {
+  const store = useLibraryStore.getState();
+  if (store.playerState && !store.playerState.paused && !store.playerState.eof) await playerSet('pause', 'yes').catch(() => {});
+  store.setPlayerPrompt(prompt);
+}
+
+/** "Continue Watching" / "Resume" on the prompt. */
+export function dismissPrompt() {
+  const store = useLibraryStore.getState();
+  const prompt = store.playerPrompt;
+  store.setPlayerPrompt(null);
+  noteUserActivity();
+  if (prompt === 'still-watching' && pendingNext) {
+    const next = pendingNext;
+    pendingNext = null;
+    void playBuiltin(next);
+  } else if (store.playerState?.eof) {
+    void closeBuiltin();
+  } else {
+    void playerSet('pause', 'no');
+  }
+}
+
+let sleepTick: number | null = null;
+let fading = false;
+const SLEEP_FADE_S = 10;
+
+/** Starts (or cancels, with null) the sleep timer. */
+export function setSleepTimer(choice: number | 'episode' | null) {
+  const store = useLibraryStore.getState();
+  if (sleepTick != null) window.clearInterval(sleepTick);
+  sleepTick = null;
+  if (choice == null) return store.setSleepTimer(null);
+  if (choice === 'episode') return store.setSleepTimer({ mode: 'episode' });
+  store.setSleepTimer({ mode: 'minutes', minutes: choice, endsAt: Date.now() + choice * 60_000 });
+  sleepTick = window.setInterval(() => {
+    const { sleepTimer, playerSession } = useLibraryStore.getState();
+    if (!playerSession || sleepTimer?.mode !== 'minutes') {
+      if (sleepTick != null) window.clearInterval(sleepTick);
+      sleepTick = null;
+      return;
+    }
+    if (!fading && Date.now() >= sleepTimer.endsAt - SLEEP_FADE_S * 1000) void fadeOutAndPause();
+  }, 1000);
+}
+
+/** Lowers the volume over a few seconds, pauses, then restores the volume for next time. */
+async function fadeOutAndPause() {
+  fading = true;
+  const start = useLibraryStore.getState().playerState?.volume ?? 100;
+  for (let i = 1; i <= SLEEP_FADE_S * 2; i++) {
+    if (useLibraryStore.getState().sleepTimer?.mode !== 'minutes') {
+      await playerSet('volume', start).catch(() => {}); // cancelled mid-fade
+      fading = false;
+      return;
+    }
+    await playerSet('volume', Math.round(start * (1 - i / (SLEEP_FADE_S * 2)))).catch(() => {});
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  await playerSet('pause', 'yes').catch(() => {});
+  await playerSet('volume', start).catch(() => {});
+  fading = false;
+  if (sleepTick != null) window.clearInterval(sleepTick);
+  sleepTick = null;
+  const store = useLibraryStore.getState();
+  store.setSleepTimer(null);
+  store.setPlayerPrompt('sleep-ended');
 }
 
 // ---------------------------------------------------------------------------
