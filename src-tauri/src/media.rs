@@ -35,13 +35,13 @@ const BASE: &[(&str, &str)] = &[
 ];
 
 /// A headless mpv core, destroyed on drop.
-struct Core {
-    api: &'static mpv::Api,
-    h: *mut Handle,
+pub(crate) struct Core {
+    pub(crate) api: &'static mpv::Api,
+    pub(crate) h: *mut Handle,
 }
 
 impl Core {
-    fn new(options: &[(&str, &str)]) -> Result<Self, String> {
+    pub(crate) fn new(options: &[(&str, &str)]) -> Result<Self, String> {
         let api = mpv::api()?;
         let h = unsafe { (api.create)() };
         if h.is_null() {
@@ -57,12 +57,12 @@ impl Core {
         Ok(Core { api, h })
     }
 
-    fn get(&self, name: &str) -> Option<String> {
+    pub(crate) fn get(&self, name: &str) -> Option<String> {
         self.api.get_property(self.h, name)
     }
 
     /// Waits for one of `ids`; returns the matching event id, or None on timeout / file error.
-    fn wait_for(&self, ids: &[i32], timeout: Duration) -> Option<i32> {
+    pub(crate) fn wait_for(&self, ids: &[i32], timeout: Duration) -> Option<i32> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let ev = unsafe { &*(self.api.wait_event)(self.h, 0.2) };
@@ -367,7 +367,7 @@ const SILENT: u32 = u32::MAX;
 const MIN_INTRO_S: f64 = 15.0;
 const MAX_INTRO_S: f64 = 150.0;
 
-fn fft(re: &mut [f32], im: &mut [f32]) {
+pub(crate) fn fft(re: &mut [f32], im: &mut [f32]) {
     let n = re.len();
     let mut j = 0;
     for i in 1..n {
