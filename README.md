@@ -22,7 +22,7 @@ A local media center for macOS and Windows that turns the movies and shows on yo
 
 ---
 
-TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Nothing is uploaded; the only network requests are metadata and ratings lookups, plus optional subtitle downloads.
+TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Nothing is uploaded; the only network requests are metadata and ratings lookups, trailers on the home banner, plus optional subtitle downloads.
 
 ## Screenshots
 
@@ -56,23 +56,44 @@ Library screenshots use the development preview with sample metadata and artwork
 **Library**
 
 - Recursive scanning of any number of folders, with incremental re-scans that only process new or changed files
+- Folder watching: new downloads, deletions and renames appear on their own within seconds, no Scan button needed
 - Scene-filename parsing with parent-folder fallbacks for TV seasons, generic file names and obfuscated releases
 - TMDB artwork, transparent title logos, cast, genres and episode details; Fix Match for anything misidentified
-- Quality badges from file names: 4K, HDR10, Dolby Vision, HEVC/AV1, Atmos and lossless audio
-- IMDb ratings for movies, shows, season averages and individual episodes, from IMDb's public datasets
-- Home, TV Shows, Movies, My List and search; Continue Watching with TV "Next Up"; Top 10 and genre rows
+- Accurate quality badges read from the actual streams (4K, HDR10, Dolby Vision, HEVC/AV1, Atmos, lossless audio), even for badly named files
+- Age ratings (PG-13, TV-MA, …), IMDb ratings for movies, shows, seasons and episodes, and franchise rows such as "Dune Collection" in watch order
+- Missing episodes shown greyed out, plus "New Episode Friday" for shows that are still airing
+- Actor pages: click anyone in the cast to see everything of theirs in your library
+- Version picker when you have the same movie in, say, 1080p and 4K
+
+**Home**
+
+- Netflix-style billboard that fades into the title's muted trailer after a few seconds
+- Hover cards that cycle through still frames taken from your actual file
+- Continue Watching with TV "Next Up", My List, Top 10, genre rows and search
+- A short animated launch intro with its own sound (both can be turned off)
+
+**Profiles**
+
+- "Who's watching?" screen with separate Continue Watching, My List and history for each person
+- Kids and Teen profiles that only show titles up to the matching age rating
+- Viewing Activity history and **TruongFlix Wrapped**: hours watched, top genres and shows, biggest binge and longest streak for each year
 
 **Playback**
 
 - Built-in player powered by libmpv: hardware decoding, HDR tone mapping and nearly every container and codec
+- Skip Intro and Skip Recap, from chapter markers or by comparing the audio of a season's episodes to find the shared opening (optionally automatic)
+- Mini-player: shrink the video into a corner and keep browsing
+- Scrub-bar thumbnails and chapter marks, generated in the background by a second, hidden player
+- Next-episode countdown that starts with the credits, the paused "You're watching" screen, fullscreen and keyboard shortcuts
+- Subtitle appearance settings (size, colour, background box, font), dialogue boost and night mode
 - Netflix-style controls: scrubbing, ±10 s, volume, speed, audio and subtitle tracks, and subtitle/audio timing
-- Next-episode countdown with auto-advance, the paused "You're watching" screen, fullscreen and keyboard shortcuts
 - Resume points saved as you watch; anything 90% watched is marked complete
 - Optional external VLC, as a fallback or as the default player
 
 **Files and subtitles**
 
 - Optional OpenSubtitles integration: search by file hash for perfectly synced results, downloaded next to the video
+- Optional Plex-style renaming (`Movie (Year)/Movie (Year).mkv`, `Show/Season 01/Show - S01E01.mkv`) with a full preview and undo
 - Loose videos are organized into their own folders, along with their subtitles and artwork
 - Delete movies, shows or single episodes to Recently Deleted, with full restore for 30 days
 - Show in Finder / File Explorer, and offline drives are never pruned from the library
@@ -82,7 +103,7 @@ Library screenshots use the development preview with sample metadata and artwork
 **macOS** (Apple Silicon)
 
 1. Download [TruongFlix-macOS.dmg](https://github.com/iant4093/TruongFlix/releases/latest/download/TruongFlix-macOS.dmg) and drag TruongFlix into Applications.
-2. The first time, right-click the app and choose **Open**. Release builds are ad-hoc signed, not notarized.
+2. Open TruongFlix. macOS will say it can't verify the developer, because release builds are ad-hoc signed rather than notarized. Click **Done**, then go to **System Settings › Privacy & Security**, scroll down to the message about TruongFlix and click **Open Anyway**, then confirm with your password. You only need to do this once.
 
 **Windows** (x64, Windows 10 or later)
 
@@ -132,7 +153,7 @@ npm run app:build
 # TypeScript check and production frontend build
 npm run build
 
-# Rust unit tests: scanner, subtitles, file management, IMDb parsing, VLC auth
+# Rust unit tests: scanner, subtitles, file management and renaming, intro fingerprinting, IMDb parsing, VLC auth
 cd src-tauri && cargo test
 
 # Network and engine tests (real IMDb datasets, OpenSubtitles, VLC)
@@ -152,7 +173,7 @@ Pull requests and pushes to `main` run:
 2. macOS and Windows builds: libmpv bundling, Rust tests and installer packaging.
 3. A Windows player smoke test that launches the built app on a sample video and captures screenshots as an artifact.
 
-After all builds pass, pushes to `main` publish a GitHub Release `v<major>.<minor>.<run number>` containing `TruongFlix-macOS.dmg`, `TruongFlix-Windows-Setup.exe`, the signed updater archives, `latest.json` and `SHA256SUMS`. Installed apps pick up the new version through `latest.json`. Pull requests never publish.
+After all builds pass, pushes to `main` publish a GitHub Release `v<major>.<minor>.<run number>` containing `TruongFlix-macOS.dmg`, `TruongFlix-Windows-Setup.exe`, the signed updater archives, `latest.json` and `SHA256SUMS`. The release notes are generated from the commit messages since the previous release, and the same list appears in the app's update prompt. Installed apps pick up the new version through `latest.json`. Pull requests never publish.
 
 The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository secret. Builds without it (such as fork pull requests) still produce installers, just without update signatures. GitHub Actions are pinned to commit SHAs, and Dependabot checks them weekly.
 
@@ -161,13 +182,13 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 ```text
 .
 ├── src/                    React app
-│   ├── components/         Library, player, modals, settings and shared UI
-│   ├── services/           Scanner, parser, TMDB, IMDb, subtitles, files, player, updates, SQLite
+│   ├── components/         Library, player, profiles, modals, settings and shared UI
+│   ├── services/           Scanner, parser, TMDB, IMDb, subtitles, files, renaming, media analysis, player, updates, SQLite
 │   ├── store/              Zustand store and library selectors
 │   └── dev/                Browser-preview mock of the Tauri backend (dev only)
 ├── src-tauri/              Rust backend
 │   ├── src/player/         libmpv bindings and macOS/Windows video surfaces
-│   ├── src/                Scanner, VLC, subtitles, file management and IMDb commands
+│   ├── src/                Scanner, folder watcher, media analysis (probe, frames, intro detection), VLC, subtitles, files, IMDb
 │   └── examples/           Player smoke test
 ├── scripts/                libmpv bundling and release packaging
 ├── docs/                   README screenshots and icon

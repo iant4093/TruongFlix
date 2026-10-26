@@ -166,11 +166,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # full history + tags, for release notes since the previous release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: installers-*
           merge-multiple: true
           path: release-assets
+
+      - name: Release notes from commit messages
+        shell: bash
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+          range="${prev:+$prev..}HEAD"
+          # One line per commit since the last release (merge commits and housekeeping skipped).
+          git log "$range" --no-merges --pretty='- %s' -n 60 \
+            | grep -viE '^- (merge|wip|bump version)\b' > release-notes.txt || true
+          [ -s release-notes.txt ] || echo "- Maintenance release" > release-notes.txt
+          {
+            echo "## What's new"
+            echo
+            cat release-notes.txt
+            echo
+            if [ -n "$prev" ]; then
+              echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${GITHUB_SHA::7}"
+            else
+              echo "Built from ${GITHUB_SHA::7}."
+            fi
+          } > release-body.md
+          cat release-body.md
 
       - name: Compose updater manifest and checksums
         shell: bash
@@ -188,7 +211,8 @@ jobs:
               platforms["darwin-aarch64"] = { signature: sig("TruongFlix-macOS.app.tar.gz"), url: url("TruongFlix-macOS.app.tar.gz") };
             if (fs.existsSync("release-assets/TruongFlix-Windows-Setup.exe.sig"))
               platforms["windows-x86_64"] = { signature: sig("TruongFlix-Windows-Setup.exe"), url: url("TruongFlix-Windows-Setup.exe") };
-            const manifest = { version: v, notes: `TruongFlix ${v}`, pub_date: new Date().toISOString(), platforms };
+            const notes = fs.readFileSync("release-notes.txt", "utf8").trim() || `TruongFlix ${v}`;
+            const manifest = { version: v, notes, pub_date: new Date().toISOString(), platforms };
             fs.writeFileSync("release-assets/latest.json", JSON.stringify(manifest, null, 2));
             console.log(Object.keys(platforms));
           '
@@ -199,12 +223,10 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          notes=$(printf '%s\n\nBuilt from %s.' "${COMMIT_MESSAGE:-Manual release}" "${GITHUB_SHA::7}")
           gh release create "v${VERSION}" release-assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "TruongFlix ${VERSION}" \
-            --notes "$notes" \
+            --notes-file release-body.md \
             --latest
