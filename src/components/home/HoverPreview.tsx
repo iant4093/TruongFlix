@@ -7,6 +7,7 @@ import type { MediaItem } from '../../types/media';
 import { extractFrames } from '../../services/frames';
 import { parseMediaInfo } from '../../services/mediainfo';
 import MaturityRating from '../common/MaturityRating';
+import CriticScores from '../common/CriticScores';
 import { playItem } from '../../services/player';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
@@ -182,6 +183,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium">
           {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
           <ImdbRating rating={item.imdbRating} />
+          <CriticScores rt={item.rtScore} metacritic={item.metacritic} />
           <MaturityRating rating={item.certification} />
           {meta && <span className="text-nf-secondary">{meta}</span>}
           <TechBadges tech={item.tech} showAudio={false} />

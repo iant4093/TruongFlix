@@ -5,12 +5,16 @@ import type { EpisodeRow, MediaInfo, MovieRow, Segment } from '../types/media';
 import * as db from './db';
 import { parseSegments, segmentsFromChapters, techFromInfo } from './mediainfo';
 import * as tmdb from './tmdb';
+import { fetchCriticScores, OmdbError } from './omdb';
 
 const PROBE_CHUNK = 6;
 /** How much of each episode's audio is compared when looking for the intro. */
 const INTRO_WINDOW_SECONDS = 420;
 const SERIES_REFRESH_DAYS = 3;
 const COLLECTION_REFRESH_DAYS = 30;
+const OMDB_REFRESH_DAYS = 30;
+/** Stay well inside OMDb's free 1,000 requests a day. */
+const OMDB_PER_RUN = 300;
 
 let running = false;
 let again = false;
@@ -36,6 +40,7 @@ export async function startBackgroundAnalysis() {
       await probeFiles();
       await fetchExtras();
       await fetchCollections();
+      await fetchCriticRatings();
       if (useLibraryStore.getState().settings.intro_detection) await detectIntros();
     } while (again);
   } catch (e) {
@@ -128,6 +133,27 @@ async function fetchCollections() {
     }
   }
   if (ids.length) await useLibraryStore.getState().reload();
+}
+
+async function fetchCriticRatings() {
+  const { settings, movies, series } = useLibraryStore.getState();
+  if (!settings.omdb_api_key) return;
+  const stale = (at: string | null) => !at || Date.now() - Date.parse(at.replace(' ', 'T') + 'Z') > OMDB_REFRESH_DAYS * 864e5;
+  const todo = new Map<string, 'movies' | 'tv_series'>();
+  for (const m of movies) if (m.imdb_id && stale(m.omdb_at)) todo.set(m.imdb_id, 'movies');
+  for (const s of series) if (s.imdb_id && stale(s.omdb_at)) todo.set(s.imdb_id, 'tv_series');
+  const list = [...todo.entries()].slice(0, OMDB_PER_RUN);
+  for (const [i, [imdbId, table]] of list.entries()) {
+    status(`Fetching Rotten Tomatoes & Metacritic · ${i + 1} of ${list.length}`);
+    try {
+      const s = await fetchCriticScores(settings.omdb_api_key, imdbId);
+      await db.saveOmdbRatings(table, imdbId, s.rt, s.metacritic);
+    } catch (e) {
+      if (e instanceof OmdbError && e.kind !== 'other') break; // bad key, daily limit or offline: try next run
+    }
+    if (i % 25 === 24) await useLibraryStore.getState().reload();
+  }
+  if (list.length) await useLibraryStore.getState().reload();
 }
 
 async function detectIntros() {

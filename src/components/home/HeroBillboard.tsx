@@ -7,6 +7,7 @@ import { matchPercent, playTargetFor } from '../../store/selectors';
 import { playItem } from '../../services/player';
 import TechBadges from '../common/TechBadges';
 import ImdbRating from '../common/ImdbRating';
+import CriticScores from '../common/CriticScores';
 
 /** Seconds of still backdrop before the trailer fades in (like Netflix's home page). */
 const TRAILER_DELAY_MS = 4000;
@@ -203,6 +204,7 @@ export default function HeroBillboard({ item }: Props) {
         <div className="text-shadow flex flex-wrap items-center gap-x-3 gap-y-1 text-[clamp(0.85rem,1.1vw,1.05rem)] font-medium">
           {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
           <ImdbRating rating={item.imdbRating} size="md" />
+          <CriticScores rt={item.rtScore} metacritic={item.metacritic} size="md" />
           {item.year && <span className="text-[#e5e5e5]">{item.year}</span>}
           {item.kind === 'tv' && item.seasonCount > 0 && (
             <span className="text-[#e5e5e5]">

@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https://image.tmdb.org data: blob:; connect-src 'self' ipc: http://ipc.localhost https://api.themoviedb.org; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src https://www.youtube-nocookie.com https://www.youtube.com https://iant4093.github.io",
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https://image.tmdb.org data: blob:; connect-src 'self' ipc: http://ipc.localhost https://api.themoviedb.org https://www.omdbapi.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src https://www.youtube-nocookie.com https://www.youtube.com https://iant4093.github.io",
       "assetProtocol": {
         "enable": true,
         "scope": [

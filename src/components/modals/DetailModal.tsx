@@ -7,6 +7,7 @@ import SubtitlesPanel from '../common/SubtitlesPanel';
 import Dropdown from '../common/Dropdown';
 import ImdbRating from '../common/ImdbRating';
 import MaturityRating from '../common/MaturityRating';
+import CriticScores from '../common/CriticScores';
 import { CastLinks, StreamInfo } from '../common/StreamInfo';
 import type { CollectionPart, EpisodeRow, MediaItem, PlayTarget, SeasonEpisodeInfo } from '../../types/media';
 import * as db from '../../services/db';
@@ -211,6 +212,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[15px]">
             {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
             <ImdbRating rating={item.imdbRating} votes={item.imdbVotes} imdbId={item.imdbId} showVotes size="md" />
+            <CriticScores rt={item.rtScore} metacritic={item.metacritic} size="md" />
             {item.year && <span className="text-nf-secondary">{item.year}</span>}
             <MaturityRating rating={item.certification} size="md" />
             {item.kind === 'movie' && item.runtime ? <span className="text-nf-secondary">{formatRuntime(item.runtime)}</span> : null}
