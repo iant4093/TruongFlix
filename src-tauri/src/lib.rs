@@ -1,6 +1,7 @@
 mod files;
 mod imdb;
 mod media;
+mod nowplaying;
 mod player;
 mod scanner;
 mod subtitles;
@@ -68,6 +69,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
             update_feed_status,
+            nowplaying::media_session_update,
+            nowplaying::media_session_clear,
             scanner::scan_media_folders,
             scanner::check_paths,
             vlc::detect_vlc,
@@ -79,6 +82,7 @@ pub fn run() {
             subtitles::opensubtitles_search,
             subtitles::opensubtitles_download,
             subtitles::list_local_subtitles,
+            subtitles::sidecar_subtitle_languages,
             subtitles::delete_subtitle_file,
             files::organize_loose_files,
             files::trash_media,

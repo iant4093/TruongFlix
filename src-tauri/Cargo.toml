@@ -32,6 +32,7 @@ tauri-plugin-process = "2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 [target.'cfg(windows)'.dependencies]
+souvlaki = { version = "0.8", default-features = false }
 # Borderless video window behind the transparent TruongFlix window (built-in player).
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
@@ -44,6 +45,7 @@ windows-sys = { version = "0.60", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 # Native video view (CAOpenGLLayer) for the built-in player.
 objc2 = "0.6"
+block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSValue"] }
 
 [profile.release]
