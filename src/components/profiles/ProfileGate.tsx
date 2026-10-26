@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Pencil, Plus } from 'lucide-react';
-import type { Maturity, Profile } from '../../types/media';
+import type { Maturity, Profile, ProfileInput } from '../../types/media';
+import { guardAdult, switchProfileGuarded } from '../../services/profilelock';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import * as db from '../../services/db';
 import { MATURITY_LABEL } from '../../store/selectors';
@@ -14,6 +15,18 @@ const MATURITY_HINT: Record<Maturity, string> = {
   kids: 'Only G, PG, TV-Y, TV-Y7, TV-G and TV-PG. Unrated titles are hidden.',
 };
 
+const LIMITS: [number, string][] = [
+  [0, 'No limit'],
+  [30, '30 min'],
+  [60, '1 hour'],
+  [90, '1½ hours'],
+  [120, '2 hours'],
+  [180, '3 hours'],
+];
+const TIMES = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`);
+const SELECT = 'rounded border border-white/30 bg-[#333] px-2 py-1.5 text-sm text-white outline-none';
+const chip = (on: boolean) => `rounded border px-3 py-1.5 text-sm ${on ? 'border-white bg-white text-black' : 'border-white/30 text-nf-secondary hover:text-white'}`;
+
 /** Netflix's "Who's watching?" screen, plus profile management. */
 export default function ProfileGate() {
   const mode = useLibraryStore((s) => s.profileGate);
@@ -23,9 +36,10 @@ export default function ProfileGate() {
 function Gate({ mode }: { mode: 'select' | 'manage' }) {
   const profiles = useLibraryStore((s) => s.profiles);
   const active = useLibraryStore((s) => s.activeProfile);
-  const switchProfile = useLibraryStore((s) => s.switchProfile);
   const setGate = useLibraryStore((s) => s.setProfileGate);
   const [editing, setEditing] = useState<Profile | 'new' | null>(null);
+  // Opened from the profile menu → "Done" closes; opened as "Who's watching?" → back to picking.
+  const openedAs = useRef(mode);
   const managing = mode === 'manage';
 
   return (
@@ -50,7 +64,7 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
               {profiles.map((p) => (
                 <button
                   key={p.id}
-                  onClick={() => (managing ? setEditing(p) : switchProfile(p.id))}
+                  onClick={() => (managing ? setEditing(p) : switchProfileGuarded(p.id))}
                   className="group flex w-[clamp(84px,10vw,160px)] flex-col items-center gap-3"
                 >
                   <span className="relative">
@@ -81,12 +95,12 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
             </div>
             <div className="mt-14 flex gap-3">
               {managing ? (
-                <button onClick={() => setGate(active ? null : 'select')} className="bg-white px-8 py-2 text-lg font-semibold text-black hover:bg-nf-red hover:text-white">
+                <button onClick={() => setGate(openedAs.current === 'manage' && active ? null : 'select')} className="bg-white px-8 py-2 text-lg font-semibold text-black hover:bg-nf-red hover:text-white">
                   Done
                 </button>
               ) : (
                 <button
-                  onClick={() => setGate('manage')}
+                  onClick={() => guardAdult(() => setGate('manage'), { atGate: true })}
                   className="border border-nf-muted px-8 py-2 text-lg tracking-widest text-nf-muted hover:border-white hover:text-white"
                 >
                   MANAGE PROFILES
@@ -110,11 +124,24 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
   const [name, setName] = useState(profile?.name ?? '');
   const [color, setColor] = useState(profile?.color ?? db.nextProfileColor(profiles.map((p) => p.color)));
   const [maturity, setMaturity] = useState<Maturity>(profile?.maturity ?? 'all');
+  const [dailyLimit, setDailyLimit] = useState(profile?.daily_limit ?? 0);
+  const [bedtime, setBedtime] = useState(profile?.bedtime ?? '');
+  const [wakeTime, setWakeTime] = useState(profile?.wake_time || '07:00');
+  const [pin, setPin] = useState(profile?.pin ?? '');
 
   const save = async () => {
     const clean = name.trim() || 'Profile';
-    if (profile) await db.updateProfile(profile.id, clean, color, maturity);
-    else await db.createProfile(clean, color, maturity);
+    const input: ProfileInput = {
+      name: clean,
+      color,
+      maturity,
+      daily_limit: dailyLimit,
+      bedtime,
+      wake_time: wakeTime,
+      pin: /^\d{4}$/.test(pin) ? pin : '',
+    };
+    if (profile) await db.updateProfile(profile.id, input);
+    else await db.createProfile(input);
     await loadProfiles();
     if (profile && profile.id === active?.id) await reload(); // maturity may have changed
     onDone();
@@ -144,7 +171,7 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
       <h1 className="text-5xl font-medium">{profile ? 'Edit Profile' : 'Add Profile'}</h1>
       <div className="mt-6 flex gap-6 border-y border-white/15 py-6">
         <ProfileAvatar color={color} maturity={maturity} size={120} />
-        <div className="flex-1 space-y-5">
+        <div className="max-h-[58vh] flex-1 space-y-5 overflow-y-auto pr-2">
           <input
             autoFocus
             value={name}
@@ -182,6 +209,61 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
               ))}
             </div>
             <p className="mt-2 text-xs text-nf-muted">{MATURITY_HINT[maturity]}</p>
+          </div>
+          <div>
+            <div className="mb-2 text-sm text-nf-secondary">Daily viewing limit</div>
+            <div className="flex flex-wrap gap-2">
+              {LIMITS.map(([m, label]) => (
+                <button key={m} onClick={() => setDailyLimit(m)} className={chip(dailyLimit === m)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <span className="text-nf-secondary">Bedtime</span>
+            <select value={bedtime} onChange={(e) => setBedtime(e.target.value)} className={SELECT}>
+              <option value="">No bedtime</option>
+              {TIMES.filter((t) => t >= '18:00').map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+            {bedtime && (
+              <>
+                <span className="text-nf-secondary">until</span>
+                <select value={wakeTime} onChange={(e) => setWakeTime(e.target.value)} className={SELECT}>
+                  {TIMES.filter((t) => t >= '05:00' && t <= '10:00').map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
+          <div>
+            <div className="mb-2 text-sm text-nf-secondary">Profile lock</div>
+            <div className="flex items-center gap-3">
+              <input
+                value={pin}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                inputMode="numeric"
+                placeholder="4-digit PIN"
+                className="w-36 bg-[#333] px-3 py-1.5 tracking-[0.4em] text-white outline-none placeholder:tracking-normal placeholder:text-white/50"
+              />
+              {pin && (
+                <button onClick={() => setPin('')} className="text-xs text-nf-muted hover:text-white">
+                  Remove PIN
+                </button>
+              )}
+            </div>
+            <p className="mt-2 text-xs text-nf-muted">
+              {maturity === 'all'
+                ? 'Asked when switching to this profile. While a kids profile is active, a parent’s PIN also protects Settings and profile changes.'
+                : 'Asked when switching to this profile.'}
+            </p>
           </div>
         </div>
       </div>

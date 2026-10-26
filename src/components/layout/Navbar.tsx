@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BarChart3, ChevronDown, History, RefreshCw, Search, Settings, Square, Users, X } from 'lucide-react';
 import ProfileAvatar from '../common/ProfileAvatar';
+import { guardAdult, switchProfileGuarded } from '../../services/profilelock';
+import { formatLeft, limitStatus } from '../../services/limits';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
 import { runScan } from '../../services/scanner';
 import { stopPlayback } from '../../services/player';
@@ -165,7 +167,7 @@ export default function Navbar() {
         </button>
 
         <button
-          onClick={() => openSettings(true)}
+          onClick={() => guardAdult(() => openSettings(true))}
           title="Settings"
           aria-label="Settings"
           className="text-[#e5e5e5] transition-colors hover:text-white"
@@ -182,11 +184,27 @@ export default function Navbar() {
 function ProfileMenu() {
   const profiles = useLibraryStore((s) => s.profiles);
   const active = useLibraryStore((s) => s.activeProfile);
-  const switchProfile = useLibraryStore((s) => s.switchProfile);
   const setGate = useLibraryStore((s) => s.setProfileGate);
   const setOverlay = useLibraryStore((s) => s.setOverlay);
   const [open, setOpen] = useState(false);
+  const [timeLeft, setTimeLeft] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
+  useEffect(() => {
+    if (!open || !active || (!active.daily_limit && !active.bedtime)) return setTimeLeft(null);
+    void limitStatus(active).then((st) =>
+      setTimeLeft(
+        st.blocked === 'bedtime'
+          ? `Bedtime until ${active.wake_time || '07:00'}`
+          : st.blocked === 'limit'
+            ? 'No TV time left today'
+            : st.remaining != null
+              ? `${formatLeft(st.remaining)} of TV left today`
+              : active.bedtime
+                ? `Bedtime at ${active.bedtime}`
+                : null,
+      ),
+    );
+  }, [open, active]);
   if (!active) return null;
 
   const show = () => {
@@ -216,15 +234,16 @@ function ProfileMenu() {
             transition={{ duration: 0.15 }}
             className="absolute right-0 top-full mt-4 w-56 border border-white/15 bg-black/90 py-2 text-sm shadow-2xl backdrop-blur"
           >
+            {timeLeft && <div className="border-b border-white/15 px-4 pb-2 text-xs text-nf-secondary">{timeLeft}</div>}
             {profiles
               .filter((p) => p.id !== active.id)
               .map((p) => (
-                <button key={p.id} onClick={pick(() => void switchProfile(p.id))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
+                <button key={p.id} onClick={pick(() => switchProfileGuarded(p.id))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
                   <ProfileAvatar color={p.color} maturity={p.maturity} size={28} />
                   {p.name}
                 </button>
               ))}
-            <button onClick={pick(() => setGate('manage'))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
+            <button onClick={pick(() => guardAdult(() => setGate('manage')))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
               <Users className="h-5 w-5 text-nf-secondary" /> Manage Profiles
             </button>
             <div className="my-2 border-t border-white/15" />
