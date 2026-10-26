@@ -59,6 +59,9 @@ export interface MovieRow extends TechInfo, ImdbInfo {
   probed_mtime: number | null;
   enriched_at: string | null;
   probe_error: string | null;
+  rt_score: number | null;
+  metacritic: number | null;
+  omdb_at: string | null;
 }
 
 export interface SeriesRow extends ImdbInfo {
@@ -84,6 +87,9 @@ export interface SeriesRow extends ImdbInfo {
   tmdb_status: string | null;
   next_episode: string | null;
   enriched_at: string | null;
+  rt_score: number | null;
+  metacritic: number | null;
+  omdb_at: string | null;
 }
 
 export interface EpisodeRow extends TechInfo, ImdbInfo {
@@ -163,6 +169,29 @@ export interface Profile {
   color: string;
   maturity: Maturity;
   created_at: string;
+  /** Minutes of viewing allowed per day (0 = no limit). */
+  daily_limit: number;
+  /** "HH:MM" after which playback won't start, until `wake_time` ("" = no bedtime). */
+  bedtime: string;
+  wake_time: string;
+  /** 4-digit PIN asked when switching to this profile ("" = none). */
+  pin: string;
+}
+
+export type ProfileInput = Omit<Profile, 'id' | 'created_at'>;
+
+/** A media folder on a network share (from the Rust `share_info` command). */
+export interface ShareInfo {
+  mount_point: string;
+  url: string;
+  host: string;
+  kind: 'smb' | 'afp' | 'nfs' | 'windows';
+  mac: string | null;
+}
+
+export interface AudioDevice {
+  name: string;
+  description: string;
 }
 
 export interface CollectionPart {
@@ -239,6 +268,9 @@ export interface MediaItem {
   imdbId: string | null;
   imdbRating: number | null;
   imdbVotes: number | null;
+  /** Rotten Tomatoes critics score (%) and Metacritic score, from OMDb. */
+  rtScore: number | null;
+  metacritic: number | null;
   /** TV only: IMDb season averages keyed by season number. */
   imdbSeasons: Record<number, SeasonRating>;
   certification: string | null;
@@ -345,6 +377,17 @@ export interface Settings {
   active_profile: number;
   /** Pause and ask "Are you still watching?" after this many episodes in a row without input (0 = never). */
   still_watching_after: number;
+  /** mpv audio device ("auto" = system default) and receiver passthrough for Dolby/DTS. */
+  audio_device: string;
+  audio_passthrough: boolean;
+  /** Audio delay (seconds) remembered per output device, keyed by mpv device name. */
+  audio_delays: Record<string, number>;
+  /** Pause when the screen locks, the display sleeps or the computer sleeps. */
+  pause_on_lock: boolean;
+  /** OMDb key for Rotten Tomatoes and Metacritic scores ("" = off). */
+  omdb_api_key: string;
+  /** Network shares behind media folders, keyed by media folder. */
+  network_shares: Record<string, ShareInfo>;
 }
 
 export type SleepTimer = { mode: 'minutes'; minutes: number; endsAt: number } | { mode: 'episode' };

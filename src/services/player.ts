@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { episodeTarget, playTargetFor } from '../store/selectors';
 import type {
+  AudioDevice,
   BuiltinPlayerState,
   EngineStatus,
   EpisodeRow,
@@ -17,6 +18,8 @@ import type {
 } from '../types/media';
 import { getSelectedSubtitlePath, logWatchTime, recordProgress } from './db';
 import { parseMediaInfo } from './mediainfo';
+import { ensureReachable } from './nas';
+import { blockedMessage, formatLeft, limitStatus } from './limits';
 import { subtitlesEnabled } from './subtitles';
 
 interface ProgressPayload {
@@ -72,6 +75,13 @@ function mediaInfoFor(target: PlayTarget) {
 /** Plays a movie/episode in the built-in player when available, otherwise in VLC. */
 export async function play(target: PlayTarget) {
   noteUserActivity(); // a title picked by hand starts a fresh "still watching" count
+  const limit = await limitStatus(useLibraryStore.getState().activeProfile, pendingSeconds);
+  if (limit.blocked) {
+    const store = useLibraryStore.getState();
+    store.toast(blockedMessage(store.activeProfile!, limit.blocked), 'error');
+    return;
+  }
+  if (!(await ensureReachable(target.filePath))) return;
   const { settings, toast } = useLibraryStore.getState();
   if (settings.player_engine !== 'vlc') {
     const status = await engineStatus();
@@ -162,6 +172,84 @@ export function syncSubtitleStyle() {
   const { settings, playerSession } = useLibraryStore.getState();
   if (!playerSession) return;
   for (const [k, v] of subtitleOptions(settings.subtitle_style)) void playerSet(k, v);
+}
+
+// ---------------------------------------------------------------------------
+// Audio output: device, receiver passthrough, per-device delay
+// ---------------------------------------------------------------------------
+
+/** Codecs sent untouched to an AV receiver (Dolby Digital/Plus, DTS/DTS-HD, TrueHD incl. Atmos). */
+const PASSTHROUGH_CODECS = 'ac3,eac3,dts,dts-hd,truehd';
+let deviceCache: AudioDevice[] | null = null;
+
+export async function listAudioDevices(refresh = false): Promise<AudioDevice[]> {
+  if (!deviceCache || refresh) deviceCache = await invoke<AudioDevice[]>('audio_devices').catch(() => deviceCache ?? []);
+  return deviceCache;
+}
+
+/** The output actually in use: the chosen device, or the system default when set to "auto". */
+async function resolveOutput(): Promise<{ key: string; label: string }> {
+  const { settings } = useLibraryStore.getState();
+  const devices = await listAudioDevices();
+  if (settings.audio_device && settings.audio_device !== 'auto') {
+    return { key: settings.audio_device, label: devices.find((d) => d.name === settings.audio_device)?.description ?? settings.audio_device };
+  }
+  const def = await invoke<AudioDevice | null>('default_audio_device').catch(() => null);
+  if (!def) return { key: 'auto', label: 'System default' };
+  return { key: def.name, label: def.description || devices.find((d) => d.name === def.name)?.description || 'System default' };
+}
+
+export function passthroughOptions(on: boolean): [string, string][] {
+  // CoreAudio only bitstreams in exclusive mode (other apps' sounds are muted meanwhile).
+  return [['audio-spdif', on ? PASSTHROUGH_CODECS : ''], ...(IS_MAC ? ([['audio-exclusive', on ? 'yes' : 'no']] as [string, string][]) : [])];
+}
+
+let outputPoll: number | null = null;
+
+/** Applies the remembered delay for whatever device is playing; re-checks when headphones connect. */
+async function syncOutput(force = false) {
+  const store = useLibraryStore.getState();
+  if (!store.playerSession) return;
+  const out = await resolveOutput();
+  if (!force && store.audioOutput?.key === out.key) return;
+  store.setAudioOutput(out);
+  await playerSet('audio-delay', (store.settings.audio_delays[out.key] ?? 0).toFixed(2)).catch(() => {});
+}
+
+function startOutputWatch() {
+  if (outputPoll != null) window.clearInterval(outputPoll);
+  outputPoll = window.setInterval(() => void syncOutput(), 4000);
+}
+
+function stopOutputWatch() {
+  if (outputPoll != null) window.clearInterval(outputPoll);
+  outputPoll = null;
+  useLibraryStore.getState().setAudioOutput(null);
+}
+
+/** Switches speakers ("auto" = follow the system), live if something is playing. */
+export async function setAudioDevice(name: string) {
+  const store = useLibraryStore.getState();
+  await store.updateSettings({ audio_device: name });
+  if (store.playerSession) {
+    await playerSet('audio-device', name).catch(() => {});
+    await syncOutput(true);
+  }
+}
+
+export async function setPassthrough(on: boolean) {
+  const store = useLibraryStore.getState();
+  await store.updateSettings({ audio_passthrough: on });
+  if (store.playerSession) for (const [k, v] of passthroughOptions(on)) await playerSet(k, v).catch(() => {});
+}
+
+/** Sets the audio delay and remembers it for the current output (e.g. AirPods lag). */
+export async function setAudioDelay(seconds: number) {
+  const store = useLibraryStore.getState();
+  const value = Math.round(seconds * 10) / 10;
+  await playerSet('audio-delay', value.toFixed(1)).catch(() => {});
+  const key = store.audioOutput?.key ?? (await resolveOutput()).key;
+  await store.updateSettings({ audio_delays: { ...store.settings.audio_delays, [key]: value } });
 }
 
 // ---------------------------------------------------------------------------
@@ -316,8 +404,15 @@ export async function playBuiltin(target: PlayTarget) {
       subtitlePath: await subtitleFor(target),
       audioLang: null,
       subLang: null,
-      options: [...subtitleOptions(settings.subtitle_style), ['af', appliedAf]],
+      options: [
+        ...subtitleOptions(settings.subtitle_style),
+        ['af', appliedAf],
+        ['audio-device', settings.audio_device || 'auto'],
+        ...passthroughOptions(settings.audio_passthrough),
+      ],
     });
+    void syncOutput(true);
+    startOutputWatch();
     // Keep the video surface in sync with the UI (e.g. the next episode starting inside the mini-player).
     const mini = useLibraryStore.getState().playerMini;
     await invoke('player_layout', { rect: mini ? miniRect() : null }).catch(() => {});
@@ -359,6 +454,7 @@ function finishSession() {
   autoStreak = 0;
   pendingNext = null;
   setSleepTimer(null);
+  stopOutputWatch();
   store.setPlayerPrompt(null);
   store.setPlayerMini(false);
   store.setPlayerSession(null);
@@ -409,7 +505,7 @@ export function stopForSleep() {
   return true;
 }
 
-async function pauseForPrompt(prompt: 'still-watching' | 'sleep-ended') {
+async function pauseForPrompt(prompt: 'still-watching' | 'sleep-ended' | 'limit' | 'bedtime') {
   const store = useLibraryStore.getState();
   if (store.playerState && !store.playerState.paused && !store.playerState.eof) await playerSet('pause', 'yes').catch(() => {});
   store.setPlayerPrompt(prompt);
@@ -419,6 +515,7 @@ async function pauseForPrompt(prompt: 'still-watching' | 'sleep-ended') {
 export function dismissPrompt() {
   const store = useLibraryStore.getState();
   const prompt = store.playerPrompt;
+  if (prompt === 'limit' || prompt === 'bedtime') return void closeBuiltin(); // no way past these
   store.setPlayerPrompt(null);
   noteUserActivity();
   if (prompt === 'still-watching' && pendingNext) {
@@ -476,6 +573,37 @@ async function fadeOutAndPause() {
   const store = useLibraryStore.getState();
   store.setSleepTimer(null);
   store.setPlayerPrompt('sleep-ended');
+}
+
+// ---------------------------------------------------------------------------
+// Kids' limits (daily viewing time, bedtime)
+// ---------------------------------------------------------------------------
+
+let limitTick: number | null = null;
+let warnedFor = '';
+const LIMIT_CHECK_MS = 20_000;
+
+/** While something plays on a profile with limits: warn at 5 minutes left, stop when time's up. */
+function startLimitWatch() {
+  if (limitTick != null) return;
+  limitTick = window.setInterval(async () => {
+    const store = useLibraryStore.getState();
+    const profile = store.activeProfile;
+    const playing = !!store.playerSession || store.playback.active;
+    if (!playing || !profile || (!profile.daily_limit && !profile.bedtime) || store.playerPrompt === 'limit' || store.playerPrompt === 'bedtime') return;
+    const st = await limitStatus(profile, pendingSeconds);
+    if (st.blocked) {
+      store.toast(blockedMessage(profile, st.blocked), 'info');
+      if (store.playerSession) void pauseForPrompt(st.blocked);
+      else void stopPlayback();
+      return;
+    }
+    const today = new Date().toDateString();
+    if (st.remaining != null && st.remaining <= 300 && warnedFor !== `${profile.id}-${today}`) {
+      warnedFor = `${profile.id}-${today}`;
+      store.toast(`${formatLeft(st.remaining)} of TV left today`, 'info');
+    }
+  }, LIMIT_CHECK_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +668,7 @@ let lastSave = 0;
 /** Subscribes to VLC and built-in player events and persists watch state in real time. */
 export async function initPlayerEvents() {
   if (unlisteners.length) return;
+  startLimitWatch();
   unlisteners = await Promise.all([
     listen<ProgressPayload>('vlc-progress', async ({ payload }) => {
       const store = useLibraryStore.getState();
@@ -603,6 +732,18 @@ export async function initPlayerEvents() {
       if (!store.playerState?.loaded) void closeBuiltin();
     }),
     listen('player-closed', () => finishSession()),
+    // Screen locked, display asleep or the computer going to sleep (lid closed).
+    listen<{ reason: 'lock' | 'display' | 'sleep' }>('system-pause', ({ payload }) => {
+      const store = useLibraryStore.getState();
+      if (!store.settings.pause_on_lock) return;
+      const why = payload.reason === 'lock' ? 'the screen locked' : payload.reason === 'sleep' ? 'the computer went to sleep' : 'the display went to sleep';
+      if (store.playerSession && store.playerState && !store.playerState.paused) {
+        void playerSet('pause', 'yes');
+        store.toast(`Paused because ${why}`, 'info');
+      } else if (store.playback.active) {
+        void invoke('pause_vlc');
+      }
+    }),
   ]);
 }
 

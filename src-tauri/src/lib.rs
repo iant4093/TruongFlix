@@ -1,9 +1,13 @@
+mod audio;
 mod files;
 mod imdb;
 mod media;
+mod nas;
 mod nowplaying;
 mod player;
+mod power;
 mod scanner;
+mod subsync;
 mod subtitles;
 mod vlc;
 mod watcher;
@@ -64,11 +68,16 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window.on_window_event(player::on_main_window_event);
             }
+            power::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
             update_feed_status,
+            audio::audio_devices,
+            audio::default_audio_device,
+            nas::share_info,
+            nas::connect_share,
             nowplaying::media_session_update,
             nowplaying::media_session_clear,
             scanner::scan_media_folders,
@@ -77,12 +86,16 @@ pub fn run() {
             vlc::install_vlc,
             vlc::launch_vlc,
             vlc::stop_vlc,
+            vlc::pause_vlc,
             subtitles::subtitle_hash,
             subtitles::opensubtitles_verify,
             subtitles::opensubtitles_search,
             subtitles::opensubtitles_download,
             subtitles::list_local_subtitles,
             subtitles::sidecar_subtitle_languages,
+            subsync::sync_subtitle,
+            subsync::undo_subtitle_sync,
+            subsync::subtitle_sync_backup_exists,
             subtitles::delete_subtitle_file,
             files::organize_loose_files,
             files::trash_media,

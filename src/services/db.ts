@@ -3,16 +3,17 @@ import type {
   CollectionPart,
   CollectionRow,
   EpisodeRow,
-  Maturity,
   MediaInfo,
   MovieRow,
   NextEpisode,
   PlayableType,
   Profile,
+  ProfileInput,
   SeasonEpisodeInfo,
   Segment,
   SeriesRow,
   Settings,
+  ShareInfo,
   SubtitleRow,
   SubtitleStyle,
   TechInfo,
@@ -206,12 +207,18 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['probed_mtime', 'INTEGER'], // file_mtime when media_info was read
     ['enriched_at', 'DATETIME'], // TMDB extras (rating, collection, trailer) fetched
     ['probe_error', 'TEXT'], // file exists but couldn't be opened/decoded
+    ['rt_score', 'INTEGER'], // Rotten Tomatoes critics %, from OMDb
+    ['metacritic', 'INTEGER'],
+    ['omdb_at', 'DATETIME'],
   ],
   tv_series: [
     ['imdb_id', 'TEXT'],
     ['imdb_rating', 'REAL'],
     ['imdb_votes', 'INTEGER'],
     ['imdb_season_ratings', 'TEXT'], // JSON {"1": {"rating": 8.4, "count": 9}}
+    ['rt_score', 'INTEGER'],
+    ['metacritic', 'INTEGER'],
+    ['omdb_at', 'DATETIME'],
     ['certification', 'TEXT'],
     ['trailer_key', 'TEXT'],
     ['tmdb_status', 'TEXT'],
@@ -230,6 +237,14 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['probe_error', 'TEXT'],
   ],
 };
+
+// Profile limits (added after profiles shipped).
+ADDED_COLUMNS.profiles = [
+  ['daily_limit', 'INTEGER NOT NULL DEFAULT 0'],
+  ['bedtime', "TEXT NOT NULL DEFAULT ''"],
+  ['wake_time', "TEXT NOT NULL DEFAULT '07:00'"],
+  ['pin', "TEXT NOT NULL DEFAULT ''"],
+];
 
 const PROFILE_COLORS = ['#E50914', '#2E86DE', '#F5B70A', '#1ABC9C', '#8E44AD', '#E67E22'];
 
@@ -335,10 +350,25 @@ export async function getSettings(): Promise<Settings> {
     ask_profile: map.ask_profile !== 'false',
     active_profile: Number(map.active_profile) || 0,
     still_watching_after: map.still_watching_after != null ? Number(map.still_watching_after) : 3,
+    audio_device: map.audio_device || 'auto',
+    audio_passthrough: map.audio_passthrough === 'true',
+    audio_delays: parseObject<Record<string, number>>(map.audio_delays),
+    pause_on_lock: map.pause_on_lock !== 'false',
+    omdb_api_key: map.omdb_api_key ?? '',
+    network_shares: parseObject<Record<string, ShareInfo>>(map.network_shares),
   };
 }
 
 const DEFAULT_STYLE: SubtitleStyle = { size: 'medium', color: 'white', background: 'shadow', font: 'sans' };
+
+function parseObject<T extends object>(raw: string | undefined): T {
+  try {
+    const v = raw ? JSON.parse(raw) : {};
+    return (v && typeof v === 'object' ? v : {}) as T;
+  } catch {
+    return {} as T;
+  }
+}
 
 function parseStyle(raw: string | undefined): SubtitleStyle {
   try {
@@ -375,13 +405,29 @@ export async function listProfiles() {
   return select<Profile[]>('SELECT * FROM profiles ORDER BY id');
 }
 
-export async function createProfile(name: string, color: string, maturity: Maturity): Promise<number> {
-  const res = await exec('INSERT INTO profiles (name, color, maturity) VALUES ($1, $2, $3)', [name, color, maturity]);
+export async function createProfile(p: ProfileInput): Promise<number> {
+  const res = await exec('INSERT INTO profiles (name, color, maturity, daily_limit, bedtime, wake_time, pin) VALUES ($1,$2,$3,$4,$5,$6,$7)', [
+    p.name, p.color, p.maturity, p.daily_limit, p.bedtime, p.wake_time, p.pin,
+  ]);
   return res.lastInsertId ?? (await select<{ id: number }[]>('SELECT MAX(id) AS id FROM profiles'))[0].id;
 }
 
-export async function updateProfile(id: number, name: string, color: string, maturity: Maturity) {
-  await exec('UPDATE profiles SET name = $2, color = $3, maturity = $4 WHERE id = $1', [id, name, color, maturity]);
+export async function updateProfile(id: number, p: ProfileInput) {
+  await exec('UPDATE profiles SET name = $2, color = $3, maturity = $4, daily_limit = $5, bedtime = $6, wake_time = $7, pin = $8 WHERE id = $1', [
+    id, p.name, p.color, p.maturity, p.daily_limit, p.bedtime, p.wake_time, p.pin,
+  ]);
+}
+
+/** Seconds this profile watched today (local date). */
+export async function secondsWatchedToday(profileId = activeProfile): Promise<number> {
+  const d = new Date();
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const rows = await select<{ total: number | null }[]>('SELECT SUM(seconds) AS total FROM watch_log WHERE profile_id = $1 AND day = $2', [profileId, day]);
+  return rows[0]?.total ?? 0;
+}
+
+export async function saveOmdbRatings(table: 'movies' | 'tv_series', imdbId: string, rt: number | null, metacritic: number | null) {
+  await exec(`UPDATE ${table} SET rt_score = $2, metacritic = $3, omdb_at = CURRENT_TIMESTAMP WHERE imdb_id = $1`, [imdbId, rt, metacritic]);
 }
 
 export async function deleteProfile(id: number) {

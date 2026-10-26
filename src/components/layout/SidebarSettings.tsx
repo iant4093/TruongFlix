@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
+import { invoke } from '@tauri-apps/api/core';
 import { CheckCircle2, DatabaseZap, Download, FilePen, HeartPulse, Loader2, RefreshCw, RotateCcw, Trash2, Undo2, Users, X } from 'lucide-react';
 import { appVersion, availableUpdate, checkForUpdate, installUpdate, onUpdateChange, type AvailableUpdate } from '../../services/updates';
-import type { EngineStatus, SubtitleStyle, TrashRow } from '../../types/media';
-import { engineStatus } from '../../services/player';
+import type { AudioDevice, EngineStatus, SubtitleStyle, TrashRow } from '../../types/media';
+import { engineStatus, listAudioDevices, setAudioDevice, setPassthrough } from '../../services/player';
+import { verifyOmdbKey } from '../../services/omdb';
+import { connectShare, refreshShares } from '../../services/nas';
 import { startBackgroundAnalysis } from '../../services/enrich';
 import Dropdown from '../common/Dropdown';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -263,6 +266,186 @@ function SubtitleAppearance() {
   );
 }
 
+function AudioOutputSettings() {
+  const device = useLibraryStore((s) => s.settings.audio_device);
+  const passthrough = useLibraryStore((s) => s.settings.audio_passthrough);
+  const delays = useLibraryStore((s) => s.settings.audio_delays);
+  const updateSettings = useLibraryStore((s) => s.updateSettings);
+  const [devices, setDevices] = useState<AudioDevice[]>([]);
+  useEffect(() => {
+    void listAudioDevices(true).then(setDevices);
+  }, []);
+  const name = (key: string) => devices.find((d) => d.name === key)?.description || key.replace(/^(coreaudio|wasapi)\//, '');
+  const remembered = Object.entries(delays).filter(([, v]) => v !== 0);
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-nf-secondary">Speaker</span>
+        <Dropdown
+          value={device || 'auto'}
+          onChange={(v) => void setAudioDevice(v)}
+          align="right"
+          options={(devices.length ? devices : [{ name: 'auto', description: '' }]).map((d) => ({
+            value: d.name,
+            label: d.name === 'auto' ? 'System default' : d.description || d.name,
+          }))}
+          className="min-w-[220px]"
+        />
+      </div>
+      <ToggleRow
+        label="Receiver passthrough (Dolby Atmos, DTS)"
+        description={`Sends Dolby Digital, Dolby TrueHD/Atmos and DTS untouched to an AV receiver or soundbar over HDMI or optical, so it decodes them. Volume, night mode and dialogue boost are then up to the receiver.${navigator.userAgent.includes('Mac') ? ' On a Mac this takes exclusive use of the speaker while playing.' : ''}`}
+        checked={passthrough}
+        onChange={(v) => void setPassthrough(v)}
+      />
+      {remembered.length > 0 && (
+        <div className="rounded bg-black/25 px-3 py-2.5 text-xs">
+          <div className="mb-1.5 font-semibold text-nf-secondary">Remembered audio timing</div>
+          {remembered.map(([key, value]) => (
+            <div key={key} className="flex items-center justify-between gap-3 py-0.5">
+              <span className="truncate text-nf-muted">{name(key)}</span>
+              <span className="flex items-center gap-2 tabular-nums">
+                {value > 0 ? '+' : ''}
+                {value.toFixed(1)} s
+                <button
+                  onClick={() => {
+                    const next = { ...delays };
+                    delete next[key];
+                    void updateSettings({ audio_delays: next });
+                  }}
+                  className="text-nf-muted hover:text-white"
+                  title="Forget"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </span>
+            </div>
+          ))}
+          <p className="mt-1.5 text-nf-muted">Set in the player (Audio & Subtitles › Audio timing); each speaker keeps its own, e.g. for Bluetooth lag.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OmdbKey() {
+  const saved = useLibraryStore((s) => s.settings.omdb_api_key);
+  const updateSettings = useLibraryStore((s) => s.updateSettings);
+  const toast = useLibraryStore((s) => s.toast);
+  const [key, setKey] = useState(saved);
+  const [checking, setChecking] = useState(false);
+  const save = async () => {
+    const k = key.trim();
+    if (k) {
+      setChecking(true);
+      const ok = await verifyOmdbKey(k).catch(() => null);
+      setChecking(false);
+      if (ok === false) return toast('That OMDb key wasn’t accepted. Check the activation email from OMDb.', 'error');
+    }
+    await updateSettings({ omdb_api_key: k });
+    toast(k ? 'Rotten Tomatoes & Metacritic scores turned on' : 'Critic scores turned off', 'success');
+    if (k) void startBackgroundAnalysis();
+  };
+  return (
+    <div className="space-y-2 rounded-md bg-black/20 p-3">
+      <div className="text-sm font-semibold">Rotten Tomatoes & Metacritic</div>
+      <div className="text-xs leading-relaxed text-nf-muted">
+        Critic scores come from OMDb. Get a free key at <span className="selectable text-white/80">omdbapi.com/apikey.aspx</span> (1,000 lookups a day; TruongFlix uses a fraction of that).
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="OMDb API key"
+          className="min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-3 py-1.5 text-sm outline-none focus:border-white/40"
+        />
+        {key.trim() !== saved && (
+          <button onClick={() => void save()} disabled={checking} className="nf-btn-red px-3 py-1.5 text-sm">
+            {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Media folders on network shares: status, Wake-on-LAN address and reconnect. */
+function NetworkShares() {
+  const dirs = useLibraryStore((s) => s.settings.media_directories);
+  const shares = useLibraryStore((s) => s.settings.network_shares);
+  const updateSettings = useLibraryStore((s) => s.updateSettings);
+  const [online, setOnline] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  // One entry per share, even when several media folders live on it.
+  const list = [...new Map(dirs.filter((d) => shares[d]).map((d) => [shares[d].url, d])).values()];
+
+  const check = useCallback(async () => {
+    const res = await invoke<boolean[]>('check_paths', { paths: list }).catch(() => list.map(() => false));
+    setOnline(Object.fromEntries(list.map((d, i) => [d, res[i]])));
+  }, [list.join('|')]);
+  const setMac = (url: string, mac: string | null) =>
+    void updateSettings({
+      network_shares: Object.fromEntries(Object.entries(shares).map(([d, info]) => [d, info.url === url ? { ...info, mac } : info])),
+    });
+  useEffect(() => {
+    void refreshShares().then(check);
+  }, [check]);
+
+  if (!list.length) return null;
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-semibold uppercase tracking-wider text-nf-muted">Network shares</div>
+      {list.map((dir) => {
+        const s = shares[dir];
+        return (
+          <div key={dir} className="space-y-2 rounded-md bg-black/25 p-3 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold">{s.host}</div>
+                <div className="selectable truncate text-nf-muted">{s.url}</div>
+              </div>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 font-semibold ${online[dir] ? 'bg-nf-green/20 text-nf-green' : 'bg-white/10 text-nf-secondary'}`}>
+                {online[dir] ? 'Connected' : 'Offline'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-nf-muted">Wake-on-LAN</span>
+              <input
+                defaultValue={s.mac ?? ''}
+                placeholder="aa:bb:cc:dd:ee:ff"
+                onBlur={(e) => {
+                  const mac = e.target.value.trim().toLowerCase();
+                  if (mac === (s.mac ?? '') || (mac && !/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/.test(mac))) return;
+                  setMac(s.url, mac || null);
+                }}
+                className="w-40 rounded border border-white/15 bg-black/40 px-2 py-1 font-mono outline-none focus:border-white/40"
+              />
+              {!online[dir] && (
+                <button
+                  onClick={async () => {
+                    setBusy(dir);
+                    await connectShare(dir, { wake: true });
+                    setBusy(null);
+                    await check();
+                  }}
+                  disabled={busy != null}
+                  className="nf-btn-ghost ml-auto h-7 px-2.5 py-0 text-xs"
+                >
+                  {busy === dir ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} {s.mac ? 'Wake & connect' : 'Connect'}
+                </button>
+              )}
+            </div>
+            {!s.mac && <p className="text-nf-muted">The NAS’s address is picked up automatically while it’s connected; enter it to wake the NAS from sleep.</p>}
+          </div>
+        );
+      })}
+      <p className="text-xs text-nf-muted">
+        Disconnected shares are reconnected automatically, and a sleeping NAS is woken up when you press Play. Changes made on the NAS from other devices show up within 15 minutes.
+      </p>
+    </div>
+  );
+}
+
 function AnalysisStatus() {
   const analysis = useLibraryStore((s) => s.analysis);
   const episodes = useLibraryStore((s) => s.episodes);
@@ -487,6 +670,7 @@ export default function SidebarSettings() {
         <div className="flex-1 overflow-y-auto">
           <Section title="Media Folders">
             <FolderList value={settings.media_directories} onChange={saveDirs} />
+            <NetworkShares />
           </Section>
 
           <Section title="Library">
@@ -546,7 +730,7 @@ export default function SidebarSettings() {
             </button>
           </Section>
 
-          <Section title="IMDb Ratings">
+          <Section title="Ratings">
             <ToggleRow
               label="Show IMDb ratings"
               description="Ratings for movies, shows, seasons and episodes, from IMDb’s official public datasets (about 65 MB, refreshed at most once a day when you scan). For personal, non-commercial use."
@@ -568,6 +752,7 @@ export default function SidebarSettings() {
                 </button>
               </div>
             )}
+            <OmdbKey />
           </Section>
 
           <Section title="Recently Deleted">
@@ -623,11 +808,21 @@ export default function SidebarSettings() {
               onChange={(v) => updateSettings({ audio_dialogue: v })}
             />
             <ToggleRow
+              label="Pause when the screen locks"
+              description="Also when the display or the computer goes to sleep, such as closing a laptop lid, so you don’t miss anything."
+              checked={settings.pause_on_lock}
+              onChange={(v) => updateSettings({ pause_on_lock: v })}
+            />
+            <ToggleRow
               label="Night mode"
               description="Evens out loudness: quiet dialogue gets louder and explosions get softer."
               checked={settings.audio_night}
               onChange={(v) => updateSettings({ audio_night: v })}
             />
+          </Section>
+
+          <Section title="Audio Output">
+            <AudioOutputSettings />
           </Section>
 
           <Section title="Skip Intro">

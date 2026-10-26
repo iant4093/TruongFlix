@@ -165,7 +165,7 @@ export default function Dropdown<T extends string | number>({
                 maxHeight: MENU_MAX_HEIGHT,
                 transformOrigin: pos.up ? 'bottom' : 'top',
               }}
-              className="z-[120] overflow-y-auto overscroll-contain rounded-md border border-[#4d4d4d] bg-[#242424]/[0.98] py-1 shadow-[0_10px_30px_rgba(0,0,0,0.6)] backdrop-blur"
+              className="z-[250] overflow-y-auto overscroll-contain rounded-md border border-[#4d4d4d] bg-[#242424]/[0.98] py-1 shadow-[0_10px_30px_rgba(0,0,0,0.6)] backdrop-blur"
             >
               {options.map((o, i) => {
                 const selected = o.value === value;

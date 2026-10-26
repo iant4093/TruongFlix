@@ -22,7 +22,7 @@ A local media center for macOS and Windows that turns the movies and shows on yo
 
 ---
 
-TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Nothing is uploaded; the only network requests are metadata and ratings lookups, trailers on the home banner, plus optional subtitle downloads.
+TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Nothing is uploaded; the only network requests are metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers on the home banner, plus optional subtitle downloads.
 
 ## Screenshots
 
@@ -60,7 +60,7 @@ Library screenshots use the development preview with sample metadata and artwork
 - Scene-filename parsing with parent-folder fallbacks for TV seasons, generic file names and obfuscated releases
 - TMDB artwork, transparent title logos, cast, genres and episode details; Fix Match for anything misidentified
 - Accurate quality badges read from the actual streams (4K, HDR10, Dolby Vision, HEVC/AV1, Atmos, lossless audio), even for badly named files
-- Age ratings (PG-13, TV-MA, …), IMDb ratings for movies, shows, seasons and episodes, and franchise rows such as "Dune Collection" in watch order
+- Age ratings (PG-13, TV-MA, …), IMDb ratings for movies, shows, seasons and episodes, Rotten Tomatoes and Metacritic scores (optional free OMDb key), and franchise rows such as "Dune Collection" in watch order
 - Missing episodes shown greyed out, plus "New Episode Friday" for shows that are still airing
 - Actor pages: click anyone in the cast to see everything of theirs in your library
 - Version picker when you have the same movie in, say, 1080p and 4K
@@ -76,6 +76,7 @@ Library screenshots use the development preview with sample metadata and artwork
 
 - "Who's watching?" screen with separate Continue Watching, My List and history for each person
 - Kids and Teen profiles that only show titles up to the matching age rating
+- Daily viewing limits and bedtimes per profile, and optional 4-digit PIN locks (a parent's PIN also protects Settings while a kids profile is active)
 - Viewing Activity history and **TruongFlix Wrapped**: hours watched, top genres and shows, biggest binge and longest streak for each year
 
 **Playback**
@@ -88,6 +89,9 @@ Library screenshots use the development preview with sample metadata and artwork
 - Sleep timer (15–90 minutes with a gentle fade-out, or "end of this episode") and Netflix's "Are you still watching?" after several episodes in a row
 - Media keys, AirPods and headphone buttons, the macOS Now Playing widget and the Windows media overlay, with artwork and a live progress bar
 - Subtitle appearance settings (size, colour, background box, font), dialogue boost and night mode
+- Automatic subtitle sync: lines a subtitle file up with the dialogue in the audio, including subtitles timed for the wrong frame rate, with undo
+- Speaker picker with Dolby Atmos/DTS passthrough to an AV receiver, and audio timing remembered per device (handy for Bluetooth lag)
+- Pauses automatically when the screen locks, the display sleeps or you close the laptop lid
 - Netflix-style controls: scrubbing, ±10 s, volume, speed, audio and subtitle tracks, and subtitle/audio timing
 - Resume points saved as you watch; anything 90% watched is marked complete
 - Optional external VLC, as a fallback or as the default player
@@ -100,6 +104,7 @@ Library screenshots use the development preview with sample metadata and artwork
 - Library health page: disk use per title, duplicate copies, unplayable or incomplete downloads, low-quality files worth upgrading, and anything missing subtitles
 - Delete movies, shows or single episodes to Recently Deleted, with full restore for 30 days
 - Show in Finder / File Explorer, and offline drives are never pruned from the library
+- NAS-friendly: network shares reconnect on their own, a sleeping NAS is woken with Wake-on-LAN when you press Play, and shared folders are re-checked for changes made from other devices
 
 ## Install
 
@@ -156,7 +161,7 @@ npm run app:build
 # TypeScript check and production frontend build
 npm run build
 
-# Rust unit tests: scanner, subtitles, file management and renaming, intro fingerprinting, IMDb parsing, VLC auth
+# Rust unit tests: scanner, subtitles and subtitle sync, file management and renaming, intro fingerprinting, NAS helpers, IMDb parsing, VLC auth
 cd src-tauri && cargo test
 
 # Network and engine tests (real IMDb datasets, OpenSubtitles, VLC)

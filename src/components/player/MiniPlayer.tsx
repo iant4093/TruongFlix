@@ -53,10 +53,14 @@ function Mini({ session }: { session: PlayerSession }) {
       </div>
       {prompt ? (
         <div className="flex items-center gap-2 px-3" style={{ height: MINI.bar - 3 }}>
-          <span className="min-w-0 flex-1 truncate text-sm font-semibold">{prompt === 'still-watching' ? 'Still watching?' : 'Sleep timer ended'}</span>
-          <button type="button" onClick={dismissPrompt} className="rounded bg-white px-3 py-1.5 text-xs font-bold text-black hover:bg-white/80">
-            {prompt === 'still-watching' ? 'Continue' : 'Resume'}
-          </button>
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+            {prompt === 'still-watching' ? 'Still watching?' : prompt === 'limit' ? 'That’s all for today!' : prompt === 'bedtime' ? 'It’s bedtime' : 'Sleep timer ended'}
+          </span>
+          {prompt !== 'limit' && prompt !== 'bedtime' && (
+            <button type="button" onClick={dismissPrompt} className="rounded bg-white px-3 py-1.5 text-xs font-bold text-black hover:bg-white/80">
+              {prompt === 'still-watching' ? 'Continue' : 'Resume'}
+            </button>
+          )}
           <button type="button" className={btn} title="Stop" onClick={() => void closeBuiltin()}>
             <X className="h-5 w-5" />
           </button>

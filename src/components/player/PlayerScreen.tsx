@@ -18,7 +18,10 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import type { BuiltinPlayerState, PlayerSession, PlayerTrack, Segment } from '../../types/media';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import type { AudioDevice, BuiltinPlayerState, PlayerSession, PlayerTrack, Segment } from '../../types/media';
+import Dropdown from '../common/Dropdown';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { formatTimestamp } from '../../store/selectors';
 import { languageName } from '../../services/subtitles';
@@ -28,6 +31,10 @@ import {
   dismissPrompt,
   enterMini,
   noteUserActivity,
+  setAudioDelay,
+  setAudioDevice,
+  setPassthrough,
+  listAudioDevices,
   setSleepTimer,
   stopForSleep,
   openCurrentInVlc,
@@ -386,8 +393,9 @@ function TrackRow({ selected, main, detail, onClick }: { selected: boolean; main
   );
 }
 
-function DelayControl({ label, value, prop }: { label: string; value: number; prop: string }) {
-  const step = (d: number) => void playerSet(prop, (Math.round((value + d) * 10) / 10).toFixed(1));
+function DelayControl({ label, value, prop, onSet }: { label: string; value: number; prop: string; onSet?: (v: number) => void }) {
+  const set = (v: number) => (onSet ? onSet(v) : void playerSet(prop, v.toFixed(1)));
+  const step = (d: number) => set(Math.round((value + d) * 10) / 10);
   return (
     <div className="flex items-center justify-between gap-3 text-sm text-[#b3b3b3]">
       <span>{label}</span>
@@ -400,7 +408,7 @@ function DelayControl({ label, value, prop }: { label: string; value: number; pr
           +
         </button>
         {value !== 0 && (
-          <button type="button" onClick={() => void playerSet(prop, '0')} className="ml-1 text-xs text-[#8c8c8c] hover:text-white">
+          <button type="button" onClick={() => set(0)} className="ml-1 text-xs text-[#8c8c8c] hover:text-white">
             Reset
           </button>
         )}
@@ -413,6 +421,8 @@ function TracksPanel({ tracks, state }: { tracks: PlayerTrack[]; state: BuiltinP
   const audio = tracks.filter((t) => t.type === 'audio');
   const subs = tracks.filter((t) => t.type === 'sub');
   const subsOff = !subs.some((t) => t.selected);
+  const selectedSub = subs.find((t) => t.selected);
+  const audioOutput = useLibraryStore((s) => s.audioOutput);
   return (
     <div className="w-[min(640px,90vw)] rounded-md bg-[#262626]/95 p-5 shadow-2xl backdrop-blur">
       <div className="grid grid-cols-2 gap-6">
@@ -441,12 +451,104 @@ function TracksPanel({ tracks, state }: { tracks: PlayerTrack[]; state: BuiltinP
         </div>
       </div>
       <AudioEnhancements />
+      <AudioOutput />
       {state && (
         <div className="mt-4 space-y-2 border-t border-white/10 pt-4">
           {!subsOff && <DelayControl label="Subtitle timing" value={state.sub_delay} prop="sub-delay" />}
-          <DelayControl label="Audio timing" value={state.audio_delay} prop="audio-delay" />
+          {selectedSub?.external && selectedSub['external-filename'] && <SubtitleSync subtitlePath={selectedSub['external-filename']} />}
+          <DelayControl label={`Audio timing${audioOutput ? ` · ${audioOutput.label}` : ''}`} value={state.audio_delay} prop="audio-delay" onSet={(v) => void setAudioDelay(v)} />
         </div>
       )}
+    </div>
+  );
+}
+
+/** Speaker choice and Dolby/DTS passthrough to an AV receiver. */
+function AudioOutput() {
+  const device = useLibraryStore((s) => s.settings.audio_device);
+  const passthrough = useLibraryStore((s) => s.settings.audio_passthrough);
+  const [devices, setDevices] = useState<AudioDevice[]>([]);
+  useEffect(() => {
+    void listAudioDevices(true).then(setDevices);
+  }, []);
+  const options = (devices.length ? devices : [{ name: 'auto', description: '' }]).map((d) => ({
+    value: d.name,
+    label: d.name === 'auto' ? 'System default' : d.description || d.name,
+  }));
+  return (
+    <div className="mt-4 flex items-center gap-3 border-t border-white/10 pt-4 text-sm">
+      <span className="text-[#b3b3b3]">Speaker</span>
+      <Dropdown value={device || 'auto'} options={options} onChange={(v) => void setAudioDevice(v)} ariaLabel="Speaker" className="min-w-[220px]" />
+      <button
+        type="button"
+        onClick={() => void setPassthrough(!passthrough)}
+        title="Sends Dolby Digital, Dolby Atmos (TrueHD) and DTS untouched to an AV receiver or soundbar over HDMI/optical. Volume, night mode and dialogue boost are then handled by the receiver."
+        className={`ml-auto rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+          passthrough ? 'border-white bg-white text-black' : 'border-white/30 text-[#b3b3b3] hover:border-white hover:text-white'
+        }`}
+      >
+        Receiver passthrough {passthrough ? 'on' : 'off'}
+      </button>
+    </div>
+  );
+}
+
+/** Lines an external subtitle file up with the dialogue, with undo. */
+function SubtitleSync({ subtitlePath }: { subtitlePath: string }) {
+  const session = useLibraryStore((s) => s.playerSession);
+  const toast = useLibraryStore((s) => s.toast);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [canUndo, setCanUndo] = useState(false);
+  useEffect(() => {
+    void invoke<boolean>('subtitle_sync_backup_exists', { subtitlePath }).then(setCanUndo).catch(() => {});
+  }, [subtitlePath]);
+
+  const run = async () => {
+    if (!session) return;
+    setBusy(0);
+    const off = await listen<{ fraction: number }>('subsync-progress', ({ payload }) => setBusy(payload.fraction));
+    try {
+      const res = await invoke<{ applied: boolean; message: string }>('sync_subtitle', { videoPath: session.target.filePath, subtitlePath });
+      if (res.applied) {
+        await playerSet('sub-delay', '0');
+        await playerCommand('sub-reload');
+        setCanUndo(true);
+      }
+      toast(res.message, res.applied ? 'success' : 'info');
+    } catch (e) {
+      toast(`Couldn’t sync subtitles: ${String(e)}`, 'error');
+    } finally {
+      off();
+      setBusy(null);
+    }
+  };
+
+  const undo = async () => {
+    if (await invoke<boolean>('undo_subtitle_sync', { subtitlePath }).catch(() => false)) {
+      await playerCommand('sub-reload');
+      setCanUndo(false);
+      toast('Subtitle timing restored', 'info');
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-3 text-sm text-[#b3b3b3]">
+      <span>Out of sync?</span>
+      <div className="flex items-center gap-2">
+        {canUndo && busy == null && (
+          <button type="button" onClick={() => void undo()} className="text-xs text-[#8c8c8c] hover:text-white">
+            Undo sync
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => void run()}
+          disabled={busy != null}
+          className="flex items-center gap-1.5 rounded bg-white/10 px-3 py-1 font-semibold text-white hover:bg-white/20 disabled:opacity-70"
+        >
+          {busy != null ? `Listening to the dialogue… ${Math.round(busy * 100)}%` : 'Sync to dialogue'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -560,6 +662,8 @@ function useCountdown(endsAt: number | null) {
 /** "Are you still watching?" / "Sleep timer ended" over the paused video. */
 function PlayerPrompt({ session }: { session: PlayerSession }) {
   const prompt = useLibraryStore((s) => s.playerPrompt);
+  const profileName = useLibraryStore((s) => s.activeProfile?.name ?? 'This profile');
+  const locked = prompt === 'limit' || prompt === 'bedtime';
   return (
     <AnimatePresence>
       {prompt && (
@@ -578,6 +682,15 @@ function PlayerPrompt({ session }: { session: PlayerSession }) {
                 <h2 className="text-5xl font-bold leading-tight">Are you still watching {session.title}?</h2>
                 <p className="text-lg text-[#b3b3b3]">We paused so you don’t miss anything.</p>
               </>
+            ) : prompt === 'limit' || prompt === 'bedtime' ? (
+              <>
+                <h2 className="text-5xl font-bold leading-tight">{prompt === 'limit' ? 'That’s all for today!' : 'It’s bedtime'}</h2>
+                <p className="text-lg text-[#b3b3b3]">
+                  {prompt === 'limit'
+                    ? `${profileName}’s TV time for today is used up. See you tomorrow!`
+                    : `${profileName} can watch again in the morning. Sleep tight!`}
+                </p>
+              </>
             ) : (
               <>
                 <h2 className="flex items-center gap-4 text-5xl font-bold">
@@ -587,15 +700,17 @@ function PlayerPrompt({ session }: { session: PlayerSession }) {
               </>
             )}
             <div className="flex flex-col gap-3 sm:w-72">
-              <button
-                type="button"
-                autoFocus
-                onClick={dismissPrompt}
-                className="flex items-center justify-center gap-2 rounded bg-white px-6 py-3 text-lg font-semibold text-black hover:bg-white/80"
-              >
-                <Play className="h-5 w-5 fill-black" strokeWidth={0} />
-                {prompt === 'still-watching' ? 'Continue Watching' : 'Resume'}
-              </button>
+              {!locked && (
+                <button
+                  type="button"
+                  autoFocus
+                  onClick={dismissPrompt}
+                  className="flex items-center justify-center gap-2 rounded bg-white px-6 py-3 text-lg font-semibold text-black hover:bg-white/80"
+                >
+                  <Play className="h-5 w-5 fill-black" strokeWidth={0} />
+                  {prompt === 'still-watching' ? 'Continue Watching' : 'Resume'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void closeBuiltin()}

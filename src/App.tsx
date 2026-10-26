@@ -13,6 +13,7 @@ import ConfirmDialog from './components/common/ConfirmDialog';
 import PlayerScreen from './components/player/PlayerScreen';
 import MiniPlayer from './components/player/MiniPlayer';
 import ProfileGate from './components/profiles/ProfileGate';
+import PinPrompt from './components/profiles/PinPrompt';
 import LaunchIntro from './components/layout/LaunchIntro';
 import ActorModal from './components/modals/ActorModal';
 import WrappedModal from './components/modals/WrappedModal';
@@ -26,6 +27,7 @@ import { autoCheckForUpdates } from './services/updates';
 import { startBackgroundAnalysis } from './services/enrich';
 import { startFolderWatch } from './services/watch';
 import { initMediaSession } from './services/mediasession';
+import { reconnectOfflineShares, refreshShares } from './services/nas';
 
 export default function App() {
   const ready = useLibraryStore((s) => s.ready);
@@ -44,8 +46,10 @@ export default function App() {
   useEffect(() => {
     init()
       .then(() => autoPurgeTrash().catch((e) => console.warn('[trash] auto-purge failed', e)))
-      .then(() => {
-        void startFolderWatch();
+      .then(async () => {
+        // Bring back NAS folders that dropped off while the app was closed, then note any shares.
+        await reconnectOfflineShares().catch(() => []);
+        void refreshShares().then(() => startFolderWatch());
         // Fill in anything missing (media info, ratings, trailers, intros) without blocking startup.
         window.setTimeout(() => void startBackgroundAnalysis(), 3000);
       })
@@ -92,7 +96,7 @@ export default function App() {
   // Restart folder watching when the folders or the setting change.
   const dirsKey = useLibraryStore((s) => `${s.settings.watch_folders}|${s.settings.tmdb_api_key ? 1 : 0}|${s.settings.media_directories.join('|')}`);
   useEffect(() => {
-    if (ready) void startFolderWatch();
+    if (ready) void refreshShares().then(() => startFolderWatch());
   }, [ready, dirsKey]);
 
   // Escape closes the top-most overlay.
@@ -161,6 +165,7 @@ export default function App() {
       <MiniPlayer />
       <PlayerScreen />
       <ProfileGate />
+      <PinPrompt />
       <Toasts />
       <ConfirmDialog />
       {launchIntro && !introDone && !onboardingOpen && <LaunchIntro sound={introSound} onDone={() => setIntroDone(true)} />}

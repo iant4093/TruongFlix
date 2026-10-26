@@ -64,6 +64,9 @@ function movie(
     probed_mtime: 0,
     enriched_at: ts(1),
     probe_error: null,
+    rt_score: null,
+    metacritic: null,
+    omdb_at: null,
     ...extra,
   };
 }
@@ -96,6 +99,8 @@ const movies: MovieRow[] = [
     cast_crew: cast('Keanu Reeves', 'Laurence Fishburne', 'Carrie-Anne Moss', 'Hugo Weaving', 'Joe Pantoliano'),
     ...tech('4K', 'Dolby Vision', 'HEVC', 'Lossless Audio, 5.1'),
     certification: 'R',
+    rt_score: 83,
+    metacritic: 73,
     collection_id: 2344,
     collection_name: 'The Matrix Collection',
     trailer_key: 'vKQi3bBA1y8',
@@ -267,6 +272,9 @@ const series: SeriesRow[] = [
   tmdb_status: ['Returning Series', 'Ended', 'Returning Series'][i],
   next_episode: i === 0 ? JSON.stringify({ season: 2, episode: 7, name: 'Chikhai Bardo', air_date: new Date(now.getTime() + 3 * 864e5).toISOString().slice(0, 10) }) : null,
   enriched_at: ts(0.5),
+  rt_score: [97, 96, 92][i],
+  metacritic: [83, 87, 76][i],
+  omdb_at: ts(1),
 }));
 
 let epId = 1000;
@@ -335,8 +343,8 @@ const settings: Record<string, string> = {
 // --- Profiles & per-profile state -------------------------------------------------------------
 
 const profiles = [
-  { id: 1, name: 'Ian', color: '#E50914', maturity: 'all', created_at: ts(30) },
-  { id: 2, name: 'Kids', color: '#F5B70A', maturity: 'kids', created_at: ts(20) },
+  { id: 1, name: 'Ian', color: '#E50914', maturity: 'all', created_at: ts(30), daily_limit: 0, bedtime: '', wake_time: '07:00', pin: '1234' },
+  { id: 2, name: 'Kids', color: '#F5B70A', maturity: 'kids', created_at: ts(20), daily_limit: 60, bedtime: '20:00', wake_time: '07:00', pin: '' },
 ];
 type StateRow = { progress_seconds: number; duration_seconds: number; watched: number; my_list: number; last_watched_at: string | null };
 const state = new Map<string, StateRow>();
@@ -436,13 +444,18 @@ function handleProfileSql(q: string, values: unknown[]): unknown | undefined {
   if (q.startsWith('SELECT * FROM profiles')) return profiles;
   if (q.startsWith('INSERT INTO profiles')) {
     const id = Math.max(0, ...profiles.map((x) => x.id)) + 1;
-    profiles.push({ id, name: values[0] as string, color: values[1] as string, maturity: values[2] as string, created_at: ts(0) });
+    const [name, color, maturity, daily_limit, bedtime, wake_time, pin] = values as [string, string, string, number, string, string, string];
+    profiles.push({ id, name, color, maturity, created_at: ts(0), daily_limit: daily_limit ?? 0, bedtime: bedtime ?? '', wake_time: wake_time ?? '07:00', pin: pin ?? '' });
     return [1, id];
   }
   if (q.startsWith('UPDATE profiles')) {
     const pr = profiles.find((x) => x.id === values[0]);
-    if (pr) Object.assign(pr, { name: values[1], color: values[2], maturity: values[3] });
+    if (pr) Object.assign(pr, { name: values[1], color: values[2], maturity: values[3], daily_limit: values[4], bedtime: values[5], wake_time: values[6], pin: values[7] });
     return [1, 0];
+  }
+  if (q.startsWith('SELECT SUM(seconds) AS total FROM watch_log')) {
+    const total = watchLog.filter((w) => w.profile_id === values[0] && w.day === values[1]).reduce((n, w) => n + w.seconds, 0);
+    return [{ total: total + ((window as unknown as { __extraWatched?: number }).__extraWatched ?? 0) }];
   }
   if (q.startsWith('DELETE FROM profiles')) {
     const i = profiles.findIndex((x) => x.id === values[0]);
@@ -654,6 +667,7 @@ const simTracks = () => [
   { id: 1, type: 'sub', lang: 'eng', codec: 'subrip', selected: false },
   { id: 2, type: 'sub', lang: 'eng', codec: 'hdmv_pgs_subtitle', 'hearing-impaired': true, selected: false },
   { id: 3, type: 'sub', lang: 'spa', codec: 'ass', forced: true, selected: false },
+  { id: 4, type: 'sub', lang: 'eng', codec: 'subrip', external: true, 'external-filename': '/Volumes/Media/Shows/Severance/Season 1/S01E03.en.srt', selected: false },
 ];
 
 function simEmit() {
@@ -792,6 +806,30 @@ export function installMocks() {
             if (!times.length) resolve([]);
           });
         }
+        case 'audio_devices':
+          return [
+            { name: 'auto', description: 'Autoselect device' },
+            { name: 'coreaudio/BuiltInSpeakerDevice', description: 'MacBook Pro Speakers' },
+            { name: 'coreaudio/AirPods-Pro-UID', description: 'Ian’s AirPods Pro' },
+            { name: 'coreaudio/HDMI-UID', description: 'LG TV (HDMI)' },
+          ];
+        case 'default_audio_device':
+          return (window as unknown as { __defaultDevice?: unknown }).__defaultDevice ?? { name: 'coreaudio/BuiltInSpeakerDevice', description: 'MacBook Pro Speakers' };
+        case 'share_info':
+          return ((a.paths as string[]) ?? []).map((p) =>
+            p.startsWith('/Volumes/Media') ? { mount_point: '/Volumes/Media', url: 'smb://ian@nas.local/Media', host: 'nas.local', kind: 'smb', mac: '00:11:32:0a:bb:cc' } : null,
+          );
+        case 'connect_share':
+          return new Promise((r) => setTimeout(() => r('ready'), 800));
+        case 'sync_subtitle':
+          return new Promise((resolve) => {
+            [0.2, 0.5, 0.8].forEach((f, i) => setTimeout(() => void emit('subsync-progress', { fraction: f }), 200 * (i + 1)));
+            setTimeout(() => resolve({ offset: -2.4, ratio: 1, confidence: 18, applied: true, message: 'Shifted -2.4 s' }), 900);
+          });
+        case 'undo_subtitle_sync':
+          return true;
+        case 'subtitle_sync_backup_exists':
+          return false;
         case 'sidecar_subtitle_languages':
           return ((a.videoPaths as string[]) ?? []).map((p) => (p.includes('Severance/Season 1/') ? ['en'] : []));
         case 'detect_intros':

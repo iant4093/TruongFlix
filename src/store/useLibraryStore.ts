@@ -51,6 +51,13 @@ export interface AnalysisState {
   message: string;
 }
 
+export interface PinRequest {
+  title: string;
+  subtitle?: string;
+  check: (pin: string) => boolean;
+  then: () => void;
+}
+
 export type Overlay = 'wrapped' | 'history' | 'rename' | 'health' | null;
 
 export interface Toast {
@@ -80,8 +87,11 @@ interface LibraryState {
   overlay: Overlay;
   playerMini: boolean;
   sleepTimer: SleepTimer | null;
+  pinRequest: PinRequest | null;
+  /** The speakers the player is using right now (resolved from "System default"). */
+  audioOutput: { key: string; label: string } | null;
   /** What's showing over the player: "Are you still watching?" or "Sleep timer ended". */
-  playerPrompt: 'still-watching' | 'sleep-ended' | null;
+  playerPrompt: 'still-watching' | 'sleep-ended' | 'limit' | 'bedtime' | null;
   analysis: AnalysisState;
 
   view: View;
@@ -134,7 +144,9 @@ interface LibraryState {
   setOverlay: (o: Overlay) => void;
   setPlayerMini: (mini: boolean) => void;
   setSleepTimer: (t: SleepTimer | null) => void;
-  setPlayerPrompt: (p: 'still-watching' | 'sleep-ended' | null) => void;
+  setPinRequest: (r: PinRequest | null) => void;
+  setAudioOutput: (o: { key: string; label: string } | null) => void;
+  setPlayerPrompt: (p: 'still-watching' | 'sleep-ended' | 'limit' | 'bedtime' | null) => void;
   setAnalysis: (a: AnalysisState) => void;
   toast: (message: string, kind?: Toast['kind']) => void;
   dismissToast: (id: number) => void;
@@ -173,6 +185,12 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     ask_profile: true,
     active_profile: 0,
     still_watching_after: 3,
+    audio_device: 'auto',
+    audio_passthrough: false,
+    audio_delays: {},
+    pause_on_lock: true,
+    omdb_api_key: '',
+    network_shares: {},
   },
   movies: [],
   series: [],
@@ -190,6 +208,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   overlay: null,
   playerMini: false,
   sleepTimer: null,
+  pinRequest: null,
+  audioOutput: null,
   playerPrompt: null,
   analysis: { running: false, message: '' },
 
@@ -240,7 +260,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     set({
       ready: true,
       onboardingOpen: onboarding,
-      profileGate: !onboarding && settings.ask_profile && profiles.length > 1 ? 'select' : null,
+      // A PIN-protected profile never opens without its PIN.
+      profileGate: !onboarding && ((settings.ask_profile && profiles.length > 1) || !!active?.pin) ? 'select' : null,
     });
   },
 
@@ -282,6 +303,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   setOverlay: (overlay) => set({ overlay, hover: null }),
   setPlayerMini: (playerMini) => set({ playerMini, hover: null }),
   setSleepTimer: (sleepTimer) => set({ sleepTimer }),
+  setPinRequest: (pinRequest) => set({ pinRequest }),
+  setAudioOutput: (audioOutput) => set({ audioOutput }),
   setPlayerPrompt: (playerPrompt) => set({ playerPrompt }),
   setAnalysis: (analysis) => set({ analysis }),
 
