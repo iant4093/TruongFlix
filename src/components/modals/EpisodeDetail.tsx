@@ -12,6 +12,9 @@ import ProgressBar from '../common/ProgressBar';
 import TechBadges from '../common/TechBadges';
 import SubtitlesPanel from '../common/SubtitlesPanel';
 import ImdbRating from '../common/ImdbRating';
+import MaturityRating from '../common/MaturityRating';
+import { CastLinks, StreamInfo } from '../common/StreamInfo';
+import { parseMediaInfo, parseSegments } from '../../services/mediainfo';
 
 interface Props {
   series: MediaItem;
@@ -153,6 +156,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
             <span className="text-nf-secondary">{epLabel(ep)}</span>
             {airDate && <span className="text-nf-secondary">{airDate}</span>}
             {ep.runtime ? <span className="text-nf-secondary">{ep.runtime}m</span> : null}
+            <MaturityRating rating={series.certification} size="md" />
             <TechBadges tech={ep} size="md" />
           </div>
 
@@ -199,9 +203,11 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
           {cast.length > 0 && (
             <p>
               <span className="text-nf-muted">Cast: </span>
-              {cast.slice(0, 4).map((c) => c.name).join(', ')}
+              <CastLinks people={cast} limit={4} />
             </p>
           )}
+          <IntroInfo segments={ep.segments} />
+          <StreamInfo info={parseMediaInfo(ep.media_info)} size={ep.file_size} />
           {series.genres.length > 0 && (
             <p>
               <span className="text-nf-muted">Genres: </span>
@@ -251,5 +257,23 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
         </section>
       )}
     </>
+  );
+}
+
+const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
+
+/** Detected intro / recap / credits, so it's clear what Skip Intro will do. */
+function IntroInfo({ segments }: { segments: string | null }) {
+  const list = parseSegments(segments);
+  if (!list.length) return null;
+  const name = { intro: 'Intro', recap: 'Recap', credits: 'Credits' } as const;
+  return (
+    <p>
+      <span className="text-nf-muted">Skippable: </span>
+      {list
+        .sort((a, b) => a.start - b.start)
+        .map((x) => `${name[x.kind]} ${clock(x.start)}–${clock(x.end)}`)
+        .join(' · ')}
+    </p>
   );
 }

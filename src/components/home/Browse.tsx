@@ -60,6 +60,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
   const allItems = useLibraryStore((s) => s.items);
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
+  const collections = useLibraryStore((s) => s.collections);
 
   const items = useMemo(
     () => (view === 'home' ? allItems : allItems.filter((i) => i.kind === (view === 'tv' ? 'tv' : 'movie'))),
@@ -96,6 +97,28 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
       out.push({ title: 'Movies', entries: wrap(seededShuffle(items.filter((i) => i.kind === 'movie'), SESSION_SEED + 2)) });
     }
 
+    // Franchise rows ("The Matrix Collection") in watch order, when you own at least two films.
+    if (view !== 'tv') {
+      const byCollection = new Map<number, MediaItem[]>();
+      for (const i of items) if (i.kind === 'movie' && i.collectionId) byCollection.set(i.collectionId, [...(byCollection.get(i.collectionId) ?? []), i]);
+      const groups = [...byCollection.entries()].filter(([, list]) => list.length >= 2);
+      groups.sort((a, b) => b[1].length - a[1].length);
+      for (const [id, list] of groups.slice(0, 6)) {
+        const c = collections.find((x) => x.id === id);
+        let order: number[] = [];
+        try {
+          order = c?.parts ? (JSON.parse(c.parts) as { tmdb_id: number }[]).map((p) => p.tmdb_id) : [];
+        } catch {
+          /* fall back to release year */
+        }
+        const rank = (i: MediaItem) => {
+          const at = order.indexOf(i.tmdbId ?? -1);
+          return at >= 0 ? at : 1000 + (i.year ?? 0);
+        };
+        out.push({ title: c?.name ?? list[0].collectionName ?? 'Collection', entries: wrap([...list].sort((a, b) => rank(a) - rank(b))) });
+      }
+    }
+
     // Dynamic genre rows, with Netflix's staple categories first.
     const genreMap = new Map<string, MediaItem[]>();
     for (const item of items)
@@ -124,7 +147,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
 
     out.push({ title: 'Unidentified Files · Fix Match', entries: wrap(items.filter((i) => !i.matched)) });
     return out.filter((r) => r.entries.length || r.top10?.length);
-  }, [items, episodesBySeries, view, imdbEnabled]);
+  }, [items, episodesBySeries, view, imdbEnabled, collections]);
 
   if (!items.length) return <EmptyLibrary />;
 

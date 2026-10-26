@@ -6,11 +6,18 @@ import EpisodeDetail from './EpisodeDetail';
 import SubtitlesPanel from '../common/SubtitlesPanel';
 import Dropdown from '../common/Dropdown';
 import ImdbRating from '../common/ImdbRating';
-import type { EpisodeRow, MediaItem } from '../../types/media';
+import MaturityRating from '../common/MaturityRating';
+import { CastLinks, StreamInfo } from '../common/StreamInfo';
+import type { CollectionPart, EpisodeRow, MediaItem, PlayTarget, SeasonEpisodeInfo } from '../../types/media';
+import * as db from '../../services/db';
+import { getSeasonEpisodes } from '../../services/tmdb';
+import { parseMediaInfo } from '../../services/mediainfo';
 import { selectItem, useLibraryStore } from '../../store/useLibraryStore';
 import {
+  airDayLabel,
   continueWatching,
   epLabel,
+  newEpisodeSoon,
   formatRemaining,
   formatRuntime,
   genreBuckets,
@@ -109,7 +116,14 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
   const [logoFailed, setLogoFailed] = useState(false);
 
   const episodes = item.kind === 'tv' ? (episodesBySeries.get(item.id) ?? []) : [];
-  const target = playTargetFor(item, episodesBySeries);
+  // Version picker (movies with several files, e.g. 1080p and 4K).
+  const [versionId, setVersionId] = useState(item.id);
+  useEffect(() => setVersionId(item.id), [item.key, item.id]);
+  const versionRow = useLibraryStore((s) => (item.kind === 'movie' ? s.movies.find((m) => m.id === versionId) : undefined));
+  const target: PlayTarget | null = versionRow
+    ? { type: 'movie', id: versionRow.id, filePath: versionRow.file_path, startTime: versionRow.watched ? 0 : versionRow.progress_seconds, label: item.title }
+    : playTargetFor(item, episodesBySeries);
+  const mediaInfo = versionRow ? parseMediaInfo(versionRow.media_info) : item.mediaInfo;
   const resumeEntry = useMemo(
     () => continueWatching([item], episodesBySeries)[0] ?? null,
     [item, episodesBySeries],
@@ -121,7 +135,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
   const genres = item.genres;
 
   const toast = useLibraryStore((s) => s.toast);
-  const revealPath = item.kind === 'movie' ? item.filePath : (episodes[0]?.file_path ?? null);
+  const revealPath = item.kind === 'movie' ? (versionRow?.file_path ?? item.filePath) : (episodes[0]?.file_path ?? null);
   const playLabel = target && target.startTime > 0 ? 'Resume' : 'Play';
   const epHint = target?.type === 'episode' && resumeEntry?.episode ? epLabel(resumeEntry.episode) : null;
 
@@ -198,14 +212,39 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
             <ImdbRating rating={item.imdbRating} votes={item.imdbVotes} imdbId={item.imdbId} showVotes size="md" />
             {item.year && <span className="text-nf-secondary">{item.year}</span>}
+            <MaturityRating rating={item.certification} size="md" />
             {item.kind === 'movie' && item.runtime ? <span className="text-nf-secondary">{formatRuntime(item.runtime)}</span> : null}
             {item.kind === 'tv' && (
               <span className="text-nf-secondary">
                 {item.seasonCount} Season{item.seasonCount === 1 ? '' : 's'}
               </span>
             )}
-            <TechBadges tech={item.tech} size="md" />
+            <TechBadges tech={versionRow ?? item.tech} size="md" />
           </div>
+
+          {item.versions.length > 1 && (
+            <div className="flex items-center gap-3 text-sm">
+              <span className="text-nf-muted">Version</span>
+              <Dropdown
+                value={versionId}
+                options={item.versions.map((v) => ({ value: v.id, label: v.label }))}
+                onChange={setVersionId}
+                ariaLabel="Version"
+                className="min-w-[260px]"
+              />
+            </div>
+          )}
+
+          {item.kind === 'tv' && item.nextEpisode && (
+            <p className={`text-sm font-semibold ${newEpisodeSoon(item.nextEpisode) ? 'text-nf-red' : 'text-nf-secondary'}`}>
+              {newEpisodeSoon(item.nextEpisode) ? 'New episode' : 'Next episode'} {airDayLabel(item.nextEpisode.air_date)}
+              <span className="font-normal text-nf-secondary">
+                {' '}
+                · S{item.nextEpisode.season}:E{item.nextEpisode.episode}
+                {item.nextEpisode.name && !/^Episode \d+$/.test(item.nextEpisode.name) ? ` “${item.nextEpisode.name}”` : ''}
+              </span>
+            </p>
+          )}
 
           {resumeEntry && resumeEntry.target.startTime > 0 && (
             <div className="flex items-center gap-3 text-sm text-nf-secondary">
@@ -221,7 +260,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           <p className="text-[15px] leading-relaxed text-white">{item.overview || 'No synopsis available.'}</p>
 
           {item.filePath && (
-            <p className="selectable break-all font-mono text-[11px] text-nf-muted">File: {item.filePath}</p>
+            <p className="selectable break-all font-mono text-[11px] text-nf-muted">File: {versionRow?.file_path ?? item.filePath}</p>
           )}
           {!item.matched && (
             <p className="text-sm text-nf-secondary">
@@ -237,8 +276,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           {cast.length > 0 && (
             <p>
               <span className="text-nf-muted">Cast: </span>
-              {cast.slice(0, 4).map((c) => c.name).join(', ')}
-              {cast.length > 4 && <span className="italic text-white/80">, more</span>}
+              <CastLinks people={cast} limit={4} />
             </p>
           )}
           {genres.length > 0 && (
@@ -250,7 +288,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           {crew.length > 0 && (
             <p>
               <span className="text-nf-muted">{crew[0].job === 'Creator' ? 'Creator' : 'Director'}: </span>
-              {crew.map((c) => c.name).join(', ')}
+              <CastLinks people={crew} />
             </p>
           )}
         </div>
@@ -259,19 +297,20 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
       {item.kind === 'tv' && (
         <EpisodeSelector item={item} episodes={episodes} season={season} onSeasonChange={onSeasonChange} />
       )}
+      {item.kind === 'movie' && item.collectionId && <CollectionSection item={item} />}
       {item.kind === 'movie' && item.filePath && (
         <SubtitlesPanel
           target={{
             type: 'movie',
-            id: item.id,
-            filePath: item.filePath,
+            id: versionRow?.id ?? item.id,
+            filePath: versionRow?.file_path ?? item.filePath,
             tmdbId: item.tmdbId,
             fallbackQuery: item.rawFilename?.replace(/\.[^.]+$/, '') ?? item.title,
           }}
         />
       )}
       <MoreLikeThis item={item} />
-      <About item={item} />
+      <About item={item} mediaInfo={mediaInfo} size={versionRow?.file_size} />
     </>
   );
 }
@@ -283,8 +322,38 @@ interface SelectorProps {
   onSeasonChange: (season: number) => void;
 }
 
+/** TMDB's episode list per season (cached in SQLite), fetched on demand for missing/upcoming episodes. */
+function useSeasonList(tmdbId: number | null, season: number) {
+  const [cache, setCache] = useState<Map<number, SeasonEpisodeInfo[]>>(new Map());
+  const fetched = useRef(new Set<number>());
+  useEffect(() => {
+    if (!tmdbId) return;
+    let alive = true;
+    void db.getSeasonCache(tmdbId).then((rows) => {
+      if (!alive) return;
+      setCache(new Map(rows.map((r) => [r.season_number, JSON.parse(r.episodes) as SeasonEpisodeInfo[]])));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [tmdbId]);
+  useEffect(() => {
+    if (!tmdbId || cache.has(season) || fetched.current.has(season)) return;
+    fetched.current.add(season);
+    void getSeasonEpisodes(tmdbId, season)
+      .then(() => db.getSeasonCache(tmdbId))
+      .then((rows) => setCache(new Map(rows.map((r) => [r.season_number, JSON.parse(r.episodes) as SeasonEpisodeInfo[]]))))
+      .catch(() => {});
+  }, [tmdbId, season, cache]);
+  return cache.get(season) ?? [];
+}
+
 function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange }: SelectorProps) {
-  const seasons = useMemo(() => [...new Set(episodes.map((e) => e.season_number))].sort((a, b) => a - b), [episodes]);
+  const seasons = useMemo(() => {
+    const owned = new Set(episodes.map((e) => e.season_number));
+    for (let n = 1; n <= item.tmdbSeasons; n++) owned.add(n);
+    return [...owned].sort((a, b) => a - b);
+  }, [episodes, item.tmdbSeasons]);
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const openEpisode = useLibraryStore((s) => s.openEpisode);
   const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
@@ -295,13 +364,21 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
   }, [item.key]); // only re-derive when switching titles, not on every progress update
   const season = chosenSeason ?? initialSeason;
   const list = episodes.filter((e) => e.season_number === season);
+  const tmdbList = useSeasonList(item.tmdbId, season);
+  const owned = new Set(list.map((e) => e.episode_number));
+  const missing = tmdbList.filter((e) => !owned.has(e.episode_number));
+  const rows: ({ kind: 'owned'; ep: EpisodeRow } | { kind: 'missing'; info: SeasonEpisodeInfo })[] = [
+    ...list.map((ep) => ({ kind: 'owned' as const, ep })),
+    ...missing.map((info) => ({ kind: 'missing' as const, info })),
+  ].sort((a, b) => (a.kind === 'owned' ? a.ep.episode_number : a.info.episode_number) - (b.kind === 'owned' ? b.ep.episode_number : b.info.episode_number));
   const seasonName = (s: number) => (s === 0 ? 'Specials' : `Season ${s}`);
   const seasonOptions = seasons.map((s) => {
     const n = episodes.filter((e) => e.season_number === s).length;
     const avg = item.imdbSeasons[s]?.rating;
     const imdbHint = avg != null && imdbEnabled ? ` · ★ ${avg.toFixed(1)}` : '';
-    return { value: s, label: seasonName(s), hint: `${n} Episode${n === 1 ? '' : 's'}${imdbHint}` };
+    return { value: s, label: seasonName(s), hint: n ? `${n} Episode${n === 1 ? '' : 's'}${imdbHint}` : 'Not in your library' };
   });
+  const today = new Date().toISOString().slice(0, 10);
 
   return (
     <section className="px-12 pb-6">
@@ -327,7 +404,31 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
       </div>
 
       <div>
-        {list.map((ep) => {
+        {rows.map((row) => {
+          if (row.kind === 'missing') {
+            const info = row.info;
+            const upcoming = !info.air_date || info.air_date > today;
+            return (
+              <div key={`missing-${info.episode_number}`} className="flex w-full items-center gap-5 border-b border-[#404040] px-6 py-6 last:border-b-0">
+                <span className="w-6 shrink-0 text-center text-2xl text-[#6d6d6d]">{info.episode_number}</span>
+                <div className="relative aspect-video w-[130px] shrink-0 overflow-hidden rounded bg-[#2a2a2a]">
+                  {info.still_path && <Artwork src={info.still_path} alt={info.name} className="h-full w-full opacity-30 grayscale" />}
+                </div>
+                <div className="min-w-0 flex-1 opacity-60">
+                  <div className="mb-1.5 flex items-baseline justify-between gap-4">
+                    <span className="truncate font-semibold">{info.name}</span>
+                    <span className="shrink-0 text-sm">{info.runtime ? `${info.runtime}m` : ''}</span>
+                  </div>
+                  {info.overview && <p className="line-clamp-2 text-sm leading-snug text-nf-secondary">{info.overview}</p>}
+                  <div className={`mt-1.5 text-[11px] font-semibold uppercase tracking-wide ${upcoming ? 'text-nf-red' : 'text-nf-muted'}`}>
+                    {upcoming ? (info.air_date ? `Coming ${airDayLabel(info.air_date)}` : 'Coming soon') : 'Not in your library'}
+                  </div>
+                </div>
+                <span className="w-6 shrink-0" />
+              </div>
+            );
+          }
+          const ep = row.ep;
           const dur = ep.duration_seconds || (ep.runtime ?? 0) * 60;
           const progress = !ep.watched && ep.progress_seconds > 0 && dur ? ep.progress_seconds / dur : ep.watched ? 1 : 0;
           return (
@@ -377,6 +478,66 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
               </div>
               <ChevronRight className="h-6 w-6 shrink-0 text-white/0 transition-colors group-hover:text-white/70" />
             </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/** Franchise films in release order; ones you don't have are greyed out. */
+function CollectionSection({ item }: { item: MediaItem }) {
+  const collection = useLibraryStore((s) => s.collections.find((c) => c.id === item.collectionId));
+  const items = useLibraryStore((s) => s.items);
+  const openDetail = useLibraryStore((s) => s.openDetail);
+  const parts = useMemo<CollectionPart[]>(() => {
+    try {
+      return collection?.parts ? (JSON.parse(collection.parts) as CollectionPart[]) : [];
+    } catch {
+      return [];
+    }
+  }, [collection?.parts]);
+  if (!collection || parts.length < 2) return null;
+  const today = new Date().toISOString().slice(0, 10);
+
+  return (
+    <section className="px-12 pb-8">
+      <h3 className="mb-1 text-2xl font-bold">{collection.name}</h3>
+      <p className="mb-5 text-sm text-nf-secondary">Watch order · {parts.length} films</p>
+      <div className="grid grid-cols-4 gap-4">
+        {parts.map((part, i) => {
+          const owned = items.find((x) => x.kind === 'movie' && x.tmdbId === part.tmdb_id);
+          const current = owned?.key === item.key;
+          const upcoming = !part.release_date || part.release_date > today;
+          return (
+            <button
+              key={part.tmdb_id}
+              type="button"
+              disabled={!owned || current}
+              onClick={() => owned && openDetail(owned.key)}
+              className={`group text-left ${owned ? '' : 'cursor-default'}`}
+            >
+              <div
+                className={`relative aspect-[2/3] overflow-hidden rounded-md bg-[#2f2f2f] ${
+                  current ? 'ring-2 ring-white' : owned ? 'transition group-hover:ring-2 group-hover:ring-white/60' : ''
+                }`}
+              >
+                <Artwork
+                  src={owned?.poster ?? part.poster}
+                  alt={part.title}
+                  fallbackTitle={part.title}
+                  className={`h-full w-full ${owned ? '' : 'opacity-35 grayscale'}`}
+                />
+                <span className="absolute left-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/75 text-sm font-bold">{i + 1}</span>
+                {!owned && (
+                  <span className="absolute inset-x-0 bottom-0 bg-black/75 px-2 py-1.5 text-center text-xs text-nf-secondary">
+                    {upcoming ? (part.release_date ? `Coming ${part.year ?? ''}` : 'Coming soon') : 'Not in your library'}
+                  </span>
+                )}
+              </div>
+              <div className={`mt-2 truncate text-sm font-semibold ${owned ? '' : 'text-nf-muted'}`}>{part.title}</div>
+              <div className="text-xs text-nf-muted">{part.year ?? 'TBA'}</div>
+            </button>
           );
         })}
       </div>
@@ -456,7 +617,7 @@ function MoreLikeThis({ item }: { item: MediaItem }) {
   );
 }
 
-function About({ item }: { item: MediaItem }) {
+function About({ item, mediaInfo, size }: { item: MediaItem; mediaInfo: MediaItem['mediaInfo']; size?: number | null }) {
   const cast = item.cast.filter((c) => !c.job);
   const crew = item.cast.filter((c) => c.job);
   return (
@@ -467,13 +628,13 @@ function About({ item }: { item: MediaItem }) {
       {crew.length > 0 && (
         <p>
           <span className="text-nf-muted">{crew[0].job === 'Creator' ? 'Creators' : 'Director'}: </span>
-          {crew.map((c) => c.name).join(', ')}
+          <CastLinks people={crew} />
         </p>
       )}
       {cast.length > 0 && (
         <p>
           <span className="text-nf-muted">Cast: </span>
-          {cast.map((c) => c.name).join(', ')}
+          <CastLinks people={cast} />
         </p>
       )}
       {item.genres.length > 0 && (
@@ -488,6 +649,13 @@ function About({ item }: { item: MediaItem }) {
           <TechBadges tech={item.tech} size="sm" className="align-middle" />
         </p>
       )}
+      {item.certification && (
+        <p>
+          <span className="text-nf-muted">Maturity rating: </span>
+          <MaturityRating rating={item.certification} className="align-middle" />
+        </p>
+      )}
+      <StreamInfo info={mediaInfo} size={size} />
     </section>
   );
 }

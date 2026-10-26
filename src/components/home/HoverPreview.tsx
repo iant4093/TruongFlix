@@ -1,8 +1,12 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Check, ChevronDown, Play, Plus, Wrench } from 'lucide-react';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
-import { formatRuntime, genreBuckets, matchPercent } from '../../store/selectors';
+import { formatRuntime, genreBuckets, matchPercent, playTargetFor } from '../../store/selectors';
+import type { MediaItem } from '../../types/media';
+import { extractFrames } from '../../services/frames';
+import { parseMediaInfo } from '../../services/mediainfo';
+import MaturityRating from '../common/MaturityRating';
 import { playItem } from '../../services/player';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
@@ -12,6 +16,49 @@ import ImdbRating from '../common/ImdbRating';
 import { CardTitleOverlay } from './MediaCard';
 
 const SCALE = 1.35;
+const STILL_POINTS = [0.14, 0.28, 0.42, 0.56, 0.7];
+const STILL_DELAY_MS = 700;
+const STILL_INTERVAL_MS = 1700;
+
+/** Frames from the actual file (the episode you'd play next, for shows), cycled like a preview. */
+function useStills(item: MediaItem) {
+  const enabled = useLibraryStore((s) => s.settings.hover_stills);
+  // A string so the selector result is stable between renders.
+  const source = useLibraryStore((s) => {
+    const target = playTargetFor(item, s.episodesBySeries);
+    if (!target) return '';
+    const row = target.type === 'movie' ? s.movies.find((m) => m.id === target.id) : s.episodes.find((e) => e.id === target.id);
+    if (!row) return '';
+    const duration = parseMediaInfo(row.media_info)?.duration || row.duration_seconds || (row.runtime ?? 0) * 60;
+    return duration > 60 ? JSON.stringify([row.file_path, row.file_mtime, duration]) : '';
+  });
+  const [frames, setFrames] = useState<string[]>([]);
+  const [index, setIndex] = useState(0);
+  const [path, mtime, duration] = source ? (JSON.parse(source) as [string, number, number]) : [null, 0, 0];
+
+  useEffect(() => {
+    if (!enabled || !path) return;
+    let alive = true;
+    const t = window.setTimeout(() => {
+      const times = STILL_POINTS.map((p) => Math.round(duration * p));
+      void extractFrames({ path, mtime, times, width: 640, lane: 'stills' }, (f) => {
+        if (alive) setFrames((prev) => (prev.includes(f.url) ? prev : [...prev, f.url]));
+      }).catch(() => {});
+    }, STILL_DELAY_MS);
+    return () => {
+      alive = false;
+      window.clearTimeout(t);
+    };
+  }, [enabled, path, mtime, duration]);
+
+  useEffect(() => {
+    if (frames.length < 1) return;
+    const t = window.setInterval(() => setIndex((i) => i + 1), STILL_INTERVAL_MS);
+    return () => window.clearInterval(t);
+  }, [frames.length]);
+
+  return frames.length ? frames[index % frames.length] : null;
+}
 const EDGE = 0.04; // matches the rows' 4% gutters
 
 /**
@@ -66,6 +113,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
     return { width, left, top, origin: `${originX} ${rect.top - top + rect.height / 2}px` };
   }, [rect]);
 
+  const still = useStills(item);
   const match = matchPercent(item.voteAverage);
   const genres = genreBuckets(item.genres).slice(0, 3);
   const meta =
@@ -87,6 +135,20 @@ function PreviewCard({ hover }: { hover: HoverState }) {
     >
       <div className="relative aspect-video w-full cursor-pointer" onClick={() => openDetail(item.key)}>
         <Artwork src={resize(item.backdrop, 'w780')} alt={item.title} fallbackTitle={item.title} className="h-full w-full" eager />
+        <AnimatePresence>
+          {still && (
+            <motion.img
+              key={still}
+              src={still}
+              alt=""
+              initial={{ opacity: 0, scale: 1 }}
+              animate={{ opacity: 1, scale: 1.06 }}
+              exit={{ opacity: 0 }}
+              transition={{ opacity: { duration: 0.6 }, scale: { duration: STILL_INTERVAL_MS / 1000 + 0.6, ease: 'linear' } }}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          )}
+        </AnimatePresence>
         <CardTitleOverlay item={item} />
         {hover.progress != null && (
           <div className="absolute inset-x-0 bottom-0">
@@ -120,6 +182,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium">
           {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
           <ImdbRating rating={item.imdbRating} />
+          <MaturityRating rating={item.certification} />
           {meta && <span className="text-nf-secondary">{meta}</span>}
           <TechBadges tech={item.tech} showAudio={false} />
         </div>

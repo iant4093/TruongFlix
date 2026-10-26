@@ -4,6 +4,7 @@ import type { EpisodeRow, MediaItem, MovieRow, RawVideoFile, TechInfo } from '..
 import * as db from './db';
 import type { EpisodeMetadata, FileInfo, MatchHint, MovieMetadata, SeriesMetadata } from './db';
 import { organizeLooseFiles } from './files';
+import { startBackgroundAnalysis } from './enrich';
 import { imdbSyncDue, syncImdbRatings } from './imdb';
 import { guessSeasonEpisode, parseVideoFile, toRawFile } from './parser';
 import * as tmdb from './tmdb';
@@ -112,7 +113,7 @@ class ScanContext {
 
 async function ingestFile(file: RawVideoFile, ctx: ScanContext, hint?: MatchHint) {
   const parsed = parseVideoFile(file);
-  const info: FileInfo = { file_path: file.file_path, raw_filename: file.filename, file_mtime: file.mtime };
+  const info: FileInfo = { file_path: file.file_path, raw_filename: file.filename, file_mtime: file.mtime, file_size: file.file_size };
   const kind = hint?.kind ?? parsed.kind;
   const title = parsed.kind === 'movie' ? parsed.title : parsed.showTitle;
 
@@ -147,25 +148,29 @@ const isUnder = (path: string, root: string) => {
 export interface ScanOptions {
   /** Re-fetch metadata for every file, not just new/changed ones. */
   force?: boolean;
+  /** Triggered by the folder watcher: no progress card unless something actually changed. */
+  quiet?: boolean;
 }
+
+let rescanQueued = false;
 
 /** Rust directory walk -> incremental SQLite diff -> parser -> TMDB -> SQLite. */
 export async function runScan(opts: ScanOptions = {}) {
   const store = useLibraryStore.getState();
-  if (store.scan.running) return;
+  if (store.scan.running) {
+    if (opts.quiet) rescanQueued = true; // a watcher event arrived mid-scan; run again afterwards
+    return;
+  }
   const { settings, setScan, toast, reload } = store;
+  const quiet = !!opts.quiet;
   const dirs = settings.media_directories;
 
-  if (!settings.tmdb_api_key) {
-    toast('Add your TMDB API key in Settings before scanning.', 'error');
-    return;
-  }
-  if (!dirs.length) {
-    toast('Add at least one media folder in Settings.', 'error');
+  if (!settings.tmdb_api_key || !dirs.length) {
+    if (!quiet) toast(settings.tmdb_api_key ? 'Add at least one media folder in Settings.' : 'Add your TMDB API key in Settings before scanning.', 'error');
     return;
   }
 
-  setScan({ running: true, phase: 'walking', current: 0, total: 0, added: 0, removed: 0, message: 'Scanning folders…' });
+  setScan({ running: true, quiet, phase: 'walking', current: 0, total: 0, added: 0, removed: 0, message: 'Scanning folders…' });
   try {
     const reachable = await invoke<boolean[]>('check_paths', { paths: dirs });
     const roots = dirs.filter((_, i) => reachable[i]);
@@ -257,10 +262,15 @@ export async function runScan(opts: ScanOptions = {}) {
               .join(' · ')
           : ratingsNote || 'No changes found';
     setScan({ running: false, phase: networkFailures >= 6 ? 'error' : 'done', added, removed, message: summary });
-    if (offline.length) toast(`Offline folder skipped: ${offline.join(', ')}`, 'error');
+    if (offline.length && !quiet) toast(`Offline folder skipped: ${offline.join(', ')}`, 'error');
+    void startBackgroundAnalysis();
   } catch (e) {
     console.error(e);
     setScan({ running: false, phase: 'error', message: String(e) });
+  }
+  if (rescanQueued) {
+    rescanQueued = false;
+    void runScan({ quiet: true });
   }
 }
 

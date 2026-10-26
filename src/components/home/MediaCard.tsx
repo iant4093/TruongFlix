@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ContinueEntry, MediaItem } from '../../types/media';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
-import { epLabel, formatRemaining, formatTimestamp } from '../../store/selectors';
+import { airDayLabel, epLabel, formatRemaining, formatTimestamp, newEpisodeSoon } from '../../store/selectors';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import ProgressBar from '../common/ProgressBar';
@@ -98,6 +98,7 @@ export default function MediaCard({ item, entry }: Props) {
             Unmatched
           </span>
         )}
+        {item.kind === 'tv' && newEpisodeSoon(item.nextEpisode) && <NewEpisodeBadge date={item.nextEpisode!.air_date} />}
       </div>
       {entry && (
         <div className="mt-1.5 px-0.5">
@@ -113,5 +114,15 @@ export default function MediaCard({ item, entry }: Props) {
         </div>
       )}
     </div>
+  );
+}
+
+/** Netflix's red ribbon at the bottom of a card for shows with an episode airing this week. */
+export function NewEpisodeBadge({ date }: { date: string }) {
+  const aired = new Date(`${date}T12:00:00`).getTime() < Date.now() - 432e5;
+  return (
+    <span className="absolute bottom-0 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-t-sm bg-nf-red px-2 py-[2px] text-[10px] font-bold leading-tight text-white shadow">
+      {aired ? 'New Episode' : `New Episode ${airDayLabel(date)}`}
+    </span>
   );
 }

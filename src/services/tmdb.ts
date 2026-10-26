@@ -1,10 +1,11 @@
-import type { CastMember } from '../types/media';
-import type { EpisodeMetadata, MovieMetadata, SeriesMetadata } from './db';
+import type { CastMember, CollectionPart } from '../types/media';
+import type { EpisodeMetadata, MovieExtras, MovieMetadata, SeriesExtras, SeriesMetadata } from './db';
+import { saveSeasonCache } from './db';
 
 const API = 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p';
 
-export const img = (path: string | null | undefined, size: 'w92' | 'w185' | 'w300' | 'w500' | 'w780' | 'w1280' | 'original') =>
+export const img = (path: string | null | undefined, size: 'w92' | 'w185' | 'w342' | 'w300' | 'w500' | 'w780' | 'w1280' | 'original') =>
   path ? `${IMG}/${size}${path}` : null;
 
 /** Re-sizes a stored TMDB URL (e.g. original backdrop -> w780 for card thumbnails). */
@@ -122,8 +123,8 @@ interface TmdbImage {
   vote_count: number;
 }
 interface TmdbCredits {
-  cast?: { name: string; character?: string; profile_path?: string | null; order?: number }[];
-  crew?: { name: string; job?: string; profile_path?: string | null }[];
+  cast?: { id: number; name: string; character?: string; profile_path?: string | null; order?: number }[];
+  crew?: { id: number; name: string; job?: string; profile_path?: string | null }[];
 }
 interface TmdbMovie {
   id: number;
@@ -140,6 +141,23 @@ interface TmdbMovie {
   credits?: TmdbCredits;
   images?: { logos?: TmdbImage[] };
   imdb_id?: string | null;
+  release_dates?: { results?: { iso_3166_1: string; release_dates: { certification: string; type: number }[] }[] };
+  videos?: { results?: TmdbVideo[] };
+  belongs_to_collection?: { id: number; name: string } | null;
+}
+interface TmdbVideo {
+  key: string;
+  site: string;
+  type: string;
+  official?: boolean;
+  iso_639_1?: string;
+  published_at?: string;
+}
+interface TmdbNextEpisode {
+  season_number: number;
+  episode_number: number;
+  name: string;
+  air_date: string | null;
 }
 interface TmdbTv {
   id: number;
@@ -151,10 +169,14 @@ interface TmdbTv {
   genres?: { name: string }[];
   poster_path?: string | null;
   backdrop_path?: string | null;
-  created_by?: { name: string; profile_path?: string | null }[];
+  created_by?: { id: number; name: string; profile_path?: string | null }[];
   credits?: TmdbCredits;
   images?: { logos?: TmdbImage[] };
   external_ids?: { imdb_id?: string | null };
+  content_ratings?: { results?: { iso_3166_1: string; rating: string }[] };
+  videos?: { results?: TmdbVideo[] };
+  status?: string;
+  next_episode_to_air?: TmdbNextEpisode | null;
 }
 interface TmdbEpisode {
   id: number;
@@ -205,6 +227,7 @@ function pickLogo(logos: TmdbImage[] | undefined): string | null {
 
 function castFrom(credits: TmdbCredits | undefined, creators: TmdbTv['created_by'] = []): CastMember[] {
   const cast: CastMember[] = (credits?.cast ?? []).slice(0, 10).map((c) => ({
+    id: c.id,
     name: c.name,
     character: c.character,
     profile_path: img(c.profile_path, 'w185'),
@@ -212,8 +235,8 @@ function castFrom(credits: TmdbCredits | undefined, creators: TmdbTv['created_by
   const directors = (credits?.crew ?? [])
     .filter((c) => c.job === 'Director')
     .slice(0, 2)
-    .map((c) => ({ name: c.name, job: 'Director', profile_path: img(c.profile_path, 'w185') }));
-  const creatorList = creators.slice(0, 2).map((c) => ({ name: c.name, job: 'Creator', profile_path: img(c.profile_path, 'w185') }));
+    .map((c) => ({ id: c.id, name: c.name, job: 'Director', profile_path: img(c.profile_path, 'w185') }));
+  const creatorList = creators.slice(0, 2).map((c) => ({ id: c.id, name: c.name, job: 'Creator', profile_path: img(c.profile_path, 'w185') }));
   return [...cast, ...directors, ...creatorList];
 }
 
@@ -263,7 +286,7 @@ export async function findMovie(title: string, year: number | null): Promise<num
 
 export async function getMovieDetails(tmdbId: number): Promise<MovieMetadata> {
   const d = await request<TmdbMovie>(`/movie/${tmdbId}`, {
-    append_to_response: 'credits,images',
+    append_to_response: 'credits,images,release_dates,videos',
     include_image_language: 'en,null',
   });
   return {
@@ -281,6 +304,121 @@ export async function getMovieDetails(tmdbId: number): Promise<MovieMetadata> {
     backdrop_path: img(d.backdrop_path, 'original'),
     logo_path: pickLogo(d.images?.logos),
     imdb_id: d.imdb_id || '',
+    extras: movieExtras(d),
+  };
+}
+
+function movieExtras(d: TmdbMovie): MovieExtras {
+  const us = d.release_dates?.results?.find((r) => r.iso_3166_1 === 'US');
+  const dates = [...(us?.release_dates ?? [])].sort((a, b) => (a.type === 3 ? -1 : 0) - (b.type === 3 ? -1 : 0));
+  return {
+    certification: dates.find((r) => r.certification)?.certification ?? '',
+    collection_id: d.belongs_to_collection?.id ?? 0,
+    collection_name: d.belongs_to_collection?.name ?? null,
+    trailer_key: pickTrailer(d.videos?.results),
+  };
+}
+
+/** Best YouTube trailer: official English trailer, then any trailer, then a teaser. */
+function pickTrailer(videos: TmdbVideo[] | undefined): string {
+  const yt = (videos ?? []).filter((v) => v.site === 'YouTube' && v.key);
+  const rank = (v: TmdbVideo) =>
+    (v.type === 'Trailer' ? 4 : v.type === 'Teaser' ? 2 : 0) + (v.official ? 2 : 0) + (v.iso_639_1 === 'en' ? 1 : 0);
+  return [...yt].sort((a, b) => rank(b) - rank(a) || (b.published_at ?? '').localeCompare(a.published_at ?? ''))[0]?.key ?? '';
+}
+
+/** Rating, collection and trailer for a movie already in the library (one request). */
+export async function getMovieExtras(tmdbId: number): Promise<MovieExtras> {
+  const d = await request<TmdbMovie>(`/movie/${tmdbId}`, { append_to_response: 'release_dates,videos' });
+  return movieExtras(d);
+}
+
+function seriesExtras(d: TmdbTv): SeriesExtras {
+  const next = d.next_episode_to_air;
+  return {
+    certification: d.content_ratings?.results?.find((r) => r.iso_3166_1 === 'US')?.rating ?? '',
+    trailer_key: pickTrailer(d.videos?.results),
+    tmdb_status: d.status ?? null,
+    next_episode:
+      next && next.air_date
+        ? { season: next.season_number, episode: next.episode_number, name: next.name, air_date: next.air_date }
+        : null,
+  };
+}
+
+/** Rating, trailer, status and next airing for a show already in the library. */
+export async function getSeriesExtras(tmdbId: number): Promise<SeriesExtras> {
+  const d = await request<TmdbTv>(`/tv/${tmdbId}`, { append_to_response: 'content_ratings,videos' });
+  return seriesExtras(d);
+}
+
+export interface TmdbCollection {
+  id: number;
+  name: string;
+  overview: string | null;
+  poster_path: string | null;
+  backdrop_path: string | null;
+  parts: CollectionPart[];
+}
+
+export async function getCollection(id: number): Promise<TmdbCollection> {
+  const d = await request<{
+    id: number;
+    name: string;
+    overview?: string;
+    poster_path?: string | null;
+    backdrop_path?: string | null;
+    parts?: { id: number; title: string; release_date?: string; poster_path?: string | null; backdrop_path?: string | null; overview?: string }[];
+  }>(`/collection/${id}`);
+  const parts = (d.parts ?? [])
+    .map((p) => ({
+      tmdb_id: p.id,
+      title: p.title,
+      year: yearOf(p.release_date),
+      release_date: p.release_date || null,
+      poster: img(p.poster_path, 'w342'),
+      backdrop: img(p.backdrop_path, 'w780'),
+      overview: p.overview ?? '',
+    }))
+    .sort((a, b) => (a.release_date ?? '9999').localeCompare(b.release_date ?? '9999'));
+  return { id: d.id, name: d.name, overview: d.overview || null, poster_path: img(d.poster_path, 'w500'), backdrop_path: img(d.backdrop_path, 'original'), parts };
+}
+
+export interface PersonInfo {
+  id: number;
+  name: string;
+  biography: string;
+  birthday: string | null;
+  place_of_birth: string | null;
+  profile: string | null;
+  known_for: string | null;
+}
+
+/** Person details by id, or by name search for older library entries without ids. */
+export async function getPerson(ref: { id?: number; name: string }): Promise<PersonInfo | null> {
+  let id = ref.id;
+  if (!id) {
+    const res = await request<{ results?: { id: number; name: string }[] }>('/search/person', { query: ref.name, include_adult: 'false' });
+    id = res.results?.find((r) => r.name.toLowerCase() === ref.name.toLowerCase())?.id ?? res.results?.[0]?.id;
+    if (!id) return null;
+  }
+  const d = await request<{
+    id: number;
+    name: string;
+    biography?: string;
+    birthday?: string | null;
+    place_of_birth?: string | null;
+    profile_path?: string | null;
+    known_for_department?: string;
+  }>(`/person/${id}`);
+  return {
+    id: d.id,
+    name: d.name,
+    biography: d.biography ?? '',
+    birthday: d.birthday ?? null,
+    place_of_birth: d.place_of_birth ?? null,
+    profile: img(d.profile_path, 'w500'),
+    known_for: d.known_for_department ?? null,
   };
 }
 
@@ -328,7 +466,7 @@ export async function findSeries(title: string, year: number | null): Promise<nu
 
 export async function getSeriesDetails(tmdbId: number): Promise<SeriesMetadata> {
   const d = await request<TmdbTv>(`/tv/${tmdbId}`, {
-    append_to_response: 'credits,images,external_ids',
+    append_to_response: 'credits,images,external_ids,content_ratings,videos',
     include_image_language: 'en,null',
   });
   return {
@@ -344,6 +482,7 @@ export async function getSeriesDetails(tmdbId: number): Promise<SeriesMetadata> 
     logo_path: pickLogo(d.images?.logos),
     number_of_seasons: d.number_of_seasons ?? 1,
     imdb_id: d.external_ids?.imdb_id || '',
+    extras: seriesExtras(d),
   };
 }
 
@@ -379,6 +518,19 @@ export async function getSeasonEpisodes(tvId: number, season: number): Promise<M
   try {
     const data = await request<{ episodes?: TmdbEpisode[] }>(`/tv/${tvId}/season/${season}`);
     for (const e of data.episodes ?? []) map.set(e.episode_number, toEpisodeMeta(e));
+    // Keep the full season list for "missing" and "upcoming" episodes on the show page.
+    await saveSeasonCache(
+      tvId,
+      season,
+      [...map.values()].map((e) => ({
+        episode_number: e.episode_number,
+        name: e.title,
+        overview: e.overview,
+        still_path: e.still_path,
+        air_date: e.air_date,
+        runtime: e.runtime,
+      })),
+    ).catch(() => {});
   } catch (e) {
     if (!(e instanceof TmdbError && e.status === 404)) throw e;
   }
