@@ -2,13 +2,17 @@ import type {
   CastMember,
   ContinueEntry,
   EpisodeRow,
+  Maturity,
   MediaItem,
   MovieRow,
+  MovieVersion,
+  NextEpisode,
   PlayTarget,
   SeasonRating,
   SeriesRow,
   TechInfo,
 } from '../types/media';
+import { formatSize, parseMediaInfo } from '../services/mediainfo';
 
 const parseJson = <T,>(s: string | null, fallback: T): T => {
   if (!s) return fallback;
@@ -33,7 +37,19 @@ function bestTech(rows: TechInfo[]): TechInfo {
   return out;
 }
 
-function movieToItem(m: MovieRow): MediaItem {
+const techOf = (r: TechInfo): TechInfo => ({ resolution: r.resolution, video_codec: r.video_codec, hdr_format: r.hdr_format, audio_codec: r.audio_codec });
+
+function versionLabel(m: MovieRow): string {
+  const res = m.resolution === 'HD' ? '1080p' : m.resolution;
+  return [res ?? 'Unknown quality', m.hdr_format, m.video_codec, formatSize(m.file_size)].filter(Boolean).join(' · ');
+}
+
+const qualityScore = (r: MovieRow) => resRank(r.resolution) * 10 + (r.hdr_format === 'Dolby Vision' ? 3 : r.hdr_format ? 2 : 0) + (r.file_size ?? 0) / 1e13;
+
+function movieToItem(m: MovieRow, all: MovieRow[] = [m]): MediaItem {
+  const versions: MovieVersion[] = [...all]
+    .sort((a, b) => qualityScore(b) - qualityScore(a))
+    .map((v) => ({ id: v.id, filePath: v.file_path, label: versionLabel(v), tech: techOf(v), fileSize: v.file_size }));
   return {
     key: `movie-${m.id}`,
     kind: 'movie',
@@ -61,6 +77,15 @@ function movieToItem(m: MovieRow): MediaItem {
     imdbRating: m.imdb_rating ?? null,
     imdbVotes: m.imdb_votes ?? null,
     imdbSeasons: {},
+    certification: m.certification || null,
+    trailerKey: m.trailer_key || null,
+    collectionId: m.collection_id || null,
+    collectionName: m.collection_name,
+    tmdbStatus: null,
+    nextEpisode: null,
+    tmdbSeasons: 0,
+    versions,
+    mediaInfo: parseMediaInfo(m.media_info),
     filePath: m.file_path,
     rawFilename: m.raw_filename,
     progressSeconds: m.progress_seconds ?? 0,
@@ -98,6 +123,15 @@ function seriesToItem(s: SeriesRow, eps: EpisodeRow[]): MediaItem {
     imdbRating: s.imdb_rating ?? null,
     imdbVotes: s.imdb_votes ?? null,
     imdbSeasons: parseJson<Record<number, SeasonRating>>(s.imdb_season_ratings, {}),
+    certification: s.certification || null,
+    trailerKey: s.trailer_key || null,
+    collectionId: null,
+    collectionName: null,
+    tmdbStatus: s.tmdb_status,
+    nextEpisode: parseJson<NextEpisode | null>(s.next_episode, null),
+    tmdbSeasons: s.tmdb_id > 0 ? s.number_of_seasons : 0,
+    versions: [],
+    mediaInfo: null,
     filePath: null,
     rawFilename: null,
     progressSeconds: 0,
@@ -108,23 +142,18 @@ function seriesToItem(s: SeriesRow, eps: EpisodeRow[]): MediaItem {
 
 /** Builds unified items. Duplicate movie files sharing a TMDB id collapse into one card. */
 export function buildItems(movies: MovieRow[], series: SeriesRow[], episodesBySeries: Map<number, EpisodeRow[]>): MediaItem[] {
-  const byTmdb = new Map<number, MovieRow>();
+  const groups = new Map<number, MovieRow[]>();
   const singles: MovieRow[] = [];
   for (const m of movies) {
-    if (m.tmdb_id == null) {
-      singles.push(m);
-      continue;
-    }
-    const prev = byTmdb.get(m.tmdb_id);
-    if (!prev) {
-      byTmdb.set(m.tmdb_id, m);
-      continue;
-    }
-    // Prefer the version the user is watching, then the highest quality.
-    const score = (r: MovieRow) => (r.last_watched_at ? 10 : 0) + resRank(r.resolution) + (r.hdr_format ? 0.5 : 0);
-    if (score(m) > score(prev)) byTmdb.set(m.tmdb_id, m);
+    if (m.tmdb_id == null) singles.push(m);
+    else groups.set(m.tmdb_id, [...(groups.get(m.tmdb_id) ?? []), m]);
   }
-  const items = [...byTmdb.values(), ...singles].map(movieToItem);
+  // The card shows the version being watched, otherwise the highest quality.
+  const score = (r: MovieRow) => (r.last_watched_at ? 1000 : 0) + qualityScore(r);
+  const items = [
+    ...[...groups.values()].map((rows) => movieToItem(rows.reduce((a, b) => (score(b) > score(a) ? b : a)), rows)),
+    ...singles.map((m) => movieToItem(m)),
+  ];
   for (const s of series) items.push(seriesToItem(s, episodesBySeries.get(s.id) ?? []));
   return items;
 }
@@ -272,3 +301,42 @@ export function seededShuffle<T>(arr: T[], seed: number): T[] {
   }
   return a;
 }
+
+// ---------------------------------------------------------------------------
+// Age ratings & profiles
+// ---------------------------------------------------------------------------
+
+const CERT_LEVEL: Record<string, number> = {
+  G: 0, 'TV-Y': 0, 'TV-Y7': 0, 'TV-Y7-FV': 0, 'TV-G': 0,
+  PG: 1, 'TV-PG': 1,
+  'PG-13': 2, 'TV-14': 2,
+  R: 3, 'NC-17': 3, 'TV-MA': 3, NR: 3, Unrated: 3,
+};
+
+/** Kids: G/PG/TV-PG and below. Teen: up to PG-13/TV-14. Unrated titles are hidden on both. */
+export function allowedForMaturity(item: MediaItem, maturity: Maturity): boolean {
+  if (maturity === 'all') return true;
+  const level = item.certification ? CERT_LEVEL[item.certification] : undefined;
+  if (level == null) return false;
+  return level <= (maturity === 'kids' ? 1 : 2);
+}
+
+export const MATURITY_LABEL: Record<Maturity, string> = { kids: 'Kids', teen: 'Teens', all: 'All Maturity Ratings' };
+
+/** "Friday" within a week, otherwise "Nov 6". */
+export function airDayLabel(date: string): string {
+  const d = new Date(`${date}T12:00:00`);
+  const days = (d.getTime() - Date.now()) / 864e5;
+  if (days < -0.5) return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  if (days < 0.5) return 'Today';
+  if (days < 1.5) return 'Tomorrow';
+  if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** The next episode airs within the coming week (or aired in the last few days). */
+export const newEpisodeSoon = (n: NextEpisode | null) => {
+  if (!n) return false;
+  const days = (new Date(`${n.air_date}T12:00:00`).getTime() - Date.now()) / 864e5;
+  return days > -4 && days < 7;
+};

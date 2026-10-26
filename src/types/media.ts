@@ -9,6 +9,8 @@ export interface RawVideoFile {
 }
 
 export interface CastMember {
+  /** TMDB person id (titles scanned before this field existed don't have it). */
+  id?: number;
   name: string;
   character?: string;
   job?: string;
@@ -47,6 +49,15 @@ export interface MovieRow extends TechInfo, ImdbInfo {
   my_list: number;
   last_watched_at: string | null;
   created_at: string;
+  certification: string | null;
+  collection_id: number | null;
+  collection_name: string | null;
+  trailer_key: string | null;
+  file_size: number | null;
+  media_info: string | null;
+  segments: string | null;
+  probed_mtime: number | null;
+  enriched_at: string | null;
 }
 
 export interface SeriesRow extends ImdbInfo {
@@ -67,6 +78,11 @@ export interface SeriesRow extends ImdbInfo {
   my_list: number;
   last_watched_at: string | null;
   created_at: string;
+  certification: string | null;
+  trailer_key: string | null;
+  tmdb_status: string | null;
+  next_episode: string | null;
+  enriched_at: string | null;
 }
 
 export interface EpisodeRow extends TechInfo, ImdbInfo {
@@ -87,6 +103,104 @@ export interface EpisodeRow extends TechInfo, ImdbInfo {
   duration_seconds: number;
   watched: number;
   last_watched_at: string | null;
+  file_size: number | null;
+  media_info: string | null;
+  segments: string | null;
+  probed_mtime: number | null;
+  intro_checked: number | null;
+}
+
+/** Real stream information read by the Rust `media_probe` command. */
+export interface MediaInfo {
+  duration: number;
+  width: number;
+  height: number;
+  video_codec: string | null;
+  video_profile: string | null;
+  gamma: string | null;
+  primaries: string | null;
+  dv_profile: number | null;
+  size?: number | null;
+  audio: { lang: string | null; title: string | null; codec: string | null; profile: string | null; channels: number | null; default: boolean }[];
+  subs: { lang: string | null; title: string | null; codec: string | null; forced: boolean }[];
+  chapters: { title: string; time: number }[];
+}
+
+export type SegmentKind = 'intro' | 'recap' | 'credits';
+export interface Segment {
+  kind: SegmentKind;
+  start: number;
+  end: number;
+  source: 'chapter' | 'audio';
+}
+
+export interface NextEpisode {
+  season: number;
+  episode: number;
+  name: string;
+  air_date: string;
+}
+
+/** One file of a movie that exists in several versions (e.g. 1080p and 4K). */
+export interface MovieVersion {
+  id: number;
+  filePath: string;
+  label: string;
+  tech: TechInfo;
+  fileSize: number | null;
+}
+
+export type Maturity = 'kids' | 'teen' | 'all';
+export interface Profile {
+  id: number;
+  name: string;
+  color: string;
+  maturity: Maturity;
+  created_at: string;
+}
+
+export interface CollectionPart {
+  tmdb_id: number;
+  title: string;
+  year: number | null;
+  release_date: string | null;
+  poster: string | null;
+  backdrop: string | null;
+  overview: string;
+}
+export interface CollectionRow {
+  id: number;
+  name: string;
+  overview: string | null;
+  poster_path: string | null;
+  backdrop_path: string | null;
+  parts: string | null;
+  fetched_at: string | null;
+}
+
+/** TMDB episode list for one season (cached), used to show missing and upcoming episodes. */
+export interface SeasonEpisodeInfo {
+  episode_number: number;
+  name: string;
+  overview: string | null;
+  still_path: string | null;
+  air_date: string | null;
+  runtime: number | null;
+}
+
+export interface WatchLogRow {
+  profile_id: number;
+  media_type: PlayableType;
+  media_id: number;
+  day: string;
+  seconds: number;
+  title: string | null;
+  series_id: number | null;
+  series_title: string | null;
+  genres: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  poster: string | null;
 }
 
 export type MediaKind = 'movie' | 'tv';
@@ -121,6 +235,18 @@ export interface MediaItem {
   imdbVotes: number | null;
   /** TV only: IMDb season averages keyed by season number. */
   imdbSeasons: Record<number, SeasonRating>;
+  certification: string | null;
+  trailerKey: string | null;
+  collectionId: number | null;
+  collectionName: string | null;
+  /** TV: TMDB status ("Returning Series", "Ended", …) and the next scheduled episode. */
+  tmdbStatus: string | null;
+  nextEpisode: NextEpisode | null;
+  /** TV: number of seasons according to TMDB (may exceed the seasons you have). */
+  tmdbSeasons: number;
+  /** Movies: every file of this title, best first (more than one = version picker). */
+  versions: MovieVersion[];
+  mediaInfo: MediaInfo | null;
   /** Movies only. */
   filePath: string | null;
   rawFilename: string | null;
@@ -150,12 +276,14 @@ export interface ContinueEntry {
 
 export interface ScanState {
   running: boolean;
-  phase: 'idle' | 'walking' | 'diffing' | 'matching' | 'ratings' | 'done' | 'error';
+  phase: 'idle' | 'walking' | 'diffing' | 'matching' | 'ratings' | 'analysis' | 'done' | 'error';
   current: number;
   total: number;
   message: string;
   added: number;
   removed: number;
+  /** Background (folder-watcher) scan: the progress card stays hidden unless something changed. */
+  quiet?: boolean;
 }
 
 export interface PlaybackState {
@@ -189,6 +317,33 @@ export interface Settings {
   updates_auto_check: boolean;
   /** ISO timestamp of the last update check. */
   updates_last_check: string;
+  /** Netflix-style subtitle appearance for the built-in player. */
+  subtitle_style: SubtitleStyle;
+  /** Loudness levelling (night mode) and centre-channel/speech boost (dialogue boost). */
+  audio_night: boolean;
+  audio_dialogue: boolean;
+  /** Detect intros from audio; skip them automatically. */
+  intro_detection: boolean;
+  skip_intro_auto: boolean;
+  /** Watch media folders and update the library automatically. */
+  watch_folders: boolean;
+  /** Autoplay muted trailers in the home banner. */
+  trailers_autoplay: boolean;
+  /** Animated intro (and sound) at launch. */
+  launch_intro: boolean;
+  launch_intro_sound: boolean;
+  /** Hover cards cycle through stills from the actual file. */
+  hover_stills: boolean;
+  /** Show the "Who's watching?" screen at launch when there are several profiles. */
+  ask_profile: boolean;
+  active_profile: number;
+}
+
+export interface SubtitleStyle {
+  size: 'small' | 'medium' | 'large' | 'xlarge';
+  color: 'white' | 'yellow' | 'cyan' | 'green' | 'magenta';
+  background: 'none' | 'shadow' | 'translucent' | 'solid';
+  font: 'sans' | 'serif' | 'mono';
 }
 
 /** Built-in player engine availability (from the Rust `player_status` command). */
@@ -283,6 +438,8 @@ export interface TrashSnapshot {
   series: SeriesRow | null;
   episodes: EpisodeRow[];
   subtitles: SubtitleRow[];
+  /** Every profile's watch state for these rows (added with profiles; absent in older entries). */
+  state?: unknown[];
 }
 
 export interface SubtitleRow {

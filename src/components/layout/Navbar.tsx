@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { RefreshCw, Search, Settings, Square, X } from 'lucide-react';
+import { BarChart3, ChevronDown, History, RefreshCw, Search, Settings, Square, Users, X } from 'lucide-react';
+import ProfileAvatar from '../common/ProfileAvatar';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
 import { runScan } from '../../services/scanner';
 import { stopPlayback } from '../../services/player';
@@ -171,7 +172,79 @@ export default function Navbar() {
         >
           <Settings className="h-5 w-5" />
         </button>
+        <ProfileMenu />
       </div>
     </header>
+  );
+}
+
+/** Avatar with a Netflix-style dropdown: switch profile, manage profiles, activity and Wrapped. */
+function ProfileMenu() {
+  const profiles = useLibraryStore((s) => s.profiles);
+  const active = useLibraryStore((s) => s.activeProfile);
+  const switchProfile = useLibraryStore((s) => s.switchProfile);
+  const setGate = useLibraryStore((s) => s.setProfileGate);
+  const setOverlay = useLibraryStore((s) => s.setOverlay);
+  const [open, setOpen] = useState(false);
+  const timer = useRef<number | null>(null);
+  if (!active) return null;
+
+  const show = () => {
+    if (timer.current) window.clearTimeout(timer.current);
+    setOpen(true);
+  };
+  const hide = () => {
+    timer.current = window.setTimeout(() => setOpen(false), 200);
+  };
+  const pick = (fn: () => void) => () => {
+    setOpen(false);
+    fn();
+  };
+
+  return (
+    <div className="relative" onMouseEnter={show} onMouseLeave={hide}>
+      <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1.5" title={active.name}>
+        <ProfileAvatar color={active.color} maturity={active.maturity} size={32} />
+        <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${open ? 'rotate-180' : ''}`} />
+      </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.15 }}
+            className="absolute right-0 top-full mt-4 w-56 border border-white/15 bg-black/90 py-2 text-sm shadow-2xl backdrop-blur"
+          >
+            {profiles
+              .filter((p) => p.id !== active.id)
+              .map((p) => (
+                <button key={p.id} onClick={pick(() => void switchProfile(p.id))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
+                  <ProfileAvatar color={p.color} maturity={p.maturity} size={28} />
+                  {p.name}
+                </button>
+              ))}
+            <button onClick={pick(() => setGate('manage'))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
+              <Users className="h-5 w-5 text-nf-secondary" /> Manage Profiles
+            </button>
+            <div className="my-2 border-t border-white/15" />
+            <button onClick={pick(() => setOverlay('history'))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
+              <History className="h-5 w-5 text-nf-secondary" /> Viewing Activity
+            </button>
+            <button onClick={pick(() => setOverlay('wrapped'))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
+              <BarChart3 className="h-5 w-5 text-nf-secondary" /> Your TruongFlix Wrapped
+            </button>
+            {profiles.length > 1 && (
+              <>
+                <div className="my-2 border-t border-white/15" />
+                <button onClick={pick(() => setGate('select'))} className="w-full px-4 py-2 text-center hover:underline">
+                  Switch profile
+                </button>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
