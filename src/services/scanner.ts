@@ -5,6 +5,7 @@ import * as db from './db';
 import type { EpisodeMetadata, FileInfo, MatchHint, MovieMetadata, SeriesMetadata } from './db';
 import { organizeLooseFiles } from './files';
 import { startBackgroundAnalysis } from './enrich';
+import { reconnectOfflineShares, refreshShares } from './nas';
 import { imdbSyncDue, syncImdbRatings } from './imdb';
 import { guessSeasonEpisode, parseVideoFile, toRawFile } from './parser';
 import * as tmdb from './tmdb';
@@ -172,6 +173,7 @@ export async function runScan(opts: ScanOptions = {}) {
 
   setScan({ running: true, quiet, phase: 'walking', current: 0, total: 0, added: 0, removed: 0, message: 'Scanning folders…' });
   try {
+    await reconnectOfflineShares(); // NAS folders that dropped off (without waking a sleeping NAS)
     const reachable = await invoke<boolean[]>('check_paths', { paths: dirs });
     const roots = dirs.filter((_, i) => reachable[i]);
     const offline = dirs.filter((_, i) => !reachable[i]);
@@ -264,6 +266,7 @@ export async function runScan(opts: ScanOptions = {}) {
     setScan({ running: false, phase: networkFailures >= 6 ? 'error' : 'done', added, removed, message: summary });
     if (offline.length && !quiet) toast(`Offline folder skipped: ${offline.join(', ')}`, 'error');
     void startBackgroundAnalysis();
+    void refreshShares();
   } catch (e) {
     console.error(e);
     setScan({ running: false, phase: 'error', message: String(e) });
