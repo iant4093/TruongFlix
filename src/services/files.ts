@@ -48,7 +48,7 @@ export async function organizeLooseFiles(roots: string[]): Promise<{ moved: numb
 // ---------------------------------------------------------------------------
 
 export type DeleteTarget =
-  | { kind: 'movie'; item: MediaItem }
+  | { kind: 'movie'; item: MediaItem; /** Only this copy (when there are several versions). */ versionId?: number }
   | { kind: 'tv'; item: MediaItem }
   | { kind: 'episode'; episode: EpisodeRow; series: MediaItem };
 
@@ -70,8 +70,14 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
   let poster: string | null;
   if (target.kind === 'movie') {
     const { item } = target;
-    movieRows = movies.filter((m) => m.id === item.id || (item.tmdbId != null && m.tmdb_id === item.tmdbId));
+    movieRows = target.versionId != null
+      ? movies.filter((m) => m.id === target.versionId)
+      : movies.filter((m) => m.id === item.id || (item.tmdbId != null && m.tmdb_id === item.tmdbId));
     label = item.year ? `${item.title} (${item.year})` : item.title;
+    if (target.versionId != null) {
+      const v = item.versions.find((x) => x.id === target.versionId);
+      if (v) label += ` · ${v.label}`;
+    }
     poster = item.poster;
   } else if (target.kind === 'tv') {
     episodeRows = episodesBySeries.get(target.item.id) ?? [];
@@ -104,8 +110,10 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
       ? `All ${fileCount} episode${fileCount === 1 ? '' : 's'} (and the show’s folder, if it only holds this show)`
       : fileCount > 1
         ? `All ${fileCount} versions of this movie`
-        : target.kind === 'movie'
-          ? 'The movie file (and its folder, if it only holds this movie)'
+        : target.kind === 'movie' && target.versionId != null
+          ? 'This copy of the movie (its other versions stay)'
+          : target.kind === 'movie'
+            ? 'The movie file (and its folder, if it only holds this movie)'
           : 'The episode file and its subtitles';
   const ok = await store.confirm({
     title: `Delete “${label}”?`,

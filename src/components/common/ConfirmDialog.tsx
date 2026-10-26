@@ -32,7 +32,7 @@ export default function ConfirmDialog() {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
           onMouseDown={(e) => e.target === e.currentTarget && resolve(false)}
-          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-6 backdrop-blur-xs"
+          className="fixed inset-0 z-[190] flex items-center justify-center bg-black/70 p-6 backdrop-blur-xs"
         >
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 10 }}

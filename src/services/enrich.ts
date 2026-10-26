@@ -53,9 +53,11 @@ type ProbeTarget = { table: 'movies' | 'episodes'; row: MovieRow | EpisodeRow };
 
 async function probeFiles() {
   const { movies, episodes } = useLibraryStore.getState();
+  // Changed files, plus files probed before the truncation check existed.
+  const stale = (r: MovieRow | EpisodeRow) => r.probed_mtime !== r.file_mtime || (!!r.media_info && !r.media_info.includes('"tail_ok"'));
   const targets: ProbeTarget[] = [
-    ...movies.filter((m) => m.probed_mtime !== m.file_mtime).map((row) => ({ table: 'movies' as const, row })),
-    ...episodes.filter((e) => e.probed_mtime !== e.file_mtime).map((row) => ({ table: 'episodes' as const, row })),
+    ...movies.filter(stale).map((row) => ({ table: 'movies' as const, row })),
+    ...episodes.filter(stale).map((row) => ({ table: 'episodes' as const, row })),
   ];
   if (!targets.length) return;
   const status0 = await invoke<{ available: boolean }>('player_status').catch(() => ({ available: false }));
@@ -68,7 +70,11 @@ async function probeFiles() {
     for (let k = 0; k < chunk.length; k++) {
       const info = infos[k];
       const { table, row } = chunk[k];
-      if (!info) continue;
+      if (!info) continue; // missing (offline drive): try again later
+      if (info.error) {
+        await db.markProbeFailed(table, row.id, row.file_mtime, info.error, info.size ?? null);
+        continue;
+      }
       const fromChapters = segmentsFromChapters(info);
       // Keep an audio-detected intro unless the chapters now provide one.
       const kept = parseSegments(row.segments).filter((s) => s.source === 'audio' && !fromChapters.some((c) => c.kind === s.kind));

@@ -56,7 +56,7 @@ export default function Toasts() {
         : 'Library is up to date';
 
   return (
-    <div className="pointer-events-none fixed right-6 z-[90] flex w-[360px] flex-col items-end gap-2 transition-[bottom]" style={{ bottom }}>
+    <div className="pointer-events-none fixed right-6 z-[180] flex w-[360px] flex-col items-end gap-2 transition-[bottom]" style={{ bottom }}>
       {/* popLayout removes exiting items from the flow immediately, so the stack never jumps. */}
       <AnimatePresence initial={false} mode="popLayout">
         {toasts.map((t) => (

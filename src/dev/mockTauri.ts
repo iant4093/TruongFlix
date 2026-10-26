@@ -63,6 +63,7 @@ function movie(
     segments: null,
     probed_mtime: 0,
     enriched_at: ts(1),
+    probe_error: null,
     ...extra,
   };
 }
@@ -160,6 +161,7 @@ const movies: MovieRow[] = [
     cast_crew: cast('Cillian Murphy', 'Emily Blunt', 'Matt Damon', 'Robert Downey Jr.'),
     ...tech('HD', null, 'H.264', 'Lossless Audio, 5.1'),
     certification: 'R',
+    media_info: JSON.stringify({ ...JSON.parse(mediaInfo(1920, 1080, 'bt.1886', null)), duration: 10860, tail_ok: false, subs: [] }),
   }),
   movie('Interstellar', 157336, 2014, ['8sNiAPPYU14PUepFNeSNGUTiHW.jpg', 'yQvGrMoipbRoddT0ZR8tPoR7NfX.jpg', 'yLPDadMcGXjlNZHzW4RMYAuackd.png'], {
     imdb_id: 'tt0816692',
@@ -197,6 +199,8 @@ const movies: MovieRow[] = [
     cast_crew: cast('Leonardo DiCaprio', 'Joseph Gordon-Levitt', 'Elliot Page', 'Tom Hardy'),
     ...tech('HD', null, 'H.264', '5.1'),
     certification: 'PG-13',
+    file_size: 1.2e9,
+    media_info: JSON.stringify({ ...JSON.parse(mediaInfo(1920, 800, 'bt.1886', null)), duration: 8880, size: 1.2e9, subs: [] }),
   }),
   movie('Paddington 2', 346648, 2017, ['p3vu3MXuW9mH4OlVPMxDaKN3aEz.jpg', '1OJ9vkD5xPt3skC6KguyXAgagRZ.jpg', 'tMfBgvYbXTkmYB4KDUAcIbKcqwV.png'], {
     overview: 'Paddington, now happily settled with the Browns, picks up a series of odd jobs to buy the perfect present for his Aunt Lucy, but it is stolen.',
@@ -267,6 +271,7 @@ const series: SeriesRow[] = [
 
 let epId = 1000;
 const episodes: EpisodeRow[] = [];
+const extraCopies: EpisodeRow[] = [];
 for (const s of series) {
   for (let season = 1; season <= 2; season++)
     for (let e = 1; e <= 5; e++) {
@@ -302,8 +307,20 @@ for (const s of series) {
         ]),
         probed_mtime: 0,
         intro_checked: 1,
+        probe_error: null,
+        // Library-health samples: an unreadable file and some 720p episodes.
+        ...(s.id === 101 && season === 2 && e === 4 ? { probe_error: 'couldn’t be opened or decoded', resolution: null } : {}),
+        ...(s.id === 102 && season === 1 ? { resolution: '720p', hdr_format: null, file_size: 0.9e9 } : {}),
       });
     }
+}
+
+// A second copy of Severance S1E2 (library-health duplicate sample).
+{
+  const e2 = episodes.find((e) => e.series_id === 100 && e.season_number === 1 && e.episode_number === 2)!;
+  extraCopies.push({ ...e2, id: epId++, file_path: e2.file_path.replace('S01E02.mkv', 'Severance.S01E02.720p.HDTV.mkv'), resolution: '720p', hdr_format: null, file_size: 1.1e9, progress_seconds: 0, watched: 0, last_watched_at: null });
+  episodes.push(...extraCopies);
+  episodes.sort((a, b) => a.series_id - b.series_id || a.season_number - b.season_number || a.episode_number - b.episode_number);
 }
 
 const settings: Record<string, string> = {
@@ -775,6 +792,8 @@ export function installMocks() {
             if (!times.length) resolve([]);
           });
         }
+        case 'sidecar_subtitle_languages':
+          return ((a.videoPaths as string[]) ?? []).map((p) => (p.includes('Severance/Season 1/') ? ['en'] : []));
         case 'detect_intros':
           return ((a.paths as string[]) ?? []).map(() => null);
         case 'watch_folders':

@@ -43,6 +43,12 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   tha: 'th', vie: 'vi', ind: 'id', jpn: 'ja', kor: 'ko', chi: 'zh-cn', zho: 'zh-cn', pt: 'pt-pt', zh: 'zh-cn',
 };
 
+/** ISO 639-1/-2 codes and aliases to our subtitle language codes ("eng" → "en"). */
+export const normalizeLang = (code: string | null | undefined) => {
+  const c = (code ?? '').toLowerCase();
+  return LANGUAGE_ALIASES[c] ?? c;
+};
+
 export function languageName(code: string | null | undefined): string {
   if (!code) return 'Unknown language';
   const c = code.toLowerCase();

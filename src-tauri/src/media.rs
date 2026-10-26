@@ -136,6 +136,11 @@ pub struct MediaInfo {
     dv_profile: Option<i64>,
     /// File size in bytes.
     size: Option<u64>,
+    /// Whether the end of the file could be decoded (false = truncated / incomplete download).
+    tail_ok: Option<bool>,
+    /// Set when the file exists but can't be opened or decoded at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
     audio: Vec<AudioTrack>,
     subs: Vec<SubTrack>,
     chapters: Vec<Chapter>,
@@ -191,8 +196,30 @@ fn probe_one(core: &Core, path: &str) -> Option<MediaInfo> {
             .collect();
         info
     });
+    let info = info.map(|mut info| {
+        info.tail_ok = tail_decodes(core, info.duration);
+        info
+    });
     core.reset();
     info
+}
+
+/// Seeks near the end: a truncated file (interrupted download) runs out of data and ends instead
+/// of decoding a frame there. None when it can't be told (very short file, timeout).
+fn tail_decodes(core: &Core, duration: f64) -> Option<bool> {
+    if duration < 30.0 {
+        return None;
+    }
+    let target = format!("{:.3}", duration - 10.0);
+    core.api.command(core.h, &["seek", &target, "absolute"]).ok()?;
+    match core.wait_for(&[mpv::EVENT_PLAYBACK_RESTART, mpv::EVENT_END_FILE], Duration::from_secs(15))? {
+        id if id == mpv::EVENT_PLAYBACK_RESTART => {
+            // Some demuxers "restart" at the last packet they have; make sure we really got there.
+            let pos = core.get("time-pos").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            Some(pos >= duration - 60.0)
+        }
+        _ => Some(false),
+    }
 }
 
 /// Reads real stream info for each file (None when a file can't be opened).
@@ -203,11 +230,14 @@ pub async fn media_probe(paths: Vec<String>) -> Result<Vec<Option<MediaInfo>>, S
         Ok(paths
             .iter()
             .map(|p| {
+                // Missing files (offline drive) are None; unreadable ones carry an error.
                 let size = std::fs::metadata(p).ok().filter(|m| m.is_file())?.len();
-                probe_one(&core, p).map(|mut info| {
-                    info.size = Some(size);
-                    info
-                })
+                let mut info = probe_one(&core, p).unwrap_or_else(|| MediaInfo {
+                    error: Some(if size == 0 { "empty file".into() } else { "couldn’t be opened or decoded".into() }),
+                    ..Default::default()
+                });
+                info.size = Some(size);
+                Some(info)
             })
             .collect())
     })

@@ -377,6 +377,19 @@ pub fn list_local_subtitles(video_path: String) -> Vec<LocalSubtitle> {
     out
 }
 
+/// Languages of the subtitle files next to each video ("" when a file has no language tag).
+#[tauri::command]
+pub async fn sidecar_subtitle_languages(video_paths: Vec<String>) -> Vec<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        video_paths
+            .into_iter()
+            .map(|p| list_local_subtitles(p).into_iter().map(|s| s.language.unwrap_or_default()).collect())
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Deletes a subtitle file TruongFlix downloaded. Refuses anything that isn't a subtitle file.
 #[tauri::command]
 pub fn delete_subtitle_file(path: String) -> Result<(), String> {

@@ -205,6 +205,7 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['segments', 'TEXT'], // JSON Segment[] (intro/recap/credits)
     ['probed_mtime', 'INTEGER'], // file_mtime when media_info was read
     ['enriched_at', 'DATETIME'], // TMDB extras (rating, collection, trailer) fetched
+    ['probe_error', 'TEXT'], // file exists but couldn't be opened/decoded
   ],
   tv_series: [
     ['imdb_id', 'TEXT'],
@@ -226,6 +227,7 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['segments', 'TEXT'],
     ['probed_mtime', 'INTEGER'],
     ['intro_checked', 'INTEGER'], // audio intro detection done
+    ['probe_error', 'TEXT'],
   ],
 };
 
@@ -332,6 +334,7 @@ export async function getSettings(): Promise<Settings> {
     hover_stills: map.hover_stills !== 'false',
     ask_profile: map.ask_profile !== 'false',
     active_profile: Number(map.active_profile) || 0,
+    still_watching_after: map.still_watching_after != null ? Number(map.still_watching_after) : 3,
   };
 }
 
@@ -870,9 +873,18 @@ export async function deleteWatchLogEntry(type: 'movie' | 'episode', id: number,
 export async function saveMediaInfo(table: 'movies' | 'episodes', id: number, mtime: number, info: MediaInfo, tech: TechInfo, segments: Segment[]) {
   await exec(
     `UPDATE ${table} SET media_info = $2, probed_mtime = $3, resolution = $4, video_codec = $5, hdr_format = $6,
-       audio_codec = $7, segments = $8, file_size = COALESCE($9, file_size) WHERE id = $1`,
+       audio_codec = $7, segments = $8, file_size = COALESCE($9, file_size), probe_error = NULL WHERE id = $1`,
     [id, JSON.stringify(info), mtime, tech.resolution, tech.video_codec, tech.hdr_format, tech.audio_codec, JSON.stringify(segments), info.size ?? null],
   );
+}
+
+export async function markProbeFailed(table: 'movies' | 'episodes', id: number, mtime: number, error: string, size: number | null) {
+  await exec(`UPDATE ${table} SET probed_mtime = $2, probe_error = $3, media_info = NULL, file_size = COALESCE($4, file_size) WHERE id = $1`, [
+    id,
+    mtime,
+    error,
+    size,
+  ]);
 }
 
 export async function saveSegments(id: number, segments: Segment[]) {
