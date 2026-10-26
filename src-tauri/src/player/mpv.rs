@@ -18,6 +18,8 @@ pub const EVENT_SHUTDOWN: c_int = 1;
 pub const EVENT_END_FILE: c_int = 7;
 pub const EVENT_FILE_LOADED: c_int = 8;
 pub const EVENT_PROPERTY_CHANGE: c_int = 22;
+pub const EVENT_IDLE: c_int = 11;
+pub const EVENT_PLAYBACK_RESTART: c_int = 21;
 
 // mpv_end_file_reason
 pub const END_FILE_REASON_ERROR: c_int = 4;

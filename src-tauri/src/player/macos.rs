@@ -10,7 +10,7 @@ use objc2::ffi;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
 use objc2::{class, msg_send, sel};
-use objc2_foundation::{NSNumber, NSRect, NSString};
+use objc2_foundation::{NSNumber, NSPoint, NSRect, NSString};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -313,6 +313,65 @@ fn layer_class() -> Result<&'static AnyClass, String> {
     Ok(unsafe { &*(ptr as *const AnyClass) })
 }
 
+/// NSView subclass that never takes mouse events: clicks fall through to the webview, which owns
+/// all interaction (important once the mini-player floats *above* the page).
+fn view_class() -> Result<&'static AnyClass, String> {
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    let ptr = *CLASS.get_or_init(|| unsafe {
+        let Some(superclass) = AnyClass::get(c"NSView") else { return 0 };
+        let cls = ffi::objc_allocateClassPair(superclass, c"TruongFlixVideoView".as_ptr(), 0);
+        if cls.is_null() {
+            return AnyClass::get(c"TruongFlixVideoView").map(|c| c as *const AnyClass as usize).unwrap_or(0);
+        }
+        unsafe extern "C-unwind" fn hit_test(_this: *mut AnyObject, _sel: Sel, _point: NSPoint) -> *mut AnyObject {
+            std::ptr::null_mut()
+        }
+        type HitFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, NSPoint) -> *mut AnyObject;
+        ffi::class_addMethod(cls, sel!(hitTest:), std::mem::transmute::<HitFn, Imp>(hit_test), c"@@:{CGPoint=dd}".as_ptr());
+        ffi::objc_registerClassPair(cls);
+        cls as usize
+    });
+    if ptr == 0 {
+        return Err("NSView is unavailable".into());
+    }
+    Ok(unsafe { &*(ptr as *const AnyClass) })
+}
+
+/// Switches between the full-window surface (below the page) and the mini-player (a small
+/// rectangle floating above the page). `rect` is in CSS pixels from the top-left. Main thread only.
+pub fn set_layout(mini: Option<(f64, f64, f64, f64)>) {
+    let view = VIEW.load(Ordering::Acquire) as *mut AnyObject;
+    if view.is_null() {
+        return;
+    }
+    unsafe {
+        let content: *mut AnyObject = msg_send![view, superview];
+        if content.is_null() {
+            return;
+        }
+        let bounds: NSRect = msg_send![content, bounds];
+        let webview = find_webview(content);
+        let _: () = msg_send![view, removeFromSuperview];
+        match mini {
+            Some((x, y, w, h)) => {
+                let flipped: bool = msg_send![content, isFlipped];
+                let oy = if flipped { y } else { bounds.size.height - y - h };
+                let frame = NSRect::new(NSPoint::new(x, oy), objc2_foundation::NSSize::new(w, h));
+                let _: () = msg_send![view, setAutoresizingMask: 0usize];
+                let _: () = msg_send![view, setFrame: frame];
+                // NSWindowAbove = 1
+                let _: () = msg_send![content, addSubview: view, positioned: 1isize, relativeTo: webview];
+            }
+            None => {
+                let _: () = msg_send![view, setFrame: bounds];
+                let _: () = msg_send![view, setAutoresizingMask: 18usize];
+                let _: () = msg_send![content, addSubview: view, positioned: -1isize, relativeTo: webview];
+            }
+        }
+    }
+    request_redraw();
+}
+
 // --- Attach / detach (main thread only) --------------------------------------------------------
 
 fn find_webview(content: *mut AnyObject) -> *mut AnyObject {
@@ -380,7 +439,7 @@ pub fn attach(ns_window: *mut c_void, handle: *mut mpv::Handle) -> Result<(), St
         let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: true];
         let _: () = msg_send![&*layer, setContentsScale: scale];
 
-        let view: Allocated<AnyObject> = msg_send![class!(NSView), alloc];
+        let view: Allocated<AnyObject> = msg_send![view_class()?, alloc];
         let view: Retained<AnyObject> = msg_send![view, initWithFrame: bounds];
         let _: () = msg_send![&*view, setLayer: &*layer];
         let _: () = msg_send![&*view, setWantsLayer: true];
@@ -426,7 +485,7 @@ pub fn attach(ns_window: *mut c_void, handle: *mut mpv::Handle) -> Result<(), St
 /// Test helper: a plain window to render into (used by the smoke-test example).
 #[doc(hidden)]
 pub fn test_window() -> *mut c_void {
-    use objc2_foundation::{NSPoint, NSSize};
+    use objc2_foundation::NSSize;
     unsafe {
         let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
         let _: bool = msg_send![app, setActivationPolicy: 0isize];

@@ -1,9 +1,11 @@
 mod files;
 mod imdb;
+mod media;
 mod player;
 mod scanner;
 mod subtitles;
 mod vlc;
+mod watcher;
 
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
@@ -58,6 +60,12 @@ pub fn run() {
             player::player_command,
             player::player_set,
             player::player_close,
+            player::player_layout,
+            media::media_probe,
+            media::extract_frames,
+            media::detect_intros,
+            watcher::watch_folders,
+            files::apply_moves,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TruongFlix");

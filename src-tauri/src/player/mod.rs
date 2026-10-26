@@ -3,7 +3,7 @@
 //! Threading (see mpv/render.h): the main thread is the render thread and only calls
 //! `mpv_render_*`; every other libmpv call happens on async-runtime or event-loop threads.
 
-mod mpv;
+pub(crate) mod mpv;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
@@ -79,6 +79,7 @@ const PROPS: &[(u64, &str, c_int)] = &[
     (12, "seeking", mpv::FORMAT_FLAG),
     (13, "video-params/gamma", mpv::FORMAT_STRING),
     (14, "core-idle", mpv::FORMAT_FLAG),
+    (15, "chapter-list", mpv::FORMAT_STRING),
 ];
 
 /// mpv's built-in Lua scripts (OSC, console, stats, …). We draw our own UI, and LuaJIT's JIT code
@@ -222,7 +223,7 @@ fn create_core(api: &mpv::Api, audio_lang: &str, sub_lang: &str, video_window: O
         ("alang", audio_lang),
         ("slang", sub_lang),
         ("sub-font-size", "46"),
-        ("sub-border-size", "2.5"),
+        ("sub-outline-size", "2.5"),
         ("sub-shadow-offset", "1"),
         ("sub-margin-y", "54"),
     ];
@@ -326,6 +327,9 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
                     12 => state.seeking = read_flag(p).unwrap_or(false),
                     13 => state.gamma = read_string(p),
                     14 => state.idle = read_flag(p).unwrap_or(false),
+                    15 => {
+                        let _ = app.emit("player-chapters", read_string(p).unwrap_or_else(|| "[]".into()));
+                    }
                     _ => {}
                 }
                 dirty = true;
@@ -376,6 +380,7 @@ pub async fn player_open(
     subtitle_path: Option<String>,
     audio_lang: Option<String>,
     sub_lang: Option<String>,
+    options: Option<Vec<(String, String)>>,
 ) -> Result<(), String> {
     if let Some(reason) = unavailable_reason() {
         return Err(reason);
@@ -442,6 +447,12 @@ pub async fn player_open(
         }
     };
 
+    // Per-play settings (subtitle style, audio filters, preferred tracks) applied before loading.
+    for (name, value) in options.unwrap_or_default() {
+        if let Err(e) = api.set_property(h, &name, &value) {
+            eprintln!("[player] {e}");
+        }
+    }
     api.set_property(h, "start", &format!("{:.3}", start_time.max(0.0)))?;
     api.set_property(h, "pause", "no")?;
     api.command(h, &["loadfile", &file_path, "replace"])
@@ -512,6 +523,28 @@ pub fn smoke_test(video: &str, seconds: f64) -> Result<String, String> {
         load(&macos::probe::UPDATES),
         load(&macos::probe::DRAWS)
     ))
+}
+
+#[derive(serde::Deserialize, Clone, Copy)]
+pub struct MiniRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// Full-window video (`rect` = null) or a mini-player at `rect` (CSS pixels, top-left origin).
+#[tauri::command]
+pub async fn player_layout(app: AppHandle, rect: Option<MiniRect>) -> Result<(), String> {
+    current_handle()?;
+    let mini = rect.map(|r| (r.x, r.y, r.w, r.h));
+    #[cfg(target_os = "macos")]
+    on_main(&app, move || macos::set_layout(mini))?;
+    #[cfg(windows)]
+    on_main(&app, move || win32::set_layout(mini))?;
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = (&app, mini);
+    Ok(())
 }
 
 /// Runs an mpv command, e.g. `["seek", "10", "relative"]` or `["cycle", "pause"]`.

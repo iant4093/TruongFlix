@@ -146,6 +146,122 @@ pub async fn organize_loose_files(roots: Vec<String>) -> Result<OrganizeResult, 
 }
 
 // ---------------------------------------------------------------------------
+// Rename (Plex-style naming) and undo
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Serialize)]
+pub struct MoveResult {
+    applied: Vec<FileMove>,
+    errors: Vec<String>,
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Renames `from` to `to`, creating folders. Handles case-only renames on case-insensitive disks.
+fn move_one(from: &Path, to: &Path) -> std::io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if to.exists() {
+        if !same_file(from, to) {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination already exists"));
+        }
+        let tmp = to.with_extension(format!("{}.tfx-rename", to.extension().map(|e| e.to_string_lossy()).unwrap_or_default()));
+        std::fs::rename(from, &tmp)?;
+        return std::fs::rename(&tmp, to);
+    }
+    std::fs::rename(from, to)
+}
+
+/// Removes now-empty folders (ignoring OS junk files), walking up but never removing a root.
+fn prune_empty_dirs(start: &Path, roots: &[PathBuf]) {
+    let mut dir = start.to_path_buf();
+    loop {
+        if roots.iter().any(|r| r == &dir) || !roots.iter().any(|r| dir.starts_with(r)) {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        let junk = |p: &PathBuf| p.file_name().is_some_and(|n| n == ".DS_Store" || n == "Thumbs.db" || n == "desktop.ini");
+        if entries.iter().any(|p| !junk(p)) {
+            return;
+        }
+        for j in &entries {
+            let _ = std::fs::remove_file(j);
+        }
+        if std::fs::remove_dir(&dir).is_err() {
+            return;
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => return,
+        }
+    }
+}
+
+fn apply_moves_inner(moves: &[FileMove], with_sidecars: bool, roots: &[PathBuf]) -> MoveResult {
+    let mut out = MoveResult::default();
+    let mut touched_dirs = Vec::new();
+    for FileMove { from, to } in moves {
+        let (src, dest) = (Path::new(from), Path::new(to));
+        if src == dest {
+            continue;
+        }
+        if !src.exists() {
+            out.errors.push(format!("{from}: file not found"));
+            continue;
+        }
+        // Collect sidecars before the video moves (they're matched by its old name).
+        let sidecars = if with_sidecars {
+            src.parent().and_then(|p| sidecars_by_video(p).remove(src)).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if let Err(e) = move_one(src, dest) {
+            out.errors.push(format!("{from}: {e}"));
+            continue;
+        }
+        out.applied.push(FileMove { from: from.clone(), to: to.clone() });
+        if let Some(p) = src.parent() {
+            touched_dirs.push(p.to_path_buf());
+        }
+        let old_stem = src.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let new_stem = dest.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        for side in sidecars {
+            let name = side.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let suffix = &name[old_stem.len().min(name.len())..];
+            let side_dest = dest.with_file_name(format!("{new_stem}{suffix}"));
+            if move_one(&side, &side_dest).is_ok() {
+                out.applied.push(FileMove { from: s(&side), to: s(&side_dest) });
+            }
+        }
+    }
+    touched_dirs.sort();
+    touched_dirs.dedup();
+    for d in touched_dirs.iter().rev() {
+        prune_empty_dirs(d, roots);
+    }
+    out
+}
+
+/// Applies planned renames. With `with_sidecars`, each video's subtitles/.nfo/artwork follow it
+/// (renamed to the new name); undo passes the exact recorded list with `with_sidecars = false`.
+#[tauri::command]
+pub async fn apply_moves(moves: Vec<FileMove>, with_sidecars: bool, roots: Vec<String>) -> Result<MoveResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let roots: Vec<PathBuf> = roots.iter().map(|r| PathBuf::from(r.trim_end_matches(['/', '\\']))).collect();
+        apply_moves_inner(&moves, with_sidecars, &roots)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Trash ("Recently Deleted")
 // ---------------------------------------------------------------------------
 
@@ -399,6 +515,36 @@ mod tests {
         let mut again = OrganizeResult::default();
         organize_root(&root, &mut again);
         assert!(again.moved.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn renames_with_sidecars_and_undoes() {
+        let root = temp_root("rename");
+        let video = root.join("Downloads Mess/the.matrix.1999.1080p.mkv");
+        touch(&video, BIG);
+        touch(&root.join("Downloads Mess/the.matrix.1999.1080p.en.srt"), 10);
+        touch(&root.join("Downloads Mess/.DS_Store"), 10);
+        let dest = root.join("The Matrix (1999)/The Matrix (1999).mkv");
+        let roots = vec![root.clone()];
+        let res = apply_moves_inner(&[FileMove { from: s(&video), to: s(&dest) }], true, &roots);
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert!(dest.exists());
+        assert!(root.join("The Matrix (1999)/The Matrix (1999).en.srt").exists());
+        assert!(!root.join("Downloads Mess").exists(), "empty source folder should be pruned");
+
+        // Undo: exact reverse of what was applied.
+        let reverse: Vec<FileMove> = res.applied.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect();
+        let undo = apply_moves_inner(&reverse, false, &roots);
+        assert!(undo.errors.is_empty(), "{:?}", undo.errors);
+        assert!(video.exists() && root.join("Downloads Mess/the.matrix.1999.1080p.en.srt").exists());
+        assert!(!root.join("The Matrix (1999)").exists());
+
+        // Case-only rename works on case-insensitive filesystems too.
+        let upper = root.join("Downloads Mess/The.Matrix.1999.1080p.mkv");
+        let res = apply_moves_inner(&[FileMove { from: s(&video), to: s(&upper) }], false, &roots);
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert!(upper.exists());
         fs::remove_dir_all(&root).unwrap();
     }
 
