@@ -1,0 +1,690 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import {
+  ArrowLeft,
+  Check,
+  Gauge,
+  Maximize,
+  MessageSquareText,
+  Minimize,
+  Pause,
+  Play,
+  SkipForward,
+  Volume1,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
+import type { BuiltinPlayerState, PlayerSession, PlayerTrack } from '../../types/media';
+import { useLibraryStore } from '../../store/useLibraryStore';
+import { formatTimestamp } from '../../store/selectors';
+import { languageName } from '../../services/subtitles';
+import {
+  closeBuiltin,
+  openCurrentInVlc,
+  playBuiltin,
+  playerCommand,
+  playerSet,
+  toggleFullscreen,
+} from '../../services/player';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+
+const HIDE_AFTER_MS = 3000;
+const NEXT_EPISODE_WINDOW_S = 30;
+const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5];
+
+type Panel = 'tracks' | 'speed' | null;
+
+/** Full-window Netflix-style player chrome drawn over the native video surface. */
+export default function PlayerScreen() {
+  const session = useLibraryStore((s) => s.playerSession);
+  return <AnimatePresence>{session && <PlayerChrome key="player" session={session} />}</AnimatePresence>;
+}
+
+// ---------------------------------------------------------------------------
+// Icons
+// ---------------------------------------------------------------------------
+
+function SkipTen({ forward }: { forward?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" className="h-full w-full" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round">
+      <g transform={forward ? 'translate(24 0) scale(-1 1)' : undefined}>
+        <path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" />
+        <path d="M4 3.5v3.7h3.7" strokeLinejoin="round" />
+      </g>
+      <text x="12" y="15.4" textAnchor="middle" fontSize="7.4" fontWeight="700" fill="currentColor" stroke="none" fontFamily="Helvetica Neue, Arial">
+        10
+      </text>
+    </svg>
+  );
+}
+
+function ControlButton({ label, onClick, children, active }: { label: string; onClick: () => void; children: ReactNode; active?: boolean }) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={`flex h-12 w-12 items-center justify-center rounded-full text-white transition-transform duration-150 hover:scale-125 ${
+        active ? 'scale-110' : ''
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scrubber
+// ---------------------------------------------------------------------------
+
+function Scrubber({ time, duration, onSeek }: { time: number; duration: number; onSeek: (t: number) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState<number | null>(null);
+  const [drag, setDrag] = useState<number | null>(null);
+
+  const ratioAt = (clientX: number) => {
+    const r = ref.current!.getBoundingClientRect();
+    return Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+  };
+
+  const shown = drag ?? (duration ? time / duration : 0);
+  const preview = drag ?? hover;
+
+  return (
+    <div
+      ref={ref}
+      onClick={(e) => e.stopPropagation()}
+      onPointerMove={(e) => {
+        const r = ratioAt(e.clientX);
+        setHover(r);
+        if (drag != null) setDrag(r);
+      }}
+      onPointerLeave={() => setHover(null)}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        setDrag(ratioAt(e.clientX));
+      }}
+      onPointerUp={(e) => {
+        if (drag == null) return;
+        const r = ratioAt(e.clientX);
+        setDrag(null);
+        if (duration) onSeek(r * duration);
+      }}
+      className="group/scrub relative flex h-6 flex-1 cursor-pointer items-center"
+    >
+      <div className="relative h-[5px] w-full rounded-full bg-white/30 transition-[height] group-hover/scrub:h-[7px]">
+        {hover != null && drag == null && (
+          <div className="absolute inset-y-0 left-0 rounded-full bg-white/35" style={{ width: `${hover * 100}%` }} />
+        )}
+        <div className="absolute inset-y-0 left-0 rounded-full bg-nf-red" style={{ width: `${shown * 100}%` }} />
+        <div
+          className="absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-nf-red shadow transition-transform group-hover/scrub:scale-125"
+          style={{ left: `${shown * 100}%` }}
+        />
+      </div>
+      {preview != null && duration > 0 && (
+        <div
+          className="pointer-events-none absolute -top-9 -translate-x-1/2 rounded bg-black/85 px-2 py-1 text-sm font-semibold tabular-nums text-white"
+          style={{ left: `${preview * 100}%` }}
+        >
+          {formatTimestamp(preview * duration)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Volume
+// ---------------------------------------------------------------------------
+
+function VolumeControl({ volume, muted }: { volume: number; muted: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  const setFrom = (clientY: number) => {
+    const r = ref.current!.getBoundingClientRect();
+    const v = Math.round(Math.min(1, Math.max(0, (r.bottom - clientY) / r.height)) * 100);
+    void playerSet('volume', v);
+    if (muted && v > 0) void playerSet('mute', 'no');
+  };
+
+  const Icon = muted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
+  const level = muted ? 0 : volume / 100;
+
+  return (
+    <div className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => !dragging.current && setOpen(false)}>
+      <ControlButton label={muted ? 'Unmute (M)' : 'Mute (M)'} onClick={() => void playerCommand('cycle', 'mute')}>
+        <Icon className="h-8 w-8" />
+      </ControlButton>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ duration: 0.12 }}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute bottom-full left-1/2 mb-1 flex h-36 w-11 -translate-x-1/2 items-center justify-center rounded bg-[#262626] py-4"
+          >
+            <div
+              ref={ref}
+              onPointerDown={(e) => {
+                dragging.current = true;
+                (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                setFrom(e.clientY);
+              }}
+              onPointerMove={(e) => dragging.current && setFrom(e.clientY)}
+              onPointerUp={() => (dragging.current = false)}
+              className="relative h-full w-2 cursor-pointer rounded-full bg-white/30"
+            >
+              <div className="absolute inset-x-0 bottom-0 rounded-full bg-nf-red" style={{ height: `${level * 100}%` }} />
+              <div
+                className="absolute left-1/2 h-4 w-4 -translate-x-1/2 translate-y-1/2 rounded-full bg-nf-red"
+                style={{ bottom: `${level * 100}%` }}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Audio & subtitles / speed panels
+// ---------------------------------------------------------------------------
+
+const CODECS: Record<string, string> = {
+  truehd: 'TrueHD',
+  eac3: 'Dolby Digital+',
+  ac3: 'Dolby Digital',
+  dts: 'DTS',
+  aac: 'AAC',
+  flac: 'FLAC',
+  opus: 'Opus',
+  mp3: 'MP3',
+  vorbis: 'Vorbis',
+};
+const CHANNELS: Record<number, string> = { 1: 'Mono', 2: 'Stereo', 6: '5.1', 7: '6.1', 8: '7.1' };
+
+function trackLang(t: PlayerTrack) {
+  return t.lang && t.lang !== 'und' ? languageName(t.lang) : null;
+}
+
+function audioLabel(t: PlayerTrack) {
+  const lang = trackLang(t) ?? t.title ?? `Track ${t.id}`;
+  const desc = t['codec-desc']?.match(/DTS-HD MA|DTS:X|DTS-HD|Atmos/i)?.[0];
+  const codec = desc ?? (t.codec ? (CODECS[t.codec] ?? t.codec.toUpperCase()) : '');
+  const ch = CHANNELS[t['demux-channel-count'] ?? t['audio-channels'] ?? 0] ?? '';
+  return { main: lang, detail: [t.title && trackLang(t) ? t.title : '', codec, ch].filter(Boolean).join(' · ') };
+}
+
+function subLabel(t: PlayerTrack) {
+  const lang = trackLang(t) ?? t.title ?? `Subtitle ${t.id}`;
+  const flags = [t.forced ? 'Forced' : '', t['hearing-impaired'] ? 'SDH' : ''].filter(Boolean).join(', ');
+  const detail = [t.external ? 'External file' : t.title && trackLang(t) ? t.title : '', t.codec === 'hdmv_pgs_subtitle' ? 'Image' : '']
+    .filter(Boolean)
+    .join(' · ');
+  return { main: flags ? `${lang} (${flags})` : lang, detail };
+}
+
+function TrackRow({ selected, main, detail, onClick }: { selected: boolean; main: string; detail?: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-start gap-3 rounded px-3 py-2 text-left transition-colors hover:bg-white/10 ${
+        selected ? 'text-white' : 'text-[#b3b3b3]'
+      }`}
+    >
+      <Check className={`mt-0.5 h-5 w-5 shrink-0 ${selected ? 'text-white' : 'text-transparent'}`} />
+      <span className="min-w-0">
+        <span className={`block text-lg leading-snug ${selected ? 'font-semibold' : ''}`}>{main}</span>
+        {detail && <span className="block truncate text-xs text-[#8c8c8c]">{detail}</span>}
+      </span>
+    </button>
+  );
+}
+
+function DelayControl({ label, value, prop }: { label: string; value: number; prop: string }) {
+  const step = (d: number) => void playerSet(prop, (Math.round((value + d) * 10) / 10).toFixed(1));
+  return (
+    <div className="flex items-center justify-between gap-3 text-sm text-[#b3b3b3]">
+      <span>{label}</span>
+      <div className="flex items-center gap-1">
+        <button type="button" onClick={() => step(-0.1)} className="h-7 w-9 rounded bg-white/10 font-semibold text-white hover:bg-white/20">
+          −
+        </button>
+        <span className="w-16 text-center tabular-nums text-white">{value > 0 ? '+' : ''}{value.toFixed(1)}s</span>
+        <button type="button" onClick={() => step(0.1)} className="h-7 w-9 rounded bg-white/10 font-semibold text-white hover:bg-white/20">
+          +
+        </button>
+        {value !== 0 && (
+          <button type="button" onClick={() => void playerSet(prop, '0')} className="ml-1 text-xs text-[#8c8c8c] hover:text-white">
+            Reset
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TracksPanel({ tracks, state }: { tracks: PlayerTrack[]; state: BuiltinPlayerState | null }) {
+  const audio = tracks.filter((t) => t.type === 'audio');
+  const subs = tracks.filter((t) => t.type === 'sub');
+  const subsOff = !subs.some((t) => t.selected);
+  return (
+    <div className="w-[min(640px,90vw)] rounded-md bg-[#262626]/95 p-5 shadow-2xl backdrop-blur">
+      <div className="grid grid-cols-2 gap-6">
+        <div className="min-w-0">
+          <h3 className="mb-2 px-3 text-2xl font-bold">Audio</h3>
+          <div className="max-h-[38vh] overflow-y-auto">
+            {audio.length ? (
+              audio.map((t) => {
+                const l = audioLabel(t);
+                return <TrackRow key={t.id} selected={!!t.selected} main={l.main} detail={l.detail} onClick={() => void playerSet('aid', t.id)} />;
+              })
+            ) : (
+              <p className="px-3 text-sm text-[#8c8c8c]">No audio tracks</p>
+            )}
+          </div>
+        </div>
+        <div className="min-w-0">
+          <h3 className="mb-2 px-3 text-2xl font-bold">Subtitles</h3>
+          <div className="max-h-[38vh] overflow-y-auto">
+            <TrackRow selected={subsOff} main="Off" onClick={() => void playerSet('sid', 'no')} />
+            {subs.map((t) => {
+              const l = subLabel(t);
+              return <TrackRow key={t.id} selected={!!t.selected} main={l.main} detail={l.detail} onClick={() => void playerSet('sid', t.id)} />;
+            })}
+          </div>
+        </div>
+      </div>
+      {state && (
+        <div className="mt-4 space-y-2 border-t border-white/10 pt-4">
+          {!subsOff && <DelayControl label="Subtitle timing" value={state.sub_delay} prop="sub-delay" />}
+          <DelayControl label="Audio timing" value={state.audio_delay} prop="audio-delay" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SpeedPanel({ speed }: { speed: number }) {
+  return (
+    <div className="w-[min(560px,90vw)] rounded-md bg-[#262626]/95 px-8 pb-7 pt-5 shadow-2xl backdrop-blur">
+      <h3 className="mb-6 text-2xl font-bold">Playback Speed</h3>
+      <div className="relative flex justify-between">
+        <div className="absolute left-3 right-3 top-[11px] h-[2px] bg-white/30" />
+        {SPEEDS.map((s) => {
+          const on = Math.abs(speed - s) < 0.01;
+          return (
+            <button key={s} type="button" onClick={() => void playerSet('speed', s)} className="relative z-10 flex flex-col items-center gap-3">
+              <span
+                className={`flex h-6 w-6 items-center justify-center rounded-full ${on ? 'border-[5px] border-white bg-nf-red' : 'bg-[#808080] hover:bg-white'}`}
+              />
+              <span className={`text-sm ${on ? 'font-bold text-white' : 'text-[#b3b3b3]'}`}>{s === 1 ? '1x (Normal)' : `${s}x`}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main chrome
+// ---------------------------------------------------------------------------
+
+function PlayerChrome({ session }: { session: PlayerSession }) {
+  const state = useLibraryStore((s) => s.playerState);
+  const tracks = useLibraryStore((s) => s.playerTracks);
+  const vlcPath = useLibraryStore((s) => s.settings.vlc_executable_path);
+  const [visible, setVisible] = useState(true);
+  const [panel, setPanel] = useState<Panel>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [pausedIdle, setPausedIdle] = useState(false);
+  const [nextDismissed, setNextDismissed] = useState(false);
+  const [flash, setFlash] = useState<'play' | 'pause' | null>(null);
+  const hideTimer = useRef<number | null>(null);
+  const overControls = useRef(false);
+  const advancedFor = useRef<number | null>(null);
+
+  const loading = !state?.loaded || state.buffering || (state.seeking && !state.paused) || (state.idle && !state.paused && !state.eof);
+  const remaining = state && state.duration ? Math.max(0, state.duration - state.time) : 0;
+  const isHdr = state?.gamma === 'pq' || state?.gamma === 'hlg';
+  const showNext = !!session.next && !!state?.duration && remaining <= NEXT_EPISODE_WINDOW_S && !nextDismissed;
+
+  // Reset per-item UI when the next episode starts.
+  useEffect(() => {
+    setNextDismissed(false);
+    setPanel(null);
+  }, [session.target.id]);
+
+  // Auto-hide the controls while playing.
+  const poke = useCallback(() => {
+    setVisible(true);
+    setPausedIdle(false);
+    if (hideTimer.current) window.clearTimeout(hideTimer.current);
+    hideTimer.current = window.setTimeout(() => {
+      if (!overControls.current) setVisible(false);
+    }, HIDE_AFTER_MS);
+  }, []);
+  useEffect(() => {
+    poke();
+    return () => {
+      if (hideTimer.current) window.clearTimeout(hideTimer.current);
+    };
+  }, [poke]);
+  const controlsShown = visible || !!panel || !state?.loaded;
+
+  // Netflix's "You're watching" screen after a few idle seconds paused.
+  useEffect(() => {
+    if (!state?.paused || panel) {
+      setPausedIdle(false);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      setPausedIdle(true);
+      setVisible(false);
+    }, 6000);
+    return () => window.clearTimeout(t);
+  }, [state?.paused, panel, visible]);
+
+  // End of file: roll into the next episode, or return to the library.
+  useEffect(() => {
+    if (!state?.eof || advancedFor.current === session.target.id) return;
+    advancedFor.current = session.target.id;
+    if (session.next) void playBuiltin(session.next);
+    else window.setTimeout(() => void closeBuiltin(), 1200);
+  }, [state?.eof, session]);
+
+  // Track window fullscreen state.
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const sync = () => void win.isFullscreen().then(setFullscreen);
+    sync();
+    window.addEventListener('resize', sync);
+    return () => window.removeEventListener('resize', sync);
+  }, []);
+
+  const togglePause = useCallback(() => {
+    if (!state) return;
+    setFlash(state.paused ? 'play' : 'pause');
+    window.setTimeout(() => setFlash(null), 500);
+    void playerCommand('cycle', 'pause');
+  }, [state]);
+
+  const seekBy = (s: number) => {
+    void playerCommand('seek', s, 'relative');
+    poke();
+  };
+
+  // Keyboard shortcuts (captured so they never reach the library's handlers).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+      let handled = true;
+      switch (e.key) {
+        case ' ':
+        case 'k':
+        case 'K':
+          togglePause();
+          break;
+        case 'ArrowLeft':
+        case 'j':
+        case 'J':
+          seekBy(-10);
+          break;
+        case 'ArrowRight':
+        case 'l':
+        case 'L':
+          seekBy(10);
+          break;
+        case 'ArrowUp':
+          void playerCommand('add', 'volume', 5);
+          break;
+        case 'ArrowDown':
+          void playerCommand('add', 'volume', -5);
+          break;
+        case 'm':
+        case 'M':
+          void playerCommand('cycle', 'mute');
+          break;
+        case 'f':
+        case 'F':
+          void toggleFullscreen().then(setFullscreen);
+          break;
+        case 'Escape':
+          if (panel) setPanel(null);
+          else if (fullscreen) void toggleFullscreen().then(setFullscreen);
+          else void closeBuiltin();
+          break;
+        default:
+          handled = false;
+      }
+      if (handled) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        poke();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
+  const title = useMemo(() => {
+    const ep = session.subtitle?.match(/^S\d+:E(\d+) · (.*)$/);
+    return ep ? { main: session.title, ep: `E${ep[1]}`, name: ep[2] } : { main: session.title, ep: null, name: null };
+  }, [session]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.25 }}
+      onMouseMove={poke}
+      onClick={() => (panel ? setPanel(null) : togglePause())}
+      onDoubleClick={() => void toggleFullscreen().then(setFullscreen)}
+      className={`fixed inset-0 z-[200] select-none overflow-hidden text-white ${controlsShown || pausedIdle ? '' : 'cursor-none'}`}
+    >
+      {/* Loading / buffering */}
+      {loading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="h-16 w-16 animate-spin rounded-full border-[5px] border-nf-red border-t-transparent" />
+        </div>
+      )}
+
+      {/* Play/pause flash */}
+      <AnimatePresence>
+        {flash && (
+          <motion.div
+            key={flash}
+            initial={{ opacity: 0.9, scale: 0.8 }}
+            animate={{ opacity: 0, scale: 1.4 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5 }}
+            className="pointer-events-none absolute inset-0 flex items-center justify-center"
+          >
+            <div className="flex h-24 w-24 items-center justify-center rounded-full bg-black/40">
+              {flash === 'play' ? <Play className="ml-1 h-12 w-12 fill-white" strokeWidth={0} /> : <Pause className="h-12 w-12 fill-white" strokeWidth={0} />}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* "You're watching" (paused & idle) */}
+      <AnimatePresence>
+        {pausedIdle && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.6 }}
+            className="pointer-events-none absolute inset-0 flex items-center bg-black/60 px-[6%]"
+          >
+            <div className="max-w-[45%] space-y-3">
+              <div className="text-lg text-[#b3b3b3]">You’re watching</div>
+              {session.logo ? (
+                <img src={session.logo} alt={session.title} className="max-h-28 max-w-full object-contain object-left" />
+              ) : (
+                <div className="text-5xl font-black">{session.title}</div>
+              )}
+              {title.ep && (
+                <div className="text-2xl font-bold">
+                  {session.subtitle?.split(' · ')[0].replace(':', ' ')}: “{title.name}”
+                </div>
+              )}
+              {session.overview && <p className="line-clamp-4 text-lg leading-snug text-[#d2d2d2]">{session.overview}</p>}
+            </div>
+            <div className="absolute bottom-[8%] right-[6%] text-xl font-semibold text-[#b3b3b3]">Paused</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Chrome */}
+      <motion.div
+        animate={{ opacity: controlsShown ? 1 : 0 }}
+        transition={{ duration: controlsShown ? 0.15 : 0.5 }}
+        className={`absolute inset-0 ${controlsShown ? '' : 'pointer-events-none'}`}
+      >
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/80 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
+
+        {/* Top bar */}
+        <div className="absolute inset-x-0 top-0 flex items-center justify-between px-6 pt-5">
+          <ControlButton label="Back to browse (Esc)" onClick={() => void closeBuiltin()}>
+            <ArrowLeft className="h-9 w-9" />
+          </ControlButton>
+          <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+            {isHdr && (
+              <span className="rounded-[3px] border border-white/50 px-1.5 py-[1px] text-xs font-semibold tracking-wide">HDR</span>
+            )}
+            {vlcPath && (
+              <button
+                type="button"
+                onClick={() => void openCurrentInVlc()}
+                title="Continue in VLC (for files the built-in player struggles with)"
+                className="rounded border border-white/30 px-3 py-1.5 text-xs font-semibold text-white/80 transition-colors hover:border-white hover:text-white"
+              >
+                Open in VLC
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Bottom controls */}
+        <div
+          className="absolute inset-x-0 bottom-0 px-6 pb-5"
+          onMouseEnter={() => (overControls.current = true)}
+          onMouseLeave={() => (overControls.current = false)}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="mb-2 flex items-center gap-4">
+            <Scrubber time={state?.time ?? 0} duration={state?.duration ?? 0} onSeek={(t) => void playerCommand('seek', t.toFixed(2), 'absolute')} />
+            <span className="w-20 text-right text-lg tabular-nums text-white/90">{state?.duration ? formatTimestamp(remaining) : '--:--'}</span>
+          </div>
+
+          <div className="flex items-center">
+            <div className="flex items-center gap-4">
+              <ControlButton label={state?.paused ? 'Play (Space)' : 'Pause (Space)'} onClick={togglePause}>
+                {state?.paused ? <Play className="h-9 w-9 fill-white" strokeWidth={0} /> : <Pause className="h-9 w-9 fill-white" strokeWidth={0} />}
+              </ControlButton>
+              <ControlButton label="Back 10 seconds (←)" onClick={() => seekBy(-10)}>
+                <span className="h-9 w-9"><SkipTen /></span>
+              </ControlButton>
+              <ControlButton label="Forward 10 seconds (→)" onClick={() => seekBy(10)}>
+                <span className="h-9 w-9"><SkipTen forward /></span>
+              </ControlButton>
+              <VolumeControl volume={state?.volume ?? 100} muted={!!state?.muted} />
+            </div>
+
+            <div className="min-w-0 flex-1 truncate px-6 text-center text-lg">
+              <span className="font-bold">{title.main}</span>
+              {title.ep && (
+                <>
+                  <span className="mx-2 font-bold">{title.ep}</span>
+                  <span className="text-[#d2d2d2]">{title.name}</span>
+                </>
+              )}
+            </div>
+
+            <div className="relative flex items-center gap-4">
+              {session.next && (
+                <ControlButton label={`Next episode: ${session.nextLabel}`} onClick={() => void playBuiltin(session.next!)}>
+                  <SkipForward className="h-8 w-8 fill-white" />
+                </ControlButton>
+              )}
+              <ControlButton label="Audio & Subtitles" onClick={() => setPanel(panel === 'tracks' ? null : 'tracks')} active={panel === 'tracks'}>
+                <MessageSquareText className="h-8 w-8" />
+              </ControlButton>
+              <ControlButton label="Playback Speed" onClick={() => setPanel(panel === 'speed' ? null : 'speed')} active={panel === 'speed'}>
+                <Gauge className="h-8 w-8" />
+              </ControlButton>
+              <ControlButton label={fullscreen ? 'Exit full screen (F)' : 'Full screen (F)'} onClick={() => void toggleFullscreen().then(setFullscreen)}>
+                {fullscreen ? <Minimize className="h-8 w-8" /> : <Maximize className="h-8 w-8" />}
+              </ControlButton>
+
+              <AnimatePresence>
+                {panel && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 10 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute bottom-full right-0 mb-3"
+                  >
+                    {panel === 'tracks' ? <TracksPanel tracks={tracks} state={state} /> : <SpeedPanel speed={state?.speed ?? 1} />}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Next episode */}
+      <AnimatePresence>
+        {showNext && (
+          <motion.div
+            initial={{ opacity: 0, x: 30 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 30 }}
+            className={`absolute right-8 flex items-center gap-3 transition-[bottom] ${controlsShown ? 'bottom-36' : 'bottom-12'}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setNextDismissed(true)}
+              className="rounded bg-[rgba(109,109,110,0.7)] px-5 py-3 text-lg font-semibold text-white hover:bg-[rgba(109,109,110,0.4)]"
+            >
+              Watch Credits
+            </button>
+            <button
+              type="button"
+              onClick={() => void playBuiltin(session.next!)}
+              className="relative overflow-hidden rounded bg-white/40 px-6 py-3 text-lg font-semibold text-black"
+            >
+              <span
+                className="absolute inset-y-0 left-0 bg-white transition-[width] duration-200 ease-linear"
+                style={{ width: `${(1 - remaining / NEXT_EPISODE_WINDOW_S) * 100}%` }}
+              />
+              <span className="relative flex items-center gap-2">
+                <Play className="h-5 w-5 fill-black" strokeWidth={0} /> Next Episode
+              </span>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The bundled player engine (libmpv + FFmpeg in Contents/Frameworks) is loaded at runtime.
+	     Hardened-runtime library validation would otherwise reject libraries that don't share
+	     the app's Team ID (always the case for ad-hoc builds). -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

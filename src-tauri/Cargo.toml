@@ -1,0 +1,56 @@
+[package]
+name = "truongflix"
+version = "0.1.0"
+description = "TruongFlix — a lightweight local media center"
+authors = ["Ian Truong"]
+edition = "2021"
+
+[lib]
+name = "truongflix_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+tokio = { version = "1", features = ["time", "net", "io-util"] }
+# OpenSubtitles API (needs a custom User-Agent, which webviews can't set). OS-native TLS keeps it small.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+# Decompresses IMDb's public .tsv.gz datasets (pure-Rust backend).
+flate2 = "1"
+# libmpv is loaded at runtime so the app still runs (falling back to VLC) when it's missing.
+libloading = "0.8"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
+[target.'cfg(windows)'.dependencies]
+# Borderless video window behind the transparent TruongFlix window (built-in player).
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Native video view (CAOpenGLLayer) for the built-in player.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSValue"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
+
+# Proc-macros (e.g. sqlx-macros) are dlopen'ed at compile time; stripping them breaks loading on macOS.
+[profile.release.build-override]
+strip = false

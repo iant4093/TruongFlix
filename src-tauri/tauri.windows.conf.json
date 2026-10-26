@@ -1,0 +1,22 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "TruongFlix",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true,
+        "theme": "Dark",
+        "transparent": true
+      }
+    ]
+  },
+  "bundle": {
+    "resources": {
+      "libmpv/libmpv-2.dll": "libmpv-2.dll"
+    }
+  }
+}

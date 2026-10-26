@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Bebas Neue';
+  src: url('./assets/fonts/BebasNeue-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body {
+    /* No rubber-band scrolling past the top/bottom edges. */
+    overscroll-behavior: none;
+    background: #141414;
+    color: #fff;
+    font-family: 'Netflix Sans', 'Inter', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+  }
+  input,
+  textarea,
+  .selectable {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  button {
+    cursor: pointer;
+  }
+  img {
+    -webkit-user-drag: none;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #3a3a3a;
+    border-radius: 10px;
+    border: 2px solid #141414;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #555;
+  }
+}
+
+/* Built-in player: the page turns transparent so the native video view underneath shows through. */
+html.player-mode,
+html.player-mode body,
+html.player-mode #app-root {
+  background: transparent !important;
+  overflow: hidden;
+}
+html.player-mode #app-shell {
+  visibility: hidden;
+}
+
+@layer components {
+  .nf-wordmark {
+    font-family: 'Bebas Neue', 'Arial Narrow', Impact, sans-serif;
+    font-weight: 400;
+    color: #e50914;
+    text-transform: uppercase;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    letter-spacing: 0;
+    -webkit-text-stroke: 0.02em #e50914; /* thickens strokes toward Netflix's heavier weight */
+  }
+  .nf-wordmark > span {
+    display: inline-block;
+    transform-origin: center;
+  }
+  .nf-row-title {
+    @apply font-semibold text-[#e5e5e5];
+    font-size: clamp(0.95rem, 1.4vw, 1.5rem);
+  }
+  .nf-btn-play {
+    @apply inline-flex items-center justify-center gap-2 rounded bg-white px-7 py-2.5 font-semibold text-black transition-colors hover:bg-white/80;
+  }
+  .nf-btn-info {
+    @apply inline-flex items-center justify-center gap-2 rounded px-7 py-2.5 font-semibold text-white transition-colors;
+    background: rgba(109, 109, 110, 0.7);
+  }
+  .nf-btn-info:hover {
+    background: rgba(109, 109, 110, 0.4);
+  }
+  .nf-circle-btn {
+    @apply inline-flex shrink-0 items-center justify-center rounded-full border-2 border-white/50 bg-[rgba(42,42,42,0.6)] text-white transition-colors hover:border-white hover:bg-white/10;
+  }
+  .nf-input {
+    @apply w-full rounded border border-[#5a5a5a] bg-[#161616]/80 px-4 py-3 text-white placeholder:text-[#8c8c8c] outline-none transition focus:border-white focus:ring-1 focus:ring-white/40;
+  }
+  .nf-btn-red {
+    @apply inline-flex items-center justify-center gap-2 rounded bg-nf-red px-6 py-2.5 font-semibold text-white transition-colors hover:bg-nf-redHover disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .nf-btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded border border-white/25 bg-white/5 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}
+
+@layer utilities {
+  .text-shadow {
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.45);
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
