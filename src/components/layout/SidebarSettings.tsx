@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
-import { CheckCircle2, DatabaseZap, Download, Loader2, RefreshCw, RotateCcw, Trash2, Undo2, X } from 'lucide-react';
+import { CheckCircle2, DatabaseZap, Download, FilePen, Loader2, RefreshCw, RotateCcw, Trash2, Undo2, Users, X } from 'lucide-react';
 import { appVersion, availableUpdate, checkForUpdate, installUpdate, onUpdateChange, type AvailableUpdate } from '../../services/updates';
-import type { EngineStatus, TrashRow } from '../../types/media';
+import type { EngineStatus, SubtitleStyle, TrashRow } from '../../types/media';
 import { engineStatus } from '../../services/player';
+import { startBackgroundAnalysis } from '../../services/enrich';
 import Dropdown from '../common/Dropdown';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { runImdbSync, runScan } from '../../services/scanner';
@@ -209,6 +210,79 @@ function AboutUpdates() {
         checked={autoCheck}
         onChange={(v) => updateSettings({ updates_auto_check: v })}
       />
+    </div>
+  );
+}
+
+const CHIP = 'rounded border px-2.5 py-1 text-xs transition-colors';
+const chipClass = (on: boolean) => `${CHIP} ${on ? 'border-white bg-white text-black font-semibold' : 'border-white/25 text-nf-secondary hover:text-white'}`;
+
+const PREVIEW_SIZE: Record<SubtitleStyle['size'], string> = { small: '13px', medium: '16px', large: '20px', xlarge: '25px' };
+const PREVIEW_COLOR: Record<SubtitleStyle['color'], string> = { white: '#fff', yellow: '#FFE600', cyan: '#3DE1FF', green: '#4CFF6B', magenta: '#FF5CF2' };
+const PREVIEW_FONT: Record<SubtitleStyle['font'], string> = { sans: '"Helvetica Neue", "Segoe UI", sans-serif', serif: 'Georgia, serif', mono: 'Menlo, Consolas, monospace' };
+
+/** Netflix-style subtitle appearance with a live preview. */
+function SubtitleAppearance() {
+  const style = useLibraryStore((s) => s.settings.subtitle_style);
+  const updateSettings = useLibraryStore((s) => s.updateSettings);
+  const set = (patch: Partial<SubtitleStyle>) => void updateSettings({ subtitle_style: { ...style, ...patch } });
+  const bg = style.background;
+  const textShadow =
+    bg === 'none' ? '0 0 2px #000, 0 0 2px #000' : bg === 'shadow' ? '0 0 3px #000, 0 0 3px #000, 2px 2px 3px rgba(0,0,0,0.8)' : 'none';
+  const boxBg = bg === 'translucent' ? 'rgba(0,0,0,0.62)' : bg === 'solid' ? '#000' : 'transparent';
+
+  const row = <T extends string>(label: string, value: T, options: [T, string][], onPick: (v: T) => void) => (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-sm text-nf-secondary">{label}</span>
+      <div className="flex flex-wrap justify-end gap-1.5">
+        {options.map(([v, l]) => (
+          <button key={v} type="button" onClick={() => onPick(v)} className={chipClass(value === v)}>
+            {l}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="relative flex aspect-[16/7] items-end justify-center overflow-hidden rounded-md bg-[linear-gradient(135deg,#355c7d,#6c5b7b_45%,#c06c84)] pb-4">
+        <span
+          className="px-1.5 leading-snug"
+          style={{ fontSize: PREVIEW_SIZE[style.size], color: PREVIEW_COLOR[style.color], fontFamily: PREVIEW_FONT[style.font], textShadow, background: boxBg, fontWeight: 600 }}
+        >
+          This is how your subtitles will look.
+        </span>
+      </div>
+      {row('Size', style.size, [['small', 'S'], ['medium', 'M'], ['large', 'L'], ['xlarge', 'XL']], (size) => set({ size }))}
+      {row('Colour', style.color, [['white', 'White'], ['yellow', 'Yellow'], ['cyan', 'Cyan'], ['green', 'Green'], ['magenta', 'Pink']], (color) => set({ color }))}
+      {row('Background', style.background, [['none', 'None'], ['shadow', 'Shadow'], ['translucent', 'Box'], ['solid', 'Solid']], (background) => set({ background }))}
+      {row('Font', style.font, [['sans', 'Sans'], ['serif', 'Serif'], ['mono', 'Mono']], (font) => set({ font }))}
+      <p className="text-xs text-nf-muted">Applies to text subtitles (SRT and similar) in the built-in player, including while playing. Styled and image subtitles keep their own look.</p>
+    </div>
+  );
+}
+
+function AnalysisStatus() {
+  const analysis = useLibraryStore((s) => s.analysis);
+  const episodes = useLibraryStore((s) => s.episodes);
+  const withIntro = episodes.filter((e) => e.segments?.includes('"intro"')).length;
+  return (
+    <div className="flex items-center justify-between gap-3 text-xs text-nf-muted">
+      <span className="min-w-0 truncate">
+        {analysis.running ? (
+          <span className="flex items-center gap-1.5 text-nf-secondary">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> {analysis.message}
+          </span>
+        ) : (
+          `Intros found for ${withIntro} of ${episodes.length} episode${episodes.length === 1 ? '' : 's'}`
+        )}
+      </span>
+      {!analysis.running && (
+        <button onClick={() => void startBackgroundAnalysis()} className="nf-btn-ghost h-8 shrink-0 py-0 text-xs">
+          <RefreshCw className="h-3.5 w-3.5" /> Analyze now
+        </button>
+      )}
     </div>
   );
 }
@@ -440,11 +514,27 @@ export default function SidebarSettings() {
               </button>
             </div>
             <ToggleRow
+              label="Watch folders for changes"
+              description="New downloads, deletions and renames show up automatically a few seconds after they happen. No Scan button needed."
+              checked={settings.watch_folders}
+              onChange={(v) => updateSettings({ watch_folders: v })}
+            />
+            <ToggleRow
               label="Organize loose files into folders"
               description="During scans, videos sitting directly in a media folder are moved into their own folder (named after the file), along with their subtitles."
               checked={settings.organize_loose_files}
               onChange={(v) => updateSettings({ organize_loose_files: v })}
             />
+            <button
+              onClick={() => {
+                setOpen(false);
+                useLibraryStore.getState().setOverlay('rename');
+              }}
+              disabled={scanning}
+              className="nf-btn-ghost"
+            >
+              <FilePen className="h-4 w-4" /> Rename files Plex-style…
+            </button>
           </Section>
 
           <Section title="IMDb Ratings">
@@ -498,6 +588,88 @@ export default function SidebarSettings() {
 
           <Section title="Playback">
             <PlaybackEngine />
+            <ToggleRow
+              label="Dialogue boost"
+              description="Lifts the centre channel on surround tracks (or speech frequencies on stereo) so voices are easier to follow."
+              checked={settings.audio_dialogue}
+              onChange={(v) => updateSettings({ audio_dialogue: v })}
+            />
+            <ToggleRow
+              label="Night mode"
+              description="Evens out loudness: quiet dialogue gets louder and explosions get softer."
+              checked={settings.audio_night}
+              onChange={(v) => updateSettings({ audio_night: v })}
+            />
+          </Section>
+
+          <Section title="Skip Intro">
+            <ToggleRow
+              label="Find intros automatically"
+              description="Uses chapter markers when a file has them. Otherwise compares the opening minutes of a season’s episodes to find the theme song they share."
+              checked={settings.intro_detection}
+              onChange={async (v) => {
+                await updateSettings({ intro_detection: v });
+                if (v) void startBackgroundAnalysis();
+              }}
+            />
+            <ToggleRow
+              label="Skip intros automatically"
+              description="Jumps past the intro without pressing Skip Intro. Recaps still show a button."
+              checked={settings.skip_intro_auto}
+              onChange={(v) => updateSettings({ skip_intro_auto: v })}
+            />
+            <AnalysisStatus />
+          </Section>
+
+          <Section title="Subtitle Appearance">
+            <SubtitleAppearance />
+          </Section>
+
+          <Section title="Home & Launch">
+            <ToggleRow
+              label="Play trailers on the home banner"
+              description="After a few seconds the banner fades into the title’s muted trailer (streamed from YouTube)."
+              checked={settings.trailers_autoplay}
+              onChange={(v) => updateSettings({ trailers_autoplay: v })}
+            />
+            <ToggleRow
+              label="Preview stills on hover"
+              description="Hover cards cycle through frames from your actual file."
+              checked={settings.hover_stills}
+              onChange={(v) => updateSettings({ hover_stills: v })}
+            />
+            <ToggleRow
+              label="Launch animation"
+              description="A short TruongFlix intro when the app opens. Click or press any key to skip it."
+              checked={settings.launch_intro}
+              onChange={(v) => updateSettings({ launch_intro: v })}
+            />
+            {settings.launch_intro && (
+              <ToggleRow
+                label="Launch sound"
+                description="Plays the intro sound along with the animation."
+                checked={settings.launch_intro_sound}
+                onChange={(v) => updateSettings({ launch_intro_sound: v })}
+              />
+            )}
+          </Section>
+
+          <Section title="Profiles">
+            <ToggleRow
+              label="Ask who’s watching at launch"
+              description="Shows the profile picker when the app opens (only when there’s more than one profile)."
+              checked={settings.ask_profile}
+              onChange={(v) => updateSettings({ ask_profile: v })}
+            />
+            <button
+              onClick={() => {
+                setOpen(false);
+                useLibraryStore.getState().setProfileGate('manage');
+              }}
+              className="nf-btn-ghost"
+            >
+              <Users className="h-4 w-4" /> Manage profiles
+            </button>
           </Section>
 
           <Section title="VLC Player">

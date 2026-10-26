@@ -5,7 +5,7 @@
  */
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
-import type { EpisodeRow, MovieRow, SeriesRow, SubtitleRow, TrashRow } from '../types/media';
+import type { EpisodeRow, MediaInfo, MovieRow, SeriesRow, SubtitleRow, TrashRow, WatchLogRow } from '../types/media';
 
 const IMG = 'https://image.tmdb.org/t/p';
 const now = new Date();
@@ -54,11 +54,32 @@ function movie(
     my_list: 0,
     last_watched_at: null,
     created_at: ts(1),
+    certification: 'PG-13',
+    collection_id: 0,
+    collection_name: null,
+    trailer_key: '',
+    file_size: 42e9,
+    media_info: null,
+    segments: null,
+    probed_mtime: 0,
+    enriched_at: ts(1),
     ...extra,
   };
 }
 
-const cast = (...names: string[]) => JSON.stringify([...names.map((n) => ({ name: n })), { name: 'Christopher Nolan', job: 'Director' }]);
+const cast = (...names: string[]) =>
+  JSON.stringify([...names.map((n, i) => ({ id: 1000 + n.length * 31 + i, name: n })), { id: 525, name: 'Christopher Nolan', job: 'Director' }]);
+
+const mediaInfo = (w: number, h: number, gamma: string, dv: number | null, chapters: { title: string; time: number }[] = []): string =>
+  JSON.stringify({
+    duration: 8160, width: w, height: h, video_codec: 'hevc', video_profile: 'Main 10', gamma, primaries: 'bt.2020', dv_profile: dv, size: 58e9,
+    audio: [
+      { lang: 'eng', title: 'TrueHD Atmos 7.1', codec: 'truehd', profile: 'TrueHD + Atmos', channels: 8, default: true },
+      { lang: 'eng', title: 'Commentary', codec: 'ac3', profile: null, channels: 2, default: false },
+    ],
+    subs: [{ lang: 'eng', title: null, codec: 'subrip', forced: false }],
+    chapters,
+  } satisfies MediaInfo);
 
 const movies: MovieRow[] = [
   movie('The Matrix', 603, 1999, ['tlm8UkiQsitc8rSuIAscQDCnP8d.jpg', 'dXNAPwY7VrqMAo51EKhhCJfaGb5.jpg', 'xslT5YyQOaqcVKAZxcoq2YbcbEf.png'], {
@@ -73,6 +94,15 @@ const movies: MovieRow[] = [
     genres: '["Action","Science Fiction"]',
     cast_crew: cast('Keanu Reeves', 'Laurence Fishburne', 'Carrie-Anne Moss', 'Hugo Weaving', 'Joe Pantoliano'),
     ...tech('4K', 'Dolby Vision', 'HEVC', 'Lossless Audio, 5.1'),
+    certification: 'R',
+    collection_id: 2344,
+    collection_name: 'The Matrix Collection',
+    trailer_key: 'vKQi3bBA1y8',
+    media_info: mediaInfo(3840, 1600, 'pq', 8, [
+      { title: 'Opening', time: 0 }, { title: 'Wake Up, Neo', time: 410 }, { title: 'The Red Pill', time: 1820 },
+      { title: 'The Construct', time: 3050 }, { title: 'The Oracle', time: 4300 }, { title: 'Lobby', time: 6100 }, { title: 'End Credits', time: 7800 },
+    ]),
+    segments: JSON.stringify([{ kind: 'credits', start: 7800, end: 8160, source: 'chapter' }]),
     progress_seconds: 3100,
     duration_seconds: 8160,
     last_watched_at: ts(0.2),
@@ -89,7 +119,34 @@ const movies: MovieRow[] = [
     genres: '["Science Fiction","Adventure"]',
     cast_crew: cast('Timothée Chalamet', 'Zendaya', 'Rebecca Ferguson', 'Javier Bardem'),
     ...tech('4K', 'HDR10', 'HEVC', 'Atmos, 5.1'),
+    certification: 'PG-13',
+    collection_id: 726871,
+    collection_name: 'Dune Collection',
+    trailer_key: 'Way9Dexny3w',
     my_list: 1,
+  }),
+  movie('Dune: Part Two', 693134, 2024, ['eZ239CUp1d6OryZEBPnO2n87gMG.jpg', '6izwz7rsy95ARzTR3poZ8H6c5pp.jpg', 'ofo16Av8ssvqmGauI2kZsdiBbm2.png'], {
+    file_path: '/Volumes/Media/Movies/Dune.Part.Two.2024.1080p.WEB-DL.mkv',
+    raw_filename: 'Dune.Part.Two.2024.1080p.WEB-DL.mkv',
+    runtime: 167,
+    genres: '["Science Fiction","Adventure"]',
+    ...tech('HD', null, 'H.264', '5.1'),
+    file_size: 9.8e9,
+    certification: 'PG-13',
+    collection_id: 726871,
+    collection_name: 'Dune Collection',
+  }),
+  movie('Dune', 438631, 2021, ['jYEW5xZkZk2WTrdbMGAPFuBqbDc.jpg', 'd5NXSklXo0qyIYkgV94XAgMIckC.jpg', 'ofo16Av8ssvqmGauI2kZsdiBbm2.png'], {
+    overview: 'Paul Atreides, a brilliant and gifted young man born into a great destiny beyond his understanding, must travel to the most dangerous planet in the universe to ensure the future of his family and his people.',
+    runtime: 155,
+    vote_average: 7.8,
+    genres: '["Science Fiction","Adventure"]',
+    cast_crew: cast('Timothée Chalamet', 'Rebecca Ferguson', 'Oscar Isaac', 'Zendaya'),
+    ...tech('4K', 'HDR10', 'HEVC', 'Atmos, 5.1'),
+    certification: 'PG-13',
+    collection_id: 726871,
+    collection_name: 'Dune Collection',
+    created_at: ts(9),
   }),
   movie('Oppenheimer', 872585, 2023, ['neeNHeXjMF5fXoCJRsOmkNGC7q.jpg', '8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg', 'zl0j2MSHkAzBI773TBrycw5q20D.png'], {
     imdb_id: 'tt15398776',
@@ -102,6 +159,7 @@ const movies: MovieRow[] = [
     genres: '["Drama","History"]',
     cast_crew: cast('Cillian Murphy', 'Emily Blunt', 'Matt Damon', 'Robert Downey Jr.'),
     ...tech('HD', null, 'H.264', 'Lossless Audio, 5.1'),
+    certification: 'R',
   }),
   movie('Interstellar', 157336, 2014, ['8sNiAPPYU14PUepFNeSNGUTiHW.jpg', 'yQvGrMoipbRoddT0ZR8tPoR7NfX.jpg', 'yLPDadMcGXjlNZHzW4RMYAuackd.png'], {
     imdb_id: 'tt0816692',
@@ -125,6 +183,7 @@ const movies: MovieRow[] = [
     vote_average: 7.6,
     genres: '["Science Fiction","Drama"]',
     cast_crew: cast('Ryan Gosling', 'Harrison Ford', 'Ana de Armas'),
+    certification: 'R',
   }),
   movie('Inception', 27205, 2010, ['8ZTVqvKDQ8emSGUEMjsS4yHAwrp.jpg', 'xlaY2zyzMfkhk0HSC5VUwzoZPU1.jpg', 'pVcoUkWWUwSXcJIEAeqlRa2q9KS.png'], {
     imdb_id: 'tt1375666',
@@ -137,6 +196,17 @@ const movies: MovieRow[] = [
     genres: '["Action","Science Fiction","Adventure"]',
     cast_crew: cast('Leonardo DiCaprio', 'Joseph Gordon-Levitt', 'Elliot Page', 'Tom Hardy'),
     ...tech('HD', null, 'H.264', '5.1'),
+    certification: 'PG-13',
+  }),
+  movie('Paddington 2', 346648, 2017, ['p3vu3MXuW9mH4OlVPMxDaKN3aEz.jpg', '1OJ9vkD5xPt3skC6KguyXAgagRZ.jpg', 'tMfBgvYbXTkmYB4KDUAcIbKcqwV.png'], {
+    overview: 'Paddington, now happily settled with the Browns, picks up a series of odd jobs to buy the perfect present for his Aunt Lucy, but it is stolen.',
+    runtime: 104,
+    vote_average: 7.6,
+    genres: '["Comedy","Family","Adventure"]',
+    cast_crew: cast('Ben Whishaw', 'Hugh Grant', 'Sally Hawkins'),
+    ...tech('HD', null, 'H.264', '5.1'),
+    certification: 'PG',
+    created_at: ts(4),
   }),
   {
     ...movie('d-dune2', 0, 0, ['', '', ''], {}),
@@ -149,6 +219,7 @@ const movies: MovieRow[] = [
     vote_average: null,
     file_path: '/Volumes/Media/Downloads/xyz-mtrx-remux.mkv',
     raw_filename: 'xyz-mtrx-remux.mkv',
+    certification: null,
   },
 ];
 
@@ -168,7 +239,10 @@ const series: SeriesRow[] = [
   overview: overview as string,
   vote_average: vote as number,
   genres: genres as string,
-  cast_crew: JSON.stringify([{ name: 'Adam Scott' }, { name: 'Britt Lower' }, { name: 'Patricia Arquette' }, { name: 'John Turturro' }, { name: 'Ben Stiller', job: 'Creator' }]),
+  cast_crew: JSON.stringify([
+    { id: 18, name: 'Adam Scott' }, { id: 19, name: 'Britt Lower' }, { id: 20, name: 'Patricia Arquette' },
+    { id: 21, name: 'John Turturro' }, { id: 22, name: 'Ben Stiller', job: 'Creator' },
+  ]),
   poster_path: `${IMG}/w500/${po}`,
   backdrop_path: `${IMG}/original/${bd}`,
   logo_path: `${IMG}/w500/${logo}`,
@@ -184,6 +258,11 @@ const series: SeriesRow[] = [
     { 1: { rating: 8.4, count: 7 }, 2: { rating: 8.6, count: 13 } },
     { 1: { rating: 8.7, count: 8 }, 2: { rating: 8.3, count: 9 } },
   ][i]),
+  certification: ['TV-MA', 'TV-MA', 'TV-14'][i],
+  trailer_key: ['xEQP4VVuyrY', 'HhesaQXLuRY', 'b9EkMc79ZSU'][i],
+  tmdb_status: ['Returning Series', 'Ended', 'Returning Series'][i],
+  next_episode: i === 0 ? JSON.stringify({ season: 2, episode: 7, name: 'Chikhai Bardo', air_date: new Date(now.getTime() + 3 * 864e5).toISOString().slice(0, 10) }) : null,
+  enriched_at: ts(0.5),
 }));
 
 let epId = 1000;
@@ -214,6 +293,15 @@ for (const s of series) {
         duration_seconds: 3300,
         watched: watched ? 1 : 0,
         last_watched_at: watched ? ts(0.1 + (2 - e) * 0.01) : null,
+        file_size: 4.2e9,
+        media_info: null,
+        segments: JSON.stringify([
+          ...(e > 1 ? [{ kind: 'recap', start: 0, end: 38, source: 'chapter' }] : []),
+          { kind: 'intro', start: 62, end: 112, source: 'audio' },
+          { kind: 'credits', start: 3180, end: 3300, source: 'chapter' },
+        ]),
+        probed_mtime: 0,
+        intro_checked: 1,
       });
     }
 }
@@ -226,6 +314,174 @@ const settings: Record<string, string> = {
   subtitle_language: 'en',
   imdb_last_sync: new Date().toISOString(),
 };
+
+// --- Profiles & per-profile state -------------------------------------------------------------
+
+const profiles = [
+  { id: 1, name: 'Ian', color: '#E50914', maturity: 'all', created_at: ts(30) },
+  { id: 2, name: 'Kids', color: '#F5B70A', maturity: 'kids', created_at: ts(20) },
+];
+type StateRow = { progress_seconds: number; duration_seconds: number; watched: number; my_list: number; last_watched_at: string | null };
+const state = new Map<string, StateRow>();
+const stateKey = (p: unknown, t: unknown, id: unknown) => `${p}|${t}|${id}`;
+for (const m of movies) state.set(stateKey(1, 'movie', m.id), { ...m });
+for (const e of episodes) state.set(stateKey(1, 'episode', e.id), { ...e, my_list: 0 });
+for (const x of series) state.set(stateKey(1, 'tv', x.id), { progress_seconds: 0, duration_seconds: 0, watched: 0, my_list: x.my_list, last_watched_at: x.last_watched_at });
+
+function withPs(rows: object[], type: string, profile: unknown) {
+  return rows.map((r) => {
+    const st = state.get(stateKey(profile, type, (r as { id: number }).id));
+    return { ...r, ps_progress: st?.progress_seconds ?? null, ps_duration: st?.duration_seconds ?? null, ps_watched: st?.watched ?? null, ps_my_list: st?.my_list ?? null, ps_last: st?.last_watched_at ?? null };
+  });
+}
+
+function upsertProfileState(q: string, values: unknown[]) {
+  const cols = q.match(/media_id, ([^)]+)\)/)![1].split(',').map((c) => c.trim());
+  const vals = q.match(/VALUES \(\$1, \$2, \$3, ([^)]+)\)/)![1].split(',').map((c) => c.trim());
+  const key = stateKey(values[0], values[1], values[2]);
+  const row = state.get(key) ?? { progress_seconds: 0, duration_seconds: 0, watched: 0, my_list: 0, last_watched_at: null };
+  cols.forEach((c, i) => {
+    const v = vals[i] === 'CURRENT_TIMESTAMP' ? ts(0) : values[Number(vals[i].slice(1)) - 1];
+    (row as Record<string, unknown>)[c] = v;
+  });
+  state.set(key, row);
+}
+
+// Viewing history for the Wrapped / Viewing Activity screens.
+const watchLog: WatchLogRow[] = [];
+{
+  const year = now.getFullYear();
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let d = 0; d < 300; d += 1 + Math.floor(rand() * 3)) {
+    const day = new Date(now.getTime() - d * 864e5);
+    if (day.getFullYear() !== year) break;
+    const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    if (rand() < 0.55) {
+      const e = episodes[Math.floor(rand() * episodes.length)];
+      const show = series.find((x) => x.id === e.series_id)!;
+      const n = 1 + Math.floor(rand() * 4);
+      for (let k = 0; k < n; k++) {
+        const ep = episodes.find((x) => x.series_id === e.series_id && x.id === e.id + k) ?? e;
+        watchLog.push({ profile_id: 1, media_type: 'episode', media_id: ep.id, day: iso, seconds: 2400 + rand() * 900, title: ep.title, series_id: show.id,
+          series_title: show.title, genres: show.genres, season_number: ep.season_number, episode_number: ep.episode_number, poster: show.poster_path });
+      }
+    } else {
+      const m = movies[Math.floor(rand() * (movies.length - 1))];
+      watchLog.push({ profile_id: 1, media_type: 'movie', media_id: m.id, day: iso, seconds: 3600 + rand() * 4000, title: m.title, series_id: null,
+        series_title: null, genres: m.genres, season_number: null, episode_number: null, poster: m.poster_path });
+    }
+  }
+}
+
+const collections = [
+  {
+    id: 726871, name: 'Dune Collection', overview: 'The saga of Paul Atreides.', poster_path: null, backdrop_path: `${IMG}/original/eZ239CUp1d6OryZEBPnO2n87gMG.jpg`, fetched_at: ts(1),
+    parts: JSON.stringify([
+      { tmdb_id: 438631, title: 'Dune', year: 2021, release_date: '2021-09-15', poster: `${IMG}/w342/d5NXSklXo0qyIYkgV94XAgMIckC.jpg`, backdrop: null, overview: '' },
+      { tmdb_id: 693134, title: 'Dune: Part Two', year: 2024, release_date: '2024-02-27', poster: `${IMG}/w342/6izwz7rsy95ARzTR3poZ8H6c5pp.jpg`, backdrop: null, overview: '' },
+      { tmdb_id: 1170608, title: 'Dune: Part Three', year: 2026, release_date: '2026-12-16', poster: null, backdrop: null, overview: 'The third chapter.' },
+    ]),
+  },
+  {
+    id: 2344, name: 'The Matrix Collection', overview: null, poster_path: null, backdrop_path: null, fetched_at: ts(1),
+    parts: JSON.stringify([
+      { tmdb_id: 603, title: 'The Matrix', year: 1999, release_date: '1999-03-31', poster: null, backdrop: null, overview: '' },
+      { tmdb_id: 604, title: 'The Matrix Reloaded', year: 2003, release_date: '2003-05-15', poster: null, backdrop: null, overview: '' },
+    ]),
+  },
+];
+
+/** TMDB season lists: Severance has episodes 6–10 that aren't in the library (some unaired). */
+function seasonCache(tmdbId: number) {
+  const show = series.find((x) => x.tmdb_id === tmdbId);
+  if (!show) return [];
+  return [1, 2].map((season) => ({
+    season_number: season,
+    fetched_at: ts(0.2),
+    episodes: JSON.stringify(
+      Array.from({ length: show.id === 100 ? (season === 1 ? 9 : 10) : 5 }, (_, i) => ({
+        episode_number: i + 1,
+        name: `Episode ${i + 1}`,
+        overview: 'An episode you don’t have yet.',
+        still_path: null,
+        air_date: new Date(now.getTime() + (season === 2 ? (i - 6) * 7 + 3 : -400 + i * 7) * 864e5).toISOString().slice(0, 10),
+        runtime: 52,
+      })),
+    ),
+  }));
+}
+
+const renameBatches: { id: number; created_at: string; label: string; moves: string; roots: string; undone: number }[] = [];
+
+function handleProfileSql(q: string, values: unknown[]): unknown | undefined {
+  if (q.startsWith('SELECT COUNT(*) AS n FROM profiles')) return [{ n: profiles.length }];
+  if (q.startsWith('SELECT * FROM profiles')) return profiles;
+  if (q.startsWith('INSERT INTO profiles')) {
+    const id = Math.max(0, ...profiles.map((x) => x.id)) + 1;
+    profiles.push({ id, name: values[0] as string, color: values[1] as string, maturity: values[2] as string, created_at: ts(0) });
+    return [1, id];
+  }
+  if (q.startsWith('UPDATE profiles')) {
+    const pr = profiles.find((x) => x.id === values[0]);
+    if (pr) Object.assign(pr, { name: values[1], color: values[2], maturity: values[3] });
+    return [1, 0];
+  }
+  if (q.startsWith('DELETE FROM profiles')) {
+    const i = profiles.findIndex((x) => x.id === values[0]);
+    if (i >= 0) profiles.splice(i, 1);
+    return [1, 0];
+  }
+  if (q.startsWith('SELECT m.*')) return withPs(movies, 'movie', values[0]);
+  if (q.startsWith('SELECT s.*')) return withPs(series, 'tv', values[0]);
+  if (q.startsWith('SELECT e.*')) return withPs(episodes, 'episode', values[0]);
+  if (q.startsWith('INSERT INTO profile_state')) {
+    upsertProfileState(q, values);
+    return [1, 0];
+  }
+  if (q.startsWith('UPDATE profile_state SET progress_seconds = 0')) {
+    for (const e of episodes.filter((x) => x.series_id === values[1])) {
+      const st = state.get(stateKey(values[0], 'episode', e.id));
+      if (st) st.progress_seconds = 0;
+    }
+    return [1, 0];
+  }
+  if (q.includes('FROM profile_state') || q.includes('INTO profile_state')) return q.startsWith('SELECT') ? [] : [1, 0];
+  if (q.startsWith('SELECT series_id FROM episodes WHERE id')) return episodes.filter((e) => e.id === values[0]).map((e) => ({ series_id: e.series_id }));
+  if (q.startsWith('SELECT * FROM watch_log')) return watchLog.filter((w) => w.profile_id === values[0]).sort((a, b) => b.day.localeCompare(a.day));
+  if (q.startsWith('INSERT INTO watch_log')) {
+    const [profile_id, media_type, media_id, day, seconds, title, series_id, series_title, genres, season_number, episode_number, poster] = values as never[];
+    const row = watchLog.find((w) => w.profile_id === profile_id && w.media_type === media_type && w.media_id === media_id && w.day === day);
+    if (row) row.seconds += seconds;
+    else watchLog.push({ profile_id, media_type, media_id, day, seconds, title, series_id, series_title, genres, season_number, episode_number, poster });
+    return [1, 0];
+  }
+  if (q.startsWith('DELETE FROM watch_log WHERE profile_id = $1 AND')) {
+    const i = watchLog.findIndex((w) => w.profile_id === values[0] && w.media_type === values[1] && w.media_id === values[2] && w.day === values[3]);
+    if (i >= 0) watchLog.splice(i, 1);
+    return [1, 0];
+  }
+  if (q.startsWith('SELECT * FROM collections')) return collections;
+  if (q.startsWith('SELECT season_number, episodes, fetched_at FROM season_cache')) return seasonCache(values[0] as number);
+  if (q.startsWith('SELECT * FROM rename_batches')) return [...renameBatches].reverse();
+  if (q.startsWith('INSERT INTO rename_batches')) {
+    renameBatches.push({ id: renameBatches.length + 1, created_at: ts(0), label: values[0] as string, moves: values[1] as string, roots: values[2] as string, undone: 0 });
+    return [1, 0];
+  }
+  if (q.startsWith('UPDATE rename_batches SET undone')) {
+    const b = renameBatches.find((x) => x.id === values[0]);
+    if (b) b.undone = 1;
+    return [1, 0];
+  }
+  if (/^UPDATE (movies|episodes) SET file_path/.test(q)) {
+    const list = (q.includes('movies') ? movies : episodes) as { file_path: string }[];
+    const row = list.find((r) => r.file_path === values[0]);
+    if (row) row.file_path = values[1] as string;
+    return [1, 0];
+  }
+  if (/watch_log|collections|season_cache|rename_batches/.test(q)) return q.startsWith('SELECT') ? [] : [1, 0];
+  return undefined;
+}
 
 let subId = 1;
 const subtitles: SubtitleRow[] = [];
@@ -320,6 +576,8 @@ function handleLibrarySql(q: string, values: unknown[]): unknown | undefined {
 
 function handleExecute(query: string, values: unknown[]) {
   const q = query.replace(/\s+/g, ' ').trim();
+  const prof = handleProfileSql(q, values);
+  if (prof !== undefined) return prof;
   const lib = handleLibrarySql(q, values);
   if (lib !== undefined) return lib;
   if (/subtitles/.test(q) && !q.startsWith('CREATE')) return handleSubtitleSql(q, values);
@@ -351,6 +609,8 @@ function handleExecute(query: string, values: unknown[]) {
 }
 
 function handleSelect(query: string, values: unknown[]) {
+  const prof = handleProfileSql(query.replace(/\s+/g, ' ').trim(), values);
+  if (prof !== undefined) return prof;
   const lib = handleLibrarySql(query.replace(/\s+/g, ' ').trim(), values);
   if (lib !== undefined) return lib;
   if (query.includes('FROM subtitles')) return handleSubtitleSql(query.replace(/\s+/g, ' ').trim(), values);
@@ -400,6 +660,11 @@ function simOpen(start: number) {
       if (!s.loaded) {
         s.loaded = true;
         void emit('player-tracks', JSON.stringify(sim.tracks));
+        const d = s.duration;
+        void emit('player-chapters', JSON.stringify([
+          { title: 'Previously On', time: 0 }, { title: 'Opening Credits', time: 62 }, { title: 'Act One', time: 112 },
+          { title: 'Act Two', time: d * 0.35 }, { title: 'Act Three', time: d * 0.7 }, { title: 'End Credits', time: d - 120 },
+        ]));
       } else if (!s.paused && !s.eof) {
         s.time = Math.min(s.duration, s.time + 0.2 * s.speed * ((window as unknown as { __simRate?: number }).__simRate ?? 1));
         if (s.time >= s.duration) s.eof = true;
@@ -491,6 +756,31 @@ export function installMocks() {
         case 'player_close':
           simClose();
           return null;
+        case 'player_layout':
+          (window as unknown as { __lastLayout: unknown }).__lastLayout = a.rect;
+          return null;
+        case 'media_probe':
+          return ((a.paths as string[]) ?? []).map(() => null);
+        case 'extract_frames': {
+          const times = a.times as number[];
+          const key = String(a.key);
+          // Like the real command, resolve only after every frame has been announced.
+          return new Promise((resolve) => {
+            times.forEach((t, i) =>
+              setTimeout(() => {
+                void emit('frame-ready', { lane: a.lane, key, index: i, time: t, path: `https://picsum.photos/seed/${key.slice(0, 6)}${Math.round(t)}/${a.width}/${Math.round((Number(a.width) * 9) / 16)}` });
+                if (i === times.length - 1) setTimeout(() => resolve(times.map(() => null)), 50);
+              }, 20 * i),
+            );
+            if (!times.length) resolve([]);
+          });
+        }
+        case 'detect_intros':
+          return ((a.paths as string[]) ?? []).map(() => null);
+        case 'watch_folders':
+          return ((a.paths as string[]) ?? []).length;
+        case 'apply_moves':
+          return { applied: a.moves, errors: [] };
         case 'plugin:app|version':
           return '0.1.0';
         case 'plugin:updater|check':

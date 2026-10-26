@@ -11,10 +11,19 @@ import OnboardingModal from './components/modals/OnboardingModal';
 import Toasts from './components/common/Toasts';
 import ConfirmDialog from './components/common/ConfirmDialog';
 import PlayerScreen from './components/player/PlayerScreen';
+import MiniPlayer from './components/player/MiniPlayer';
+import ProfileGate from './components/profiles/ProfileGate';
+import LaunchIntro from './components/layout/LaunchIntro';
+import ActorModal from './components/modals/ActorModal';
+import WrappedModal from './components/modals/WrappedModal';
+import HistoryModal from './components/modals/HistoryModal';
+import RenameModal from './components/modals/RenameModal';
 import { autoPurgeTrash } from './services/files';
 import { invoke } from '@tauri-apps/api/core';
-import { engineStatus, initPlayerEvents, playBuiltin } from './services/player';
+import { engineStatus, initPlayerEvents, playBuiltin, syncAudioFilters, syncMiniLayout, syncSubtitleStyle } from './services/player';
 import { autoCheckForUpdates } from './services/updates';
+import { startBackgroundAnalysis } from './services/enrich';
+import { startFolderWatch } from './services/watch';
 
 export default function App() {
   const ready = useLibraryStore((s) => s.ready);
@@ -26,10 +35,18 @@ export default function App() {
   const settingsOpen = useLibraryStore((s) => s.settingsOpen);
   const onboardingOpen = useLibraryStore((s) => s.onboardingOpen);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [introDone, setIntroDone] = useState(false);
+  const launchIntro = useLibraryStore((s) => s.settings.launch_intro);
+  const introSound = useLibraryStore((s) => s.settings.launch_intro_sound);
 
   useEffect(() => {
     init()
       .then(() => autoPurgeTrash().catch((e) => console.warn('[trash] auto-purge failed', e)))
+      .then(() => {
+        void startFolderWatch();
+        // Fill in anything missing (media info, ratings, trailers, intros) without blocking startup.
+        window.setTimeout(() => void startBackgroundAnalysis(), 3000);
+      })
       .then(() => void autoCheckForUpdates())
       .then(async () => {
         // TRUONGFLIX_AUTOPLAY=<file> (CI smoke test): start playing right away.
@@ -45,16 +62,35 @@ export default function App() {
   }, [init]);
 
   // Lock page scroll behind overlays.
-  const overlay = !!detailKey || !!fixMatchKey || settingsOpen || onboardingOpen;
+  const actorOpen = useLibraryStore((s) => !!s.actor);
+  const pageOverlay = useLibraryStore((s) => s.overlay);
+  const overlay = !!detailKey || !!fixMatchKey || settingsOpen || onboardingOpen || actorOpen || !!pageOverlay;
   useEffect(() => {
     document.body.style.overflow = overlay ? 'hidden' : '';
   }, [overlay]);
 
-  // Built-in player: make the page transparent over the native video surface.
-  const playerActive = useLibraryStore((s) => !!s.playerSession);
+  // Built-in player: make the page transparent over the native video surface (not in the mini-player).
+  const playerActive = useLibraryStore((s) => !!s.playerSession && !s.playerMini);
   useEffect(() => {
     document.documentElement.classList.toggle('player-mode', playerActive);
   }, [playerActive]);
+
+  // Live-apply player settings and keep the mini-player glued to its corner.
+  const subtitleStyle = useLibraryStore((s) => s.settings.subtitle_style);
+  const audioNight = useLibraryStore((s) => s.settings.audio_night);
+  const audioDialogue = useLibraryStore((s) => s.settings.audio_dialogue);
+  useEffect(() => syncSubtitleStyle(), [subtitleStyle]);
+  useEffect(() => syncAudioFilters(), [audioNight, audioDialogue]);
+  useEffect(() => {
+    window.addEventListener('resize', syncMiniLayout);
+    return () => window.removeEventListener('resize', syncMiniLayout);
+  }, []);
+
+  // Restart folder watching when the folders or the setting change.
+  const dirsKey = useLibraryStore((s) => `${s.settings.watch_folders}|${s.settings.tmdb_api_key ? 1 : 0}|${s.settings.media_directories.join('|')}`);
+  useEffect(() => {
+    if (ready) void startFolderWatch();
+  }, [ready, dirsKey]);
 
   // Escape closes the top-most overlay.
   useEffect(() => {
@@ -62,9 +98,11 @@ export default function App() {
       if (e.key !== 'Escape') return;
       const s = useLibraryStore.getState();
       if (s.fixMatchKey) s.openFixMatch(null);
+      else if (s.actor) s.openActor(null);
       else if (s.detailEpisodeId != null) s.openEpisode(null);
       else if (s.detailKey) s.openDetail(null);
       else if (s.settingsOpen) s.setSettingsOpen(false);
+      else if (s.overlay) s.setOverlay(null);
       else if (s.hover) s.setHover(null);
     };
     window.addEventListener('keydown', onKey);
@@ -109,10 +147,19 @@ export default function App() {
         <AnimatePresence>{fixMatchKey && <FixMatchModal key={fixMatchKey} />}</AnimatePresence>
         <AnimatePresence>{settingsOpen && <SidebarSettings key="settings" />}</AnimatePresence>
         <AnimatePresence>{onboardingOpen && <OnboardingModal key="onboarding" />}</AnimatePresence>
+        <ActorModal />
+        <AnimatePresence>
+          {pageOverlay === 'wrapped' && <WrappedModal key="wrapped" />}
+          {pageOverlay === 'history' && <HistoryModal key="history" />}
+          {pageOverlay === 'rename' && <RenameModal key="rename" />}
+        </AnimatePresence>
       </div>
+      <MiniPlayer />
       <PlayerScreen />
+      <ProfileGate />
       <Toasts />
       <ConfirmDialog />
+      {launchIntro && !introDone && !onboardingOpen && <LaunchIntro sound={introSound} onDone={() => setIntroDone(true)} />}
     </div>
   );
 }
