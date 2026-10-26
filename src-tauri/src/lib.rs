@@ -19,6 +19,36 @@ fn startup_autoplay() -> Option<String> {
     std::env::var("TRUONGFLIX_AUTOPLAY").ok().filter(|p| std::path::Path::new(p).is_file())
 }
 
+/// The updater only reports "no valid release JSON" when the feed fails, so this fetches the feed
+/// itself to tell the user what actually happened (offline, HTTP 403/404/429, …).
+#[tauri::command]
+async fn update_feed_status(app: tauri::AppHandle) -> String {
+    let url = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|u| u.get("endpoints"))
+        .and_then(|e| e.get(0))
+        .and_then(|e| e.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    if url.is_empty() {
+        return "no update feed is configured".into();
+    }
+    let client = match reqwest::Client::builder().user_agent("tauri-updater").timeout(std::time::Duration::from_secs(15)).build() {
+        Ok(c) => c,
+        Err(e) => return e.to_string(),
+    };
+    match client.get(&url).send().await {
+        Ok(res) if res.status().is_success() => "ok".into(),
+        Ok(res) => format!("GitHub answered HTTP {}", res.status()),
+        Err(e) if e.is_timeout() => "GitHub didn’t answer within 15 seconds".into(),
+        Err(e) if e.is_connect() => "couldn’t connect to GitHub (offline, VPN or firewall?)".into(),
+        Err(e) => e.to_string(),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -37,6 +67,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
+            update_feed_status,
             scanner::scan_media_folders,
             scanner::check_paths,
             vlc::detect_vlc,

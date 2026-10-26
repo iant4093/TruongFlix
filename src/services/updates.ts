@@ -1,4 +1,5 @@
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { useLibraryStore } from '../store/useLibraryStore';
@@ -32,9 +33,25 @@ export function onUpdateChange(fn: (u: AvailableUpdate | null) => void) {
   return () => listeners.delete(fn);
 }
 
+/** One retry for transient network errors; then explains what the feed actually returned. */
+async function checkWithDiagnosis(): Promise<Update | null> {
+  try {
+    return await check({ timeout: 20000 });
+  } catch (first) {
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      return await check({ timeout: 20000 });
+    } catch (e) {
+      const status = await invoke<string>('update_feed_status').catch(() => '');
+      if (status && status !== 'ok') throw new Error(`${status}. Try again in a few minutes.`);
+      throw e ?? first;
+    }
+  }
+}
+
 /** Asks the release feed for a newer, signed build. Returns null when up to date. */
 export async function checkForUpdate(): Promise<AvailableUpdate | null> {
-  pending = await check();
+  pending = await checkWithDiagnosis();
   await useLibraryStore.getState().updateSettings({ updates_last_check: new Date().toISOString() });
   const info = availableUpdate();
   listeners.forEach((fn) => fn(info));
