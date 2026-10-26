@@ -16,6 +16,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3);
 #[derive(Default)]
 pub struct VlcState {
     current: Mutex<Option<Arc<Mutex<Child>>>>,
+    /// Port and Basic-auth token of the running VLC's HTTP interface.
+    http: Mutex<Option<(u16, String)>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -173,10 +175,15 @@ fn base64(input: &[u8]) -> String {
 
 /// Minimal HTTP/1.0 client for VLC's Lua status endpoint (avoids pulling in an HTTP crate).
 async fn fetch_status(port: u16, auth: &str) -> Option<(f64, f64)> {
+    status_request(port, auth, "").await
+}
+
+/// `query` is e.g. "?command=pl_forcepause".
+async fn status_request(port: u16, auth: &str, query: &str) -> Option<(f64, f64)> {
     let request = async {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
         let req = format!(
-            "GET /requests/status.json HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Basic {auth}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+            "GET /requests/status.json{query} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Basic {auth}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
         );
         stream.write_all(req.as_bytes()).await.ok()?;
         let mut buf = Vec::new();
@@ -258,6 +265,7 @@ pub async fn launch_vlc(
     *state.current.lock().map_err(|e| e.to_string())? = Some(child.clone());
 
     let auth = base64(format!(":{password}").as_bytes());
+    *state.http.lock().map_err(|e| e.to_string())? = Some((port, auth.clone()));
     tauri::async_runtime::spawn(async move {
         let mut last_time = start_time as f64;
         let mut last_length = 0.0_f64;
@@ -349,6 +357,16 @@ mod tests {
         println!("VLC status: time={time} length={length}");
         assert!(length > 0.0 && time >= 0.0);
     }
+}
+
+/// Pauses VLC (used when the screen locks). No-op when VLC isn't running.
+#[tauri::command]
+pub async fn pause_vlc(state: State<'_, VlcState>) -> Result<(), String> {
+    let http = state.http.lock().map_err(|e| e.to_string())?.clone();
+    if let Some((port, auth)) = http {
+        let _ = status_request(port, &auth, "?command=pl_forcepause").await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
