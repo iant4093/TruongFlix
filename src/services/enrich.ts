@@ -135,10 +135,18 @@ async function fetchCollections() {
   if (ids.length) await useLibraryStore.getState().reload();
 }
 
-async function fetchCriticRatings() {
+export interface CriticRefresh {
+  checked: number;
+  found: number;
+  error: string | null;
+}
+
+/** Rotten Tomatoes / Metacritic from OMDb for titles not checked recently (all of them with `force`). */
+async function fetchCriticRatings(force = false): Promise<CriticRefresh> {
+  const result: CriticRefresh = { checked: 0, found: 0, error: null };
   const { settings, movies, series } = useLibraryStore.getState();
-  if (!settings.omdb_api_key) return;
-  const stale = (at: string | null) => !at || Date.now() - Date.parse(at.replace(' ', 'T') + 'Z') > OMDB_REFRESH_DAYS * 864e5;
+  if (!settings.omdb_api_key) return result;
+  const stale = (at: string | null) => force || !at || Date.now() - Date.parse(at.replace(' ', 'T') + 'Z') > OMDB_REFRESH_DAYS * 864e5;
   const todo = new Map<string, 'movies' | 'tv_series'>();
   for (const m of movies) if (m.imdb_id && stale(m.omdb_at)) todo.set(m.imdb_id, 'movies');
   for (const s of series) if (s.imdb_id && stale(s.omdb_at)) todo.set(s.imdb_id, 'tv_series');
@@ -148,12 +156,27 @@ async function fetchCriticRatings() {
     try {
       const s = await fetchCriticScores(settings.omdb_api_key, imdbId);
       await db.saveOmdbRatings(table, imdbId, s.rt, s.metacritic);
+      result.checked++;
+      if (s.rt != null || s.metacritic != null) result.found++;
     } catch (e) {
-      if (e instanceof OmdbError && e.kind !== 'other') break; // bad key, daily limit or offline: try next run
+      if (e instanceof OmdbError && e.kind !== 'other') {
+        result.error = e.message; // bad key, daily limit or offline: try again next run
+        break;
+      }
     }
     if (i % 25 === 24) await useLibraryStore.getState().reload();
   }
   if (list.length) await useLibraryStore.getState().reload();
+  return result;
+}
+
+/** "Refresh critic scores" in Settings: re-checks every title now. */
+export async function refreshCriticScores(): Promise<CriticRefresh> {
+  try {
+    return await fetchCriticRatings(true);
+  } finally {
+    if (!running) useLibraryStore.getState().setAnalysis({ running: false, message: '' });
+  }
 }
 
 async function detectIntros() {
