@@ -114,6 +114,13 @@ html.player-mode #app-shell {
   .nf-btn-ghost {
     @apply inline-flex items-center justify-center gap-2 rounded border border-white/25 bg-white/5 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50;
   }
+  /* Settings window: shared setup controls at the same compact size as the rest of the page. */
+  .settings-compact .nf-input {
+    @apply h-9 px-3 py-0 text-sm;
+  }
+  .settings-compact .nf-btn-ghost {
+    @apply h-9 px-3 py-0;
+  }
 }
 
 @layer utilities {

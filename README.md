@@ -120,7 +120,7 @@ Library screenshots use the development preview with sample metadata and artwork
 
 On first launch, the setup wizard asks for a free [TMDB API key](https://www.themoviedb.org/settings/api), an optional [OpenSubtitles key](https://www.opensubtitles.com/en/consumers), and your media folders. The player engine is included, so no other software is required. The download buttons always point to the most recent successfully published release.
 
-Installed copies update themselves: they check for a new version once a day (or from **Settings › About & Updates**) and install it after verifying its signature.
+Installed copies update themselves: they check for a new version once a day (or from **Settings › About**) and install it after verifying its signature.
 
 ## Tech stack
 

@@ -338,6 +338,7 @@ const settings: Record<string, string> = {
   opensubtitles_api_key: 'dev-mock-os-key',
   subtitle_language: 'en',
   imdb_last_sync: new Date().toISOString(),
+  omdb_api_key: 'dev-omdb-key',
 };
 
 // --- Profiles & per-profile state -------------------------------------------------------------
@@ -489,6 +490,11 @@ function handleProfileSql(q: string, values: unknown[]): unknown | undefined {
   if (q.startsWith('DELETE FROM watch_log WHERE profile_id = $1 AND')) {
     const i = watchLog.findIndex((w) => w.profile_id === values[0] && w.media_type === values[1] && w.media_id === values[2] && w.day === values[3]);
     if (i >= 0) watchLog.splice(i, 1);
+    return [1, 0];
+  }
+  if (/^UPDATE (movies|tv_series) SET rt_score/.test(q)) {
+    const list = (q.includes('tv_series') ? series : movies) as { imdb_id: string | null; rt_score: number | null; metacritic: number | null; omdb_at: string | null }[];
+    for (const r of list.filter((x) => x.imdb_id === values[0])) Object.assign(r, { rt_score: values[1], metacritic: values[2], omdb_at: ts(0) });
     return [1, 0];
   }
   if (q.startsWith('SELECT * FROM collections')) return collections;
@@ -743,8 +749,24 @@ function simClose() {
   void emit('player-closed', final);
 }
 
+/** OMDb, like the real service: scores for movies, usually none for TV shows. */
+function mockOmdb() {
+  const realFetch = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (!url.includes('omdbapi.com')) return realFetch(input, init);
+    const id = new URL(url).searchParams.get('i');
+    const show = series.find((x) => x.imdb_id === id);
+    const body = show
+      ? { Response: 'True', Type: 'series', Ratings: [{ Source: 'Internet Movie Database', Value: '8.6/10' }], Metascore: 'N/A' }
+      : { Response: 'True', Type: 'movie', Ratings: [{ Source: 'Rotten Tomatoes', Value: '88%' }], Metascore: '74' };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+}
+
 export function installMocks() {
   mockWindows('main');
+  mockOmdb();
   mockIPC(
     (cmd, args) => {
       const a = (args ?? {}) as Record<string, unknown>;

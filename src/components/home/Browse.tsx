@@ -45,7 +45,7 @@ function EmptyLibrary() {
             <RefreshCw className={`h-6 w-6 ${scan.running ? 'animate-spin' : ''}`} />
             Scan Library
           </button>
-          <button onClick={() => openSettings(true)} className="nf-btn-info text-lg">
+          <button onClick={() => openSettings(true, 'library')} className="nf-btn-info text-lg">
             <FolderOpen className="h-6 w-6" />
             Media Folders
           </button>

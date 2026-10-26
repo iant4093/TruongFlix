@@ -58,6 +58,8 @@ export interface PinRequest {
   then: () => void;
 }
 
+export type SettingsTab = 'library' | 'playback' | 'audio' | 'subtitles' | 'ratings' | 'home' | 'profiles' | 'trash' | 'about';
+
 export type Overlay = 'wrapped' | 'history' | 'rename' | 'health' | null;
 
 export interface Toast {
@@ -130,7 +132,8 @@ interface LibraryState {
   openDetail: (key: string | null) => void;
   openEpisode: (id: number | null) => void;
   openFixMatch: (key: string | null) => void;
-  setSettingsOpen: (open: boolean) => void;
+  setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
+  settingsTab: SettingsTab;
   setOnboardingOpen: (open: boolean) => void;
   setHover: (h: HoverState | null) => void;
   setScan: (patch: Partial<ScanState>) => void;
@@ -208,6 +211,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   overlay: null,
   playerMini: false,
   sleepTimer: null,
+  settingsTab: 'library',
   pinRequest: null,
   audioOutput: null,
   playerPrompt: null,
@@ -323,7 +327,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   openDetail: (detailKey) => set({ detailKey, detailEpisodeId: null, hover: null }),
   openEpisode: (detailEpisodeId) => set({ detailEpisodeId, hover: null }),
   openFixMatch: (fixMatchKey) => set({ fixMatchKey, hover: null }),
-  setSettingsOpen: (settingsOpen) => set({ settingsOpen, hover: null }),
+  setSettingsOpen: (settingsOpen, tab) => set((s) => ({ settingsOpen, hover: null, settingsTab: tab ?? s.settingsTab })),
   setOnboardingOpen: (onboardingOpen) => set({ onboardingOpen }),
   setHover: (hover) => set({ hover }),
   setScan: (patch) => set((s) => ({ scan: { ...s.scan, ...patch } })),

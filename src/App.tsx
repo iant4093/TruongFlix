@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useLibraryStore } from './store/useLibraryStore';
 import Navbar, { Wordmark } from './components/layout/Navbar';
-import SidebarSettings from './components/layout/SidebarSettings';
+import SettingsDialog from './components/settings/SettingsDialog';
 import { BrowseView, MyListView, SearchView } from './components/home/Browse';
 import HoverPreview from './components/home/HoverPreview';
 import DetailModal from './components/modals/DetailModal';
@@ -152,7 +152,7 @@ export default function App() {
         <HoverPreview />
         <AnimatePresence>{detailKey && <DetailModal key="detail" />}</AnimatePresence>
         <AnimatePresence>{fixMatchKey && <FixMatchModal key={fixMatchKey} />}</AnimatePresence>
-        <AnimatePresence>{settingsOpen && <SidebarSettings key="settings" />}</AnimatePresence>
+        <AnimatePresence>{settingsOpen && <SettingsDialog key="settings" />}</AnimatePresence>
         <AnimatePresence>{onboardingOpen && <OnboardingModal key="onboarding" />}</AnimatePresence>
         <ActorModal />
         <AnimatePresence>
