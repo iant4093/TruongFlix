@@ -7,29 +7,40 @@ import {
   Maximize,
   MessageSquareText,
   Minimize,
+  Moon,
   Pause,
+  PictureInPicture2,
   Play,
   SkipForward,
+  Speech,
   Volume1,
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import type { BuiltinPlayerState, PlayerSession, PlayerTrack } from '../../types/media';
+import type { BuiltinPlayerState, PlayerSession, PlayerTrack, Segment } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { formatTimestamp } from '../../store/selectors';
 import { languageName } from '../../services/subtitles';
 import {
   closeBuiltin,
+  enterMini,
   openCurrentInVlc,
   playBuiltin,
   playerCommand,
   playerSet,
+  syncAudioFilters,
   toggleFullscreen,
 } from '../../services/player';
+import { parseMediaInfo, parseSegments } from '../../services/mediainfo';
+import { cancelFrames, coarseToFine, extractFrames } from '../../services/frames';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const HIDE_AFTER_MS = 3000;
 const NEXT_EPISODE_WINDOW_S = 30;
+/** Countdown before the next episode starts once the credits begin. */
+const CREDITS_COUNTDOWN_S = 10;
+const THUMB_WIDTH = 320;
+const MAX_THUMBS = 400;
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5];
 
 type Panel = 'tracks' | 'speed' | null;
@@ -37,7 +48,88 @@ type Panel = 'tracks' | 'speed' | null;
 /** Full-window Netflix-style player chrome drawn over the native video surface. */
 export default function PlayerScreen() {
   const session = useLibraryStore((s) => s.playerSession);
-  return <AnimatePresence>{session && <PlayerChrome key="player" session={session} />}</AnimatePresence>;
+  const mini = useLibraryStore((s) => s.playerMini);
+  useAutoAdvance(session);
+  useScrubThumbnails(session);
+  return <AnimatePresence>{session && !mini && <PlayerChrome key="player" session={session} />}</AnimatePresence>;
+}
+
+/** End of file: roll into the next episode, or return to the library (also in the mini-player). */
+function useAutoAdvance(session: PlayerSession | null) {
+  const eof = useLibraryStore((s) => !!s.playerState?.eof);
+  const advancedFor = useRef<number | null>(null);
+  useEffect(() => {
+    if (!session || !eof || advancedFor.current === session.target.id) return;
+    advancedFor.current = session.target.id;
+    if (session.next) void playBuiltin(session.next);
+    else window.setTimeout(() => void closeBuiltin(), 1200);
+  }, [eof, session]);
+}
+
+/** Library row (segments, media info, mtime) for what's playing. */
+function usePlayingRow(session: PlayerSession | null) {
+  return useLibraryStore((s) => {
+    if (!session) return undefined;
+    const { type, id } = session.target;
+    return type === 'movie' ? s.movies.find((m) => m.id === id) : s.episodes.find((e) => e.id === id);
+  });
+}
+
+// Scrub-bar thumbnails, generated in the background by a hidden player core.
+const thumbStore = { key: '', interval: 10, frames: new Map<number, string>(), listeners: new Set<() => void>() };
+
+function useScrubThumbnails(session: PlayerSession | null) {
+  const row = usePlayingRow(session);
+  const duration = useLibraryStore((s) => (s.playerState?.loaded ? s.playerState.duration : 0));
+  const path = session?.target.filePath;
+  const mtime = row?.file_mtime ?? 0;
+  useEffect(() => {
+    if (!path || !(duration > 0)) return;
+    const key = `${path}|${mtime}`;
+    if (thumbStore.key === key) return;
+    thumbStore.key = key;
+    thumbStore.frames = new Map();
+    const interval = Math.max(10, duration / MAX_THUMBS);
+    thumbStore.interval = interval;
+    const count = Math.floor((duration - 2) / interval) + 1;
+    const times = coarseToFine(count, interval, 1);
+    // Give playback a head start before the second core begins decoding.
+    const t = window.setTimeout(() => {
+      void extractFrames({ path, mtime, times, width: THUMB_WIDTH, lane: 'scrub' }, (f) => {
+        if (thumbStore.key !== key) return;
+        thumbStore.frames.set(Math.round((f.time - 1) / interval), f.url);
+        thumbStore.listeners.forEach((l) => l());
+      }).catch(() => {});
+    }, 4000);
+    return () => window.clearTimeout(t);
+  }, [path, mtime, duration]);
+  useEffect(() => {
+    if (session) return;
+    thumbStore.key = '';
+    thumbStore.frames = new Map();
+    cancelFrames('scrub');
+  }, [session]);
+}
+
+function thumbAt(time: number): string | null {
+  const { frames, interval } = thumbStore;
+  if (!frames.size) return null;
+  const idx = Math.round(Math.max(0, time - 1) / interval);
+  for (let d = 0; d < 48; d++) {
+    const hit = frames.get(idx - d) ?? frames.get(idx + d);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function useThumbVersion() {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    const l = () => setV((x) => x + 1);
+    thumbStore.listeners.add(l);
+    return () => void thumbStore.listeners.delete(l);
+  }, []);
+  return v;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,10 +173,21 @@ function ControlButton({ label, onClick, children, active }: { label: string; on
 // Scrubber
 // ---------------------------------------------------------------------------
 
-function Scrubber({ time, duration, onSeek }: { time: number; duration: number; onSeek: (t: number) => void }) {
+function Scrubber({
+  time,
+  duration,
+  onSeek,
+  chapters,
+}: {
+  time: number;
+  duration: number;
+  onSeek: (t: number) => void;
+  chapters: { title: string; time: number }[];
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [drag, setDrag] = useState<number | null>(null);
+  useThumbVersion();
 
   const ratioAt = (clientX: number) => {
     const r = ref.current!.getBoundingClientRect();
@@ -93,6 +196,14 @@ function Scrubber({ time, duration, onSeek }: { time: number; duration: number; 
 
   const shown = drag ?? (duration ? time / duration : 0);
   const preview = drag ?? hover;
+  const previewTime = preview != null ? preview * duration : 0;
+  const marks = duration > 0 ? chapters.filter((c) => c.time > 1 && c.time < duration - 1) : [];
+  const chapter = preview != null && chapters.length > 1 ? [...chapters].reverse().find((c) => c.time <= previewTime + 0.5) : undefined;
+  const thumb = preview != null ? thumbAt(previewTime) : null;
+  // Keep the preview inside the window.
+  const width = ref.current?.getBoundingClientRect().width ?? 1;
+  const half = (thumb ? 128 : 40) / width;
+  const left = preview != null ? Math.min(1 - half, Math.max(half, preview)) : 0;
 
   return (
     <div
@@ -122,17 +233,21 @@ function Scrubber({ time, duration, onSeek }: { time: number; duration: number; 
           <div className="absolute inset-y-0 left-0 rounded-full bg-white/35" style={{ width: `${hover * 100}%` }} />
         )}
         <div className="absolute inset-y-0 left-0 rounded-full bg-nf-red" style={{ width: `${shown * 100}%` }} />
+        {marks.map((c) => (
+          <div key={c.time} className="absolute inset-y-0 w-[3px] -translate-x-1/2 bg-black/70" style={{ left: `${(c.time / duration) * 100}%` }} />
+        ))}
         <div
           className="absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-nf-red shadow transition-transform group-hover/scrub:scale-125"
           style={{ left: `${shown * 100}%` }}
         />
       </div>
       {preview != null && duration > 0 && (
-        <div
-          className="pointer-events-none absolute -top-9 -translate-x-1/2 rounded bg-black/85 px-2 py-1 text-sm font-semibold tabular-nums text-white"
-          style={{ left: `${preview * 100}%` }}
-        >
-          {formatTimestamp(preview * duration)}
+        <div className="pointer-events-none absolute bottom-7 flex -translate-x-1/2 flex-col items-center gap-1" style={{ left: `${left * 100}%` }}>
+          {thumb && (
+            <img src={thumb} alt="" className="aspect-video w-64 rounded-sm bg-black object-cover shadow-2xl ring-2 ring-white/90" />
+          )}
+          {chapter?.title && <div className="max-w-64 truncate text-sm font-semibold text-white drop-shadow">{chapter.title}</div>}
+          <div className="rounded bg-black/85 px-2 py-1 text-sm font-semibold tabular-nums text-white">{formatTimestamp(previewTime)}</div>
         </div>
       )}
     </div>
@@ -307,12 +422,48 @@ function TracksPanel({ tracks, state }: { tracks: PlayerTrack[]; state: BuiltinP
           </div>
         </div>
       </div>
+      <AudioEnhancements />
       {state && (
         <div className="mt-4 space-y-2 border-t border-white/10 pt-4">
           {!subsOff && <DelayControl label="Subtitle timing" value={state.sub_delay} prop="sub-delay" />}
           <DelayControl label="Audio timing" value={state.audio_delay} prop="audio-delay" />
         </div>
       )}
+    </div>
+  );
+}
+
+function AudioEnhancements() {
+  const night = useLibraryStore((s) => s.settings.audio_night);
+  const dialogue = useLibraryStore((s) => s.settings.audio_dialogue);
+  const update = useLibraryStore((s) => s.updateSettings);
+  const toggle = async (patch: { audio_night?: boolean; audio_dialogue?: boolean }) => {
+    await update(patch);
+    syncAudioFilters();
+  };
+  const Chip = ({ on, label, hint, icon, onClick }: { on: boolean; label: string; hint: string; icon: ReactNode; onClick: () => void }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      title={hint}
+      className={`flex flex-1 items-center gap-3 rounded border px-3 py-2 text-left transition-colors ${
+        on ? 'border-white bg-white/15 text-white' : 'border-white/20 text-[#b3b3b3] hover:border-white/50 hover:text-white'
+      }`}
+    >
+      {icon}
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold">{label}</span>
+        <span className="block truncate text-xs text-[#8c8c8c]">{hint}</span>
+      </span>
+      <span className={`ml-auto h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors ${on ? 'bg-nf-red' : 'bg-white/25'}`}>
+        <span className={`block h-4 w-4 rounded-full bg-white transition-transform ${on ? 'translate-x-4' : ''}`} />
+      </span>
+    </button>
+  );
+  return (
+    <div className="mt-4 flex gap-3 border-t border-white/10 pt-4">
+      <Chip on={dialogue} label="Dialogue boost" hint="Clearer speech" icon={<Speech className="h-5 w-5 shrink-0" />} onClick={() => void toggle({ audio_dialogue: !dialogue })} />
+      <Chip on={night} label="Night mode" hint="Evens out loud and quiet" icon={<Moon className="h-5 w-5 shrink-0" />} onClick={() => void toggle({ audio_night: !night })} />
     </div>
   );
 }
@@ -347,6 +498,15 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
   const state = useLibraryStore((s) => s.playerState);
   const tracks = useLibraryStore((s) => s.playerTracks);
   const vlcPath = useLibraryStore((s) => s.settings.vlc_executable_path);
+  const autoSkip = useLibraryStore((s) => s.settings.skip_intro_auto);
+  const liveChapters = useLibraryStore((s) => s.playerChapters);
+  const toast = useLibraryStore((s) => s.toast);
+  const row = usePlayingRow(session);
+  const segments = useMemo(() => parseSegments(row?.segments), [row?.segments]);
+  const chapters = useMemo(
+    () => (liveChapters.length ? liveChapters : (parseMediaInfo(row?.media_info)?.chapters ?? [])),
+    [liveChapters, row?.media_info],
+  );
   const [visible, setVisible] = useState(true);
   const [panel, setPanel] = useState<Panel>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -355,12 +515,40 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
   const [flash, setFlash] = useState<'play' | 'pause' | null>(null);
   const hideTimer = useRef<number | null>(null);
   const overControls = useRef(false);
-  const advancedFor = useRef<number | null>(null);
+  const autoSkipped = useRef(new Set<string>());
+  const creditsAdvanced = useRef<number | null>(null);
 
   const loading = !state?.loaded || state.buffering || (state.seeking && !state.paused) || (state.idle && !state.paused && !state.eof);
-  const remaining = state && state.duration ? Math.max(0, state.duration - state.time) : 0;
+  const time = state?.time ?? 0;
+  const duration = state?.duration ?? 0;
+  const remaining = duration ? Math.max(0, duration - time) : 0;
   const isHdr = state?.gamma === 'pq' || state?.gamma === 'hlg';
-  const showNext = !!session.next && !!state?.duration && remaining <= NEXT_EPISODE_WINDOW_S && !nextDismissed;
+
+  // Skip Intro / Skip Recap: shown while inside the segment (until its last second).
+  const skippable: Segment | undefined = state?.loaded
+    ? segments.find((x) => (x.kind === 'intro' || x.kind === 'recap') && time >= x.start && time < x.end - 1)
+    : undefined;
+  const skipTo = (seg: Segment) => void playerCommand('seek', Math.min(seg.end, duration - 1).toFixed(2), 'absolute');
+  useEffect(() => {
+    if (!autoSkip || skippable?.kind !== 'intro' || state?.paused) return;
+    const key = `${session.target.id}:${skippable.start}`;
+    if (autoSkipped.current.has(key)) return; // only once, so seeking back into the intro works
+    autoSkipped.current.add(key);
+    skipTo(skippable);
+    toast('Skipped intro', 'info');
+  }, [autoSkip, skippable, session.target.id]);
+
+  // Next episode: from the start of the credits (with a countdown), else the last 30 seconds.
+  const credits = segments.find((x) => x.kind === 'credits' && x.start < duration - 5);
+  const nextFrom = credits ? credits.start : duration - NEXT_EPISODE_WINDOW_S;
+  const nextUntil = credits ? Math.min(credits.start + CREDITS_COUNTDOWN_S, duration) : duration;
+  const showNext = !!session.next && duration > 0 && time >= nextFrom && !nextDismissed;
+  const nextProgress = showNext ? Math.min(1, Math.max(0, (time - nextFrom) / Math.max(1, nextUntil - nextFrom))) : 0;
+  useEffect(() => {
+    if (!showNext || !credits || state?.paused || time < nextUntil || creditsAdvanced.current === session.target.id) return;
+    creditsAdvanced.current = session.target.id;
+    void playBuiltin(session.next!);
+  }, [showNext, credits, time, nextUntil, state?.paused, session]);
 
   // Reset per-item UI when the next episode starts.
   useEffect(() => {
@@ -397,14 +585,6 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
     }, 6000);
     return () => window.clearTimeout(t);
   }, [state?.paused, panel, visible]);
-
-  // End of file: roll into the next episode, or return to the library.
-  useEffect(() => {
-    if (!state?.eof || advancedFor.current === session.target.id) return;
-    advancedFor.current = session.target.id;
-    if (session.next) void playBuiltin(session.next);
-    else window.setTimeout(() => void closeBuiltin(), 1200);
-  }, [state?.eof, session]);
 
   // Track window fullscreen state.
   useEffect(() => {
@@ -462,6 +642,15 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         case 'f':
         case 'F':
           void toggleFullscreen().then(setFullscreen);
+          break;
+        case 'i':
+        case 'I':
+          void enterMini();
+          break;
+        case 's':
+        case 'S':
+          if (skippable) skipTo(skippable);
+          else handled = false;
           break;
         case 'Escape':
           if (panel) setPanel(null);
@@ -590,7 +779,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="mb-2 flex items-center gap-4">
-            <Scrubber time={state?.time ?? 0} duration={state?.duration ?? 0} onSeek={(t) => void playerCommand('seek', t.toFixed(2), 'absolute')} />
+            <Scrubber time={time} duration={duration} chapters={chapters} onSeek={(t) => void playerCommand('seek', t.toFixed(2), 'absolute')} />
             <span className="w-20 text-right text-lg tabular-nums text-white/90">{state?.duration ? formatTimestamp(remaining) : '--:--'}</span>
           </div>
 
@@ -630,6 +819,9 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
               <ControlButton label="Playback Speed" onClick={() => setPanel(panel === 'speed' ? null : 'speed')} active={panel === 'speed'}>
                 <Gauge className="h-8 w-8" />
               </ControlButton>
+              <ControlButton label="Mini player (I) — keep browsing while you watch" onClick={() => void enterMini()}>
+                <PictureInPicture2 className="h-8 w-8" />
+              </ControlButton>
               <ControlButton label={fullscreen ? 'Exit full screen (F)' : 'Full screen (F)'} onClick={() => void toggleFullscreen().then(setFullscreen)}>
                 {fullscreen ? <Minimize className="h-8 w-8" /> : <Maximize className="h-8 w-8" />}
               </ControlButton>
@@ -651,6 +843,28 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
           </div>
         </div>
       </motion.div>
+
+      {/* Skip Intro / Skip Recap */}
+      <AnimatePresence>
+        {skippable && !showNext && !panel && (
+          <motion.button
+            key={skippable.kind}
+            type="button"
+            initial={{ opacity: 0, x: 30 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 30 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              skipTo(skippable);
+            }}
+            className={`absolute right-8 border-2 border-white/80 bg-black/40 px-7 py-3 text-lg font-semibold text-white backdrop-blur-sm transition-[bottom,background-color] hover:bg-white hover:text-black ${
+              controlsShown ? 'bottom-36' : 'bottom-12'
+            }`}
+          >
+            {skippable.kind === 'intro' ? 'Skip Intro' : 'Skip Recap'}
+          </motion.button>
+        )}
+      </AnimatePresence>
 
       {/* Next episode */}
       <AnimatePresence>
@@ -676,7 +890,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
             >
               <span
                 className="absolute inset-y-0 left-0 bg-white transition-[width] duration-200 ease-linear"
-                style={{ width: `${(1 - remaining / NEXT_EPISODE_WINDOW_S) * 100}%` }}
+                style={{ width: `${nextProgress * 100}%` }}
               />
               <span className="relative flex items-center gap-2">
                 <Play className="h-5 w-5 fill-black" strokeWidth={0} /> Next Episode

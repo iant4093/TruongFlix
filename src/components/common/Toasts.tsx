@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertCircle, CheckCircle2, Info, RefreshCw, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { miniRect } from '../../services/player';
 import ProgressBar from './ProgressBar';
 
 const SCAN_RESULT_MS = 4000;
@@ -38,6 +39,10 @@ export default function Toasts() {
 
   const finished = !scan.running;
   const failed = finished && scan.phase === 'error';
+  // Folder-watcher scans stay silent unless something was actually added or removed.
+  const scanVisible = showScan && (!scan.quiet || scan.phase === 'matching' || (finished && !failed && (scan.added > 0 || scan.removed > 0)));
+  const mini = useLibraryStore((s) => s.playerMini);
+  const bottom = mini ? window.innerHeight - miniRect().y + 16 : 24;
   const title = scan.running
     ? scan.phase === 'ratings'
       ? 'Updating IMDb ratings'
@@ -51,7 +56,7 @@ export default function Toasts() {
         : 'Library is up to date';
 
   return (
-    <div className="pointer-events-none fixed bottom-6 right-6 z-[90] flex w-[360px] flex-col items-end gap-2">
+    <div className="pointer-events-none fixed right-6 z-[90] flex w-[360px] flex-col items-end gap-2 transition-[bottom]" style={{ bottom }}>
       {/* popLayout removes exiting items from the flow immediately, so the stack never jumps. */}
       <AnimatePresence initial={false} mode="popLayout">
         {toasts.map((t) => (
@@ -74,7 +79,7 @@ export default function Toasts() {
           </motion.div>
         ))}
 
-        {showScan && (
+        {scanVisible && (
           <motion.div
             key="scan"
             {...enter}
