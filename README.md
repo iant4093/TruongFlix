@@ -62,6 +62,7 @@ Library screenshots use the development preview with sample metadata and artwork
 - Accurate quality badges read from the actual streams (4K, HDR10, Dolby Vision, HEVC/AV1, Atmos, lossless audio), even for badly named files
 - Age ratings (PG-13, TV-MA, …), IMDb ratings for movies, shows, seasons and episodes, Rotten Tomatoes and Metacritic scores (optional free OMDb key), and franchise rows such as "Dune Collection" in watch order
 - Missing episodes shown greyed out, plus "New Episode Friday" for shows that are still airing
+- Mark a whole season or show as watched or unwatched in one go
 - Actor pages: click anyone in the cast to see everything of theirs in your library
 - Version picker when you have the same movie in, say, 1080p and 4K
 
@@ -82,7 +83,9 @@ Library screenshots use the development preview with sample metadata and artwork
 **Playback**
 
 - Built-in player powered by libmpv: hardware decoding, HDR tone mapping and nearly every container and codec
-- Skip Intro and Skip Recap, from chapter markers or by comparing the audio of a season's episodes to find the shared opening (optionally automatic)
+- Skip Intro and Skip Recap, from chapter markers or by comparing the audio of a season's episodes to find the shared opening (optionally automatic), plus "Starts here / Ends here" buttons to fix an intro or credits marker by hand for a single episode
+- Chapter menu with thumbnails (press C) to jump straight to a scene
+- "Stay for the credits": movies with a scene during or after the credits say so on their page and when the credits start (from TMDB's tags)
 - Mini-player: shrink the video into a corner and keep browsing
 - Scrub-bar thumbnails and chapter marks, generated in the background by a second, hidden player
 - Next-episode countdown that starts with the credits, the paused "You're watching" screen, fullscreen and keyboard shortcuts
@@ -99,12 +102,18 @@ Library screenshots use the development preview with sample metadata and artwork
 **Files and subtitles**
 
 - Optional OpenSubtitles integration: search by file hash for perfectly synced results, downloaded next to the video
+- Automatic subtitle downloads: missing subtitles in your language are fetched in the background within OpenSubtitles' daily allowance (in-progress titles first), and inexact matches are synced to the dialogue
 - Optional Plex-style renaming (`Movie (Year)/Movie (Year).mkv`, `Show/Season 01/Show - S01E01.mkv`) with a full preview and undo
 - Loose videos are organized into their own folders, along with their subtitles and artwork
 - Library health page: disk use per title, duplicate copies, unplayable or incomplete downloads, low-quality files worth upgrading, and anything missing subtitles
 - Delete movies, shows or single episodes to Recently Deleted, with full restore for 30 days
 - Show in Finder / File Explorer, and offline drives are never pruned from the library
 - NAS-friendly: network shares reconnect on their own, a sleeping NAS is woken with Wake-on-LAN when you press Play, and shared folders are re-checked for changes made from other devices
+
+**Other screens**
+
+- Cast to a TV: send playback to a Chromecast or a DLNA smart TV, with play/pause, seeking and progress kept in sync. Files the TV can't play are converted on the fly (H.264/AAC, HDR tone-mapped to SDR)
+- Watch in a browser on your home network: turn on browser access in Settings › Devices, scan the QR code with a phone or tablet and enter the access code. Profiles, PINs, kids' limits and progress are shared with the desktop app
 
 ## Install
 
@@ -129,6 +138,7 @@ Installed copies update themselves: they check for a new version once a day (or 
 | App shell | Tauri 2 (Rust), WKWebView on macOS, WebView2 on Windows |
 | Interface | React 18, TypeScript, Vite, Tailwind CSS, Framer Motion, Zustand |
 | Playback | libmpv with FFmpeg; macOS: CAOpenGLLayer under a transparent webview; Windows: owned video window behind a transparent window |
+| Streaming | Built-in HTTP server with byte ranges, on-the-fly HLS/MPEG-TS conversion through a headless libmpv encoder (VideoToolbox / x264), Cast v2 and UPnP AVTransport, Bonjour/mDNS and SSDP discovery, hls.js in the browser app |
 | Metadata | TMDB API v3, IMDb non-commercial datasets, OpenSubtitles REST API |
 | Storage | SQLite via tauri-plugin-sql, local file operations and a same-volume trash |
 | Delivery | GitHub Actions, macOS `.dmg`, Windows NSIS installer, signed auto-updates, SHA-256 checksums |
@@ -161,10 +171,11 @@ npm run app:build
 # TypeScript check and production frontend build
 npm run build
 
-# Rust unit tests: scanner, subtitles and subtitle sync, file management and renaming, intro fingerprinting, NAS helpers, IMDb parsing, VLC auth
+# Rust unit tests: scanner, subtitles and subtitle sync, file management and renaming, intro fingerprinting, NAS helpers, IMDb parsing, VLC auth, cast protocols (incl. a simulated DLNA TV)
 cd src-tauri && cargo test
 
-# Network and engine tests (real IMDb datasets, OpenSubtitles, VLC)
+# Network and engine tests (real IMDb datasets, OpenSubtitles, VLC, a simulated Chromecast, Bonjour discovery,
+# and stream conversion with TRUONGFLIX_STREAM_TEST=/path/to/video.mkv)
 cd src-tauri && cargo test -- --ignored
 
 # Built-in player smoke test on macOS: renders into a real window and reports drawn frames
@@ -193,10 +204,12 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 │   ├── components/         Library, player, profiles, modals, settings and shared UI
 │   ├── services/           Scanner, parser, TMDB, IMDb, subtitles, files, renaming, media analysis, player, updates, SQLite
 │   ├── store/              Zustand store and library selectors
+│   ├── remote/             Browser app served to phones, tablets and other computers on the home network
 │   └── dev/                Browser-preview mock of the Tauri backend (dev only)
 ├── src-tauri/              Rust backend
 │   ├── src/player/         libmpv bindings and macOS/Windows video surfaces
-│   ├── src/                Scanner, folder watcher, media analysis (probe, frames, intro detection), VLC, subtitles, files, IMDb
+│   ├── src/                Scanner, folder watcher, media analysis (probe, frames, intro detection), VLC, subtitles, files, IMDb,
+│   │                       media server and stream conversion (stream.rs), Chromecast/DLNA casting (cast.rs)
 │   └── examples/           Player smoke test
 ├── scripts/                libmpv bundling and release packaging
 ├── docs/                   README screenshots and icon
