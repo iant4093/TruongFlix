@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowLeft,
+  Cast,
   Check,
   Gauge,
   Maximize,
@@ -11,7 +12,9 @@ import {
   Pause,
   PictureInPicture2,
   Play,
+  ListVideo,
   SkipForward,
+  Sparkles,
   Speech,
   Timer,
   Volume1,
@@ -45,6 +48,7 @@ import {
   toggleFullscreen,
 } from '../../services/player';
 import { parseMediaInfo, parseSegments } from '../../services/mediainfo';
+import { setSegments } from '../../services/db';
 import { cancelFrames, coarseToFine, extractFrames } from '../../services/frames';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
@@ -56,7 +60,7 @@ const THUMB_WIDTH = 320;
 const MAX_THUMBS = 400;
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5];
 
-type Panel = 'tracks' | 'speed' | 'sleep' | null;
+type Panel = 'tracks' | 'speed' | 'sleep' | 'chapters' | null;
 
 /** Full-window Netflix-style player chrome drawn over the native video surface. */
 export default function PlayerScreen() {
@@ -726,6 +730,128 @@ function PlayerPrompt({ session }: { session: PlayerSession }) {
   );
 }
 
+const clock = (t: number) => formatTimestamp(Math.max(0, t));
+
+/** Chapter list with thumbnails, plus hand-editing of the intro/credits skip markers. */
+function ChaptersPanel({
+  session,
+  chapters,
+  segments,
+  time,
+  duration,
+  onPick,
+}: {
+  session: PlayerSession;
+  chapters: { title: string; time: number }[];
+  segments: Segment[];
+  time: number;
+  duration: number;
+  onPick: () => void;
+}) {
+  const row = usePlayingRow(session);
+  const reload = useLibraryStore((s) => s.reload);
+  const toast = useLibraryStore((s) => s.toast);
+  const [thumbs, setThumbs] = useState<Record<number, string>>({});
+  const list = chapters.length > 1 ? chapters : [];
+  const currentIdx = list.reduce((acc, c, i) => (c.time <= time + 0.5 ? i : acc), 0);
+
+  useEffect(() => {
+    if (!list.length || !row) return;
+    let alive = true;
+    // A few seconds in, so the thumbnail isn't a black transition frame.
+    const times = list.map((c, i) => Math.min(c.time + 6, ((list[i + 1]?.time ?? duration) + c.time) / 2));
+    void extractFrames({ path: row.file_path, mtime: row.file_mtime, times, width: 240, lane: 'chapters' }, (f) => {
+      if (alive) setThumbs((t) => ({ ...t, [f.index]: f.url }));
+    }).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [row?.file_path, list.length]);
+
+  const intro = segments.find((x) => x.kind === 'intro');
+  const credits = segments.find((x) => x.kind === 'credits');
+  const save = async (next: Segment[], message: string) => {
+    if (!row) return;
+    await setSegments(session.target.type === 'movie' ? 'movies' : 'episodes', row.id, next);
+    await reload();
+    toast(message, 'success');
+  };
+  const others = (kind: Segment['kind']) => segments.filter((x) => x.kind !== kind);
+  const setIntro = (edge: 'start' | 'end') => {
+    const t = Math.round(time * 10) / 10;
+    const start = edge === 'start' ? t : intro && intro.start < t ? intro.start : Math.max(0, t - 60);
+    const end = edge === 'end' ? t : intro && intro.end > t ? intro.end : Math.min(duration, t + 60);
+    void save([...others('intro'), { kind: 'intro', start, end, source: 'manual' }], edge === 'start' ? `Intro starts at ${clock(start)}` : `Intro ends at ${clock(end)}`);
+  };
+  const setCredits = () => {
+    const t = Math.round(time * 10) / 10;
+    void save([...others('credits'), { kind: 'credits', start: t, end: duration, source: 'manual' }], `Credits start at ${clock(t)}`);
+  };
+  const markerBtn = 'rounded bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-40';
+
+  return (
+    <div className="w-[min(560px,90vw)] rounded-md bg-[#262626]/95 p-5 shadow-2xl backdrop-blur">
+      {list.length > 0 && (
+        <>
+          <h3 className="mb-3 text-2xl font-bold">Chapters</h3>
+          <div className="mb-4 max-h-[40vh] space-y-1 overflow-y-auto pr-1">
+            {list.map((c, i) => (
+              <button
+                key={`${c.time}-${i}`}
+                type="button"
+                onClick={() => {
+                  void playerCommand('seek', c.time.toFixed(2), 'absolute');
+                  onPick();
+                }}
+                className={`flex w-full items-center gap-3 rounded p-1.5 text-left transition-colors hover:bg-white/10 ${i === currentIdx ? 'bg-white/10' : ''}`}
+              >
+                <span className="relative aspect-video w-28 shrink-0 overflow-hidden rounded-sm bg-black">
+                  {thumbs[i] && <img src={thumbs[i]} alt="" className="h-full w-full object-cover" />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className={`block truncate ${i === currentIdx ? 'font-semibold text-white' : 'text-[#d2d2d2]'}`}>{c.title || `Chapter ${i + 1}`}</span>
+                  <span className="text-xs tabular-nums text-[#8c8c8c]">{clock(c.time)}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      <h3 className={`${list.length ? 'border-t border-white/10 pt-4' : ''} mb-1 text-lg font-bold`}>Skip markers</h3>
+      <p className="mb-3 text-xs text-[#8c8c8c]">Wrong or missing? Pause where it starts or ends and set it here. Saved for this {session.target.type === 'movie' ? 'movie' : 'episode'}.</p>
+      <div className="space-y-3 text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="w-16 text-[#b3b3b3]">Intro</span>
+          <span className="w-32 tabular-nums">{intro ? `${clock(intro.start)} – ${clock(intro.end)}` : 'Not set'}</span>
+          <button type="button" className={markerBtn} onClick={() => setIntro('start')}>
+            Starts here
+          </button>
+          <button type="button" className={markerBtn} onClick={() => setIntro('end')}>
+            Ends here
+          </button>
+          {intro && (
+            <button type="button" className="text-xs text-[#8c8c8c] hover:text-white" onClick={() => void save(others('intro'), 'Intro marker removed')}>
+              Remove
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="w-16 text-[#b3b3b3]">Credits</span>
+          <span className="w-32 tabular-nums">{credits ? `from ${clock(credits.start)}` : 'Not set'}</span>
+          <button type="button" className={markerBtn} onClick={setCredits}>
+            Start here
+          </button>
+          {credits && (
+            <button type="button" className="text-xs text-[#8c8c8c] hover:text-white" onClick={() => void save(others('credits'), 'Credits marker removed')}>
+              Remove
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main chrome
 // ---------------------------------------------------------------------------
@@ -782,6 +908,13 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
   const nextFrom = credits ? credits.start : duration - NEXT_EPISODE_WINDOW_S;
   const nextUntil = credits ? Math.min(credits.start + CREDITS_COUNTDOWN_S, duration) : duration;
   const showNext = !!session.next && duration > 0 && time >= nextFrom && !nextDismissed && !prompt && sleepTimer?.mode !== 'episode';
+
+  // Credits scene: shown once the credits begin (or in the last 8 minutes when they aren't marked).
+  const stinger = useLibraryStore((s) =>
+    session.target.type === 'movie' ? (s.allItems.find((i) => i.kind === 'movie' && i.versions.some((v) => v.id === session.target.id))?.stinger ?? null) : null,
+  );
+  const creditsFrom = credits ? credits.start : duration - 480;
+  const stingerShown = !!stinger && duration > 600 && time >= creditsFrom && time < duration - 2 && !prompt;
   const nextProgress = showNext ? Math.min(1, Math.max(0, (time - nextFrom) / Math.max(1, nextUntil - nextFrom))) : 0;
   useEffect(() => {
     if (!showNext || !credits || state?.paused || time < nextUntil || creditsAdvanced.current === session.target.id) return;
@@ -894,6 +1027,10 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         case 'i':
         case 'I':
           void enterMini();
+          break;
+        case 'c':
+        case 'C':
+          setPanel(panel === 'chapters' ? null : 'chapters');
           break;
         case 's':
         case 'S':
@@ -1021,6 +1158,15 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
             {isHdr && (
               <span className="rounded-[3px] border border-white/50 px-1.5 py-[1px] text-xs font-semibold tracking-wide">HDR</span>
             )}
+            <button
+              type="button"
+              onClick={() => useLibraryStore.getState().setCastPicker({ target: session.target, start: time })}
+              title="Cast to a TV"
+              aria-label="Cast to a TV"
+              className="flex h-9 w-9 items-center justify-center rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+            >
+              <Cast className="h-5 w-5" />
+            </button>
             {vlcPath && (
               <button
                 type="button"
@@ -1082,6 +1228,9 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
               <ControlButton label="Playback Speed" onClick={() => setPanel(panel === 'speed' ? null : 'speed')} active={panel === 'speed'}>
                 <Gauge className="h-8 w-8" />
               </ControlButton>
+              <ControlButton label="Chapters & skip markers (C)" onClick={() => setPanel(panel === 'chapters' ? null : 'chapters')} active={panel === 'chapters'}>
+                <ListVideo className="h-8 w-8" />
+              </ControlButton>
               <ControlButton label="Sleep timer" onClick={() => setPanel(panel === 'sleep' ? null : 'sleep')} active={panel === 'sleep'}>
                 <Timer className={`h-8 w-8 ${sleepTimer ? 'text-nf-red' : ''}`} />
               </ControlButton>
@@ -1103,6 +1252,8 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
                   >
                     {panel === 'tracks' ? (
                       <TracksPanel tracks={tracks} state={state} />
+                    ) : panel === 'chapters' ? (
+                      <ChaptersPanel session={session} chapters={chapters} segments={segments} time={time} duration={duration} onPick={() => setPanel(null)} />
                     ) : panel === 'sleep' ? (
                       <SleepPanel isEpisode={session.target.type === 'episode'} onPick={() => setPanel(null)} />
                     ) : (
@@ -1117,6 +1268,22 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
       </motion.div>
 
       <PlayerPrompt session={session} />
+
+      {/* "Stay for the credits": a scene during/after them (movies, from TMDB) */}
+      <AnimatePresence>
+        {stingerShown && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute left-1/2 top-6 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-5 py-2.5 text-sm font-semibold backdrop-blur"
+          >
+            <Sparkles className="h-4 w-4 text-[#ffd76a]" />
+            {stinger === 'during' ? 'Keep watching: there’s a scene during the credits' : 'Stay tuned: there’s a scene after the credits'}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Skip Intro / Skip Recap */}
       <AnimatePresence>

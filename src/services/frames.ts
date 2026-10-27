@@ -22,7 +22,7 @@ export interface FrameReady {
  * frame as it lands; starting a new request on the same lane cancels the previous one.
  */
 export async function extractFrames(
-  opts: { path: string; mtime: number; times: number[]; width: number; lane: 'scrub' | 'stills' },
+  opts: { path: string; mtime: number; times: number[]; width: number; lane: 'scrub' | 'stills' | 'chapters' },
   onFrame: (f: FrameReady) => void,
 ): Promise<void> {
   const key = frameKey(opts.path, opts.mtime);
@@ -37,7 +37,7 @@ export async function extractFrames(
 }
 
 /** Stops any extraction running on `lane` (e.g. when playback ends). */
-export function cancelFrames(lane: 'scrub' | 'stills') {
+export function cancelFrames(lane: 'scrub' | 'stills' | 'chapters') {
   void invoke('extract_frames', { path: '', key: 'cancel', times: [], width: 1, lane }).catch(() => {});
 }
 
