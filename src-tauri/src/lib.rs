@@ -1,4 +1,5 @@
 mod audio;
+mod cast;
 mod files;
 mod imdb;
 mod media;
@@ -7,6 +8,7 @@ mod nowplaying;
 mod player;
 mod power;
 mod scanner;
+mod stream;
 mod subsync;
 mod subtitles;
 mod vlc;
@@ -69,11 +71,21 @@ pub fn run() {
                 window.on_window_event(player::on_main_window_event);
             }
             power::start(app.handle());
+            stream::init(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
             update_feed_status,
+            cast::cast_discover,
+            cast::cast_start,
+            cast::cast_control,
+            stream::stream_register,
+            stream::stream_url,
+            stream::stream_release,
+            stream::remote_access_set,
+            stream::server_info,
+            stream::remote_api_reply,
             audio::audio_devices,
             audio::default_audio_device,
             nas::share_info,

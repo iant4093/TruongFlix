@@ -3,12 +3,14 @@ import * as db from '../services/db';
 import { setApiKey } from '../services/tmdb';
 import type {
   BuiltinPlayerState,
+  CastState,
   CollectionRow,
   EpisodeRow,
   MediaItem,
   MovieRow,
   PlaybackState,
   PlayableType,
+  PlayTarget,
   PlayerSession,
   PlayerTrack,
   Profile,
@@ -58,7 +60,7 @@ export interface PinRequest {
   then: () => void;
 }
 
-export type SettingsTab = 'library' | 'playback' | 'audio' | 'subtitles' | 'ratings' | 'home' | 'profiles' | 'trash' | 'about';
+export type SettingsTab = 'library' | 'playback' | 'audio' | 'subtitles' | 'ratings' | 'devices' | 'home' | 'profiles' | 'trash' | 'about';
 
 export type Overlay = 'wrapped' | 'history' | 'rename' | 'health' | null;
 
@@ -89,6 +91,10 @@ interface LibraryState {
   overlay: Overlay;
   playerMini: boolean;
   sleepTimer: SleepTimer | null;
+  /** Casting to a TV (Chromecast / DLNA), or null. */
+  cast: CastState | null;
+  /** The "Cast to…" device picker, with what to cast. */
+  castPicker: { target: PlayTarget; start: number } | null;
   pinRequest: PinRequest | null;
   /** The speakers the player is using right now (resolved from "System default"). */
   audioOutput: { key: string; label: string } | null;
@@ -147,6 +153,9 @@ interface LibraryState {
   setOverlay: (o: Overlay) => void;
   setPlayerMini: (mini: boolean) => void;
   setSleepTimer: (t: SleepTimer | null) => void;
+  setCast: (c: CastState | null) => void;
+  setCastPicker: (p: { target: PlayTarget; start: number } | null) => void;
+  patchCast: (p: Partial<CastState>) => void;
   setPinRequest: (r: PinRequest | null) => void;
   setAudioOutput: (o: { key: string; label: string } | null) => void;
   setPlayerPrompt: (p: 'still-watching' | 'sleep-ended' | 'limit' | 'bedtime' | null) => void;
@@ -194,6 +203,12 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     pause_on_lock: true,
     omdb_api_key: '',
     network_shares: {},
+    subtitles_auto: false,
+    subtitles_auto_sync: true,
+    subtitles_auto_paused: '',
+    remote_access: false,
+    remote_code: '',
+    remote_port: 8732,
   },
   movies: [],
   series: [],
@@ -211,6 +226,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   overlay: null,
   playerMini: false,
   sleepTimer: null,
+  cast: null,
+  castPicker: null,
   settingsTab: 'library',
   pinRequest: null,
   audioOutput: null,
@@ -307,6 +324,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   setOverlay: (overlay) => set({ overlay, hover: null }),
   setPlayerMini: (playerMini) => set({ playerMini, hover: null }),
   setSleepTimer: (sleepTimer) => set({ sleepTimer }),
+  setCast: (cast) => set({ cast }),
+  setCastPicker: (castPicker) => set({ castPicker, hover: null }),
+  patchCast: (patch) => set((s) => (s.cast ? { cast: { ...s.cast, ...patch } } : {})),
   setPinRequest: (pinRequest) => set({ pinRequest }),
   setAudioOutput: (audioOutput) => set({ audioOutput }),
   setPlayerPrompt: (playerPrompt) => set({ playerPrompt }),

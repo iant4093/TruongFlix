@@ -42,7 +42,8 @@ export default function Toasts() {
   // Folder-watcher scans stay silent unless something was actually added or removed.
   const scanVisible = showScan && (!scan.quiet || scan.phase === 'matching' || (finished && !failed && (scan.added > 0 || scan.removed > 0)));
   const mini = useLibraryStore((s) => s.playerMini);
-  const bottom = mini ? window.innerHeight - miniRect().y + 16 : 24;
+  const casting = useLibraryStore((s) => !!s.cast);
+  const bottom = mini ? window.innerHeight - miniRect().y + 16 : casting ? 150 : 24;
   const title = scan.running
     ? scan.phase === 'ratings'
       ? 'Updating IMDb ratings'

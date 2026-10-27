@@ -27,6 +27,9 @@ import { autoCheckForUpdates } from './services/updates';
 import { startBackgroundAnalysis } from './services/enrich';
 import { startFolderWatch } from './services/watch';
 import { initMediaSession } from './services/mediasession';
+import { initCastEvents } from './services/cast';
+import { applyRemoteAccess, initRemoteApi } from './services/remoteapi';
+import { CastBar, CastPicker } from './components/cast/CastUI';
 import { reconnectOfflineShares, refreshShares } from './services/nas';
 
 export default function App() {
@@ -47,6 +50,7 @@ export default function App() {
     init()
       .then(() => autoPurgeTrash().catch((e) => console.warn('[trash] auto-purge failed', e)))
       .then(async () => {
+        void applyRemoteAccess().catch((e) => console.warn('[remote]', e));
         // Bring back NAS folders that dropped off while the app was closed, then note any shares.
         await reconnectOfflineShares().catch(() => []);
         void refreshShares().then(() => startFolderWatch());
@@ -66,6 +70,8 @@ export default function App() {
     void engineStatus();
     initPlayerEvents().catch((e) => console.warn('Player events unavailable', e));
     initMediaSession().catch((e) => console.warn('Media keys unavailable', e));
+    initCastEvents().catch((e) => console.warn('Casting unavailable', e));
+    initRemoteApi().catch((e) => console.warn('Browser access unavailable', e));
   }, [init]);
 
   // Lock page scroll behind overlays.
@@ -163,6 +169,8 @@ export default function App() {
         </AnimatePresence>
       </div>
       <MiniPlayer />
+      <CastBar />
+      <CastPicker />
       <PlayerScreen />
       <ProfileGate />
       <PinPrompt />

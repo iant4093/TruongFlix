@@ -67,6 +67,9 @@ function movie(
     rt_score: null,
     metacritic: null,
     omdb_at: null,
+    stinger: '',
+    subs_auto_at: null,
+    subs_auto_result: null,
     ...extra,
   };
 }
@@ -101,6 +104,7 @@ const movies: MovieRow[] = [
     certification: 'R',
     rt_score: 83,
     metacritic: 73,
+    stinger: 'after',
     collection_id: 2344,
     collection_name: 'The Matrix Collection',
     trailer_key: 'vKQi3bBA1y8',
@@ -316,6 +320,8 @@ for (const s of series) {
         probed_mtime: 0,
         intro_checked: 1,
         probe_error: null,
+        subs_auto_at: null,
+        subs_auto_result: null,
         // Library-health samples: an unreadable file and some 720p episodes.
         ...(s.id === 101 && season === 2 && e === 4 ? { probe_error: 'couldn’t be opened or decoded', resolution: null } : {}),
         ...(s.id === 102 && season === 1 ? { resolution: '720p', hdr_format: null, file_size: 0.9e9 } : {}),
@@ -852,6 +858,47 @@ export function installMocks() {
           return true;
         case 'subtitle_sync_backup_exists':
           return false;
+        case 'cast_discover':
+          return new Promise((r) =>
+            setTimeout(
+              () =>
+                r([
+                  { id: 'cc1', name: 'Living Room TV', kind: 'chromecast', host: '192.168.1.40', port: 8009, model: 'Google TV Streamer', av_transport: null, rendering: null },
+                  { id: 'tv2', name: '[LG] webOS TV OLED55', kind: 'dlna', host: '192.168.1.41', port: 1400, model: 'OLED55C3', av_transport: 'http://192.168.1.41:1400/avt', rendering: null },
+                ]),
+              1200,
+            ),
+          );
+        case 'cast_start': {
+          const media = a.media as { start: number; duration: number };
+          let t = media.start;
+          void emit('cast-status', { state: 'buffering', time: t, duration: media.duration, message: null });
+          const w = window as unknown as { __castTimer?: number; __castPaused?: boolean };
+          window.clearInterval(w.__castTimer);
+          w.__castPaused = false;
+          w.__castTimer = window.setInterval(() => {
+            if (!w.__castPaused) t += 1;
+            void emit('cast-status', { state: w.__castPaused ? 'paused' : 'playing', time: t, duration: media.duration, message: null });
+          }, 1000);
+          return null;
+        }
+        case 'cast_control': {
+          const w = window as unknown as { __castTimer?: number; __castPaused?: boolean };
+          if (a.action === 'pause') w.__castPaused = true;
+          if (a.action === 'play') w.__castPaused = false;
+          if (a.action === 'stop') window.clearInterval(w.__castTimer);
+          return null;
+        }
+        case 'stream_register':
+          return `tok${Math.random().toString(16).slice(2, 10)}`;
+        case 'stream_url':
+          return { url: `http://192.168.1.20:8732/stream/${a.token}/job/index.m3u8`, path: `/stream/${a.token}/job/index.m3u8`, offset: Number(a.start) || 0 };
+        case 'stream_release':
+          return null;
+        case 'remote_access_set':
+          return { port: Number(a.port) || 8732, addresses: ['192.168.1.20'], web_enabled: !!a.enabled };
+        case 'server_info':
+          return { port: 8732, addresses: ['192.168.1.20'], web_enabled: false };
         case 'sidecar_subtitle_languages':
           return ((a.videoPaths as string[]) ?? []).map((p) => (p.includes('Severance/Season 1/') ? ['en'] : []));
         case 'detect_intros':

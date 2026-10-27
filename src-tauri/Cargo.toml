@@ -20,7 +20,9 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
-tokio = { version = "1", features = ["time", "net", "io-util"] }
+tokio = { version = "1", features = ["time", "net", "io-util", "sync", "fs"] }
+getrandom = "0.2"
+native-tls = "0.2"
 # OpenSubtitles API (needs a custom User-Agent, which webviews can't set). OS-native TLS keeps it small.
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 # Decompresses IMDb's public .tsv.gz datasets (pure-Rust backend).
@@ -32,6 +34,7 @@ tauri-plugin-process = "2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 [target.'cfg(windows)'.dependencies]
+mdns-sd = "0.13"
 souvlaki = { version = "0.8", default-features = false }
 # Same version souvlaki uses, so it is only compiled once.
 windows = { version = "0.44", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com"] }
