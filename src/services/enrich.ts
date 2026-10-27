@@ -6,6 +6,7 @@ import * as db from './db';
 import { parseSegments, segmentsFromChapters, techFromInfo } from './mediainfo';
 import * as tmdb from './tmdb';
 import { fetchCriticScores, OmdbError } from './omdb';
+import { runAutoSubtitles } from './autosubs';
 
 const PROBE_CHUNK = 6;
 /** How much of each episode's audio is compared when looking for the intro. */
@@ -42,6 +43,7 @@ export async function startBackgroundAnalysis() {
       await fetchCollections();
       await fetchCriticRatings();
       if (useLibraryStore.getState().settings.intro_detection) await detectIntros();
+      if (useLibraryStore.getState().settings.subtitles_auto) await runAutoSubtitles();
     } while (again);
   } catch (e) {
     console.warn('[analysis]', e);
@@ -80,10 +82,12 @@ async function probeFiles() {
         await db.markProbeFailed(table, row.id, row.file_mtime, info.error, info.size ?? null);
         continue;
       }
-      const fromChapters = segmentsFromChapters(info);
-      // Keep an audio-detected intro unless the chapters now provide one.
-      const kept = parseSegments(row.segments).filter((s) => s.source === 'audio' && !fromChapters.some((c) => c.kind === s.kind));
-      await db.saveMediaInfo(table, row.id, row.file_mtime, info, techFromInfo(info, row), [...fromChapters, ...kept]);
+      const existing = parseSegments(row.segments);
+      // Markers set by hand always win; audio-detected ones stay unless the chapters now cover them.
+      const manual = existing.filter((s) => s.source === 'manual');
+      const fromChapters = segmentsFromChapters(info).filter((c) => !manual.some((m) => m.kind === c.kind));
+      const audio = existing.filter((s) => s.source === 'audio' && ![...manual, ...fromChapters].some((c) => c.kind === s.kind));
+      await db.saveMediaInfo(table, row.id, row.file_mtime, info, techFromInfo(info, row), [...manual, ...fromChapters, ...audio]);
     }
     if ((i / PROBE_CHUNK) % 5 === 4) await useLibraryStore.getState().reload();
   }
@@ -92,7 +96,8 @@ async function probeFiles() {
 
 async function fetchExtras() {
   const { movies, series } = useLibraryStore.getState();
-  const movieIds = [...new Set(movies.filter((m) => m.tmdb_id && !m.enriched_at).map((m) => m.tmdb_id!))];
+  // `stinger` arrived later: movies enriched before it are fetched once more.
+  const movieIds = [...new Set(movies.filter((m) => m.tmdb_id && (!m.enriched_at || m.stinger == null)).map((m) => m.tmdb_id!))];
   const stale = (at: string | null) => !at || Date.now() - Date.parse(at.replace(' ', 'T') + 'Z') > SERIES_REFRESH_DAYS * 864e5;
   const shows = series.filter((s) => s.tmdb_id > 0 && (!s.enriched_at || (s.tmdb_status !== 'Ended' && s.tmdb_status !== 'Canceled' && stale(s.enriched_at))));
   const total = movieIds.length + shows.length;
@@ -219,7 +224,9 @@ async function detectIntros() {
           const seg = found[k];
           const existing = parseSegments(e.segments);
           const isPending = pending.includes(e);
-          if (seg && (isPending || !existing.some((s) => s.kind === 'intro'))) {
+          if (existing.some((s) => s.kind === 'intro' && s.source === 'manual')) {
+            if (isPending) await db.markIntroChecked([e.id]); // never replace an intro set by hand
+          } else if (seg && (isPending || !existing.some((s) => s.kind === 'intro'))) {
             const intro: Segment = { kind: 'intro', start: seg[0], end: seg[1], source: 'audio' };
             await db.saveSegments(e.id, [...existing.filter((s) => s.kind !== 'intro'), intro]);
           } else if (isPending) {

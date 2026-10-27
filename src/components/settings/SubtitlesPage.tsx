@@ -2,7 +2,10 @@ import { useState } from 'react';
 import type { SubtitleStyle } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { OpenSubtitlesFields, type SubtitleSettingsValue } from '../common/SetupControls';
-import { Block, BTN_PRIMARY, Group, Page, Row, Segmented } from './ui';
+import { Loader2, RefreshCw } from 'lucide-react';
+import { runAutoSubtitles } from '../../services/autosubs';
+import { languageName } from '../../services/subtitles';
+import { Block, BTN, BTN_PRIMARY, Group, Page, Row, Segmented, StatusText, ToggleRow } from './ui';
 
 const PREVIEW_SIZE: Record<SubtitleStyle['size'], string> = { small: '13px', medium: '16px', large: '20px', xlarge: '25px' };
 const PREVIEW_COLOR: Record<SubtitleStyle['color'], string> = { white: '#fff', yellow: '#FFE600', cyan: '#3DE1FF', green: '#4CFF6B', magenta: '#FF5CF2' };
@@ -75,6 +78,8 @@ export default function SubtitlesPage() {
         </Row>
       </Group>
 
+      <AutoDownloads />
+
       <Group
         title="Downloads · OpenSubtitles"
         footer={settings.opensubtitles_api_key ? 'Search from any title page, or from the player.' : 'Subtitle search is off until an API key is added.'}
@@ -93,5 +98,58 @@ export default function SubtitlesPage() {
         </Row>
       </Group>
     </Page>
+  );
+}
+
+function AutoDownloads() {
+  const settings = useLibraryStore((s) => s.settings);
+  const updateSettings = useLibraryStore((s) => s.updateSettings);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const enabled = !!settings.opensubtitles_api_key;
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    const r = await runAutoSubtitles(true);
+    setBusy(false);
+    setResult(r.message);
+  };
+  return (
+    <Group
+      title="Automatic downloads"
+      footer={`Works through the titles missing ${languageName(settings.subtitle_language || 'en')} subtitles (see Library Health), in-progress ones first, within OpenSubtitles’ daily allowance.`}
+    >
+      <ToggleRow
+        label="Download missing subtitles automatically"
+        description={enabled ? 'Runs quietly after scans and at launch, never while you’re watching.' : 'Needs an OpenSubtitles API key (below).'}
+        checked={settings.subtitles_auto}
+        onChange={(v) => {
+          void updateSettings({ subtitles_auto: v });
+          if (v && enabled) void run();
+        }}
+      />
+      <ToggleRow
+        label="Fix the timing of inexact matches"
+        description="When the subtitle isn’t made for your exact file, it’s lined up with the dialogue after downloading."
+        checked={settings.subtitles_auto_sync}
+        onChange={(v) => void updateSettings({ subtitles_auto_sync: v })}
+      />
+      <Row
+        label="Run now"
+        description={
+          result ? (
+            <StatusText tone="muted">{result}</StatusText>
+          ) : settings.subtitles_auto_paused ? (
+            `Daily allowance ran out on ${settings.subtitles_auto_paused}.`
+          ) : (
+            'Checks your library for missing subtitles right away.'
+          )
+        }
+      >
+        <button onClick={() => void run()} disabled={busy || !enabled} className={BTN}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Run now
+        </button>
+      </Row>
+    </Group>
   );
 }
