@@ -62,6 +62,10 @@ export interface MovieRow extends TechInfo, ImdbInfo {
   rt_score: number | null;
   metacritic: number | null;
   omdb_at: string | null;
+  /** Scene during/after the credits (TMDB keywords): 'during' | 'after' | 'both' | '' (none) | null (unknown). */
+  stinger: string | null;
+  subs_auto_at: string | null;
+  subs_auto_result: string | null;
 }
 
 export interface SeriesRow extends ImdbInfo {
@@ -116,6 +120,8 @@ export interface EpisodeRow extends TechInfo, ImdbInfo {
   probed_mtime: number | null;
   intro_checked: number | null;
   probe_error: string | null;
+  subs_auto_at: string | null;
+  subs_auto_result: string | null;
 }
 
 /** Real stream information read by the Rust `media_probe` command. */
@@ -143,7 +149,7 @@ export interface Segment {
   kind: SegmentKind;
   start: number;
   end: number;
-  source: 'chapter' | 'audio';
+  source: 'chapter' | 'audio' | 'manual';
 }
 
 export interface NextEpisode {
@@ -271,6 +277,8 @@ export interface MediaItem {
   /** Rotten Tomatoes critics score (%) and Metacritic score, from OMDb. */
   rtScore: number | null;
   metacritic: number | null;
+  /** Movies: a scene during and/or after the credits. */
+  stinger: 'during' | 'after' | 'both' | null;
   /** TV only: IMDb season averages keyed by season number. */
   imdbSeasons: Record<number, SeasonRating>;
   certification: string | null;
@@ -388,6 +396,15 @@ export interface Settings {
   omdb_api_key: string;
   /** Network shares behind media folders, keyed by media folder. */
   network_shares: Record<string, ShareInfo>;
+  /** Download missing subtitles in the background (and fix the timing of inexact matches). */
+  subtitles_auto: boolean;
+  subtitles_auto_sync: boolean;
+  /** Local date when OpenSubtitles' daily allowance ran out ("" = not paused). */
+  subtitles_auto_paused: string;
+  /** Library in a web browser on the local network. */
+  remote_access: boolean;
+  remote_code: string;
+  remote_port: number;
 }
 
 export type SleepTimer = { mode: 'minutes'; minutes: number; endsAt: number } | { mode: 'episode' };
@@ -508,3 +525,32 @@ export interface SubtitleRow {
   selected: number;
   created_at: string;
 }
+
+/** A Chromecast or DLNA TV on the network (from the Rust `cast_discover` command). */
+export interface CastDevice {
+  id: string;
+  name: string;
+  kind: 'chromecast' | 'dlna';
+  host: string;
+  port: number;
+  model: string | null;
+  av_transport: string | null;
+  rendering: string | null;
+}
+
+export interface CastState {
+  device: CastDevice;
+  target: PlayTarget;
+  title: string;
+  subtitle: string | null;
+  image: string | null;
+  state: 'connecting' | 'buffering' | 'playing' | 'paused' | 'idle' | 'ended' | 'error';
+  time: number;
+  duration: number;
+  /** Converted streams start at `offset`; the device reports time from there. */
+  offset: number;
+  message: string | null;
+  next: PlayTarget | null;
+  converting: boolean;
+}
+

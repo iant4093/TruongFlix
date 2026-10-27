@@ -210,6 +210,9 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['rt_score', 'INTEGER'], // Rotten Tomatoes critics %, from OMDb
     ['metacritic', 'INTEGER'],
     ['omdb_at', 'DATETIME'],
+    ['stinger', 'TEXT'], // 'during' | 'after' | 'both' | '' — scene during/after the credits
+    ['subs_auto_at', 'DATETIME'], // automatic subtitle download attempted
+    ['subs_auto_result', 'TEXT'], // 'found' | 'none'
   ],
   tv_series: [
     ['imdb_id', 'TEXT'],
@@ -235,6 +238,8 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['probed_mtime', 'INTEGER'],
     ['intro_checked', 'INTEGER'], // audio intro detection done
     ['probe_error', 'TEXT'],
+    ['subs_auto_at', 'DATETIME'],
+    ['subs_auto_result', 'TEXT'],
   ],
 };
 
@@ -356,6 +361,12 @@ export async function getSettings(): Promise<Settings> {
     pause_on_lock: map.pause_on_lock !== 'false',
     omdb_api_key: map.omdb_api_key ?? '',
     network_shares: parseObject<Record<string, ShareInfo>>(map.network_shares),
+    subtitles_auto: map.subtitles_auto === 'true',
+    subtitles_auto_sync: map.subtitles_auto_sync !== 'false',
+    subtitles_auto_paused: map.subtitles_auto_paused ?? '',
+    remote_access: map.remote_access === 'true',
+    remote_code: map.remote_code ?? '',
+    remote_port: Number(map.remote_port) || 8732,
   };
 }
 
@@ -476,8 +487,7 @@ const mediaDuration = (json: string | null) => {
   }
 };
 
-export async function loadLibrary() {
-  const p = activeProfile;
+export async function loadLibrary(p = activeProfile) {
   const [movies, series, episodes] = await Promise.all([
     select<(MovieRow & StateCols)[]>(
       `SELECT m.*, ${STATE_SELECT} FROM movies m
@@ -569,6 +579,7 @@ export interface MovieExtras {
   collection_id: number;
   collection_name: string | null;
   trailer_key: string;
+  stinger: string;
 }
 
 export interface SeriesExtras {
@@ -590,13 +601,13 @@ export async function upsertMovie(file: FileInfo, meta: MovieMetadata, tech: Tec
     `INSERT INTO movies (tmdb_id, file_path, raw_filename, file_mtime, title, original_title, year, overview, tagline,
        runtime, vote_average, genres, cast_crew, poster_path, backdrop_path, logo_path,
        resolution, video_codec, hdr_format, audio_codec, imdb_id, file_size,
-       certification, collection_id, collection_name, trailer_key, enriched_at)
+       certification, collection_id, collection_name, trailer_key, enriched_at, stinger)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,
-       CASE WHEN $23 IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)
+       CASE WHEN $23 IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END, $27)
      ON CONFLICT(file_path) DO UPDATE SET
        file_size = excluded.file_size, certification = excluded.certification,
        collection_id = excluded.collection_id, collection_name = excluded.collection_name,
-       trailer_key = excluded.trailer_key, enriched_at = excluded.enriched_at,
+       trailer_key = excluded.trailer_key, enriched_at = excluded.enriched_at, stinger = excluded.stinger,
        imdb_rating = CASE WHEN movies.imdb_id IS excluded.imdb_id THEN movies.imdb_rating END,
        imdb_votes = CASE WHEN movies.imdb_id IS excluded.imdb_id THEN movies.imdb_votes END,
        imdb_id = excluded.imdb_id,
@@ -613,7 +624,7 @@ export async function upsertMovie(file: FileInfo, meta: MovieMetadata, tech: Tec
       meta.poster_path, meta.backdrop_path, meta.logo_path,
       tech.resolution, tech.video_codec, tech.hdr_format, tech.audio_codec, meta.imdb_id, file.file_size ?? null,
       meta.extras?.certification ?? null, meta.extras?.collection_id ?? null, meta.extras?.collection_name ?? null,
-      meta.extras?.trailer_key ?? null,
+      meta.extras?.trailer_key ?? null, meta.extras?.stinger ?? null,
     ],
   );
 }
@@ -623,13 +634,13 @@ export async function updateMovieMetadata(id: number, meta: MovieMetadata) {
     `UPDATE movies SET tmdb_id=$1, title=$2, original_title=$3, year=$4, overview=$5, tagline=$6, runtime=$7,
        vote_average=$8, genres=$9, cast_crew=$10, poster_path=$11, backdrop_path=$12, logo_path=$13,
        imdb_id=$15, imdb_rating=NULL, imdb_votes=NULL, certification=$16, collection_id=$17, collection_name=$18,
-       trailer_key=$19, enriched_at=CASE WHEN $16 IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END
+       trailer_key=$19, stinger=$20, enriched_at=CASE WHEN $16 IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END
      WHERE id=$14`,
     [
       meta.tmdb_id, meta.title, meta.original_title, meta.year, meta.overview, meta.tagline, meta.runtime,
       meta.vote_average, json(meta.genres), json(meta.cast_crew), meta.poster_path, meta.backdrop_path,
       meta.logo_path, id, meta.imdb_id, meta.extras?.certification ?? null, meta.extras?.collection_id ?? null,
-      meta.extras?.collection_name ?? null, meta.extras?.trailer_key ?? null,
+      meta.extras?.collection_name ?? null, meta.extras?.trailer_key ?? null, meta.extras?.stinger ?? null,
     ],
   );
 }
@@ -802,16 +813,17 @@ export async function clearLibrary() {
 // User state
 // ---------------------------------------------------------------------------
 
-/** Upserts the active profile's state for one item. Only the given fields change. */
+/** Upserts a profile's state for one item (the active profile by default). Only the given fields change. */
 async function upsertState(
   mediaType: 'movie' | 'episode' | 'tv',
   id: number,
   fields: Partial<{ progress_seconds: number; duration_seconds: number; watched: number; my_list: number; last_watched_at: 'now' | null }>,
+  profileId = activeProfile,
 ) {
   const cols = Object.keys(fields);
   const values = cols.map((c) => (fields as Record<string, unknown>)[c]);
   const valueSql = cols.map((c, i) => (c === 'last_watched_at' && values[i] === 'now' ? 'CURRENT_TIMESTAMP' : `$${i + 4}`));
-  const params = [activeProfile, mediaType, id, ...values.map((v) => (v === 'now' ? null : v))];
+  const params = [profileId, mediaType, id, ...values.map((v) => (v === 'now' ? null : v))];
   await exec(
     `INSERT INTO profile_state (profile_id, media_type, media_id, ${cols.join(', ')})
      VALUES ($1, $2, $3, ${valueSql.join(', ')})
@@ -825,8 +837,8 @@ async function seriesOf(episodeId: number): Promise<number | null> {
   return rows[0]?.series_id ?? null;
 }
 
-export async function setMyList(kind: 'movie' | 'tv', id: number, value: boolean) {
-  await upsertState(kind, id, { my_list: value ? 1 : 0 });
+export async function setMyList(kind: 'movie' | 'tv', id: number, value: boolean, profileId = activeProfile) {
+  await upsertState(kind, id, { my_list: value ? 1 : 0 }, profileId);
 }
 
 export const CONTINUE_MIN_SECONDS = 30;
@@ -840,20 +852,21 @@ export async function recordProgress(
   id: number,
   time: number,
   length: number,
+  profileId = activeProfile,
 ): Promise<ProgressOutcome> {
   if (!length || length <= 0) return 'ignored';
   const ratio = time / length;
   let outcome: ProgressOutcome = 'ignored';
   if (ratio >= COMPLETED_RATIO) {
-    await upsertState(type, id, { watched: 1, progress_seconds: 0, duration_seconds: Math.round(length), last_watched_at: 'now' });
+    await upsertState(type, id, { watched: 1, progress_seconds: 0, duration_seconds: Math.round(length), last_watched_at: 'now' }, profileId);
     outcome = 'completed';
   } else if (time > CONTINUE_MIN_SECONDS) {
-    await upsertState(type, id, { watched: 0, progress_seconds: Math.floor(time), duration_seconds: Math.round(length), last_watched_at: 'now' });
+    await upsertState(type, id, { watched: 0, progress_seconds: Math.floor(time), duration_seconds: Math.round(length), last_watched_at: 'now' }, profileId);
     outcome = 'progress';
   }
   if (outcome !== 'ignored' && type === 'episode') {
     const series = await seriesOf(id);
-    if (series != null) await upsertState('tv', series, { last_watched_at: 'now' });
+    if (series != null) await upsertState('tv', series, { last_watched_at: 'now' }, profileId);
   }
   return outcome;
 }
@@ -890,6 +903,7 @@ export async function logWatchTime(
   id: number,
   seconds: number,
   meta: { title: string; series_id: number | null; series_title: string | null; genres: string[]; season: number | null; episode: number | null; poster: string | null },
+  profileId = activeProfile,
 ) {
   if (!(seconds > 0)) return;
   const d = new Date();
@@ -900,7 +914,7 @@ export async function logWatchTime(
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT(profile_id, media_type, media_id, day) DO UPDATE SET seconds = watch_log.seconds + excluded.seconds,
        title = excluded.title, series_title = excluded.series_title, genres = excluded.genres, poster = excluded.poster`,
-    [activeProfile, type, id, day, seconds, meta.title, meta.series_id, meta.series_title, json(meta.genres), meta.season, meta.episode, meta.poster],
+    [profileId, type, id, day, seconds, meta.title, meta.series_id, meta.series_title, json(meta.genres), meta.season, meta.episode, meta.poster],
   );
 }
 
@@ -933,6 +947,25 @@ export async function markProbeFailed(table: 'movies' | 'episodes', id: number, 
   ]);
 }
 
+/** Replaces a title's skip markers (e.g. after fixing the intro by hand). */
+export async function setSegments(table: 'movies' | 'episodes', id: number, segments: Segment[]) {
+  const extra = table === 'episodes' ? ', intro_checked = 1' : '';
+  await exec(`UPDATE ${table} SET segments = $2${extra} WHERE id = $1`, [id, JSON.stringify(segments)]);
+}
+
+/** Marks many episodes watched/unwatched at once (a season or a whole show). */
+export async function setEpisodesWatched(ids: number[], watched: boolean) {
+  for (const id of ids) await upsertState('episode', id, { watched: watched ? 1 : 0, progress_seconds: 0, last_watched_at: watched ? 'now' : null });
+  if (watched && ids.length) {
+    const series = await seriesOf(ids[ids.length - 1]);
+    if (series != null) await upsertState('tv', series, { last_watched_at: 'now' });
+  }
+}
+
+export async function markSubtitleAttempt(table: 'movies' | 'episodes', id: number, result: 'found' | 'none') {
+  await exec(`UPDATE ${table} SET subs_auto_at = CURRENT_TIMESTAMP, subs_auto_result = $2 WHERE id = $1`, [id, result]);
+}
+
 export async function saveSegments(id: number, segments: Segment[]) {
   await exec('UPDATE episodes SET segments = $2, intro_checked = 1 WHERE id = $1', [id, JSON.stringify(segments)]);
 }
@@ -943,9 +976,9 @@ export async function markIntroChecked(ids: number[]) {
 
 export async function saveMovieExtras(tmdbId: number, x: MovieExtras) {
   await exec(
-    `UPDATE movies SET certification = $2, collection_id = $3, collection_name = $4, trailer_key = $5,
+    `UPDATE movies SET certification = $2, collection_id = $3, collection_name = $4, trailer_key = $5, stinger = $6,
        enriched_at = CURRENT_TIMESTAMP WHERE tmdb_id = $1`,
-    [tmdbId, x.certification, x.collection_id, x.collection_name, x.trailer_key],
+    [tmdbId, x.certification, x.collection_id, x.collection_name, x.trailer_key, x.stinger],
   );
 }
 
