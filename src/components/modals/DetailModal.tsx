@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Check, ChevronRight, FolderOpen, Play, Plus, Trash2, Wrench, X } from 'lucide-react';
+import { Cast, Check, CheckCheck, ChevronRight, FolderOpen, Play, Plus, Sparkles, Trash2, Wrench, X } from 'lucide-react';
 import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
 import EpisodeDetail from './EpisodeDetail';
 import SubtitlesPanel from '../common/SubtitlesPanel';
@@ -11,6 +11,7 @@ import CriticScores from '../common/CriticScores';
 import { CastLinks, StreamInfo } from '../common/StreamInfo';
 import type { CollectionPart, EpisodeRow, MediaItem, PlayTarget, SeasonEpisodeInfo } from '../../types/media';
 import * as db from '../../services/db';
+import { setEpisodesWatched } from '../../services/db';
 import { getSeasonEpisodes } from '../../services/tmdb';
 import { parseMediaInfo } from '../../services/mediainfo';
 import { selectItem, useLibraryStore } from '../../store/useLibraryStore';
@@ -181,6 +182,15 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             >
               {item.myList ? <Check className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
             </button>
+            {target && (
+              <button
+                onClick={() => useLibraryStore.getState().setCastPicker({ target, start: target.startTime })}
+                title="Cast to a TV"
+                className="nf-circle-btn h-11 w-11"
+              >
+                <Cast className="h-4 w-4" />
+              </button>
+            )}
             <button onClick={() => openFixMatch(item.key)} title="Fix Match" className="nf-circle-btn h-11 w-11">
               <Wrench className="h-4 w-4" />
             </button>
@@ -213,6 +223,12 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
             <ImdbRating rating={item.imdbRating} votes={item.imdbVotes} imdbId={item.imdbId} showVotes size="md" />
             <CriticScores rt={item.rtScore} metacritic={item.metacritic} size="md" />
+            {item.stinger && (
+              <span className="flex items-center gap-1 text-sm text-[#ffd76a]" title="TMDB lists a scene during or after the credits">
+                <Sparkles className="h-4 w-4" />
+                {item.stinger === 'during' ? 'Scene during the credits' : item.stinger === 'after' ? 'Scene after the credits' : 'Scenes during & after the credits'}
+              </span>
+            )}
             {item.year && <span className="text-nf-secondary">{item.year}</span>}
             <MaturityRating rating={item.certification} size="md" />
             {item.kind === 'movie' && item.runtime ? <span className="text-nf-secondary">{formatRuntime(item.runtime)}</span> : null}
@@ -394,15 +410,18 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
             className="text-sm"
           />
         </div>
-        <Dropdown
-          value={season}
-          options={seasonOptions}
-          onChange={onSeasonChange}
-          size="lg"
-          align="right"
-          ariaLabel="Season"
-          className="min-w-[160px]"
-        />
+        <div className="flex items-center gap-2">
+          <WatchedMenu episodes={episodes} season={season} seasonLabel={seasonName(season)} />
+          <Dropdown
+            value={season}
+            options={seasonOptions}
+            onChange={onSeasonChange}
+            size="lg"
+            align="right"
+            ariaLabel="Season"
+            className="min-w-[160px]"
+          />
+        </div>
       </div>
 
       <div>
@@ -544,6 +563,56 @@ function CollectionSection({ item }: { item: MediaItem }) {
         })}
       </div>
     </section>
+  );
+}
+
+/** Marks a whole season (or the show) watched or unwatched. */
+function WatchedMenu({ episodes, season, seasonLabel }: { episodes: EpisodeRow[]; season: number; seasonLabel: string }) {
+  const reload = useLibraryStore((s) => s.reload);
+  const toast = useLibraryStore((s) => s.toast);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [open]);
+  const inSeason = episodes.filter((e) => e.season_number === season);
+  const run = async (list: EpisodeRow[], watched: boolean, label: string) => {
+    setOpen(false);
+    await setEpisodesWatched(list.map((e) => e.id), watched);
+    await reload();
+    toast(`${label} marked ${watched ? 'watched' : 'unwatched'}`, 'success');
+  };
+  const item = 'block w-full px-4 py-2 text-left text-sm hover:bg-white/10';
+  return (
+    <div ref={ref} className="relative">
+      <button onClick={() => setOpen(!open)} title="Mark watched or unwatched" className="nf-circle-btn h-11 w-11">
+        <CheckCheck className="h-5 w-5" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-20 mt-2 w-60 overflow-hidden rounded-md border border-white/15 bg-[#242424] py-1 shadow-2xl">
+          {inSeason.length > 0 && (
+            <>
+              <button className={item} onClick={() => void run(inSeason, true, seasonLabel)}>
+                Mark {seasonLabel} watched
+              </button>
+              <button className={item} onClick={() => void run(inSeason, false, seasonLabel)}>
+                Mark {seasonLabel} unwatched
+              </button>
+              <div className="my-1 border-t border-white/10" />
+            </>
+          )}
+          <button className={item} onClick={() => void run(episodes, true, 'Every episode')}>
+            Mark whole show watched
+          </button>
+          <button className={item} onClick={() => void run(episodes, false, 'Every episode')}>
+            Mark whole show unwatched
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
