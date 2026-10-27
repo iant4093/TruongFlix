@@ -144,6 +144,7 @@ interface TmdbMovie {
   release_dates?: { results?: { iso_3166_1: string; release_dates: { certification: string; type: number }[] }[] };
   videos?: { results?: TmdbVideo[] };
   belongs_to_collection?: { id: number; name: string } | null;
+  keywords?: { keywords?: { id: number; name: string }[] };
 }
 interface TmdbVideo {
   key: string;
@@ -286,7 +287,7 @@ export async function findMovie(title: string, year: number | null): Promise<num
 
 export async function getMovieDetails(tmdbId: number): Promise<MovieMetadata> {
   const d = await request<TmdbMovie>(`/movie/${tmdbId}`, {
-    append_to_response: 'credits,images,release_dates,videos',
+    append_to_response: 'credits,images,release_dates,videos,keywords',
     include_image_language: 'en,null',
   });
   return {
@@ -316,7 +317,16 @@ function movieExtras(d: TmdbMovie): MovieExtras {
     collection_id: d.belongs_to_collection?.id ?? 0,
     collection_name: d.belongs_to_collection?.name ?? null,
     trailer_key: pickTrailer(d.videos?.results),
+    stinger: stingerOf(d),
   };
+}
+
+/** TMDB tags movies with "duringcreditsstinger" / "aftercreditsstinger" when there's a scene in or after the credits. */
+function stingerOf(d: TmdbMovie): string {
+  const names = new Set((d.keywords?.keywords ?? []).map((k) => k.name.toLowerCase()));
+  const during = names.has('duringcreditsstinger');
+  const after = names.has('aftercreditsstinger');
+  return during && after ? 'both' : during ? 'during' : after ? 'after' : '';
 }
 
 /** Best YouTube trailer: official English trailer, then any trailer, then a teaser. */
@@ -329,7 +339,7 @@ function pickTrailer(videos: TmdbVideo[] | undefined): string {
 
 /** Rating, collection and trailer for a movie already in the library (one request). */
 export async function getMovieExtras(tmdbId: number): Promise<MovieExtras> {
-  const d = await request<TmdbMovie>(`/movie/${tmdbId}`, { append_to_response: 'release_dates,videos' });
+  const d = await request<TmdbMovie>(`/movie/${tmdbId}`, { append_to_response: 'release_dates,videos,keywords' });
   return movieExtras(d);
 }
 
