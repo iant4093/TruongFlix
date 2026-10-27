@@ -1,12 +1,13 @@
 import { useEffect, useRef, type ComponentType } from 'react';
 import { motion } from 'framer-motion';
-import { Captions, Home, Info, Library, PlayCircle, Star, Trash2, Users, Volume2, X, type LucideIcon } from 'lucide-react';
+import { Captions, Home, Info, Library, MonitorSmartphone, PlayCircle, Star, Trash2, Users, Volume2, X, type LucideIcon } from 'lucide-react';
 import { useLibraryStore, type SettingsTab } from '../../store/useLibraryStore';
 import LibraryPage from './LibraryPage';
 import PlaybackPage from './PlaybackPage';
 import AudioPage from './AudioPage';
 import SubtitlesPage from './SubtitlesPage';
 import RatingsPage from './RatingsPage';
+import DevicesPage from './DevicesPage';
 import HomePage from './HomePage';
 import ProfilesPage from './ProfilesPage';
 import TrashPage from './TrashPage';
@@ -18,6 +19,7 @@ const PAGES: { id: SettingsTab; label: string; icon: LucideIcon; page: Component
   { id: 'audio', label: 'Audio', icon: Volume2, page: AudioPage },
   { id: 'subtitles', label: 'Subtitles', icon: Captions, page: SubtitlesPage },
   { id: 'ratings', label: 'Ratings & Data', icon: Star, page: RatingsPage },
+  { id: 'devices', label: 'Devices', icon: MonitorSmartphone, page: DevicesPage },
   { id: 'home', label: 'Home', icon: Home, page: HomePage },
   { id: 'profiles', label: 'Profiles', icon: Users, page: ProfilesPage },
   { id: 'trash', label: 'Recently Deleted', icon: Trash2, page: TrashPage },

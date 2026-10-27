@@ -19,5 +19,9 @@ export default defineConfig({
     target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari14',
     minify: !process.env.TAURI_ENV_DEBUG,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    rollupOptions: {
+      // The desktop app, plus the browser app served to phones/tablets on the home network.
+      input: { main: 'index.html', remote: 'remote.html' },
+    },
   },
 });
