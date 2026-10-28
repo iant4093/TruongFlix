@@ -154,7 +154,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
   return (
     <>
       {featured && <HeroBillboard key={featured.key} item={featured} />}
-      <div className={`relative z-10 pb-16 ${featured ? '-mt-32' : 'pt-24'}`}>
+      <div className={`relative z-10 flow-root pb-16 ${featured ? '-mt-32' : 'pt-24'}`}>
         {rows.map((r) =>
           r.top10 ? <Top10Row key={r.title} title={r.title} items={r.top10} /> : <MediaRow key={r.title} title={r.title} entries={r.entries} />,
         )}

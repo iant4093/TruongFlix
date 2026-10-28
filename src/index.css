@@ -14,20 +14,23 @@
   :root {
     color-scheme: dark;
   }
-  html,
-  body {
-    /* No rubber-band scrolling past the top/bottom edges. */
+  html {
+    /* No rubber-band scrolling past the top/bottom edges. Keep overflow/overscroll on html only
+       so Blink/WebView2 never turns body into a second nested scroll container that traps wheel input. */
     overscroll-behavior: none;
+    overflow-x: hidden;
     background: #141414;
     color: #fff;
     font-family: 'Netflix Sans', 'Inter', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    overflow-x: hidden;
   }
   body {
     margin: 0;
     min-height: 100vh;
+    background: #141414;
+    color: #fff;
+    overflow-x: clip;
     user-select: none;
     -webkit-user-select: none;
     cursor: default;
@@ -66,6 +69,8 @@ html.player-mode,
 html.player-mode body,
 html.player-mode #app-root {
   background: transparent !important;
+}
+html.player-mode {
   overflow: hidden;
 }
 html.player-mode #app-shell {

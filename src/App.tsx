@@ -74,12 +74,13 @@ export default function App() {
     initRemoteApi().catch((e) => console.warn('Browser access unavailable', e));
   }, [init]);
 
-  // Lock page scroll behind overlays.
+  // Lock page scroll behind overlays (always on documentElement so body never becomes a nested scroller).
   const actorOpen = useLibraryStore((s) => !!s.actor);
+  const profileGateOpen = useLibraryStore((s) => !!s.profileGate);
   const pageOverlay = useLibraryStore((s) => s.overlay);
-  const overlay = !!detailKey || !!fixMatchKey || settingsOpen || onboardingOpen || actorOpen || !!pageOverlay;
+  const overlay = !!detailKey || !!fixMatchKey || settingsOpen || onboardingOpen || actorOpen || profileGateOpen || !!pageOverlay;
   useEffect(() => {
-    document.body.style.overflow = overlay ? 'hidden' : '';
+    document.documentElement.style.overflowY = overlay ? 'hidden' : '';
   }, [overlay]);
 
   // Built-in player: make the page transparent over the native video surface (not in the mini-player).
