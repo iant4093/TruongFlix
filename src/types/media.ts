@@ -405,6 +405,161 @@ export interface Settings {
   remote_access: boolean;
   remote_code: string;
   remote_port: number;
+  /** Built-in BitTorrent client settings. */
+  torrent_default_mode: TorrentMode;
+  torrent_delete_after_complete: boolean;
+  torrent_seed_ratio_limit: number;
+  torrent_seed_time_mins: number;
+  torrent_stream_cache_hours: number;
+  torrent_listen_port: number;
+  torrent_upnp: boolean;
+  torrent_dht: boolean;
+  torrent_lsd: boolean;
+  torrent_trackers: boolean;
+  torrent_max_download_kbps: number;
+  torrent_max_upload_kbps: number;
+  torrent_peer_limit: number;
+  torrent_movies_dir: string;
+  torrent_tv_dir: string;
+}
+
+export type TorrentMode = 'stream' | 'download';
+
+export type TorrentState =
+  | 'resolving'
+  | 'initializing'
+  | 'downloading'
+  | 'seeding'
+  | 'paused'
+  | 'completed'
+  | 'stopped_seeding'
+  | 'error';
+
+export interface TorrentEngineConfig {
+  listen_port: number;
+  enable_upnp: boolean;
+  enable_dht: boolean;
+  enable_lsd: boolean;
+  disable_trackers: boolean;
+  max_download_kbps: number;
+  max_upload_kbps: number;
+  peer_limit: number;
+  stream_cache_dir?: string | null;
+}
+
+export interface InspectedFile {
+  index: number;
+  name: string;
+  relative_path: string;
+  size: number;
+  is_video: boolean;
+}
+
+export interface InspectTorrentRes {
+  info_hash: string;
+  name: string;
+  total_bytes: number;
+  is_magnet: boolean;
+  metadata_ready: boolean;
+  files: InspectedFile[];
+  trackers: string[];
+}
+
+export interface TorrentFileStatus {
+  index: number;
+  name: string;
+  relative_path: string;
+  full_path: string;
+  size: number;
+  downloaded_bytes: number;
+  included: boolean;
+  is_video: boolean;
+}
+
+export interface TorrentStatus {
+  info_hash: string;
+  name: string;
+  state: TorrentState;
+  progress_bytes: number;
+  total_bytes: number;
+  uploaded_bytes: number;
+  progress_pct: number;
+  download_speed_bps: number;
+  upload_speed_bps: number;
+  eta_secs: number | null;
+  peers_live: number;
+  peers_connecting: number;
+  peers_seen: number;
+  finished: boolean;
+  paused: boolean;
+  error: string | null;
+  output_folder: string;
+  listen_port: number | null;
+  files: TorrentFileStatus[];
+}
+
+export interface TorrentRecord {
+  info_hash: string;
+  name: string;
+  source: string;
+  mode: TorrentMode;
+  save_path: string;
+  delete_on_complete: number;
+  cache_hours: number | null;
+  expires_at: string | null;
+  media_kind: MediaKind | null;
+  tmdb_id: number | null;
+  series_id: number | null;
+  movie_id: number | null;
+  file_paths: string; // JSON string[]
+  total_bytes: number;
+  completed_at: string | null;
+  seeding_stopped: number;
+  created_at: string;
+}
+
+export interface TorrentItem {
+  infoHash: string;
+  name: string;
+  source: string;
+  mode: TorrentMode;
+  savePath: string;
+  deleteOnComplete: boolean;
+  cacheHours: number | null;
+  expiresAt: string | null;
+  mediaKind: MediaKind | null;
+  tmdbId: number | null;
+  seriesId: number | null;
+  movieId: number | null;
+  filePaths: string[];
+  completedAt: string | null;
+  seedingStopped: boolean;
+  createdAt: string;
+  state: TorrentState;
+  progressBytes: number;
+  totalBytes: number;
+  uploadedBytes: number;
+  progressPct: number;
+  downloadSpeedBps: number;
+  uploadSpeedBps: number;
+  etaSecs: number | null;
+  peersLive: number;
+  peersConnecting: number;
+  peersSeen: number;
+  finished: boolean;
+  paused: boolean;
+  error: string | null;
+  listenPort: number | null;
+  files: TorrentFileStatus[];
+  ratio: number;
+  /** True while managed in the live Rust BitTorrent session. */
+  inSession: boolean;
+}
+
+export interface OsHandlerStatus {
+  magnet_registered: boolean;
+  torrent_file_registered: boolean;
+  platform: string;
 }
 
 export type SleepTimer = { mode: 'minutes'; minutes: number; endsAt: number } | { mode: 'episode' };

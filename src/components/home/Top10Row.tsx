@@ -1,6 +1,8 @@
 import { useCallback } from 'react';
+import { Clock } from 'lucide-react';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { formatExpiryRemaining, torrentForItem } from '../../services/torrents';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import { useHoverIntent } from './MediaCard';
@@ -33,8 +35,12 @@ function RankNumber({ rank }: { rank: number }) {
 
 function Top10Card({ item, rank }: { item: MediaItem; rank: number }) {
   const openDetail = useLibraryStore((s) => s.openDetail);
+  const torrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
   const build = useCallback(() => ({ item }), [item]);
   const hover = useHoverIntent(build);
+  const isDownloading = Boolean(torrent && !torrent.finished);
+  const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, true) : null;
+  const pct = torrent ? Math.min(100, Math.max(torrent.state === 'resolving' ? 4 : 0, torrent.progressPct)) : 0;
 
   return (
     <div
@@ -48,7 +54,22 @@ function Top10Card({ item, rank }: { item: MediaItem; rank: number }) {
         <RankNumber rank={rank} />
       </div>
       <div className="relative z-10 -ml-[4%] w-1/2 overflow-hidden rounded-sm shadow-[0_0_8px_rgba(0,0,0,0.6)]">
-        <Artwork src={resize(item.poster, 'w342')} alt={item.title} fallbackTitle={item.title} className="h-full w-full" />
+        <Artwork
+          src={resize(item.poster, 'w342')}
+          alt={item.title}
+          fallbackTitle={item.title}
+          className={`h-full w-full ${isDownloading ? 'opacity-45 grayscale' : ''}`}
+        />
+        {expiry && (
+          <span className="absolute right-1 top-1 inline-flex items-center gap-0.5 rounded bg-black/80 px-1 py-0.5 text-[9px] font-semibold tabular-nums text-amber-200 ring-1 ring-amber-300/35">
+            <Clock className="h-2.5 w-2.5" /> {expiry.label}
+          </span>
+        )}
+        {isDownloading && (
+          <div className="absolute inset-x-0 bottom-0 h-1.5 bg-black/80">
+            <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${pct}%` }} />
+          </div>
+        )}
       </div>
     </div>
   );

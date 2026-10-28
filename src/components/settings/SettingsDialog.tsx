@@ -1,8 +1,9 @@
 import { useEffect, useRef, type ComponentType } from 'react';
 import { motion } from 'framer-motion';
-import { Captions, Home, Info, Library, MonitorSmartphone, PlayCircle, Star, Trash2, Users, Volume2, X, type LucideIcon } from 'lucide-react';
+import { Captions, Home, Info, Library, Magnet, MonitorSmartphone, PlayCircle, Star, Trash2, Users, Volume2, X, type LucideIcon } from 'lucide-react';
 import { useLibraryStore, type SettingsTab } from '../../store/useLibraryStore';
 import LibraryPage from './LibraryPage';
+import TorrentsPage from './TorrentsPage';
 import PlaybackPage from './PlaybackPage';
 import AudioPage from './AudioPage';
 import SubtitlesPage from './SubtitlesPage';
@@ -15,6 +16,7 @@ import AboutPage from './AboutPage';
 
 const PAGES: { id: SettingsTab; label: string; icon: LucideIcon; page: ComponentType }[] = [
   { id: 'library', label: 'Library', icon: Library, page: LibraryPage },
+  { id: 'torrents', label: 'Torrents', icon: Magnet, page: TorrentsPage },
   { id: 'playback', label: 'Playback', icon: PlayCircle, page: PlaybackPage },
   { id: 'audio', label: 'Audio', icon: Volume2, page: AudioPage },
   { id: 'subtitles', label: 'Subtitles', icon: Captions, page: SubtitlesPage },
@@ -31,6 +33,9 @@ export default function SettingsDialog() {
   const tab = useLibraryStore((s) => s.settingsTab);
   const setOpen = useLibraryStore((s) => s.setSettingsOpen);
   const scanning = useLibraryStore((s) => s.scan.running);
+  const activeTorrentCount = useLibraryStore(
+    (s) => s.torrents.filter((t) => !t.finished && t.inSession && !t.paused && t.state !== 'error').length,
+  );
   const scroller = useRef<HTMLDivElement>(null);
   const current = PAGES.find((p) => p.id === tab) ?? PAGES[0];
   const Current = current.page;
@@ -70,6 +75,11 @@ export default function SettingsDialog() {
               <Icon className="h-4 w-4 shrink-0" />
               <span className="flex-1">{label}</span>
               {id === 'library' && scanning && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-nf-red" title="Scanning" />}
+              {id === 'torrents' && activeTorrentCount > 0 && (
+                <span className="rounded-full bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-sky-300" title="Active downloads">
+                  {activeTorrentCount}
+                </span>
+              )}
             </button>
           ))}
         </nav>

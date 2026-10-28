@@ -194,14 +194,19 @@ export async function runScan(opts: ScanOptions = {}) {
     const files = roots.length ? await invoke<RawVideoFile[]>('scan_media_folders', { paths: roots }) : [];
 
     setScan({ phase: 'diffing', message: `Found ${files.length} videos` });
-    const [index, hints] = await Promise.all([db.getFileIndex(), db.getMatchHints()]);
+    const [index, hints, protectedTorrentPaths] = await Promise.all([
+      db.getFileIndex(),
+      db.getMatchHints(),
+      db.getTorrentProtectedPaths(),
+    ]);
     const onDisk = new Set(files.map((f) => f.file_path));
 
-    // Prune rows whose files vanished — but never for roots that are merely offline.
+    // Prune rows whose files vanished — but never for roots that are merely offline, nor for
+    // stream-cached / still-downloading torrent files.
     const goneMovies: string[] = [];
     const goneEpisodes: string[] = [];
     for (const [path, rec] of index) {
-      if (onDisk.has(path) || offline.some((r) => isUnder(path, r))) continue;
+      if (onDisk.has(path) || protectedTorrentPaths.has(path) || offline.some((r) => isUnder(path, r))) continue;
       (rec.type === 'movie' ? goneMovies : goneEpisodes).push(path);
     }
     const removed = goneMovies.length + goneEpisodes.length;

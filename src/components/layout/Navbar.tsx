@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BarChart3, ChevronDown, History, RefreshCw, Search, Settings, Square, Users, X } from 'lucide-react';
+import { BarChart3, ChevronDown, History, Magnet, Plus, RefreshCw, Search, Settings, Square, Users, X } from 'lucide-react';
 import ProfileAvatar from '../common/ProfileAvatar';
 import { guardAdult, switchProfileGuarded } from '../../services/profilelock';
 import { formatLeft, limitStatus } from '../../services/limits';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
 import { runScan } from '../../services/scanner';
 import { stopPlayback } from '../../services/player';
+import { formatSpeed } from '../../services/torrents';
 import { formatTimestamp } from '../../store/selectors';
 
 const LINKS: { view: View; label: string }[] = [
@@ -166,6 +167,8 @@ export default function Navbar() {
           <span className="hidden xl:inline">{scanning ? 'Scanning…' : 'Scan Library'}</span>
         </button>
 
+        <TorrentMenu />
+
         <button
           onClick={() => guardAdult(() => openSettings(true))}
           title="Settings"
@@ -177,6 +180,110 @@ export default function Navbar() {
         <ProfileMenu />
       </div>
     </header>
+  );
+}
+
+/** Top-bar torrent action: click to add a magnet/.torrent, hover for live transfer progress & Torrent Settings. */
+function TorrentMenu() {
+  const torrents = useLibraryStore((s) => s.torrents);
+  const openAddTorrent = useLibraryStore((s) => s.openAddTorrent);
+  const openSettings = useLibraryStore((s) => s.setSettingsOpen);
+  const [open, setOpen] = useState(false);
+  const timer = useRef<number | null>(null);
+
+  const activeDownloads = torrents.filter((t) => !t.finished && t.inSession && !t.paused && t.state !== 'error');
+  const totalSpeed = activeDownloads.reduce((sum, t) => sum + (t.downloadSpeedBps || 0), 0);
+
+  const show = () => {
+    if (timer.current) window.clearTimeout(timer.current);
+    setOpen(true);
+  };
+  const hide = () => {
+    timer.current = window.setTimeout(() => setOpen(false), 200);
+  };
+
+  return (
+    <div className="relative" onMouseEnter={show} onMouseLeave={hide}>
+      <button
+        onClick={() => {
+          setOpen(false);
+          guardAdult(() => openAddTorrent());
+        }}
+        title="Add Magnet or .torrent"
+        aria-label="Torrents"
+        className="flex items-center gap-1.5 text-sm text-[#e5e5e5] transition-colors hover:text-white"
+      >
+        <span className="relative flex items-center">
+          <Magnet className={`h-5 w-5 ${activeDownloads.length > 0 ? 'text-sky-400' : ''}`} />
+          {activeDownloads.length > 0 && (
+            <span className="ml-1.5 rounded-full bg-sky-500/20 px-1.5 py-[1px] text-[10px] font-bold tabular-nums text-sky-300">
+              {activeDownloads.length}
+            </span>
+          )}
+        </span>
+        {activeDownloads.length > 0 && totalSpeed > 0 ? (
+          <span className="hidden tabular-nums text-xs text-sky-300 xl:inline">↓ {formatSpeed(totalSpeed)}</span>
+        ) : (
+          <span className="hidden xl:inline">Torrents</span>
+        )}
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.15 }}
+            className="absolute right-0 top-full mt-4 w-72 border border-white/15 bg-black/95 py-2 text-sm shadow-2xl backdrop-blur"
+          >
+            <button
+              onClick={() => {
+                setOpen(false);
+                guardAdult(() => openAddTorrent());
+              }}
+              className="flex w-full items-center gap-2.5 px-4 py-2 font-semibold text-white hover:bg-white/10"
+            >
+              <Plus className="h-4 w-4 text-nf-red" /> Add Magnet / .torrent
+            </button>
+
+            {torrents.length > 0 && (
+              <>
+                <div className="my-1.5 border-t border-white/15" />
+                <div className="max-h-52 overflow-y-auto px-4 py-1">
+                  {torrents.slice(0, 4).map((t) => (
+                    <div key={t.infoHash} className="py-1.5">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="truncate font-medium text-white">{t.name}</span>
+                        <span className="shrink-0 tabular-nums text-nf-muted">{t.progressPct.toFixed(0)}%</span>
+                      </div>
+                      <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-white/15">
+                        <div
+                          className={`h-full ${t.finished ? 'bg-nf-green' : 'bg-sky-400'}`}
+                          style={{ width: `${Math.min(100, Math.max(t.state === 'resolving' ? 5 : 0, t.progressPct))}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div className="my-1.5 border-t border-white/15" />
+            <button
+              onClick={() => {
+                setOpen(false);
+                guardAdult(() => openSettings(true, 'torrents'));
+              }}
+              className="flex w-full items-center justify-between px-4 py-2 text-xs text-nf-secondary hover:bg-white/10 hover:text-white"
+            >
+              <span>Manage Torrents & Settings</span>
+              {torrents.length > 0 && <span className="tabular-nums text-white/70">{torrents.length}</span>}
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 

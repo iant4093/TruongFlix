@@ -11,6 +11,7 @@ mod scanner;
 mod stream;
 mod subsync;
 mod subtitles;
+mod torrent;
 mod vlc;
 mod watcher;
 
@@ -59,6 +60,10 @@ async fn update_feed_status(app: tauri::AppHandle) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            torrent::handle_cli_args(app, &argv);
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -72,6 +77,8 @@ pub fn run() {
             }
             power::start(app.handle());
             stream::init(app.handle());
+            let args: Vec<String> = std::env::args().collect();
+            torrent::capture_startup_args(app.handle(), &args);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -128,7 +135,26 @@ pub fn run() {
             media::detect_intros,
             watcher::watch_folders,
             files::apply_moves,
+            torrent::torrent_configure,
+            torrent::torrent_inspect,
+            torrent::torrent_inspect_files,
+            torrent::torrent_add,
+            torrent::torrent_list,
+            torrent::torrent_action,
+            torrent::torrent_set_only_files,
+            torrent::torrent_stream_url,
+            torrent::torrent_take_pending_links,
+            torrent::torrent_check_os_handler,
+            torrent::torrent_register_os_handler,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running TruongFlix");
+        .build(tauri::generate_context!())
+        .expect("error while building TruongFlix")
+        .run(|app, event| {
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            if let tauri::RunEvent::Opened { urls } = event {
+                torrent::handle_opened_urls(app, urls.iter().map(|u| u.as_str()));
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            let _ = (app, event);
+        });
 }

@@ -1,7 +1,38 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Cast, Check, CheckCheck, ChevronRight, FolderOpen, Play, Plus, Sparkles, Trash2, Wrench, X } from 'lucide-react';
+import {
+  Cast,
+  Check,
+  CheckCheck,
+  ChevronRight,
+  Clock,
+  Download,
+  FolderOpen,
+  HardDriveDownload,
+  Pause,
+  Play,
+  Plus,
+  Sparkles,
+  Square,
+  Trash2,
+  Wrench,
+  X,
+} from 'lucide-react';
 import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
+import {
+  episodeFileProgress,
+  formatBytes,
+  formatEta,
+  formatExpiryRemaining,
+  formatSpeed,
+  keepStreamPermanently,
+  pauseTorrent,
+  removeTorrent,
+  resumeTorrent,
+  setTorrentDeleteOnComplete,
+  stopSeedingTorrent,
+  torrentForItem,
+} from '../../services/torrents';
 import EpisodeDetail from './EpisodeDetail';
 import SubtitlesPanel from '../common/SubtitlesPanel';
 import Dropdown from '../common/Dropdown';
@@ -135,17 +166,52 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
   const genres = item.genres;
 
   const toast = useLibraryStore((s) => s.toast);
+  const torrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    if (!torrent?.expiresAt) return;
+    const id = window.setInterval(() => setClockTick((n) => n + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, [torrent?.expiresAt]);
+
+  const isDownloading = Boolean(torrent && !torrent.finished);
+  const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
   const revealPath = item.kind === 'movie' ? (versionRow?.file_path ?? item.filePath) : (episodes[0]?.file_path ?? null);
-  const playLabel = target && target.startTime > 0 ? 'Resume' : 'Play';
+  const playLabel = isDownloading
+    ? target && target.startTime > 0
+      ? 'Resume Stream'
+      : 'Stream Now'
+    : target && target.startTime > 0
+      ? 'Resume'
+      : 'Play';
   const epHint = target?.type === 'episode' && resumeEntry?.episode ? epLabel(resumeEntry.episode) : null;
 
   return (
     <>
       {/* Header */}
       <div className="relative aspect-video w-full">
-        <Artwork src={resize(item.backdrop, 'w1280')} alt={item.title} fallbackTitle={item.title} className="h-full w-full" eager />
+        <Artwork
+          src={resize(item.backdrop, 'w1280')}
+          alt={item.title}
+          fallbackTitle={item.title}
+          className={`h-full w-full ${isDownloading ? 'opacity-65 grayscale-[50%]' : ''}`}
+          eager
+        />
         <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-nf-surface/10 to-transparent" />
         <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-transparent" />
+
+        {expiry && (
+          <div
+            className={`absolute left-6 top-4 z-10 inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-semibold shadow-lg backdrop-blur-md ${
+              expiry.urgent
+                ? 'bg-nf-red/90 text-white ring-1 ring-white/25'
+                : 'bg-black/75 text-amber-200 ring-1 ring-amber-300/35'
+            }`}
+          >
+            <Clock className="h-3.5 w-3.5" />
+            <span>Stream cache · {expiry.label}</span>
+          </div>
+        )}
 
         <button
           onClick={() => openDetail(null)}
@@ -213,6 +279,129 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           </div>
         </div>
       </div>
+
+      {/* Torrent Stream Expiry / Live Download Banners */}
+      {torrent && (expiry || isDownloading || (torrent.finished && torrent.inSession && !torrent.seedingStopped)) && (
+        <div className="space-y-2.5 px-12 pb-2 pt-3">
+          {expiry && (
+            <div
+              className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${
+                expiry.urgent
+                  ? 'border-nf-red/40 bg-nf-red/10 text-red-100'
+                  : 'border-amber-400/30 bg-amber-500/10 text-amber-100'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Clock className="h-4 w-4 shrink-0 text-amber-300" />
+                <div>
+                  <span className="font-semibold">Temporary Stream</span>
+                  <span className="mx-2 text-white/40">·</span>
+                  <span>{expiry.label}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void keepStreamPermanently(torrent.infoHash)}
+                  className="inline-flex h-8 items-center gap-1.5 rounded bg-white px-3 text-xs font-semibold text-black transition-colors hover:bg-white/85"
+                >
+                  <HardDriveDownload className="h-3.5 w-3.5" /> Keep in Library
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await removeTorrent(torrent.infoHash, true);
+                    openDetail(null);
+                  }}
+                  className="nf-btn-ghost h-8 px-2.5 py-0 text-xs"
+                >
+                  Clear Now
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isDownloading && (
+            <div className="space-y-2.5 rounded-lg border border-sky-400/25 bg-sky-500/[0.07] px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <span className="inline-flex items-center gap-1.5 font-semibold text-sky-300">
+                    <Download className="h-3.5 w-3.5" />
+                    {torrent.state === 'resolving'
+                      ? 'Fetching torrent metadata from peers…'
+                      : torrent.paused
+                        ? 'Download paused'
+                        : 'Downloading via BitTorrent'}
+                  </span>
+                  <span className="tabular-nums text-white/80">
+                    {torrent.progressPct.toFixed(1)}% ({formatBytes(torrent.progressBytes)} /{' '}
+                    {torrent.totalBytes > 0 ? formatBytes(torrent.totalBytes) : '—'})
+                  </span>
+                  {!torrent.paused && torrent.downloadSpeedBps > 0 && (
+                    <span className="tabular-nums text-sky-200">↓ {formatSpeed(torrent.downloadSpeedBps)}</span>
+                  )}
+                  {!torrent.paused && (
+                    <span className="tabular-nums text-nf-secondary">
+                      Peers {torrent.peersLive} · ETA {formatEta(torrent.etaSecs)}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-nf-secondary select-none">
+                    <input
+                      type="checkbox"
+                      checked={torrent.deleteOnComplete}
+                      onChange={(e) => void setTorrentDeleteOnComplete(torrent.infoHash, e.target.checked)}
+                      className="h-3.5 w-3.5 accent-nf-red"
+                    />
+                    Stop seeding on complete
+                  </label>
+                  {torrent.paused ? (
+                    <button
+                      type="button"
+                      onClick={() => void resumeTorrent(torrent.infoHash)}
+                      className="nf-btn-ghost h-7 px-2.5 py-0 text-xs"
+                    >
+                      <Play className="h-3 w-3" /> Resume
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void pauseTorrent(torrent.infoHash)}
+                      className="nf-btn-ghost h-7 px-2.5 py-0 text-xs"
+                    >
+                      <Pause className="h-3 w-3" /> Pause
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full bg-sky-400 transition-all duration-300"
+                  style={{ width: `${Math.min(100, Math.max(torrent.state === 'resolving' ? 4 : 0, torrent.progressPct))}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {torrent.finished && torrent.inSession && !torrent.seedingStopped && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-400/20 bg-emerald-500/[0.06] px-4 py-2 text-xs">
+              <span className="tabular-nums text-emerald-200">
+                Seeding · ↑ {formatSpeed(torrent.uploadSpeedBps)} · Ratio {torrent.ratio.toFixed(2)} · Peers {torrent.peersLive}
+              </span>
+              <button
+                type="button"
+                onClick={() => void stopSeedingTorrent(torrent.infoHash)}
+                className="nf-btn-ghost h-7 px-2.5 py-0 text-xs"
+              >
+                <Square className="h-3 w-3" /> Stop Seeding
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Two-column body */}
       <div className="grid grid-cols-[65%_35%] gap-8 px-12 pb-8 pt-2">
@@ -372,6 +561,7 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const openEpisode = useLibraryStore((s) => s.openEpisode);
   const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
+  const seriesTorrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
   const initialSeason = useMemo(() => {
     const t = playTargetFor(item, episodesBySeries);
     const ep = t ? episodes.find((e) => e.id === t.id) : null;
@@ -449,6 +639,7 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
           const ep = row.ep;
           const dur = ep.duration_seconds || (ep.runtime ?? 0) * 60;
           const progress = !ep.watched && ep.progress_seconds > 0 && dur ? ep.progress_seconds / dur : ep.watched ? 1 : 0;
+          const dlProg = episodeFileProgress(ep, seriesTorrent);
           return (
             <div
               key={ep.id}
@@ -465,19 +656,29 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
                   e.stopPropagation();
                   playEpisode(ep, item);
                 }}
-                title={`Play ${epLabel(ep)}`}
+                title={dlProg ? `Stream ${epLabel(ep)}` : `Play ${epLabel(ep)}`}
                 className="group/thumb relative aspect-video w-[130px] shrink-0 overflow-hidden rounded"
               >
-                <Artwork src={ep.still_path ?? resize(item.backdrop, 'w300')} alt={ep.title} className="h-full w-full" />
+                <Artwork
+                  src={ep.still_path ?? resize(item.backdrop, 'w300')}
+                  alt={ep.title}
+                  className={`h-full w-full ${dlProg ? 'opacity-50 grayscale' : ''}`}
+                />
                 <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition group-hover:opacity-100 group-hover/thumb:bg-black/30">
                   <span className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-black/50 transition-transform group-hover/thumb:scale-110">
                     <Play className="ml-0.5 h-4 w-4 fill-white" strokeWidth={0} />
                   </span>
                 </div>
-                {progress > 0 && (
-                  <div className="absolute inset-x-0 bottom-0">
-                    <ProgressBar value={progress} height={3} />
+                {dlProg ? (
+                  <div className="absolute inset-x-0 bottom-0 h-1.5 bg-black/80">
+                    <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${Math.max(4, dlProg.pct)}%` }} />
                   </div>
+                ) : (
+                  progress > 0 && (
+                    <div className="absolute inset-x-0 bottom-0">
+                      <ProgressBar value={progress} height={3} />
+                    </div>
+                  )
                 )}
               </button>
               <div className="min-w-0 flex-1">
@@ -491,6 +692,11 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
                 <p className="line-clamp-2 text-sm leading-snug text-nf-secondary">{ep.overview || 'No description available.'}</p>
                 <div className="mt-1.5 flex items-center gap-2">
                   <TechBadges tech={ep} showCodec={false} showAudio={false} />
+                  {dlProg && (
+                    <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-sky-300">
+                      Downloading {dlProg.pct.toFixed(0)}%
+                    </span>
+                  )}
                   {ep.watched ? <span className="text-[11px] text-nf-muted">Watched</span> : null}
                 </div>
               </div>

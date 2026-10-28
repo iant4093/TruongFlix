@@ -4,6 +4,7 @@ import type {
   CollectionRow,
   EpisodeRow,
   MediaInfo,
+  MediaKind,
   MovieRow,
   NextEpisode,
   PlayableType,
@@ -17,6 +18,8 @@ import type {
   SubtitleRow,
   SubtitleStyle,
   TechInfo,
+  TorrentMode,
+  TorrentRecord,
   TrashRow,
   TrashSnapshot,
   WatchLogRow,
@@ -186,6 +189,25 @@ const SCHEMA = [
     moves TEXT NOT NULL,                   -- JSON FileMove[] actually applied
     roots TEXT NOT NULL,
     undone INTEGER DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS torrents (
+    info_hash TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    mode TEXT NOT NULL,                    -- 'stream' | 'download'
+    save_path TEXT NOT NULL,
+    delete_on_complete INTEGER NOT NULL DEFAULT 0,
+    cache_hours INTEGER,
+    expires_at TEXT,
+    media_kind TEXT,                       -- 'movie' | 'tv' | NULL
+    tmdb_id INTEGER,
+    series_id INTEGER,
+    movie_id INTEGER,
+    file_paths TEXT NOT NULL DEFAULT '[]', -- JSON string[]
+    total_bytes INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    seeding_stopped INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`,
   `CREATE INDEX IF NOT EXISTS idx_movies_tmdb ON movies(tmdb_id)`,
   `CREATE INDEX IF NOT EXISTS idx_episodes_series ON episodes(series_id, season_number, episode_number)`,
@@ -367,6 +389,21 @@ export async function getSettings(): Promise<Settings> {
     remote_access: map.remote_access === 'true',
     remote_code: map.remote_code ?? '',
     remote_port: Number(map.remote_port) || 8732,
+    torrent_default_mode: map.torrent_default_mode === 'stream' ? 'stream' : 'download',
+    torrent_delete_after_complete: map.torrent_delete_after_complete === 'true',
+    torrent_seed_ratio_limit: map.torrent_seed_ratio_limit != null ? Number(map.torrent_seed_ratio_limit) || 0 : 0,
+    torrent_seed_time_mins: map.torrent_seed_time_mins != null ? Number(map.torrent_seed_time_mins) || 0 : 0,
+    torrent_stream_cache_hours: map.torrent_stream_cache_hours != null ? Math.max(1, Number(map.torrent_stream_cache_hours) || 72) : 72,
+    torrent_listen_port: map.torrent_listen_port != null ? Math.max(0, Number(map.torrent_listen_port) || 0) : 0,
+    torrent_upnp: map.torrent_upnp !== 'false',
+    torrent_dht: map.torrent_dht !== 'false',
+    torrent_lsd: map.torrent_lsd !== 'false',
+    torrent_trackers: map.torrent_trackers !== 'false',
+    torrent_max_download_kbps: map.torrent_max_download_kbps != null ? Math.max(0, Number(map.torrent_max_download_kbps) || 0) : 0,
+    torrent_max_upload_kbps: map.torrent_max_upload_kbps != null ? Math.max(0, Number(map.torrent_max_upload_kbps) || 0) : 0,
+    torrent_peer_limit: map.torrent_peer_limit != null ? Math.max(8, Number(map.torrent_peer_limit) || 128) : 128,
+    torrent_movies_dir: map.torrent_movies_dir ?? '',
+    torrent_tv_dir: map.torrent_tv_dir ?? '',
   };
 }
 
@@ -795,10 +832,31 @@ export async function getEpisodesForSeries(seriesId: number) {
 
 /** Re-points rows at files that were moved on disk, so progress and matches survive. */
 export async function updateFilePaths(moves: { from: string; to: string }[]) {
+  if (!moves.length) return;
+  const moveMap = new Map(moves.map((m) => [m.from, m.to]));
   for (const { from, to } of moves) {
     await exec('UPDATE movies SET file_path = $2 WHERE file_path = $1', [from, to]);
     await exec('UPDATE episodes SET file_path = $2 WHERE file_path = $1', [from, to]);
     await exec('UPDATE subtitles SET file_path = $2 WHERE file_path = $1', [from, to]);
+  }
+  const trows = await select<{ info_hash: string; file_paths: string }[]>('SELECT info_hash, file_paths FROM torrents');
+  for (const tr of trows) {
+    try {
+      const list = JSON.parse(tr.file_paths) as string[];
+      if (!Array.isArray(list)) continue;
+      let changed = false;
+      const next = list.map((p) => {
+        const mapped = moveMap.get(p);
+        if (mapped) {
+          changed = true;
+          return mapped;
+        }
+        return p;
+      });
+      if (changed) await exec('UPDATE torrents SET file_paths = $2 WHERE info_hash = $1', [tr.info_hash, JSON.stringify(next)]);
+    } catch {
+      /* ignore malformed JSON */
+    }
   }
 }
 
@@ -1234,4 +1292,158 @@ export async function pruneOrphanState() {
 export async function pruneOrphanSubtitles() {
   await exec("DELETE FROM subtitles WHERE media_type = 'movie' AND media_id NOT IN (SELECT id FROM movies)");
   await exec("DELETE FROM subtitles WHERE media_type = 'episode' AND media_id NOT IN (SELECT id FROM episodes)");
+}
+
+// ---------------------------------------------------------------------------
+// Torrents
+// ---------------------------------------------------------------------------
+
+export interface UpsertTorrentInput {
+  info_hash: string;
+  name: string;
+  source: string;
+  mode: TorrentMode;
+  save_path: string;
+  delete_on_complete: boolean;
+  cache_hours: number | null;
+  expires_at: string | null;
+  media_kind: MediaKind | null;
+  tmdb_id: number | null;
+  series_id: number | null;
+  movie_id: number | null;
+  file_paths: string[];
+  total_bytes: number;
+  completed_at?: string | null;
+  seeding_stopped?: boolean;
+}
+
+export async function listTorrentRecords(): Promise<TorrentRecord[]> {
+  return select<TorrentRecord[]>('SELECT * FROM torrents ORDER BY created_at DESC');
+}
+
+export async function upsertTorrentRecord(t: UpsertTorrentInput) {
+  await exec(
+    `INSERT INTO torrents (
+       info_hash, name, source, mode, save_path, delete_on_complete, cache_hours, expires_at,
+       media_kind, tmdb_id, series_id, movie_id, file_paths, total_bytes, completed_at, seeding_stopped
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     ON CONFLICT(info_hash) DO UPDATE SET
+       name = excluded.name,
+       source = excluded.source,
+       mode = excluded.mode,
+       save_path = excluded.save_path,
+       delete_on_complete = excluded.delete_on_complete,
+       cache_hours = excluded.cache_hours,
+       expires_at = excluded.expires_at,
+       media_kind = COALESCE(excluded.media_kind, torrents.media_kind),
+       tmdb_id = COALESCE(excluded.tmdb_id, torrents.tmdb_id),
+       series_id = COALESCE(excluded.series_id, torrents.series_id),
+       movie_id = COALESCE(excluded.movie_id, torrents.movie_id),
+       file_paths = excluded.file_paths,
+       total_bytes = CASE WHEN excluded.total_bytes > 0 THEN excluded.total_bytes ELSE torrents.total_bytes END,
+       completed_at = COALESCE(excluded.completed_at, torrents.completed_at),
+       seeding_stopped = MAX(torrents.seeding_stopped, excluded.seeding_stopped)`,
+    [
+      t.info_hash.toLowerCase(),
+      t.name,
+      t.source,
+      t.mode,
+      t.save_path,
+      t.delete_on_complete ? 1 : 0,
+      t.cache_hours,
+      t.expires_at,
+      t.media_kind,
+      t.tmdb_id,
+      t.series_id,
+      t.movie_id,
+      JSON.stringify(t.file_paths),
+      t.total_bytes,
+      t.completed_at ?? null,
+      t.seeding_stopped ? 1 : 0,
+    ],
+  );
+}
+
+export async function updateTorrentRecord(
+  infoHash: string,
+  patch: Partial<{
+    name: string;
+    mode: TorrentMode;
+    save_path: string;
+    delete_on_complete: boolean;
+    cache_hours: number | null;
+    expires_at: string | null;
+    media_kind: MediaKind | null;
+    tmdb_id: number | null;
+    series_id: number | null;
+    movie_id: number | null;
+    file_paths: string[];
+    total_bytes: number;
+    completed_at: string | null;
+    seeding_stopped: boolean;
+  }>,
+) {
+  const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
+  if (!entries.length) return;
+  const sets: string[] = [];
+  const params: unknown[] = [infoHash.toLowerCase()];
+  for (const [k, v] of entries) {
+    const val =
+      k === 'file_paths'
+        ? JSON.stringify(v)
+        : k === 'delete_on_complete' || k === 'seeding_stopped'
+          ? v
+            ? 1
+            : 0
+          : v;
+    params.push(val);
+    sets.push(`${k} = $${params.length}`);
+  }
+  await exec(`UPDATE torrents SET ${sets.join(', ')} WHERE info_hash = $1`, params);
+}
+
+export async function deleteTorrentRecord(infoHash: string) {
+  await exec('DELETE FROM torrents WHERE info_hash = $1', [infoHash.toLowerCase()]);
+}
+
+export async function findMovieIdByPath(filePath: string): Promise<number | null> {
+  const rows = await select<{ id: number }[]>('SELECT id FROM movies WHERE file_path = $1 LIMIT 1', [filePath]);
+  return rows[0]?.id ?? null;
+}
+
+/**
+ * File paths managed by stream-cached or still-downloading torrents. The folder scanner must never
+ * prune these as missing library files (stream cache lives outside `media_directories`, and magnet
+ * files don't exist on disk until pieces arrive).
+ */
+export async function getTorrentProtectedPaths(): Promise<Set<string>> {
+  const rows = await select<{ mode: string; completed_at: string | null; file_paths: string }[]>(
+    'SELECT mode, completed_at, file_paths FROM torrents',
+  );
+  const out = new Set<string>();
+  for (const r of rows) {
+    if (r.mode !== 'stream' && r.completed_at != null) continue;
+    try {
+      const list = JSON.parse(r.file_paths) as string[];
+      if (Array.isArray(list)) for (const p of list) out.add(p);
+    } catch {
+      /* ignore */
+    }
+  }
+  return out;
+}
+
+/** File paths belonging to torrents whose download hasn't reached 100% yet (skip `media_probe`). */
+export async function getIncompleteTorrentPaths(): Promise<Set<string>> {
+  const rows = await select<{ file_paths: string }[]>('SELECT file_paths FROM torrents WHERE completed_at IS NULL');
+  const out = new Set<string>();
+  for (const r of rows) {
+    try {
+      const list = JSON.parse(r.file_paths) as string[];
+      if (Array.isArray(list)) for (const p of list) out.add(p);
+    } catch {
+      /* ignore */
+    }
+  }
+  return out;
 }

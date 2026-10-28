@@ -5,7 +5,18 @@
  */
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
-import type { EpisodeRow, MediaInfo, MovieRow, SeriesRow, SubtitleRow, TrashRow, WatchLogRow } from '../types/media';
+import type {
+  EpisodeRow,
+  InspectTorrentRes,
+  MediaInfo,
+  MovieRow,
+  SeriesRow,
+  SubtitleRow,
+  TorrentRecord,
+  TorrentStatus,
+  TrashRow,
+  WatchLogRow,
+} from '../types/media';
 
 const IMG = 'https://image.tmdb.org/t/p';
 const now = new Date();
@@ -562,7 +573,123 @@ const mockSubtitleResults = {
 
 let trashId = 1;
 const trash: TrashRow[] = [];
+const torrentRecords: TorrentRecord[] = [];
 const tables = { movies, episodes, tv_series: series } as unknown as Record<string, { id: number }[]>;
+
+function handleTorrentSql(q: string, values: unknown[]): unknown | undefined {
+  if (!/\btorrents\b/.test(q) || q.startsWith('CREATE')) return undefined;
+  if (q.startsWith('SELECT * FROM torrents')) {
+    return [...torrentRecords].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+  if (q.startsWith('SELECT info_hash, file_paths FROM torrents')) {
+    return torrentRecords.map((r) => ({ info_hash: r.info_hash, file_paths: r.file_paths }));
+  }
+  if (q.startsWith('SELECT mode, completed_at, file_paths FROM torrents')) {
+    return torrentRecords.map((r) => ({ mode: r.mode, completed_at: r.completed_at, file_paths: r.file_paths }));
+  }
+  if (q.startsWith('SELECT file_paths FROM torrents WHERE completed_at IS NULL')) {
+    return torrentRecords.filter((r) => r.completed_at == null).map((r) => ({ file_paths: r.file_paths }));
+  }
+  if (q.startsWith('INSERT INTO torrents')) {
+    const [
+      info_hash,
+      name,
+      source,
+      mode,
+      save_path,
+      delete_on_complete,
+      cache_hours,
+      expires_at,
+      media_kind,
+      tmdb_id,
+      series_id,
+      movie_id,
+      file_paths,
+      total_bytes,
+      completed_at,
+      seeding_stopped,
+    ] = values as [
+      string,
+      string,
+      string,
+      TorrentRecord['mode'],
+      string,
+      number,
+      number | null,
+      string | null,
+      TorrentRecord['media_kind'],
+      number | null,
+      number | null,
+      number | null,
+      string,
+      number,
+      string | null,
+      number,
+    ];
+    const hash = String(info_hash).toLowerCase();
+    const existing = torrentRecords.find((r) => r.info_hash === hash);
+    if (existing) {
+      Object.assign(existing, {
+        name,
+        source,
+        mode,
+        save_path,
+        delete_on_complete,
+        cache_hours,
+        expires_at,
+        media_kind: media_kind ?? existing.media_kind,
+        tmdb_id: tmdb_id ?? existing.tmdb_id,
+        series_id: series_id ?? existing.series_id,
+        movie_id: movie_id ?? existing.movie_id,
+        file_paths,
+        total_bytes: total_bytes > 0 ? total_bytes : existing.total_bytes,
+        completed_at: completed_at ?? existing.completed_at,
+        seeding_stopped: Math.max(existing.seeding_stopped, seeding_stopped || 0),
+      });
+    } else {
+      torrentRecords.push({
+        info_hash: hash,
+        name,
+        source,
+        mode,
+        save_path,
+        delete_on_complete,
+        cache_hours,
+        expires_at,
+        media_kind,
+        tmdb_id,
+        series_id,
+        movie_id,
+        file_paths,
+        total_bytes,
+        completed_at,
+        seeding_stopped,
+        created_at: ts(0),
+      });
+    }
+    return [1, 0];
+  }
+  if (q.startsWith('UPDATE torrents SET')) {
+    const hash = String(values[0]).toLowerCase();
+    const row = torrentRecords.find((r) => r.info_hash === hash);
+    if (row) {
+      const assignPart = q.slice('UPDATE torrents SET '.length, q.indexOf(' WHERE info_hash'));
+      for (const piece of assignPart.split(',')) {
+        const [col, param] = piece.split('=').map((s) => s.trim());
+        const idx = Number(param.slice(1)) - 1;
+        (row as unknown as Record<string, unknown>)[col] = values[idx];
+      }
+    }
+    return [1, 0];
+  }
+  if (q.startsWith('DELETE FROM torrents WHERE info_hash')) {
+    const hash = String(values[0]).toLowerCase();
+    const idx = torrentRecords.findIndex((r) => r.info_hash === hash);
+    if (idx >= 0) torrentRecords.splice(idx, 1);
+    return [1, 0];
+  }
+  return q.startsWith('SELECT') ? [] : [1, 0];
+}
 
 /** Generic `INSERT OR IGNORE INTO t (a, b) VALUES ($1, $2)` used by restore. */
 function genericInsert(q: string, values: unknown[]) {
@@ -609,6 +736,85 @@ function handleLibrarySql(q: string, values: unknown[]): unknown | undefined {
     for (let i = series.length - 1; i >= 0; i--) if (!episodes.some((e) => e.series_id === series[i].id)) series.splice(i, 1);
     return [1, 0];
   }
+  if ((m = q.match(/^DELETE FROM (movies|episodes) WHERE file_path IN \(([^)]+)\)/))) {
+    const pathSet = new Set(values.map(String));
+    const list = tables[m[1]] as unknown as { file_path: string }[];
+    for (let i = list.length - 1; i >= 0; i--) if (pathSet.has(list[i].file_path)) list.splice(i, 1);
+    return [1, 0];
+  }
+  if (q.startsWith('INSERT INTO movies (')) {
+    const [
+      tmdb_id, file_path, raw_filename, file_mtime, title, original_title, year, overview, tagline, runtime,
+      vote_average, genres, cast_crew, poster_path, backdrop_path, logo_path, resolution, video_codec, hdr_format,
+      audio_codec, imdb_id, file_size, certification, collection_id, collection_name, trailer_key, stinger,
+    ] = values as never[];
+    const existing = movies.find((r) => r.file_path === file_path);
+    if (existing) {
+      Object.assign(existing, {
+        tmdb_id, raw_filename, file_mtime, title, original_title, year, overview, tagline, runtime,
+        vote_average, genres, cast_crew, poster_path, backdrop_path, logo_path, resolution, video_codec, hdr_format,
+        audio_codec, imdb_id, file_size, certification, collection_id, collection_name, trailer_key, stinger,
+      });
+      return [1, existing.id];
+    }
+    const id = nextId++;
+    movies.push({
+      id, tmdb_id, file_path, raw_filename, file_mtime, title, original_title, year, overview: overview ?? '',
+      tagline, runtime, vote_average, genres: genres ?? '[]', cast_crew: cast_crew ?? '[]', poster_path, backdrop_path,
+      logo_path, resolution, video_codec, hdr_format, audio_codec, imdb_id, imdb_rating: null, imdb_votes: null,
+      progress_seconds: 0, duration_seconds: 0, watched: 0, my_list: 0, last_watched_at: null, created_at: ts(0),
+      certification, collection_id: collection_id ?? 0, collection_name, trailer_key: trailer_key ?? '', file_size,
+      media_info: null, segments: null, probed_mtime: 0, enriched_at: certification ? ts(0) : null, probe_error: null,
+      rt_score: null, metacritic: null, omdb_at: null, stinger: stinger ?? '', subs_auto_at: null, subs_auto_result: null,
+    });
+    return [1, id];
+  }
+  if (q.startsWith('INSERT INTO tv_series (')) {
+    const [
+      tmdb_id, folder_path, title, year, overview, vote_average, genres, cast_crew, poster_path, backdrop_path,
+      logo_path, number_of_seasons, imdb_id, certification, trailer_key, tmdb_status, next_episode,
+    ] = values as never[];
+    const existing = series.find((s) => s.tmdb_id === tmdb_id);
+    if (existing) {
+      Object.assign(existing, {
+        folder_path: existing.folder_path ?? folder_path, title, year, overview: overview ?? '', vote_average,
+        genres: genres ?? '[]', cast_crew: cast_crew ?? '[]', poster_path, backdrop_path, logo_path, number_of_seasons,
+      });
+      return [1, existing.id];
+    }
+    const id = 100 + nextId++;
+    series.push({
+      id, tmdb_id, folder_path, title, year, overview: overview ?? '', vote_average, genres: genres ?? '[]',
+      cast_crew: cast_crew ?? '[]', poster_path, backdrop_path, logo_path, number_of_seasons: number_of_seasons ?? 1,
+      my_list: 0, last_watched_at: null, created_at: ts(0), imdb_id, imdb_rating: null, imdb_votes: null,
+      imdb_season_ratings: null, certification, trailer_key: trailer_key ?? '', tmdb_status, next_episode,
+      enriched_at: certification ? ts(0) : null, rt_score: null, metacritic: null, omdb_at: null,
+    });
+    return [1, id];
+  }
+  if (q.startsWith('INSERT INTO episodes (')) {
+    const [
+      series_id, tmdb_episode_id, file_path, raw_filename, file_mtime, season_number, episode_number, title,
+      overview, still_path, air_date, runtime, resolution, video_codec, hdr_format, audio_codec, file_size,
+    ] = values as never[];
+    const existing = episodes.find((e) => e.file_path === file_path);
+    if (existing) {
+      Object.assign(existing, {
+        series_id, tmdb_episode_id, raw_filename, file_mtime, season_number, episode_number, title, overview,
+        still_path, air_date, runtime, resolution, video_codec, hdr_format, audio_codec, file_size,
+      });
+      return [1, existing.id];
+    }
+    const id = epId++;
+    episodes.push({
+      id, series_id, tmdb_episode_id, file_path, raw_filename, file_mtime, season_number, episode_number, title,
+      overview, still_path, air_date, runtime, resolution, video_codec, hdr_format, audio_codec, imdb_id: null,
+      imdb_rating: null, imdb_votes: null, progress_seconds: 0, duration_seconds: 0, watched: 0, last_watched_at: null,
+      file_size, media_info: null, segments: null, probed_mtime: 0, intro_checked: 0, probe_error: null,
+      subs_auto_at: null, subs_auto_result: null,
+    });
+    return [1, id];
+  }
   if (q.startsWith('INSERT OR IGNORE INTO') && !q.includes('subtitles')) {
     genericInsert(q, values);
     return [1, 0];
@@ -618,6 +824,8 @@ function handleLibrarySql(q: string, values: unknown[]): unknown | undefined {
 
 function handleExecute(query: string, values: unknown[]) {
   const q = query.replace(/\s+/g, ' ').trim();
+  const tor = handleTorrentSql(q, values);
+  if (tor !== undefined) return tor;
   const prof = handleProfileSql(q, values);
   if (prof !== undefined) return prof;
   const lib = handleLibrarySql(q, values);
@@ -651,7 +859,10 @@ function handleExecute(query: string, values: unknown[]) {
 }
 
 function handleSelect(query: string, values: unknown[]) {
-  const prof = handleProfileSql(query.replace(/\s+/g, ' ').trim(), values);
+  const qNorm = query.replace(/\s+/g, ' ').trim();
+  const tor = handleTorrentSql(qNorm, values);
+  if (tor !== undefined) return tor;
+  const prof = handleProfileSql(qNorm, values);
   if (prof !== undefined) return prof;
   const lib = handleLibrarySql(query.replace(/\s+/g, ' ').trim(), values);
   if (lib !== undefined) return lib;
@@ -755,11 +966,104 @@ function simClose() {
   void emit('player-closed', final);
 }
 
-/** OMDb, like the real service: scores for movies, usually none for TV shows. */
+/** Mock OMDb + TMDB (when using dev-mock-key) so browser dev & automated UI tests work offline. */
 function mockOmdb() {
   const realFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
+    if (url.includes('api.themoviedb.org/3/') && url.includes('api_key=dev-mock-key')) {
+      const u = new URL(url);
+      const p = u.pathname.replace('/3', '');
+      const jsonRes = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (p === '/search/movie') {
+        const q = (u.searchParams.get('query') ?? '').toLowerCase();
+        if (q.includes('arrival')) {
+          return jsonRes({
+            results: [
+              { id: 329865, title: 'Arrival', release_date: '2016-11-10', overview: 'Taking place after alien crafts land around the world, an expert linguist is recruited by the military to determine whether they come in peace or are a threat.', poster_path: '/x2FJsf1ElAgr63Y3PNPtJrcmpoe.jpg', backdrop_path: '/yIZ1xendyqKvY3FGeeUYUd5X9Mm.jpg', vote_average: 7.6 },
+            ],
+          });
+        }
+        return jsonRes({
+          results: [
+            { id: 157336, title: 'Interstellar', release_date: '2014-11-05', overview: 'Explorers travel through a wormhole in space.', poster_path: '/yQvGrMoipbRoddT0ZR8tPoR7NfX.jpg', backdrop_path: '/8sNiAPPYU14PUepFNeSNGUTiHW.jpg', vote_average: 8.5 },
+            { id: 329865, title: 'Arrival', release_date: '2016-11-10', overview: 'Linguist communicates with extraterrestrial visitors.', poster_path: '/x2FJsf1ElAgr63Y3PNPtJrcmpoe.jpg', backdrop_path: '/yIZ1xendyqKvY3FGeeUYUd5X9Mm.jpg', vote_average: 7.6 },
+          ],
+        });
+      }
+      if (p === '/search/tv') {
+        const q = (u.searchParams.get('query') ?? '').toLowerCase();
+        if (q.includes('andor')) {
+          return jsonRes({
+            results: [
+              { id: 83867, name: 'Andor', first_air_date: '2022-09-21', overview: 'Cassian Andor embarks on a path that is destined to turn him into a rebel hero.', poster_path: '/59SVNwLfoMnZPPB6ukW6dlPxAdI.jpg', backdrop_path: '/ajztm40qDPqMONaSJhQ2PaNe2Xd.jpg', vote_average: 8.2 },
+            ],
+          });
+        }
+        return jsonRes({
+          results: [
+            { id: 83867, name: 'Andor', first_air_date: '2022-09-21', overview: 'Cassian Andor embarks on a rebel journey.', poster_path: '/59SVNwLfoMnZPPB6ukW6dlPxAdI.jpg', backdrop_path: '/ajztm40qDPqMONaSJhQ2PaNe2Xd.jpg', vote_average: 8.2 },
+          ],
+        });
+      }
+      if (p.startsWith('/movie/')) {
+        const id = Number(p.split('/')[2]) || 329865;
+        return jsonRes({
+          id,
+          title: id === 329865 ? 'Arrival' : 'Interstellar',
+          original_title: id === 329865 ? 'Arrival' : 'Interstellar',
+          release_date: id === 329865 ? '2016-11-10' : '2014-11-05',
+          overview: 'Linguist Louise Banks leads an elite team of investigators when gigantic spaceships touch down across the globe.',
+          tagline: 'Why are they here?',
+          runtime: 116,
+          vote_average: 7.6,
+          imdb_id: 'tt2543164',
+          poster_path: '/x2FJsf1ElAgr63Y3PNPtJrcmpoe.jpg',
+          backdrop_path: '/yIZ1xendyqKvY3FGeeUYUd5X9Mm.jpg',
+          genres: [{ name: 'Science Fiction' }, { name: 'Drama' }],
+          credits: { cast: [{ id: 9273, name: 'Amy Adams' }, { id: 17604, name: 'Jeremy Renner' }], crew: [{ id: 137427, name: 'Denis Villeneuve', job: 'Director' }] },
+          images: { logos: [] },
+          release_dates: { results: [{ iso_3166_1: 'US', release_dates: [{ certification: 'PG-13' }] }] },
+          videos: { results: [] },
+          keywords: { keywords: [] },
+        });
+      }
+      if (/^\/tv\/\d+\/season\/\d+$/.test(p)) {
+        const seasonNum = Number(p.split('/')[4]) || 1;
+        return jsonRes({
+          episodes: [1, 2, 3].map((epNum) => ({
+            id: 50000 + seasonNum * 100 + epNum,
+            season_number: seasonNum,
+            episode_number: epNum,
+            name: `Episode ${epNum}`,
+            overview: `Andor Season ${seasonNum} Episode ${epNum} synopsis.`,
+            still_path: '/ajztm40qDPqMONaSJhQ2PaNe2Xd.jpg',
+            air_date: '2022-09-21',
+            runtime: 45,
+          })),
+        });
+      }
+      if (p.startsWith('/tv/')) {
+        const id = Number(p.split('/')[2]) || 83867;
+        return jsonRes({
+          id,
+          name: 'Andor',
+          first_air_date: '2022-09-21',
+          overview: 'Cassian Andor embarks on a path that is destined to turn him into a rebel hero.',
+          vote_average: 8.2,
+          number_of_seasons: 2,
+          status: 'Returning Series',
+          poster_path: '/59SVNwLfoMnZPPB6ukW6dlPxAdI.jpg',
+          backdrop_path: '/ajztm40qDPqMONaSJhQ2PaNe2Xd.jpg',
+          genres: [{ name: 'Sci-Fi & Fantasy' }, { name: 'Action & Adventure' }],
+          credits: { cast: [{ id: 8688, name: 'Diego Luna' }], crew: [{ id: 19303, name: 'Tony Gilroy', job: 'Creator' }] },
+          external_ids: { imdb_id: 'tt9253284' },
+          images: { logos: [] },
+          content_ratings: { results: [{ iso_3166_1: 'US', rating: 'TV-14' }] },
+          videos: { results: [] },
+        });
+      }
+    }
     if (!url.includes('omdbapi.com')) return realFetch(input, init);
     const id = new URL(url).searchParams.get('i');
     const show = series.find((x) => x.imdb_id === id);
@@ -767,6 +1071,45 @@ function mockOmdb() {
       ? { Response: 'True', Type: 'series', Ratings: [{ Source: 'Internet Movie Database', Value: '8.6/10' }], Metascore: 'N/A' }
       : { Response: 'True', Type: 'movie', Ratings: [{ Source: 'Rotten Tomatoes', Value: '88%' }], Metascore: '74' };
     return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+}
+
+// --- Simulated BitTorrent engine (mirrors Rust `torrent_*` commands) -----------------------------
+
+const simTorrents = new Map<string, TorrentStatus>();
+let simOsDefault = { magnet_registered: false, torrent_file_registered: false, platform: 'macos' };
+
+function hashSource(src: string): string {
+  const m = src.match(/btih:([0-9a-fA-F]{40})/i);
+  if (m) return m[1].toLowerCase();
+  let h1 = 0x811c9dc5;
+  for (let i = 0; i < src.length; i++) h1 = Math.imul(h1 ^ src.charCodeAt(i), 0x01000193) >>> 0;
+  return h1.toString(16).padStart(8, '0').repeat(5).slice(0, 40);
+}
+
+function inspectMockSource(source: string): InspectTorrentRes {
+  const info_hash = hashSource(source);
+  const dnMatch = source.match(/[?&]dn=([^&]+)/);
+  const name = dnMatch
+    ? decodeURIComponent(dnMatch[1].replace(/\+/g, ' '))
+    : source.endsWith('.torrent')
+      ? source.split(/[\\/]/).pop()!.replace(/\.torrent$/i, '')
+      : 'Arrival.2016.2160p.UHD.BluRay.x265.mkv';
+  const isTv = /\bS\d{1,2}E\d{1,2}\b|\bS\d{1,2}\b|\bSeason\b/i.test(name);
+  const files = isTv
+    ? [
+        { index: 0, name: `${name}.S01E01.1080p.mkv`, relative_path: `${name}.S01E01.1080p.mkv`, size: 2_200_000_000, is_video: true },
+        { index: 1, name: `${name}.S01E02.1080p.mkv`, relative_path: `${name}.S01E02.1080p.mkv`, size: 2_100_000_000, is_video: true },
+      ]
+    : [{ index: 0, name: /\.mkv$|\.mp4$/i.test(name) ? name : `${name}.mkv`, relative_path: /\.mkv$|\.mp4$/i.test(name) ? name : `${name}.mkv`, size: 8_400_000_000, is_video: true }];
+  return {
+    info_hash,
+    name,
+    is_magnet: source.toLowerCase().startsWith('magnet:'),
+    metadata_ready: true,
+    total_bytes: files.reduce((s, f) => s + f.size, 0),
+    files,
+    trackers: ['udp://tracker.opentrackr.org:1337/announce'],
   };
 }
 
@@ -959,6 +1302,102 @@ export function installMocks() {
           return null;
         case 'detect_vlc':
           return '/Applications/VLC.app/Contents/MacOS/VLC';
+        case 'torrent_configure':
+          (window as unknown as { __lastTorrentConfig?: unknown }).__lastTorrentConfig = a.config;
+          return (a.config as { listen_port?: number })?.listen_port || 49152;
+        case 'torrent_inspect':
+        case 'torrent_inspect_files':
+          return inspectMockSource(String(a.source));
+        case 'torrent_add': {
+          const req = a.req as {
+            source: string;
+            is_stream: boolean;
+            output_folder?: string | null;
+            sub_folder?: string | null;
+            only_files?: number[] | null;
+            paused?: boolean;
+          };
+          const info = inspectMockSource(req.source);
+          const outRoot = req.is_stream
+            ? `/tmp/truongflix-stream-cache/${info.info_hash}`
+            : `${(req.output_folder || '/Volumes/Media/Movies').replace(/\/+$/, '')}/${req.sub_folder || info.name}`;
+          const only = req.only_files ? new Set(req.only_files) : null;
+          const status: TorrentStatus = {
+            info_hash: info.info_hash,
+            name: info.name,
+            state: req.paused ? 'paused' : 'downloading',
+            output_folder: outRoot,
+            progress_bytes: Math.round(info.total_bytes * 0.28),
+            total_bytes: info.total_bytes,
+            uploaded_bytes: 0,
+            progress_pct: 28,
+            download_speed_bps: 18_500_000,
+            upload_speed_bps: 1_200_000,
+            eta_secs: 320,
+            peers_live: 14,
+            peers_connecting: 3,
+            peers_seen: 42,
+            finished: false,
+            paused: !!req.paused,
+            error: null,
+            listen_port: 49152,
+            files: info.files.map((f) => ({
+              ...f,
+              full_path: `${outRoot}/${f.relative_path}`,
+              downloaded_bytes: Math.round(f.size * 0.28),
+              included: only ? only.has(f.index) : true,
+            })),
+          };
+          simTorrents.set(info.info_hash, status);
+          return status;
+        }
+        case 'torrent_list': {
+          const stepPct = Number((window as unknown as { __simTorrentStepPct?: number }).__simTorrentStepPct ?? 8);
+          for (const st of simTorrents.values()) {
+            if (!st.paused && !st.finished && stepPct > 0) {
+              st.progress_pct = Math.min(100, st.progress_pct + stepPct);
+              st.progress_bytes = Math.round((st.total_bytes * st.progress_pct) / 100);
+              for (const f of st.files) f.downloaded_bytes = Math.round((f.size * st.progress_pct) / 100);
+              if (st.progress_pct >= 100) {
+                st.finished = true;
+                st.state = 'seeding';
+                st.download_speed_bps = 0;
+                st.eta_secs = 0;
+              }
+            }
+          }
+          return [...simTorrents.values()];
+        }
+        case 'torrent_action': {
+          const hash = String(a.infoHash).toLowerCase();
+          const st = simTorrents.get(hash);
+          const act = String(a.action);
+          if (act === 'pause' && st) {
+            st.paused = true;
+            st.state = 'paused';
+            st.download_speed_bps = 0;
+          } else if (act === 'resume' && st) {
+            st.paused = false;
+            st.state = st.finished ? 'seeding' : 'downloading';
+            st.download_speed_bps = st.finished ? 0 : 18_500_000;
+          } else if (act === 'delete_keep_files' || act === 'delete_with_files') {
+            simTorrents.delete(hash);
+          }
+          return null;
+        }
+        case 'torrent_set_only_files':
+          return null;
+        case 'torrent_stream_url':
+          return `http://127.0.0.1:54321/torrent/mocksecret/${a.infoHash}/${a.fileIndex ?? 0}`;
+        case 'torrent_take_pending_links':
+          return [];
+        case 'torrent_check_os_handler':
+          return simOsDefault;
+        case 'torrent_register_os_handler':
+          simOsDefault = { ...simOsDefault, magnet_registered: true, torrent_file_registered: true };
+          return simOsDefault;
+        case 'plugin:deep-link|get_current':
+          return null;
         case 'check_paths':
           return ((a.paths as string[]) ?? []).map(() => true);
         case 'scan_media_folders':

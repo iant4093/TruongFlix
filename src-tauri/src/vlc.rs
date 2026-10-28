@@ -228,7 +228,8 @@ pub async fn launch_vlc(
         .filter(|p| Path::new(p).is_file())
         .or_else(detect_vlc)
         .ok_or("VLC was not found. Install VLC or set its path in Settings.")?;
-    if !Path::new(&file_path).is_file() {
+    let is_local_stream = file_path.starts_with("http://127.0.0.1:");
+    if !is_local_stream && !Path::new(&file_path).is_file() {
         return Err(format!("File not found: {file_path}"));
     }
 

@@ -105,6 +105,37 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
     return false;
   }
 
+  const allPaths = new Set([...movieRows.map((m) => m.file_path), ...episodeRows.map((e) => e.file_path)]);
+  const matchingTorrents = store.torrents.filter(
+    (t) => t.filePaths.some((p) => allPaths.has(p)) || t.files.some((f) => allPaths.has(f.full_path)),
+  );
+  const transientTorrent = matchingTorrents.find((t) => t.mode === 'stream' || !t.finished);
+
+  if (transientTorrent) {
+    const ok = await store.confirm({
+      title: `Remove “${label}”?`,
+      message:
+        transientTorrent.mode === 'stream'
+          ? `This will clear the temporary stream cache for “${label}” immediately.`
+          : `This will cancel the active download for “${label}” and delete any partial files.`,
+      confirmLabel: transientTorrent.mode === 'stream' ? 'Clear Stream' : 'Cancel & Delete',
+      danger: true,
+    });
+    if (!ok) return false;
+    for (const t of matchingTorrents) {
+      await invoke('torrent_action', { infoHash: t.infoHash, action: 'delete_with_files' }).catch(() => {});
+      await db.deleteTorrentRecord(t.infoHash);
+    }
+    await db.removeLibraryRows(movieIds, episodeIds);
+    store.setTorrents(store.torrents.filter((t) => !matchingTorrents.some((m) => m.infoHash === t.infoHash)));
+    await store.reload();
+    store.toast(
+      transientTorrent.mode === 'stream' ? `Cleared stream cache for “${label}”` : `Cancelled download for “${label}”`,
+      'info',
+    );
+    return true;
+  }
+
   const what =
     target.kind === 'tv'
       ? `All ${fileCount} episode${fileCount === 1 ? '' : 's'} (and the show’s folder, if it only holds this show)`
@@ -122,6 +153,15 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
     danger: true,
   });
   if (!ok) return false;
+
+  // Release any active seeding handles before moving files on disk (critical on Windows).
+  for (const t of matchingTorrents) {
+    await invoke('torrent_action', { infoHash: t.infoHash, action: 'delete_keep_files' }).catch(() => {});
+    await db.deleteTorrentRecord(t.infoHash);
+  }
+  if (matchingTorrents.length) {
+    store.setTorrents(store.torrents.filter((t) => !matchingTorrents.some((m) => m.infoHash === t.infoHash)));
+  }
 
   // Group by media folder so each trash entry stays on the same drive as its files.
   const allRows = [...movieRows.map((r) => ({ ...r, type: 'movie' as const })), ...episodeRows.map((r) => ({ ...r, type: 'episode' as const }))];

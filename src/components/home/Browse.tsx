@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
-import { FolderOpen, RefreshCw } from 'lucide-react';
+import { FolderOpen, Magnet, RefreshCw } from 'lucide-react';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
 import { continueWatching, genreBuckets, seededShuffle } from '../../store/selectors';
 import { runScan } from '../../services/scanner';
+import { torrentForItem } from '../../services/torrents';
 import HeroBillboard from './HeroBillboard';
 import MediaCard from './MediaCard';
 import MediaRow, { useItemsPerRow, type RowEntry } from './MediaRow';
@@ -25,6 +26,7 @@ function pickFeatured(items: MediaItem[], seed: number): MediaItem | null {
 function EmptyLibrary() {
   const scan = useLibraryStore((s) => s.scan);
   const openSettings = useLibraryStore((s) => s.setSettingsOpen);
+  const openAddTorrent = useLibraryStore((s) => s.openAddTorrent);
   const dirs = useLibraryStore((s) => s.settings.media_directories);
   return (
     <section className="relative flex h-[85vh] min-h-[520px] items-center overflow-hidden px-[4%]">
@@ -40,7 +42,7 @@ function EmptyLibrary() {
               ? 'Scan your media folders to fetch posters, logos and metadata for every movie and episode.'
               : 'Add the folders where your movies and TV shows live, then scan to build your TruongFlix library.'}
         </p>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <button onClick={() => runScan()} disabled={scan.running || !dirs.length} className="nf-btn-play text-lg disabled:opacity-50">
             <RefreshCw className={`h-6 w-6 ${scan.running ? 'animate-spin' : ''}`} />
             Scan Library
@@ -48,6 +50,10 @@ function EmptyLibrary() {
           <button onClick={() => openSettings(true, 'library')} className="nf-btn-info text-lg">
             <FolderOpen className="h-6 w-6" />
             Media Folders
+          </button>
+          <button onClick={() => openAddTorrent()} className="nf-btn-info text-lg">
+            <Magnet className="h-6 w-6" />
+            Add Magnet / .torrent
           </button>
         </div>
       </div>
@@ -61,6 +67,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
   const collections = useLibraryStore((s) => s.collections);
+  const torrents = useLibraryStore((s) => s.torrents);
 
   const items = useMemo(
     () => (view === 'home' ? allItems : allItems.filter((i) => i.kind === (view === 'tv' ? 'tv' : 'movie'))),
@@ -72,6 +79,14 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
   const rows = useMemo(() => {
     const out: { title: string; entries: RowEntry[]; top10?: MediaItem[] }[] = [];
     const noun = view === 'tv' ? 'TV Shows' : view === 'movies' ? 'Movies' : '';
+
+    const downloading = items.filter((i) => {
+      const t = torrentForItem(i, torrents);
+      return Boolean(t && !t.finished);
+    });
+    if (downloading.length > 0) {
+      out.push({ title: 'Downloading Now', entries: wrap(downloading) });
+    }
 
     const cw = continueWatching(items, episodesBySeries);
     out.push({ title: 'Continue Watching for You', entries: cw.map((entry) => ({ item: entry.item, entry })) });
@@ -147,7 +162,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
 
     out.push({ title: 'Unidentified Files · Fix Match', entries: wrap(items.filter((i) => !i.matched)) });
     return out.filter((r) => r.entries.length || r.top10?.length);
-  }, [items, episodesBySeries, view, imdbEnabled, collections]);
+  }, [items, episodesBySeries, view, imdbEnabled, collections, torrents]);
 
   if (!items.length) return <EmptyLibrary />;
 

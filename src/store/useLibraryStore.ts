@@ -18,6 +18,7 @@ import type {
   SeriesRow,
   Settings,
   SleepTimer,
+  TorrentItem,
 } from '../types/media';
 import { allowedForMaturity, buildItems, groupEpisodes } from './selectors';
 
@@ -60,7 +61,7 @@ export interface PinRequest {
   then: () => void;
 }
 
-export type SettingsTab = 'library' | 'playback' | 'audio' | 'subtitles' | 'ratings' | 'devices' | 'home' | 'profiles' | 'trash' | 'about';
+export type SettingsTab = 'library' | 'torrents' | 'playback' | 'audio' | 'subtitles' | 'ratings' | 'devices' | 'home' | 'profiles' | 'trash' | 'about';
 
 export type Overlay = 'wrapped' | 'history' | 'rename' | 'health' | null;
 
@@ -114,6 +115,8 @@ interface LibraryState {
 
   scan: ScanState;
   playback: PlaybackState;
+  torrents: TorrentItem[];
+  addTorrentModal: { open: boolean; initialSource?: string } | null;
   toasts: Toast[];
   confirmRequest: ConfirmRequest | null;
 
@@ -144,6 +147,9 @@ interface LibraryState {
   setHover: (h: HoverState | null) => void;
   setScan: (patch: Partial<ScanState>) => void;
   setPlayback: (patch: Partial<PlaybackState>) => void;
+  setTorrents: (t: TorrentItem[]) => void;
+  openAddTorrent: (initialSource?: string) => void;
+  closeAddTorrent: () => void;
   patchProgress: (type: PlayableType, id: number, time: number, length: number) => void;
   toggleMyList: (item: MediaItem) => Promise<void>;
   loadProfiles: () => Promise<void>;
@@ -209,6 +215,21 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     remote_access: false,
     remote_code: '',
     remote_port: 8732,
+    torrent_default_mode: 'download',
+    torrent_delete_after_complete: false,
+    torrent_seed_ratio_limit: 0,
+    torrent_seed_time_mins: 0,
+    torrent_stream_cache_hours: 72,
+    torrent_listen_port: 0,
+    torrent_upnp: true,
+    torrent_dht: true,
+    torrent_lsd: true,
+    torrent_trackers: true,
+    torrent_max_download_kbps: 0,
+    torrent_max_upload_kbps: 0,
+    torrent_peer_limit: 128,
+    torrent_movies_dir: '',
+    torrent_tv_dir: '',
   },
   movies: [],
   series: [],
@@ -245,6 +266,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
   scan: EMPTY_SCAN,
   playback: { active: false, type: null, id: null, time: 0, length: 0 },
+  torrents: [],
+  addTorrentModal: null,
   toasts: [],
   confirmRequest: null,
 
@@ -352,6 +375,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   setHover: (hover) => set({ hover }),
   setScan: (patch) => set((s) => ({ scan: { ...s.scan, ...patch } })),
   setPlayback: (patch) => set((s) => ({ playback: { ...s.playback, ...patch } })),
+  setTorrents: (torrents) => set({ torrents }),
+  openAddTorrent: (initialSource) => set({ addTorrentModal: { open: true, initialSource }, hover: null }),
+  closeAddTorrent: () => set({ addTorrentModal: null }),
 
   /** Live in-memory progress update while VLC is playing (DB is written by the player service). */
   patchProgress: (type, id, time, length) => {

@@ -386,7 +386,8 @@ pub async fn player_open(
         return Err(reason);
     }
     let api = mpv::api()?;
-    if !std::path::Path::new(&file_path).is_file() {
+    let is_local_stream = file_path.starts_with("http://127.0.0.1:");
+    if !is_local_stream && !std::path::Path::new(&file_path).is_file() {
         return Err(format!("File not found: {file_path}"));
     }
     let subtitle = subtitle_path.filter(|p| std::path::Path::new(p).is_file());

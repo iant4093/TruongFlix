@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, ChevronDown, Play, Plus, Wrench } from 'lucide-react';
+import { Check, ChevronDown, Clock, HardDriveDownload, Play, Plus, Wrench } from 'lucide-react';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
 import { formatRuntime, genreBuckets, playTargetFor } from '../../store/selectors';
 import type { MediaItem } from '../../types/media';
 import { extractFrames } from '../../services/frames';
 import { parseMediaInfo } from '../../services/mediainfo';
+import { formatExpiryRemaining, formatSpeed, keepStreamPermanently, torrentForItem } from '../../services/torrents';
 import MaturityRating from '../common/MaturityRating';
 import CriticScores from '../common/CriticScores';
 import { playItem } from '../../services/player';
@@ -97,6 +98,9 @@ function PreviewCard({ hover }: { hover: HoverState }) {
   const toggleMyList = useLibraryStore((s) => s.toggleMyList);
   const liveItem = useLibraryStore((s) => s.items.find((i) => i.key === hover.item.key));
   const item = liveItem ?? hover.item;
+  const torrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
+  const isDownloading = Boolean(torrent && !torrent.finished);
+  const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
   const { rect } = hover;
 
   const layout = useMemo(() => {
@@ -136,9 +140,15 @@ function PreviewCard({ hover }: { hover: HoverState }) {
       className="z-40 overflow-hidden rounded-md bg-nf-surface shadow-card"
     >
       <div className="relative aspect-video w-full cursor-pointer" onClick={() => openDetail(item.key)}>
-        <Artwork src={resize(item.backdrop, 'w780')} alt={item.title} fallbackTitle={item.title} className="h-full w-full" eager />
+        <Artwork
+          src={resize(item.backdrop, 'w780')}
+          alt={item.title}
+          fallbackTitle={item.title}
+          className={`h-full w-full ${isDownloading ? 'opacity-50 grayscale' : ''}`}
+          eager
+        />
         <AnimatePresence>
-          {still && (
+          {still && !isDownloading && (
             <motion.img
               key={still}
               src={still}
@@ -152,10 +162,28 @@ function PreviewCard({ hover }: { hover: HoverState }) {
           )}
         </AnimatePresence>
         <CardTitleOverlay item={item} />
-        {hover.progress != null && (
-          <div className="absolute inset-x-0 bottom-0">
-            <ProgressBar value={hover.progress} height={3} />
+        {expiry && (
+          <span
+            className={`absolute right-2 top-2 inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold shadow backdrop-blur-xs ${
+              expiry.urgent ? 'bg-nf-red/90 text-white' : 'bg-black/80 text-amber-200 ring-1 ring-amber-300/35'
+            }`}
+          >
+            <Clock className="h-3 w-3" /> {expiry.label}
+          </span>
+        )}
+        {isDownloading && torrent ? (
+          <div className="absolute inset-x-0 bottom-0 h-1.5 bg-black/80">
+            <div
+              className="h-full bg-sky-400 transition-all duration-300"
+              style={{ width: `${Math.min(100, Math.max(4, torrent.progressPct))}%` }}
+            />
           </div>
+        ) : (
+          hover.progress != null && (
+            <div className="absolute inset-x-0 bottom-0">
+              <ProgressBar value={hover.progress} height={3} />
+            </div>
+          )
         )}
       </div>
 
@@ -163,7 +191,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
         <div className="flex items-center gap-2">
           <button
             onClick={() => playItem(item)}
-            title="Play"
+            title={isDownloading ? 'Stream Now' : 'Play'}
             className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-white/80"
           >
             <Play className="ml-0.5 h-4 w-4 fill-black" strokeWidth={0} />
@@ -174,10 +202,26 @@ function PreviewCard({ hover }: { hover: HoverState }) {
           <button onClick={() => openFixMatch(item.key)} title="Fix Match" className="nf-circle-btn h-9 w-9">
             <Wrench className="h-3.5 w-3.5" />
           </button>
+          {torrent?.mode === 'stream' && (
+            <button
+              onClick={() => void keepStreamPermanently(torrent.infoHash)}
+              title="Keep permanently in library"
+              className="nf-circle-btn h-9 w-9 text-amber-200 hover:!border-amber-300"
+            >
+              <HardDriveDownload className="h-4 w-4" />
+            </button>
+          )}
           <button onClick={() => openDetail(item.key)} title="More info" className="nf-circle-btn ml-auto h-9 w-9">
             <ChevronDown className="h-5 w-5" />
           </button>
         </div>
+
+        {isDownloading && torrent && (
+          <div className="truncate text-xs font-medium text-sky-300">
+            Downloading {torrent.progressPct.toFixed(1)}%
+            {torrent.downloadSpeedBps > 0 ? ` · ↓ ${formatSpeed(torrent.downloadSpeedBps)}` : ''}
+          </div>
+        )}
 
         {hover.subtitle && <div className="truncate text-xs font-semibold text-white">{hover.subtitle}</div>}
 

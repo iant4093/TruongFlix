@@ -20,9 +20,12 @@ import WrappedModal from './components/modals/WrappedModal';
 import HistoryModal from './components/modals/HistoryModal';
 import RenameModal from './components/modals/RenameModal';
 import HealthModal from './components/modals/HealthModal';
+import AddTorrentModal from './components/torrents/AddTorrentModal';
 import { autoPurgeTrash } from './services/files';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { engineStatus, initPlayerEvents, playBuiltin, syncAudioFilters, syncMiniLayout, syncSubtitleStyle } from './services/player';
+import { fileToBase64TorrentSource, initTorrentService } from './services/torrents';
 import { autoCheckForUpdates } from './services/updates';
 import { startBackgroundAnalysis } from './services/enrich';
 import { startFolderWatch } from './services/watch';
@@ -41,6 +44,7 @@ export default function App() {
   const fixMatchKey = useLibraryStore((s) => s.fixMatchKey);
   const settingsOpen = useLibraryStore((s) => s.settingsOpen);
   const onboardingOpen = useLibraryStore((s) => s.onboardingOpen);
+  const addTorrentOpen = useLibraryStore((s) => !!s.addTorrentModal?.open);
   const [fatal, setFatal] = useState<string | null>(null);
   const [introDone, setIntroDone] = useState(false);
   const launchIntro = useLibraryStore((s) => s.settings.launch_intro);
@@ -50,6 +54,7 @@ export default function App() {
     init()
       .then(() => autoPurgeTrash().catch((e) => console.warn('[trash] auto-purge failed', e)))
       .then(async () => {
+        void initTorrentService().catch((e) => console.warn('[torrents]', e));
         void applyRemoteAccess().catch((e) => console.warn('[remote]', e));
         // Bring back NAS folders that dropped off while the app was closed, then note any shares.
         await reconnectOfflineShares().catch(() => []);
@@ -78,7 +83,7 @@ export default function App() {
   const actorOpen = useLibraryStore((s) => !!s.actor);
   const profileGateOpen = useLibraryStore((s) => !!s.profileGate);
   const pageOverlay = useLibraryStore((s) => s.overlay);
-  const overlay = !!detailKey || !!fixMatchKey || settingsOpen || onboardingOpen || actorOpen || profileGateOpen || !!pageOverlay;
+  const overlay = !!detailKey || !!fixMatchKey || settingsOpen || onboardingOpen || addTorrentOpen || actorOpen || profileGateOpen || !!pageOverlay;
   useEffect(() => {
     document.documentElement.style.overflowY = overlay ? 'hidden' : '';
   }, [overlay]);
@@ -106,12 +111,13 @@ export default function App() {
     if (ready) void refreshShares().then(() => startFolderWatch());
   }, [ready, dirsKey]);
 
-  // Escape closes the top-most overlay.
+  // Escape closes the top-most overlay; global drag-and-drop opens .torrent files & magnet links.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       const s = useLibraryStore.getState();
-      if (s.fixMatchKey) s.openFixMatch(null);
+      if (s.addTorrentModal?.open) s.closeAddTorrent();
+      else if (s.fixMatchKey) s.openFixMatch(null);
       else if (s.actor) s.openActor(null);
       else if (s.detailEpisodeId != null) s.openEpisode(null);
       else if (s.detailKey) s.openDetail(null);
@@ -119,8 +125,45 @@ export default function App() {
       else if (s.overlay) s.setOverlay(null);
       else if (s.hover) s.setHover(null);
     };
+    const onDragOver = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files') || e.dataTransfer?.types.includes('text/uri-list')) {
+        e.preventDefault();
+      }
+    };
+    const onDrop = async (e: DragEvent) => {
+      if (useLibraryStore.getState().addTorrentModal?.open) return;
+      const file = Array.from(e.dataTransfer?.files ?? []).find((f) => f.name.toLowerCase().endsWith('.torrent'));
+      if (file) {
+        e.preventDefault();
+        const b64 = await fileToBase64TorrentSource(file);
+        useLibraryStore.getState().openAddTorrent(b64);
+        return;
+      }
+      const text = (e.dataTransfer?.getData('text/uri-list') || e.dataTransfer?.getData('text/plain') || '').trim();
+      if (text.toLowerCase().startsWith('magnet:')) {
+        e.preventDefault();
+        useLibraryStore.getState().openAddTorrent(text);
+      }
+    };
+    let unlistenDrop: (() => void) | null = null;
+    void listen<{ paths?: string[] }>('tauri://drag-drop', ({ payload }) => {
+      const torrentPath = payload?.paths?.find((p) => p.toLowerCase().endsWith('.torrent'));
+      if (torrentPath) useLibraryStore.getState().openAddTorrent(torrentPath);
+    })
+      .then((fn) => {
+        unlistenDrop = fn;
+      })
+      .catch(() => {});
+
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('drop', onDrop);
+      unlistenDrop?.();
+    };
   }, []);
 
   if (fatal) {
@@ -160,6 +203,7 @@ export default function App() {
         <AnimatePresence>{detailKey && <DetailModal key="detail" />}</AnimatePresence>
         <AnimatePresence>{fixMatchKey && <FixMatchModal key={fixMatchKey} />}</AnimatePresence>
         <AnimatePresence>{settingsOpen && <SettingsDialog key="settings" />}</AnimatePresence>
+        <AnimatePresence>{addTorrentOpen && <AddTorrentModal key="add-torrent" />}</AnimatePresence>
         <AnimatePresence>{onboardingOpen && <OnboardingModal key="onboarding" />}</AnimatePresence>
         <ActorModal />
         <AnimatePresence>

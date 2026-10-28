@@ -20,7 +20,7 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
-tokio = { version = "1", features = ["time", "net", "io-util", "sync", "fs"] }
+tokio = { version = "1", features = ["time", "net", "io-util", "sync", "fs", "rt-multi-thread", "macros"] }
 getrandom = "0.2"
 native-tls = "0.2"
 # OpenSubtitles API (needs a custom User-Agent, which webviews can't set). OS-native TLS keeps it small.
@@ -31,6 +31,9 @@ flate2 = "1"
 libloading = "0.8"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+librqbit = { version = "9", default-features = false, features = ["default-tls"] }
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 [target.'cfg(windows)'.dependencies]

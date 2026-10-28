@@ -296,13 +296,31 @@ async function flushWatchTime() {
   }
 }
 
+/** Resolves a local sequential HTTP byte-range stream URL when playing an active torrent download. */
+async function resolvePlaybackSource(filePath: string): Promise<string> {
+  if (filePath.startsWith('http://127.0.0.1:')) return filePath;
+  const { torrents } = useLibraryStore.getState();
+  const match = torrents.find((t) => t.filePaths.includes(filePath) || t.files.some((f) => f.full_path === filePath));
+  if (!match) return filePath;
+  if (match.finished && !match.inSession) return filePath;
+  if (match.finished) {
+    const ok = await invoke<boolean[]>('check_paths', { paths: [filePath] }).catch(() => [false]);
+    if (ok[0]) return filePath;
+  }
+  const fileObj = match.files.find((f) => f.full_path === filePath);
+  return invoke<string>('torrent_stream_url', {
+    infoHash: match.infoHash,
+    fileIndex: fileObj ? fileObj.index : null,
+  });
+}
+
 /** Launches external VLC, resuming from `startTime` seconds. */
 export async function playInVlc(target: PlayTarget) {
   const store = useLibraryStore.getState();
   try {
-    const subtitlePath = await subtitleFor(target);
+    const [subtitlePath, sourcePath] = await Promise.all([subtitleFor(target), resolvePlaybackSource(target.filePath)]);
     await invoke('launch_vlc', {
-      filePath: target.filePath,
+      filePath: sourcePath,
       startTime: Math.max(0, Math.floor(target.startTime)),
       mediaType: target.type,
       mediaId: target.id,
@@ -398,10 +416,11 @@ export async function playBuiltin(target: PlayTarget) {
   try {
     const { settings } = useLibraryStore.getState();
     appliedAf = audioFilterChain(settings, mediaInfoFor(target)?.audio.find((a) => a.default)?.channels ?? 2);
+    const [subtitlePath, sourcePath] = await Promise.all([subtitleFor(target), resolvePlaybackSource(target.filePath)]);
     await invoke('player_open', {
-      filePath: target.filePath,
+      filePath: sourcePath,
       startTime: Math.max(0, target.startTime),
-      subtitlePath: await subtitleFor(target),
+      subtitlePath,
       audioLang: null,
       subLang: null,
       options: [

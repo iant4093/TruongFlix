@@ -60,8 +60,10 @@ type ProbeTarget = { table: 'movies' | 'episodes'; row: MovieRow | EpisodeRow };
 
 async function probeFiles() {
   const { movies, episodes } = useLibraryStore.getState();
-  // Changed files, plus files probed before the truncation check existed.
-  const stale = (r: MovieRow | EpisodeRow) => r.probed_mtime !== r.file_mtime || (!!r.media_info && !r.media_info.includes('"tail_ok"'));
+  const incompletePaths = await db.getIncompleteTorrentPaths();
+  // Changed files, plus files probed before the truncation check existed (skipping active downloads).
+  const stale = (r: MovieRow | EpisodeRow) =>
+    !incompletePaths.has(r.file_path) && (r.probed_mtime !== r.file_mtime || (!!r.media_info && !r.media_info.includes('"tail_ok"')));
   const targets: ProbeTarget[] = [
     ...movies.filter(stale).map((row) => ({ table: 'movies' as const, row })),
     ...episodes.filter(stale).map((row) => ({ table: 'episodes' as const, row })),
@@ -186,13 +188,14 @@ export async function refreshCriticScores(): Promise<CriticRefresh> {
 
 async function detectIntros() {
   const { episodesBySeries, series } = useLibraryStore.getState();
+  const incompletePaths = await db.getIncompleteTorrentPaths();
   let currentStep = '';
   const unlisten = await listen<{ done: number; total: number }>('intro-progress', ({ payload }) => {
     if (currentStep) status(`${currentStep} · ${payload.done} of ${payload.total}`);
   });
   try {
     for (const show of series) {
-      const eps = episodesBySeries.get(show.id) ?? [];
+      const eps = (episodesBySeries.get(show.id) ?? []).filter((e) => !incompletePaths.has(e.file_path));
       const seasons = new Map<number, EpisodeRow[]>();
       for (const e of eps) seasons.set(e.season_number, [...(seasons.get(e.season_number) ?? []), e]);
       for (const [season, list] of seasons) {

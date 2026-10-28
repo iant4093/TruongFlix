@@ -1,6 +1,27 @@
-import { useState } from 'react';
-import { ArrowLeft, Check, ChevronLeft, ChevronRight, Eye, FolderOpen, Play, RotateCcw, Trash2, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import {
+  ArrowLeft,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Download,
+  Eye,
+  FolderOpen,
+  HardDriveDownload,
+  Play,
+  RotateCcw,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
+import {
+  episodeFileProgress,
+  formatExpiryRemaining,
+  formatSpeed,
+  keepStreamPermanently,
+  torrentForEpisode,
+} from '../../services/torrents';
 import type { EpisodeRow, MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { epLabel, episodeTarget, formatRemaining } from '../../store/selectors';
@@ -38,6 +59,16 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
   const toast = useLibraryStore((s) => s.toast);
   const [logoFailed, setLogoFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const torrent = useLibraryStore((s) => torrentForEpisode(ep, s.torrents));
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    if (!torrent?.expiresAt) return;
+    const id = window.setInterval(() => setClockTick((n) => n + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, [torrent?.expiresAt]);
+
+  const dlProg = episodeFileProgress(ep, torrent);
+  const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
 
   const idx = episodes.findIndex((e) => e.id === ep.id);
   const prev = idx > 0 ? episodes[idx - 1] : null;
@@ -108,7 +139,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
           <div className="mt-1 flex items-center gap-2.5">
             <button onClick={() => play(target)} className="nf-btn-play px-8 text-lg">
               <Play className="h-6 w-6 fill-black" strokeWidth={0} />
-              {inProgress ? 'Resume' : 'Play'}
+              {dlProg ? (inProgress ? 'Resume Stream' : 'Stream Now') : inProgress ? 'Resume' : 'Play'}
             </button>
             {inProgress && (
               <button
@@ -146,6 +177,43 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
           </div>
         </div>
       </div>
+
+      {torrent && (expiry || dlProg) && (
+        <div className="space-y-2 px-12 pb-2 pt-3">
+          {expiry && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-100">
+              <span className="inline-flex items-center gap-2">
+                <Clock className="h-4 w-4 text-amber-300" />
+                <span>
+                  <strong className="font-semibold">Temporary Stream</strong> · {expiry.label}
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => void keepStreamPermanently(torrent.infoHash)}
+                className="inline-flex h-8 items-center gap-1.5 rounded bg-white px-3 text-xs font-semibold text-black hover:bg-white/85"
+              >
+                <HardDriveDownload className="h-3.5 w-3.5" /> Keep in Library
+              </button>
+            </div>
+          )}
+          {dlProg && (
+            <div className="space-y-2 rounded-lg border border-sky-400/25 bg-sky-500/[0.07] px-4 py-2.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-sky-300">
+                  <Download className="h-3.5 w-3.5" /> Downloading episode · {dlProg.pct.toFixed(1)}%
+                </span>
+                {torrent.downloadSpeedBps > 0 && !torrent.paused && (
+                  <span className="tabular-nums text-sky-200">↓ {formatSpeed(torrent.downloadSpeedBps)}</span>
+                )}
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${Math.max(4, dlProg.pct)}%` }} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-[65%_35%] gap-8 px-12 pb-8 pt-2">
         <div className="min-w-0 space-y-4">
