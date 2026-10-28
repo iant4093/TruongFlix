@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Info, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { matchPercent, playTargetFor } from '../../store/selectors';
+import { playTargetFor } from '../../store/selectors';
 import { playItem } from '../../services/player';
 import TechBadges from '../common/TechBadges';
 import ImdbRating from '../common/ImdbRating';
@@ -26,9 +26,12 @@ function trailerUrl(key: string) {
     modestbranding: '1',
     playsinline: '1',
     rel: '0',
+    vq: 'hd1080',
     enablejsapi: '1',
-    origin: window.location.origin,
   });
+  if (window.location.protocol.startsWith('http')) {
+    params.set('origin', window.location.origin);
+  }
   return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(key)}?${params}`;
 }
 
@@ -61,19 +64,39 @@ export default function HeroBillboard({ item }: Props) {
   const [logoFailed, setLogoFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  const match = matchPercent(item.voteAverage);
   const target = playTargetFor(item, episodesBySeries);
   const resume = !!target && target.startTime > 0;
 
   // Trailer (muted YouTube embed) that takes over from the backdrop after a few seconds.
   const { enabled, playing } = useTrailerAllowed();
   const [phase, setPhase] = useState<TrailerPhase>('waiting');
+  const [ytState, setYtState] = useState<number | null>(null);
   const [muted, setMuted] = useState(true);
+  const sectionRef = useRef<HTMLElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const trailerKey = enabled ? item.trailerKey : null;
+  const [box, setBox] = useState(() => ({ w: window.innerWidth || 1920, h: Math.max(520, (window.innerHeight || 1080) * 0.85) }));
+
+  useEffect(() => {
+    const el = sectionRef.current;
+    if (!el) return;
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) setBox({ w: r.width, h: r.height });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const send = (func: string, args: unknown[] = []) =>
     frame.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
+
+  const forceHd = () => {
+    send('setPlaybackQualityRange', ['hd1080', 'highres']);
+    send('setPlaybackQuality', ['hd1080']);
+  };
 
   useEffect(() => {
     if (!trailerKey || phase !== 'waiting' || !playing) return;
@@ -81,7 +104,7 @@ export default function HeroBillboard({ item }: Props) {
     return () => window.clearTimeout(t);
   }, [trailerKey, phase, playing]);
 
-  // YouTube iframe API messages: playing / ended / errors.
+  // YouTube iframe API messages: playing / paused / buffering / ended / errors.
   useEffect(() => {
     if (phase === 'waiting' || phase === 'failed') return;
     const onMessage = (e: MessageEvent) => {
@@ -92,11 +115,24 @@ export default function HeroBillboard({ item }: Props) {
       } catch {
         return;
       }
+      if (msg.event === 'onReady') {
+        forceHd();
+        return;
+      }
       const state =
-        msg.event === 'onStateChange' ? msg.info : msg.event === 'infoDelivery' ? (msg.info as { playerState?: number })?.playerState : undefined;
+        msg.event === 'onStateChange'
+          ? typeof msg.info === 'number'
+            ? msg.info
+            : undefined
+          : msg.event === 'infoDelivery'
+            ? (msg.info as { playerState?: number })?.playerState
+            : undefined;
+      if (typeof state === 'number') setYtState(state);
       if (msg.event === 'onError') setPhase('failed');
-      else if (state === 1) setPhase((p) => (p === 'ended' ? p : 'playing'));
-      else if (state === 0) setPhase('ended');
+      else if (state === 1) {
+        forceHd();
+        setPhase((p) => (p === 'ended' ? p : 'playing'));
+      } else if (state === 0) setPhase('ended');
     };
     window.addEventListener('message', onMessage);
     // Give up quietly if the video never starts (blocked embed, offline, …).
@@ -107,14 +143,17 @@ export default function HeroBillboard({ item }: Props) {
     };
   }, [phase]);
 
-  // Pause while something covers the banner; resume afterwards (only if we paused it).
+  // Fade the iframe out first when something covers the banner, then pause once hidden so YouTube's
+  // pause icon / end-screen overlay never flashes; resume afterwards if we paused it.
   const pausedByUs = useRef(false);
   useEffect(() => {
     if (phase !== 'playing') return;
     if (!playing) {
-      send('pauseVideo');
       pausedByUs.current = true;
-    } else if (pausedByUs.current) {
+      const t = window.setTimeout(() => send('pauseVideo'), 180);
+      return () => window.clearTimeout(t);
+    }
+    if (pausedByUs.current) {
       send('playVideo');
       pausedByUs.current = false;
     }
@@ -122,7 +161,8 @@ export default function HeroBillboard({ item }: Props) {
 
   const toggleMute = () => {
     if (phase === 'ended') {
-      setPhase('playing');
+      setYtState(null);
+      setPhase('loading');
       send('seekTo', [0, true]);
       send('playVideo');
       return;
@@ -131,10 +171,18 @@ export default function HeroBillboard({ item }: Props) {
     setMuted(!muted);
   };
 
-  const trailerOn = phase === 'playing';
+  // Only reveal the embed while YouTube is actively playing (never while paused, buffering, or covered).
+  const trailerOn = phase === 'playing' && playing && ytState === 1;
+
+  // Render the iframe at >= 1920x1080 CSS px and scale via transform so YouTube ABR picks 1080p+
+  // even on Windows high-DPI displays (125%–175% scaling) where the CSS viewport is < 1280x720.
+  const coverW = Math.max(box.w, (box.h * 16) / 9) * 1.18;
+  const iframeW = Math.max(1920, Math.ceil(coverW));
+  const iframeH = Math.ceil((iframeW * 9) / 16);
+  const iframeScale = coverW / iframeW;
 
   return (
-    <section className="relative h-[85vh] min-h-[520px] w-full overflow-hidden">
+    <section ref={sectionRef} className="relative h-[85vh] min-h-[520px] w-full overflow-hidden">
       {item.backdrop && (
         <motion.img
           key={item.backdrop}
@@ -154,17 +202,29 @@ export default function HeroBillboard({ item }: Props) {
           className="pointer-events-none absolute inset-0 overflow-hidden"
           initial={{ opacity: 0 }}
           animate={{ opacity: trailerOn ? 1 : 0 }}
-          transition={{ duration: 1.2 }}
+          transition={{ duration: trailerOn ? 0.9 : 0.15, ease: 'easeOut' }}
         >
           <iframe
             ref={frame}
             src={trailerUrl(trailerKey)}
             title={`${item.title} trailer`}
+            tabIndex={-1}
             allow="autoplay; encrypted-media"
             referrerPolicy="strict-origin-when-cross-origin"
-            onLoad={() => frame.current?.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*')}
-            className="absolute left-1/2 top-1/2 aspect-video min-h-full min-w-full -translate-x-1/2 -translate-y-1/2 scale-[1.18] border-0"
-            style={{ width: 'max(100%, calc(85vh * 16 / 9))' }}
+            onLoad={() => {
+              const win = frame.current?.contentWindow;
+              if (!win) return;
+              win.postMessage(JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*');
+              for (const ev of ['onReady', 'onStateChange', 'onError']) {
+                win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: [ev] }), '*');
+              }
+            }}
+            className="pointer-events-none absolute left-1/2 top-1/2 border-0"
+            style={{
+              width: `${iframeW}px`,
+              height: `${iframeH}px`,
+              transform: `translate(-50%, -50%) scale(${iframeScale})`,
+            }}
           />
         </motion.div>
       )}
@@ -202,7 +262,6 @@ export default function HeroBillboard({ item }: Props) {
         )}
 
         <div className="text-shadow flex flex-wrap items-center gap-x-3 gap-y-1 text-[clamp(0.85rem,1.1vw,1.05rem)] font-medium">
-          {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
           <ImdbRating rating={item.imdbRating} size="md" />
           <CriticScores rt={item.rtScore} metacritic={item.metacritic} size="md" />
           {item.year && <span className="text-[#e5e5e5]">{item.year}</span>}
