@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Check, ChevronDown, Play, Plus, Wrench } from 'lucide-react';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
-import { formatRuntime, genreBuckets, matchPercent, playTargetFor } from '../../store/selectors';
+import { formatRuntime, genreBuckets, playTargetFor } from '../../store/selectors';
 import type { MediaItem } from '../../types/media';
 import { extractFrames } from '../../services/frames';
 import { parseMediaInfo } from '../../services/mediainfo';
@@ -74,10 +74,12 @@ export default function HoverPreview() {
     if (!hover) return;
     const close = () => setHover(null);
     window.addEventListener('scroll', close, { passive: true });
+    window.addEventListener('wheel', close, { passive: true });
     window.addEventListener('resize', close);
     document.documentElement.addEventListener('mouseleave', close);
     return () => {
       window.removeEventListener('scroll', close);
+      window.removeEventListener('wheel', close);
       window.removeEventListener('resize', close);
       document.documentElement.removeEventListener('mouseleave', close);
     };
@@ -115,7 +117,6 @@ function PreviewCard({ hover }: { hover: HoverState }) {
   }, [rect]);
 
   const still = useStills(item);
-  const match = matchPercent(item.voteAverage);
   const genres = genreBuckets(item.genres).slice(0, 3);
   const meta =
     item.kind === 'movie'
@@ -181,7 +182,6 @@ function PreviewCard({ hover }: { hover: HoverState }) {
         {hover.subtitle && <div className="truncate text-xs font-semibold text-white">{hover.subtitle}</div>}
 
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium">
-          {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
           <ImdbRating rating={item.imdbRating} />
           <CriticScores rt={item.rtScore} metacritic={item.metacritic} />
           <MaturityRating rating={item.certification} />

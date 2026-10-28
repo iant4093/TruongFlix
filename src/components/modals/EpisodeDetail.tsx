@@ -3,7 +3,7 @@ import { ArrowLeft, Check, ChevronLeft, ChevronRight, Eye, FolderOpen, Play, Rot
 import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
 import type { EpisodeRow, MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { epLabel, episodeTarget, formatRemaining, matchPercent } from '../../store/selectors';
+import { epLabel, episodeTarget, formatRemaining } from '../../store/selectors';
 import { play } from '../../services/player';
 import { setWatched } from '../../services/db';
 import { resize } from '../../services/tmdb';
@@ -48,7 +48,6 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
   const inProgress = !ep.watched && ep.progress_seconds > 0;
   const progress = inProgress && duration ? ep.progress_seconds / duration : 0;
   const target = episodeTarget(ep, series);
-  const match = matchPercent(series.voteAverage);
   const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
   const seasonRating = series.imdbSeasons[ep.season_number];
   const cast = series.cast.filter((c) => !c.job);
@@ -152,7 +151,6 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
         <div className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[15px]">
             <ImdbRating rating={ep.imdb_rating} votes={ep.imdb_votes} imdbId={ep.imdb_id} showVotes size="md" />
-            {ep.imdb_rating == null && match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
             <span className="text-nf-secondary">{epLabel(ep)}</span>
             {airDate && <span className="text-nf-secondary">{airDate}</span>}
             {ep.runtime ? <span className="text-nf-secondary">{ep.runtime}m</span> : null}

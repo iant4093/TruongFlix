@@ -256,8 +256,6 @@ export function continueWatching(items: MediaItem[], episodesBySeries: Map<numbe
   return out.sort((a, b) => b.sortDate.localeCompare(a.sortDate));
 }
 
-export const matchPercent = (vote: number) => (vote > 0 ? Math.round(vote * 10) : null);
-
 export function formatRuntime(minutes: number | null | undefined): string {
   if (!minutes) return '';
   const h = Math.floor(minutes / 60);

@@ -4,7 +4,7 @@ import { User, X } from 'lucide-react';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore, type ActorRef } from '../../store/useLibraryStore';
 import { getPerson, resize, type PersonInfo } from '../../services/tmdb';
-import { formatRuntime, matchPercent } from '../../store/selectors';
+import { formatRuntime } from '../../store/selectors';
 import Artwork from '../common/Artwork';
 import MaturityRating from '../common/MaturityRating';
 
@@ -106,35 +106,31 @@ function ActorPage({ actor }: { actor: ActorRef }) {
           </h3>
           {credits.length ? (
             <div className="grid grid-cols-3 gap-4">
-              {credits.map(({ item, role }) => {
-                const m = matchPercent(item.voteAverage);
-                return (
-                  <button
-                    key={item.key}
-                    onClick={() => {
-                      openActor(null);
-                      openDetail(item.key);
-                    }}
-                    className="overflow-hidden rounded-md bg-[#2f2f2f] text-left transition-colors hover:bg-[#383838]"
-                  >
-                    <div className="relative aspect-video">
-                      <Artwork src={resize(item.backdrop, 'w500')} alt={item.title} fallbackTitle={item.title} className="h-full w-full" />
-                      <span className="text-shadow absolute bottom-2 left-2 line-clamp-1 max-w-[90%] text-sm font-bold">{item.title}</span>
+              {credits.map(({ item, role }) => (
+                <button
+                  key={item.key}
+                  onClick={() => {
+                    openActor(null);
+                    openDetail(item.key);
+                  }}
+                  className="overflow-hidden rounded-md bg-[#2f2f2f] text-left transition-colors hover:bg-[#383838]"
+                >
+                  <div className="relative aspect-video">
+                    <Artwork src={resize(item.backdrop, 'w500')} alt={item.title} fallbackTitle={item.title} className="h-full w-full" />
+                    <span className="text-shadow absolute bottom-2 left-2 line-clamp-1 max-w-[90%] text-sm font-bold">{item.title}</span>
+                  </div>
+                  <div className="space-y-1 p-3 text-sm">
+                    <div className="flex items-center gap-2">
+                      <MaturityRating rating={item.certification} />
+                      <span className="text-nf-secondary">{item.year}</span>
+                      <span className="text-nf-secondary">
+                        {item.kind === 'movie' ? formatRuntime(item.runtime) : `${item.seasonCount} Season${item.seasonCount === 1 ? '' : 's'}`}
+                      </span>
                     </div>
-                    <div className="space-y-1 p-3 text-sm">
-                      <div className="flex items-center gap-2">
-                        {m != null && <span className="font-semibold text-nf-green">{m}% Match</span>}
-                        <MaturityRating rating={item.certification} />
-                        <span className="text-nf-secondary">{item.year}</span>
-                        <span className="text-nf-secondary">
-                          {item.kind === 'movie' ? formatRuntime(item.runtime) : `${item.seasonCount} Season${item.seasonCount === 1 ? '' : 's'}`}
-                        </span>
-                      </div>
-                      {role && <div className="truncate text-xs text-nf-muted">{role}</div>}
-                    </div>
-                  </button>
-                );
-              })}
+                    {role && <div className="truncate text-xs text-nf-muted">{role}</div>}
+                  </div>
+                </button>
+              ))}
             </div>
           ) : (
             <p className="text-nf-secondary">Nothing else with {actor.name} in your library yet.</p>

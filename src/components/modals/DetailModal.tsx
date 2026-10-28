@@ -23,7 +23,6 @@ import {
   formatRemaining,
   formatRuntime,
   genreBuckets,
-  matchPercent,
   playTargetFor,
 } from '../../store/selectors';
 import { play, playEpisode } from '../../services/player';
@@ -131,7 +130,6 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
     [item, episodesBySeries],
   );
 
-  const match = matchPercent(item.voteAverage);
   const cast = item.cast.filter((c) => !c.job);
   const crew = item.cast.filter((c) => c.job);
   const genres = item.genres;
@@ -220,7 +218,6 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
       <div className="grid grid-cols-[65%_35%] gap-8 px-12 pb-8 pt-2">
         <div className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[15px]">
-            {match != null && <span className="font-semibold text-nf-green">{match}% Match</span>}
             <ImdbRating rating={item.imdbRating} votes={item.imdbVotes} imdbId={item.imdbId} showVotes size="md" />
             <CriticScores rt={item.rtScore} metacritic={item.metacritic} size="md" />
             {item.stinger && (
@@ -641,48 +638,47 @@ function MoreLikeThis({ item }: { item: MediaItem }) {
     <section className="px-12 pb-8">
       <h3 className="mb-5 text-2xl font-bold">More Like This</h3>
       <div className="grid grid-cols-3 gap-4">
-        {similar.map((s) => {
-          const m = matchPercent(s.voteAverage);
-          return (
-            <div
-              key={s.key}
-              onClick={() => openDetail(s.key)}
-              className="cursor-pointer overflow-hidden rounded-md bg-[#2f2f2f] transition-colors hover:bg-[#383838]"
-            >
-              <div className="relative aspect-video">
-                <Artwork src={resize(s.backdrop, 'w500')} alt={s.title} fallbackTitle={s.title} className="h-full w-full" />
-                <span className="absolute right-2 top-2 text-sm font-semibold text-shadow">
-                  {s.kind === 'movie' ? formatRuntime(s.runtime) : `${s.seasonCount} Season${s.seasonCount === 1 ? '' : 's'}`}
-                </span>
-                <span className="absolute bottom-2 left-2 line-clamp-1 max-w-[90%] text-sm font-bold text-shadow">{s.title}</span>
-              </div>
-              <div className="space-y-2 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5 text-sm">
-                    <div className="flex items-center gap-2">
-                      {m != null && <span className="font-semibold text-nf-green">{m}% Match</span>}
-                      <ImdbRating rating={s.imdbRating} className="text-xs" />
-                    </div>
-                    <div className="flex items-center gap-2 text-nf-secondary">
-                      {s.year}
-                      <TechBadges tech={s.tech} showCodec={false} showAudio={false} />
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleMyList(s);
-                    }}
-                    className="nf-circle-btn h-9 w-9"
-                  >
-                    {s.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                  </button>
-                </div>
-                <p className="line-clamp-4 text-[13px] leading-snug text-[#d2d2d2]">{s.overview}</p>
-              </div>
+        {similar.map((s) => (
+          <div
+            key={s.key}
+            onClick={() => openDetail(s.key)}
+            className="cursor-pointer overflow-hidden rounded-md bg-[#2f2f2f] transition-colors hover:bg-[#383838]"
+          >
+            <div className="relative aspect-video">
+              <Artwork src={resize(s.backdrop, 'w500')} alt={s.title} fallbackTitle={s.title} className="h-full w-full" />
+              <span className="absolute right-2 top-2 text-sm font-semibold text-shadow">
+                {s.kind === 'movie' ? formatRuntime(s.runtime) : `${s.seasonCount} Season${s.seasonCount === 1 ? '' : 's'}`}
+              </span>
+              <span className="absolute bottom-2 left-2 line-clamp-1 max-w-[90%] text-sm font-bold text-shadow">{s.title}</span>
             </div>
-          );
-        })}
+            <div className="space-y-2 p-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5 text-sm">
+                  {(s.imdbRating != null || s.rtScore != null || s.metacritic != null) && (
+                    <div className="flex items-center gap-2">
+                      <ImdbRating rating={s.imdbRating} className="text-xs" />
+                      <CriticScores rt={s.rtScore} metacritic={s.metacritic} />
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 text-nf-secondary">
+                    {s.year}
+                    <TechBadges tech={s.tech} showCodec={false} showAudio={false} />
+                  </div>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleMyList(s);
+                  }}
+                  className="nf-circle-btn h-9 w-9"
+                >
+                  {s.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                </button>
+              </div>
+              <p className="line-clamp-4 text-[13px] leading-snug text-[#d2d2d2]">{s.overview}</p>
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );
