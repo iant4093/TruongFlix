@@ -19,6 +19,9 @@ export interface RemoteItem {
   logo: string | null;
   certification: string | null;
   imdbRating: number | null;
+  rtScore?: number | null;
+  metacritic?: number | null;
+  stinger?: 'during' | 'after' | 'both' | null;
   runtime: number | null;
   seasonCount: number;
   genres: string[];
@@ -65,11 +68,41 @@ export interface RemoteTitle {
   episodes: RemoteEpisode[];
 }
 
+export interface RemoteAudioTrack {
+  id: number;
+  label: string;
+  detail: string | null;
+  selected: boolean;
+}
+
+export interface RemoteSubTrack {
+  id: number;
+  label: string;
+  detail: string | null;
+  selected: boolean;
+}
+
+export interface RemoteChapter {
+  title: string;
+  time: number;
+}
+
+export interface RemoteSegment {
+  kind: 'intro' | 'recap' | 'credits';
+  start: number;
+  end: number;
+}
+
+export interface RemoteSubStyle {
+  size: 'small' | 'medium' | 'large' | 'xlarge';
+  background: 'none' | 'shadow' | 'translucent' | 'solid';
+}
+
 export interface RemoteStream {
   token: string;
   /** Relative URL on the TruongFlix server. */
   url: string;
-  /** Media time where the stream starts (converted streams start at the requested time). */
+  /** Media time where the stream starts (0 for direct & VOD HLS). */
   offset: number;
   duration: number;
   mode: 'direct' | 'hls';
@@ -77,4 +110,13 @@ export interface RemoteStream {
   subtitle: string | null;
   start: number;
   next: RemotePlayable | null;
+  aid: number | null;
+  /** Selected mpv subtitle id, or 0 when subtitles are off. */
+  sid: number;
+  audioTracks: RemoteAudioTrack[];
+  subTracks: RemoteSubTrack[];
+  chapters: RemoteChapter[];
+  segments: RemoteSegment[];
+  stinger: 'during' | 'after' | 'both' | null;
+  subStyle: RemoteSubStyle;
 }

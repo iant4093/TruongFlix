@@ -2,11 +2,25 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useLibraryStore } from '../store/useLibraryStore';
 import type { EpisodeRow, MediaItem, MovieRow, Profile } from '../types/media';
-import type { RemoteEpisode, RemoteItem, RemoteLibrary, RemotePlayable, RemoteProfile, RemoteStream, RemoteTitle } from '../remote/types';
+import type {
+  RemoteAudioTrack,
+  RemoteEpisode,
+  RemoteItem,
+  RemoteLibrary,
+  RemotePlayable,
+  RemoteProfile,
+  RemoteStream,
+  RemoteSubStyle,
+  RemoteSubTrack,
+  RemoteTitle,
+} from '../remote/types';
 import * as db from './db';
 import { allowedForMaturity, buildItems, continueWatching, epLabel, formatRemaining, genreBuckets, groupEpisodes, playTargetFor } from '../store/selectors';
 import { blockedMessage, limitStatus } from './limits';
-import { durationOf, planStream, registerStream, releaseStream, streamUrl } from './streaming';
+import { parseMediaInfo, parseSegments } from './mediainfo';
+import { subtitleOptions } from './player';
+import { durationOf, planStream, probeStream, registerStream, releaseStream, streamUrl } from './streaming';
+import { languageName } from './subtitles';
 
 /**
  * Answers the browser app's `/api/…` requests (forwarded by the Rust media server) with the same
@@ -55,6 +69,9 @@ function lite(i: MediaItem, extra: Partial<RemoteItem> = {}): RemoteItem {
     logo: i.logo,
     certification: i.certification,
     imdbRating: i.imdbRating,
+    rtScore: i.rtScore,
+    metacritic: i.metacritic,
+    stinger: i.stinger,
     runtime: i.runtime,
     seasonCount: i.seasonCount,
     genres: i.genres,
@@ -119,21 +136,70 @@ async function title(profile: Profile, itemKey: string): Promise<RemoteTitle> {
   };
 }
 
-async function play(profile: Profile, type: 'movie' | 'episode', id: number, start?: number): Promise<RemoteStream> {
+function channelTag(channels: number | null): string | null {
+  if (!channels) return null;
+  if (channels >= 8) return '7.1';
+  if (channels >= 6) return '5.1';
+  if (channels === 2) return 'Stereo';
+  if (channels === 1) return 'Mono';
+  return `${channels}ch`;
+}
+
+interface PlayOptions {
+  start?: number;
+  aid?: number;
+  sid?: number;
+  subStyle?: Partial<RemoteSubStyle>;
+  prevToken?: string;
+}
+
+async function play(profile: Profile, type: 'movie' | 'episode', id: number, opts: PlayOptions = {}): Promise<RemoteStream> {
   const st = await limitStatus(profile);
   if (st.blocked) throw new ApiError(403, blockedMessage(profile, st.blocked));
+  if (opts.prevToken) {
+    sessions.delete(opts.prevToken);
+    releaseStream(opts.prevToken);
+  }
   const { movies, episodes, bySeries, items } = await libraryFor(profile);
   const row: MovieRow | EpisodeRow | undefined = type === 'movie' ? movies.find((m) => m.id === id) : episodes.find((e) => e.id === id);
   if (!row) throw new ApiError(404, 'Not found');
-  const plan = planStream(row, 'browser');
+
+  const { settings } = useLibraryStore.getState();
+  const probe = await probeStream(row.file_path).catch(() => null);
+  const defaultAudio = probe?.audio.find((a) => a.selected) ?? probe?.audio.find((a) => a.default) ?? probe?.audio[0] ?? null;
+  const chosenAid = opts.aid != null && opts.aid > 0 ? opts.aid : (defaultAudio?.id ?? null);
+
+  let chosenSid = 0;
+  if (opts.sid != null) {
+    chosenSid = Math.max(0, opts.sid);
+  } else if (probe?.subs.length) {
+    const savedPath = await db.getSelectedSubtitlePath(type, id).catch(() => null);
+    const saved = savedPath ? probe.subs.find((s) => s.external_filename === savedPath) : undefined;
+    const def = saved ?? probe.subs.find((s) => s.selected) ?? probe.subs.find((s) => s.forced && s.default);
+    chosenSid = def?.id ?? 0;
+  }
+
+  const subStyle: RemoteSubStyle = {
+    size: opts.subStyle?.size ?? settings.subtitle_style.size,
+    background: opts.subStyle?.background ?? settings.subtitle_style.background,
+  };
+  const mpvSubStyle = subtitleOptions({ ...settings.subtitle_style, ...subStyle });
+
+  const plan = planStream(row, 'browser', {
+    aid: chosenAid,
+    defaultAid: defaultAudio?.id ?? null,
+    sid: chosenSid,
+    subStyle: mpvSubStyle,
+  });
   const token = await registerStream(row.file_path, plan);
-  const resume = start ?? (row.watched ? 0 : row.progress_seconds);
+  const resume = opts.start != null ? Math.max(0, opts.start) : row.watched ? 0 : row.progress_seconds;
   const url = await streamUrl(token, plan.format === 'direct' ? 0 : resume);
   sessions.set(token, { profile: profile.id, type, id });
 
   let titleText = row.title;
   let subtitle: string | null = null;
   let next: RemotePlayable | null = null;
+  let stinger: RemoteStream['stinger'] = null;
   if (type === 'episode') {
     const e = row as EpisodeRow;
     const show = items.find((i) => i.kind === 'tv' && i.id === e.series_id);
@@ -142,8 +208,48 @@ async function play(profile: Profile, type: 'movie' | 'episode', id: number, sta
     const list = bySeries.get(e.series_id) ?? [];
     const n = list.slice(list.findIndex((x) => x.id === e.id) + 1).find((x) => x.season_number > 0);
     if (n) next = { type: 'episode', id: n.id, label: `${epLabel(n)} · ${n.title}`, resume: 0 };
+  } else {
+    const m = row as MovieRow;
+    if (m.stinger === 'during' || m.stinger === 'after' || m.stinger === 'both') stinger = m.stinger;
   }
-  return { token, url: url.path, offset: url.offset, duration: durationOf(row), mode: plan.format === 'direct' ? 'direct' : 'hls', title: titleText, subtitle, start: resume, next };
+
+  const audioTracks: RemoteAudioTrack[] = (probe?.audio ?? []).map((a) => ({
+    id: a.id,
+    label: a.lang ? languageName(a.lang) : a.title || `Track ${a.id}`,
+    detail: [a.lang ? a.title : null, channelTag(a.channels)].filter(Boolean).join(' · ') || null,
+    selected: a.id === chosenAid,
+  }));
+
+  const subTracks: RemoteSubTrack[] = (probe?.subs ?? []).map((s) => ({
+    id: s.id,
+    label: s.lang ? languageName(s.lang) : s.title || `Subtitles ${s.id}`,
+    detail: [s.lang ? s.title : null, s.forced ? 'Forced' : null, s.external ? 'Downloaded' : null].filter(Boolean).join(' · ') || null,
+    selected: s.id === chosenSid,
+  }));
+
+  const chapters = probe?.chapters?.length ? probe.chapters : (parseMediaInfo(row.media_info)?.chapters ?? []);
+  const segments = parseSegments(row.segments).map(({ kind, start: s, end }) => ({ kind, start: s, end }));
+  const duration = probe?.duration || durationOf(row);
+
+  return {
+    token,
+    url: url.path,
+    offset: url.offset,
+    duration,
+    mode: plan.format === 'direct' ? 'direct' : 'hls',
+    title: titleText,
+    subtitle,
+    start: resume,
+    next,
+    aid: chosenAid,
+    sid: chosenSid,
+    audioTracks,
+    subTracks,
+    chapters,
+    segments,
+    stinger,
+    subStyle,
+  };
 }
 
 async function progress(profile: Profile, body: { type: 'movie' | 'episode'; id: number; time: number; duration: number; watched?: number }) {
@@ -187,7 +293,15 @@ async function route(method: string, path: string, query: Record<string, string>
   }
   if (method === 'GET' && path === '/library') return library(p());
   if (method === 'GET' && path === '/title') return title(p(), query.item);
-  if (method === 'POST' && path === '/play') return play(p(), body.type as 'movie' | 'episode', Number(body.id), body.start != null ? Number(body.start) : undefined);
+  if (method === 'POST' && path === '/play') {
+    return play(p(), body.type as 'movie' | 'episode', Number(body.id), {
+      start: body.start != null ? Number(body.start) : undefined,
+      aid: body.aid != null ? Number(body.aid) : undefined,
+      sid: body.sid != null ? Number(body.sid) : undefined,
+      subStyle: (body.subStyle as Partial<RemoteSubStyle> | undefined) ?? undefined,
+      prevToken: typeof body.prevToken === 'string' ? body.prevToken : undefined,
+    });
+  }
   if (method === 'POST' && path === '/seek') {
     const s = sessions.get(String(body.token));
     if (!s) throw new ApiError(404, 'Playback ended');
@@ -233,7 +347,7 @@ export async function applyRemoteAccess() {
     code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
     await updateSettings({ remote_code: code });
   }
-  return invoke<{ port: number; addresses: string[]; web_enabled: boolean }>('remote_access_set', {
+  return invoke<{ port: number; addresses: string[]; web_enabled: boolean; encoder?: string | null }>('remote_access_set', {
     enabled: settings.remote_access,
     code,
     port: settings.remote_port || 8732,

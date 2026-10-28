@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Lock, Play, Search, X } from 'lucide-react';
+import { ArrowLeft, Lock, Play, Search, Sparkles, X } from 'lucide-react';
+import CriticScores from '../components/common/CriticScores';
 import ProfileAvatar from '../components/common/ProfileAvatar';
 import type { RemoteItem, RemoteLibrary, RemotePlayable, RemoteProfile, RemoteTitle } from './types';
 import { api, AuthError, getToken, login, qs } from './api';
@@ -291,6 +292,13 @@ function TitlePage({ who, itemKey, back, play }: { who: Who; itemKey: string; ba
           {item.certification && <span className="border border-white/40 px-1 text-xs">{item.certification}</span>}
           {item.kind === 'tv' ? <span>{item.seasonCount} Season{item.seasonCount === 1 ? '' : 's'}</span> : item.runtime ? <span>{Math.floor(item.runtime / 60)}h {item.runtime % 60}m</span> : null}
           {item.imdbRating != null && <span className="font-semibold text-[#f5c518]">IMDb {item.imdbRating.toFixed(1)}</span>}
+          <CriticScores rt={item.rtScore ?? null} metacritic={item.metacritic ?? null} />
+          {item.stinger && (
+            <span className="flex items-center gap-1 text-xs text-[#ffd76a]">
+              <Sparkles className="h-3.5 w-3.5" />
+              {item.stinger === 'during' ? 'Scene during the credits' : item.stinger === 'after' ? 'Scene after the credits' : 'Scenes during & after the credits'}
+            </span>
+          )}
         </div>
         {data.play && (
           <button onClick={() => play(data.play!)} className="nf-btn-play w-full justify-center py-3 text-lg sm:w-auto sm:px-10">

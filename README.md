@@ -113,7 +113,7 @@ Library screenshots use the development preview with sample metadata and artwork
 **Other screens**
 
 - Cast to a TV: send playback to a Chromecast or a DLNA smart TV, with play/pause, seeking and progress kept in sync. Files the TV can't play are converted on the fly (H.264/AAC, HDR tone-mapped to SDR)
-- Watch in a browser on your home network: turn on browser access in Settings › Devices, scan the QR code with a phone or tablet and enter the access code. Profiles, PINs, kids' limits and progress are shared with the desktop app
+- Watch in a browser on your home network: turn on browser access in Settings › Devices, scan the QR code with a phone or tablet and enter the access code. Profiles, PINs, kids' limits and progress are shared with the desktop app, with full-length VOD scrubbing, subtitles, audio tracks, chapters, Skip Intro and next-episode advance
 
 ## Install
 
@@ -138,7 +138,7 @@ Installed copies update themselves: they check for a new version once a day (or 
 | App shell | Tauri 2 (Rust), WKWebView on macOS, WebView2 on Windows |
 | Interface | React 18, TypeScript, Vite, Tailwind CSS, Framer Motion, Zustand |
 | Playback | libmpv with FFmpeg; macOS: CAOpenGLLayer under a transparent webview; Windows: owned video window behind a transparent window |
-| Streaming | Built-in HTTP server with byte ranges, on-the-fly HLS/MPEG-TS conversion through a headless libmpv encoder (VideoToolbox / x264), Cast v2 and UPnP AVTransport, Bonjour/mDNS and SSDP discovery, hls.js in the browser app |
+| Streaming | Built-in HTTP server with byte ranges, on-demand VOD HLS and MPEG-TS conversion through a headless libmpv encoder (VideoToolbox / NVENC / Quick Sync / AMF / Media Foundation / x264), Cast v2 and UPnP AVTransport, Bonjour/mDNS and SSDP discovery, native HLS on Apple devices and hls.js elsewhere |
 | Metadata | TMDB API v3, IMDb non-commercial datasets, OpenSubtitles REST API |
 | Storage | SQLite via tauri-plugin-sql, local file operations and a same-volume trash |
 | Delivery | GitHub Actions, macOS `.dmg`, Windows NSIS installer, signed auto-updates, SHA-256 checksums |
