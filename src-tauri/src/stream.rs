@@ -1084,7 +1084,9 @@ fn run_encode(
         }
     };
 
-    let want_gpu = opts.tone_map && !GPU_FILTER_BROKEN.load(Ordering::Relaxed);
+    // Headless vf=gpu works via CGL on macOS; on Windows shinchiro's libmpv-2.dll segfaults
+    // (0xc0000005) when vf=gpu initializes inside vo=lavc without a swapchain, so use swscale there.
+    let want_gpu = cfg!(target_os = "macos") && opts.tone_map && !GPU_FILTER_BROKEN.load(Ordering::Relaxed);
     let attempts: &[bool] = if want_gpu { &[true, false] } else { &[false] };
     let m3u8 = dir.join("seg.m3u8");
     let live_ts = dir.join("live.ts");
