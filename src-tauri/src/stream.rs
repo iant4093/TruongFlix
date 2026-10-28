@@ -1,8 +1,9 @@
 //! Local media server for casting (Chromecast / DLNA) and the browser app on the home network.
 //!
 //! - `/stream/<token>/file`: the original file, with byte ranges (seeking).
-//! - `/stream/<token>/<job>/index.m3u8` + segments: on-the-fly HLS (H.264/AAC, tone-mapped from
-//!   HDR when needed), encoded by a headless mpv core. Seeking past what's encoded starts a new job.
+//! - `/stream/<token>/index.m3u8` + `/stream/<token>/seg<N>.ts`: full-length VOD HLS (H.264/AAC in
+//!   MPEG-TS, tone-mapped from HDR and with burned-in subtitles when requested), encoded on demand
+//!   by a headless mpv core. Seeking jumps to the target segment and reuses already-encoded ones.
 //! - `/stream/<token>/<job>/live.ts`: a single MPEG-TS stream for TVs that reject the original.
 //! - `/` and `/assets/…`: the browser app; `/api/…`: forwarded to the desktop app's frontend,
 //!   which answers with the same library/progress code it uses itself.
@@ -12,10 +13,11 @@
 use crate::media::Core;
 use crate::player::mpv;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -24,6 +26,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 const IDLE_STREAM: Duration = Duration::from_secs(15 * 60);
 const API_TIMEOUT: Duration = Duration::from_secs(20);
+const PROBE_TTL: Duration = Duration::from_secs(120);
+const LOOKAHEAD_SEGS: u32 = 6;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct StreamOptions {
@@ -40,14 +44,109 @@ pub struct StreamOptions {
     /// mpv audio track id to use (None = default).
     #[serde(default)]
     pub aid: Option<i64>,
+    /// mpv subtitle track id to burn into the video (None = off).
+    #[serde(default)]
+    pub sid: Option<i64>,
+    /// mpv subtitle appearance options `[name, value]` applied when `sid` is set.
+    #[serde(default)]
+    pub sub_style: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamAudioTrack {
+    pub id: i64,
+    pub lang: Option<String>,
+    pub title: Option<String>,
+    pub codec: Option<String>,
+    pub channels: Option<i64>,
+    pub default: bool,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamSubTrack {
+    pub id: i64,
+    pub lang: Option<String>,
+    pub title: Option<String>,
+    pub codec: Option<String>,
+    pub forced: bool,
+    pub default: bool,
+    pub selected: bool,
+    pub external: bool,
+    pub external_filename: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamChapter {
+    pub title: String,
+    pub time: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamProbe {
+    pub duration: f64,
+    pub fps: f64,
+    pub audio: Vec<StreamAudioTrack>,
+    pub subs: Vec<StreamSubTrack>,
+    pub chapters: Vec<StreamChapter>,
+}
+
+#[derive(Debug, Clone)]
+struct HlsPlan {
+    gop: u32,
+    seg_len: f64,
+    seg_count: u32,
+    last_len: f64,
+}
+
+impl HlsPlan {
+    fn from_probe(duration: f64, fps: f64) -> Self {
+        let fps = if (1.0..240.0).contains(&fps) { fps } else { 24.0 };
+        let gop = ((4.0 * fps).round() as u32).clamp(24, 480);
+        let seg_len = gop as f64 / fps;
+        let dur = duration.max(seg_len);
+        let raw = (dur / seg_len).ceil() as u32;
+        // Fold a sub-0.35s remainder into the preceding segment so we never advertise a near-empty tail.
+        let (seg_count, last_len) = if raw > 1 {
+            let rem = dur - (raw - 1) as f64 * seg_len;
+            if rem < 0.35 {
+                (raw - 1, seg_len + rem.max(0.0))
+            } else {
+                (raw, rem)
+            }
+        } else {
+            (1, dur)
+        };
+        HlsPlan { gop, seg_len, seg_count, last_len }
+    }
+
+    fn playlist(&self) -> String {
+        use std::fmt::Write;
+        let target = self.seg_len.max(self.last_len).ceil() as u32;
+        let mut out = String::with_capacity(160 + self.seg_count as usize * 32);
+        let _ = writeln!(
+            out,
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-TARGETDURATION:{}\n#EXT-X-MEDIA-SEQUENCE:0",
+            target.max(1)
+        );
+        for i in 0..self.seg_count {
+            let len = if i + 1 == self.seg_count { self.last_len } else { self.seg_len };
+            let _ = writeln!(out, "#EXTINF:{len:.6},\nseg{i}.ts");
+        }
+        out.push_str("#EXT-X-ENDLIST\n");
+        out
+    }
 }
 
 struct Job {
     id: String,
     dir: PathBuf,
     start: f64,
+    start_seg: u32,
+    frontier: Arc<AtomicU32>,
     cancel: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
+    eof: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
 }
 
@@ -60,6 +159,8 @@ impl Job {
 struct Stream {
     path: PathBuf,
     opts: StreamOptions,
+    dir: PathBuf,
+    hls: Option<HlsPlan>,
     job: Option<Job>,
     touched: Instant,
 }
@@ -82,9 +183,25 @@ struct Shared {
 }
 
 static SHARED: OnceLock<Shared> = OnceLock::new();
+static ENCODER: Mutex<Option<&'static str>> = Mutex::new(None);
+static GPU_FILTER_BROKEN: AtomicBool = AtomicBool::new(false);
+static PROBE_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, StreamProbe)>>> = OnceLock::new();
 
 fn shared() -> Result<&'static Shared, String> {
     SHARED.get().ok_or_else(|| "The media server isn't initialised".into())
+}
+
+fn cleanup_stream_dir(job: Option<Job>, dir: PathBuf) {
+    std::thread::spawn(move || {
+        if let Some(j) = job {
+            j.stop();
+            let t = Instant::now();
+            while !j.done.load(Ordering::Acquire) && t.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    });
 }
 
 pub fn init(app: &AppHandle) {
@@ -94,17 +211,24 @@ pub fn init(app: &AppHandle) {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
             if let Ok(s) = shared() {
-                let mut inner = s.inner.lock().unwrap();
-                inner.streams.retain(|_, st| {
-                    let keep = st.touched.elapsed() < IDLE_STREAM;
-                    if !keep {
-                        if let Some(job) = &st.job {
-                            job.stop();
-                            let _ = std::fs::remove_dir_all(&job.dir);
+                let mut expired = Vec::new();
+                {
+                    let mut inner = s.inner.lock().unwrap();
+                    let dead: Vec<String> = inner
+                        .streams
+                        .iter()
+                        .filter(|(_, st)| st.touched.elapsed() >= IDLE_STREAM)
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for k in dead {
+                        if let Some(st) = inner.streams.remove(&k) {
+                            expired.push((st.job, st.dir));
                         }
                     }
-                    keep
-                });
+                }
+                for (job, dir) in expired {
+                    cleanup_stream_dir(job, dir);
+                }
             }
         }
     });
@@ -114,6 +238,14 @@ fn random_token() -> String {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).expect("OS random generator");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn stream_cache_dir(token: &str) -> PathBuf {
+    let base = shared()
+        .ok()
+        .and_then(|s| s.app.path().app_cache_dir().ok())
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("streams").join(token)
 }
 
 /// Local address this machine uses to reach `host` (the IP a TV should connect back to).
@@ -291,7 +423,7 @@ async fn handle(mut conn: TcpStream) -> std::io::Result<()> {
         return respond(&mut conn, 403, "text/html; charset=utf-8", "", OFF_PAGE.as_bytes(), false).await;
     }
     if req.path == "/api/login" && req.method == "POST" {
-        let code = serde_json::from_slice::<serde_json::Value>(&req.body).ok().and_then(|v| v["code"].as_str().map(str::to_owned)).unwrap_or_default();
+        let code = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["code"].as_str().map(str::to_owned)).unwrap_or_default();
         let s = shared().map_err(std::io::Error::other)?;
         let token = {
             let mut inner = s.inner.lock().unwrap();
@@ -339,7 +471,7 @@ async fn forward_api(req: &Request) -> (u16, String) {
         "method": req.method,
         "path": req.path.trim_start_matches("/api"),
         "query": req.query,
-        "body": serde_json::from_slice::<serde_json::Value>(&req.body).unwrap_or(serde_json::Value::Null),
+        "body": serde_json::from_slice::<Value>(&req.body).unwrap_or(Value::Null),
     });
     if s.app.emit("remote-api", payload).is_err() {
         s.inner.lock().unwrap().pending.remove(&id);
@@ -413,61 +545,180 @@ async fn serve_stream(conn: &mut TcpStream, req: &Request, rest: &str) -> std::i
     let token = parts.next().unwrap_or_default().to_string();
     let second = parts.next().unwrap_or_default().to_string();
     let third = parts.next().unwrap_or_default().to_string();
-    let found = shared().ok().and_then(|s| {
-        let mut inner = s.inner.lock().unwrap();
-        inner.streams.get_mut(&token).map(|st| {
-            st.touched = Instant::now();
-            let job = st.job.as_ref().map(|j| (j.id.clone(), j.dir.clone(), j.done.clone(), j.error.clone()));
-            (st.path.clone(), job)
-        })
-    });
-    let Some((path, job)) = found else { return respond(conn, 404, "text/plain", "", b"Unknown stream", false).await };
     let head_only = req.method == "HEAD";
+
+    let info = shared().ok().and_then(|s| {
+        let mut inner = s.inner.lock().unwrap();
+        let st = inner.streams.get_mut(&token)?;
+        st.touched = Instant::now();
+        let live_job = st.job.as_ref().map(|j| (j.id.clone(), j.dir.clone(), j.done.clone()));
+        Some((st.path.clone(), st.hls.clone(), live_job))
+    });
+    let Some((path, hls, live_job)) = info else {
+        return respond(conn, 404, "text/plain", "", b"Unknown stream", false).await;
+    };
 
     if second == "file" {
         return serve_file_range(conn, &path, req.headers.get("range").map(String::as_str), head_only).await;
     }
-    let Some((_, dir, done, error)) = job.filter(|j| j.0 == second) else {
-        return respond(conn, 404, "text/plain", "", b"This conversion has ended", false).await;
-    };
-    let file = dir.join(&third);
-    if third == "index.m3u8" {
-        // Wait for the first segments rather than handing out an empty playlist.
-        let started = Instant::now();
-        loop {
-            if let Ok(text) = tokio::fs::read_to_string(&file).await {
-                if text.contains(".m4s") || done.load(Ordering::Acquire) {
-                    // A still-growing (EVENT) playlist looks live to players; start at the beginning.
-                    let text = if text.contains("#EXT-X-START") { text } else { text.replacen("#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", 1) };
-                    return respond(conn, 200, "application/vnd.apple.mpegurl", "Cache-Control: no-cache\r\n", text.as_bytes(), head_only).await;
-                }
-            }
-            let failed = error.lock().unwrap().clone();
-            if let Some(e) = failed {
-                return respond(conn, 503, "text/plain", "", e.as_bytes(), false).await;
-            }
-            if started.elapsed() > Duration::from_secs(40) {
-                return respond(conn, 503, "text/plain", "", b"Conversion is taking too long", false).await;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+    if second == "index.m3u8" {
+        let Some(plan) = hls else {
+            return respond(conn, 404, "text/plain", "", b"Not an HLS stream", false).await;
+        };
+        let body = plan.playlist();
+        return respond(conn, 200, "application/vnd.apple.mpegurl", "Cache-Control: no-cache\r\n", body.as_bytes(), head_only).await;
+    }
+    if let Some(idx) = second.strip_prefix("seg").and_then(|s| s.strip_suffix(".ts")).and_then(|s| s.parse::<u32>().ok()) {
+        return serve_segment(conn, &token, idx, head_only).await;
     }
     if third == "live.ts" {
-        return serve_growing(conn, &file, &done, head_only).await;
-    }
-    if third.ends_with(".m4s") || third == "init.mp4" {
-        // Segments are written to a temp name and renamed once complete.
-        let started = Instant::now();
-        while !file.exists() {
-            if done.load(Ordering::Acquire) || started.elapsed() > Duration::from_secs(30) {
-                return respond(conn, 404, "text/plain", "", b"No such segment", false).await;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        let bytes = tokio::fs::read(&file).await?;
-        return respond(conn, 200, "video/mp4", "Cache-Control: public, max-age=3600\r\n", &bytes, head_only).await;
+        let Some((_, dir, done)) = live_job.filter(|j| j.0 == second) else {
+            return respond(conn, 404, "text/plain", "", b"This conversion has ended", false).await;
+        };
+        return serve_growing(conn, &dir.join("live.ts"), &done, head_only).await;
     }
     respond(conn, 404, "text/plain", "", b"Not found", false).await
+}
+
+/// Serves one HLS segment, waiting for the active encoder or restarting it at `idx` on a seek.
+async fn serve_segment(conn: &mut TcpStream, token: &str, idx: u32, head_only: bool) -> std::io::Result<()> {
+    let s = shared().map_err(std::io::Error::other)?;
+    let resolved: Result<(PathBuf, u32), &'static [u8]> = {
+        let mut inner = s.inner.lock().unwrap();
+        match inner.streams.get_mut(token) {
+            None => Err(b"Unknown stream"),
+            Some(st) => {
+                st.touched = Instant::now();
+                match &st.hls {
+                    None => Err(b"Not an HLS stream"),
+                    Some(plan) if idx >= plan.seg_count => Err(b"No such segment"),
+                    Some(plan) => Ok((st.dir.join(format!("seg{idx}.ts")), plan.seg_count)),
+                }
+            }
+        }
+    };
+    let (seg_file, seg_count) = match resolved {
+        Ok(v) => v,
+        Err(msg) => return respond(conn, 404, "text/plain", "", msg, false).await,
+    };
+
+    if seg_file.exists() {
+        let bytes = tokio::fs::read(&seg_file).await?;
+        return respond(conn, 200, "video/mp2t", "Cache-Control: public, max-age=3600\r\n", &bytes, head_only).await;
+    }
+
+    let started = Instant::now();
+    let mut our_job: Option<String> = None;
+    loop {
+        if seg_file.exists() {
+            let bytes = tokio::fs::read(&seg_file).await?;
+            return respond(conn, 200, "video/mp2t", "Cache-Control: public, max-age=3600\r\n", &bytes, head_only).await;
+        }
+
+        enum Step {
+            Wait,
+            Ready,
+            EmptyEof,
+            Failed(String),
+            Gone,
+        }
+
+        let step = {
+            let mut inner = s.inner.lock().unwrap();
+            if let Some(st) = inner.streams.get_mut(token) {
+                st.touched = Instant::now();
+                if seg_file.exists() {
+                    Step::Ready
+                } else {
+                    let plan = st.hls.clone().unwrap();
+                    let active_covers = st.job.as_ref().is_some_and(|j| {
+                        !j.cancel.load(Ordering::Acquire)
+                            && !j.done.load(Ordering::Acquire)
+                            && j.error.lock().unwrap().is_none()
+                            && idx >= j.start_seg
+                            && idx <= j.frontier.load(Ordering::Acquire).saturating_add(LOOKAHEAD_SEGS)
+                    });
+                    if active_covers {
+                        if our_job.is_none() {
+                            our_job = st.job.as_ref().map(|j| j.id.clone());
+                        }
+                        Step::Wait
+                    } else if let Some(ref wanted_id) = our_job {
+                        // We already bound to or spawned a job for this segment; inspect what happened to it.
+                        match st.job.as_ref().filter(|j| &j.id == wanted_id) {
+                            Some(j) => {
+                                let err = j.error.lock().unwrap().clone();
+                                if let Some(e) = err {
+                                    Step::Failed(e)
+                                } else if j.done.load(Ordering::Acquire) && j.eof.load(Ordering::Acquire) && idx + 1 >= seg_count {
+                                    Step::EmptyEof
+                                } else if j.done.load(Ordering::Acquire) || j.cancel.load(Ordering::Acquire) {
+                                    if j.start_seg != idx && !j.cancel.load(Ordering::Acquire) {
+                                        let prev = st.job.take().map(|old| {
+                                            old.stop();
+                                            old.done
+                                        });
+                                        match spawn_hls_job(&st.path, &st.opts, &plan, idx, &st.dir, prev) {
+                                            Ok(nj) => {
+                                                our_job = Some(nj.id.clone());
+                                                st.job = Some(nj);
+                                                Step::Wait
+                                            }
+                                            Err(e) => Step::Failed(e),
+                                        }
+                                    } else {
+                                        Step::Gone
+                                    }
+                                } else {
+                                    Step::Wait
+                                }
+                            }
+                            None => Step::Gone, // superseded by a newer seek
+                        }
+                    } else {
+                        let at_eof = st.job.as_ref().is_some_and(|j| {
+                            j.done.load(Ordering::Acquire)
+                                && j.eof.load(Ordering::Acquire)
+                                && j.error.lock().unwrap().is_none()
+                                && idx >= j.start_seg
+                                && idx + 1 >= seg_count
+                        });
+                        if at_eof {
+                            Step::EmptyEof
+                        } else {
+                            let prev = st.job.take().map(|old| {
+                                old.stop();
+                                old.done
+                            });
+                            match spawn_hls_job(&st.path, &st.opts, &plan, idx, &st.dir, prev) {
+                                Ok(nj) => {
+                                    our_job = Some(nj.id.clone());
+                                    st.job = Some(nj);
+                                    Step::Wait
+                                }
+                                Err(e) => Step::Failed(e),
+                            }
+                        }
+                    }
+                }
+            } else {
+                Step::Gone
+            }
+        };
+
+        match step {
+            Step::Ready => continue,
+            Step::EmptyEof => return respond(conn, 200, "video/mp2t", "Cache-Control: no-store\r\n", b"", head_only).await,
+            Step::Failed(e) => return respond(conn, 503, "text/plain", "", e.as_bytes(), false).await,
+            Step::Gone => return respond(conn, 404, "text/plain", "", b"Segment superseded", false).await,
+            Step::Wait => {
+                if started.elapsed() > Duration::from_secs(45) {
+                    return respond(conn, 503, "text/plain", "", b"Conversion is taking too long", false).await;
+                }
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+        }
+    }
 }
 
 /// Original file with single-range support (seeking in browsers, TVs and Chromecast).
@@ -555,116 +806,504 @@ async fn serve_growing(conn: &mut TcpStream, path: &Path, done: &AtomicBool, hea
 }
 
 // ---------------------------------------------------------------------------
-// Conversion jobs (headless mpv in encoding mode)
+// Probing & encoder discovery
 // ---------------------------------------------------------------------------
 
-fn encoder_options() -> (&'static str, &'static str) {
+fn candidate_encoders() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
-        ("h264_videotoolbox", "b=6M,maxrate=10M,g=48")
+        &["h264_videotoolbox", "libx264"]
+    } else if cfg!(windows) {
+        // shinchiro's Windows libmpv ships GPU & Media Foundation H.264 encoders (no libx264).
+        &["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264"]
     } else {
-        ("libx264", "preset=veryfast,crf=21,g=48,keyint_min=48,sc_threshold=0,profile=high,level=4.1")
+        &["libx264", "h264_vaapi", "h264_nvenc"]
     }
 }
 
-fn start_job(path: &Path, opts: &StreamOptions, start: f64, root: &Path) -> Result<Job, String> {
+fn ovcopts_for(encoder: &str, gop: u32) -> String {
+    if encoder == "libx264" {
+        format!("preset=veryfast,crf=21,g={gop},keyint_min={gop},sc_threshold=0,profile=high")
+    } else {
+        format!("b=6M,maxrate=10M,g={gop}")
+    }
+}
+
+fn test_encoder(name: &str) -> bool {
+    let tmp = std::env::temp_dir().join(format!("tf-enc-{}-{}.ts", name, random_token()));
+    let out = tmp.to_string_lossy().into_owned();
+    let opts = [
+        ("o", out.as_str()),
+        ("of", "mpegts"),
+        ("ovc", name),
+        ("ovcopts", "b=2M,g=24"),
+        ("vf", "format=yuv420p"),
+        ("aid", "no"),
+        ("sid", "no"),
+        ("keep-open", "no"),
+    ];
+    let ok = (|| -> Option<bool> {
+        let core = Core::new(&opts).ok()?;
+        core.api
+            .command(core.h, &["loadfile", "av://lavfi:testsrc2=size=320x180:rate=24:duration=1", "replace"])
+            .ok()?;
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut vo_ok = false;
+        let mut clean_end = false;
+        while Instant::now() < deadline {
+            let ev = unsafe { &*(core.api.wait_event)(core.h, 0.2) };
+            if ev.event_id == mpv::EVENT_PLAYBACK_RESTART {
+                vo_ok = core.get("vo-configured").as_deref() == Some("yes");
+                if !vo_ok {
+                    break;
+                }
+            } else if ev.event_id == mpv::EVENT_END_FILE {
+                let err = !ev.data.is_null() && unsafe { &*(ev.data as *const mpv::EventEndFile) }.reason == mpv::END_FILE_REASON_ERROR;
+                clean_end = !err;
+                break;
+            } else if ev.event_id == mpv::EVENT_SHUTDOWN {
+                break;
+            }
+        }
+        drop(core);
+        Some(vo_ok && clean_end)
+    })()
+    .unwrap_or(false);
+    let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    let _ = std::fs::remove_file(&tmp);
+    ok && size > 1000
+}
+
+fn pick_encoder() -> Result<&'static str, String> {
+    if let Some(enc) = *ENCODER.lock().unwrap() {
+        return Ok(enc);
+    }
+    for &cand in candidate_encoders() {
+        if test_encoder(cand) {
+            let mut guard = ENCODER.lock().unwrap();
+            *guard = Some(cand);
+            return Ok(cand);
+        }
+    }
+    Err("No working H.264 video encoder was found on this computer".into())
+}
+
+fn probe_str(v: &Value, k: &str) -> Option<String> {
+    v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_owned)
+}
+
+fn probe_file(path: &Path) -> Result<StreamProbe, String> {
+    let cache = PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some((at, hit)) = cache.lock().unwrap().get(path) {
+        if at.elapsed() < PROBE_TTL {
+            return Ok(hit.clone());
+        }
+    }
+    let core = Core::new(&[("vo", "null"), ("ao", "null"), ("pause", "yes"), ("sub-auto", "fuzzy")])?;
+    let file = path.to_string_lossy().into_owned();
+    core.api.command(core.h, &["loadfile", &file, "replace"])?;
+    if core.wait_for(&[mpv::EVENT_FILE_LOADED], Duration::from_secs(15)).is_none() {
+        return Err("Couldn't open this media file".into());
+    }
+    let tracks: Vec<Value> = core.get("track-list").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    let chapters_raw: Vec<Value> = core.get("chapter-list").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    let video = tracks.iter().find(|t| probe_str(t, "type").as_deref() == Some("video") && !t["albumart"].as_bool().unwrap_or(false));
+    let duration = core.get("duration").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).max(0.0);
+    let fps = core
+        .get("container-fps")
+        .and_then(|v| v.parse::<f64>().ok())
+        .or_else(|| video.and_then(|v| v["demux-fps"].as_f64()))
+        .filter(|f| *f > 1.0 && *f < 240.0)
+        .unwrap_or(24.0);
+
+    let mut audio = Vec::new();
+    let mut subs = Vec::new();
+    for t in &tracks {
+        let Some(id) = t["id"].as_i64() else { continue };
+        match probe_str(t, "type").as_deref() {
+            Some("audio") => audio.push(StreamAudioTrack {
+                id,
+                lang: probe_str(t, "lang"),
+                title: probe_str(t, "title"),
+                codec: probe_str(t, "codec"),
+                channels: t["demux-channel-count"].as_i64().or_else(|| t["audio-channels"].as_i64()),
+                default: t["default"].as_bool().unwrap_or(false),
+                selected: t["selected"].as_bool().unwrap_or(false),
+            }),
+            Some("sub") => subs.push(StreamSubTrack {
+                id,
+                lang: probe_str(t, "lang"),
+                title: probe_str(t, "title"),
+                codec: probe_str(t, "codec"),
+                forced: t["forced"].as_bool().unwrap_or(false),
+                default: t["default"].as_bool().unwrap_or(false),
+                selected: t["selected"].as_bool().unwrap_or(false),
+                external: t["external"].as_bool().unwrap_or(false),
+                external_filename: probe_str(t, "external-filename"),
+            }),
+            _ => {}
+        }
+    }
+    let chapters = chapters_raw
+        .iter()
+        .map(|c| StreamChapter { title: probe_str(c, "title").unwrap_or_default(), time: c["time"].as_f64().unwrap_or(0.0) })
+        .collect();
+    drop(core);
+
+    let probe = StreamProbe { duration, fps, audio, subs, chapters };
+    cache.lock().unwrap().insert(path.to_path_buf(), (Instant::now(), probe.clone()));
+    Ok(probe)
+}
+
+// ---------------------------------------------------------------------------
+// Conversion jobs (headless mpv in encoding mode)
+// ---------------------------------------------------------------------------
+
+fn last_playlist_seg(playlist: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(playlist).ok()?;
+    text.lines().rev().find_map(|l| l.trim().strip_prefix("seg")?.strip_suffix(".ts")?.parse().ok())
+}
+
+fn all_playlist_segs(playlist: &Path) -> Vec<u32> {
+    let Ok(text) = std::fs::read_to_string(playlist) else { return Vec::new() };
+    text.lines()
+        .filter_map(|l| l.trim().strip_prefix("seg")?.strip_suffix(".ts")?.parse().ok())
+        .collect()
+}
+
+fn remove_tmp_files(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().ends_with(".tmp") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+fn spawn_hls_job(
+    path: &Path,
+    opts: &StreamOptions,
+    plan: &HlsPlan,
+    start_seg: u32,
+    dir: &Path,
+    prev_done: Option<Arc<AtomicBool>>,
+) -> Result<Job, String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let id = random_token()[..12].to_string();
+    let start = start_seg as f64 * plan.seg_len;
+    let frontier = Arc::new(AtomicU32::new(start_seg));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let eof = Arc::new(AtomicBool::new(false));
+    let error = Arc::new(Mutex::new(None));
+    let job = Job {
+        id,
+        dir: dir.to_path_buf(),
+        start,
+        start_seg,
+        frontier: frontier.clone(),
+        cancel: cancel.clone(),
+        done: done.clone(),
+        eof: eof.clone(),
+        error: error.clone(),
+    };
+    let (path, opts, plan, dir) = (path.to_path_buf(), opts.clone(), plan.clone(), dir.to_path_buf());
+    std::thread::spawn(move || {
+        run_encode(path, opts, Some((plan, start_seg, frontier)), start, dir, prev_done, cancel, done, eof, error);
+    });
+    Ok(job)
+}
+
+fn spawn_ts_job(
+    path: &Path,
+    opts: &StreamOptions,
+    start: f64,
+    root: &Path,
+    prev_done: Option<Arc<AtomicBool>>,
+) -> Result<Job, String> {
     let id = random_token()[..12].to_string();
     let dir = root.join(&id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let (cancel, done, error) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)));
-    let job = Job { id, dir: dir.clone(), start, cancel: cancel.clone(), done: done.clone(), error: error.clone() };
+    let frontier = Arc::new(AtomicU32::new(0));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let eof = Arc::new(AtomicBool::new(false));
+    let error = Arc::new(Mutex::new(None));
+    let job = Job {
+        id,
+        dir: dir.clone(),
+        start,
+        start_seg: 0,
+        frontier,
+        cancel: cancel.clone(),
+        done: done.clone(),
+        eof: eof.clone(),
+        error: error.clone(),
+    };
     let (path, opts) = (path.to_path_buf(), opts.clone());
     std::thread::spawn(move || {
-        let hls = opts.format == "hls";
-        let out = dir.join(if hls { "index.m3u8" } else { "live.ts" }).to_string_lossy().into_owned();
-        let (ovc, ovcopts) = encoder_options();
-        let start_s = format!("{:.3}", start.max(0.0));
+        run_encode(path, opts, None, start, dir, prev_done, cancel, done, eof, error);
+    });
+    Ok(job)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_encode(
+    path: PathBuf,
+    opts: StreamOptions,
+    hls: Option<(HlsPlan, u32, Arc<AtomicU32>)>,
+    start: f64,
+    dir: PathBuf,
+    prev_done: Option<Arc<AtomicBool>>,
+    cancel: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+    eof: Arc<AtomicBool>,
+    error: Arc<Mutex<Option<String>>>,
+) {
+    if let Some(prev) = prev_done {
+        let wait = Instant::now();
+        while !prev.load(Ordering::Acquire) && wait.elapsed() < Duration::from_secs(8) {
+            if cancel.load(Ordering::Acquire) {
+                done.store(true, Ordering::Release);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    if cancel.load(Ordering::Acquire) {
+        done.store(true, Ordering::Release);
+        return;
+    }
+
+    let enc = match pick_encoder() {
+        Ok(e) => e,
+        Err(e) => {
+            *error.lock().unwrap() = Some(e);
+            done.store(true, Ordering::Release);
+            return;
+        }
+    };
+
+    let want_gpu = opts.tone_map && !GPU_FILTER_BROKEN.load(Ordering::Relaxed);
+    let attempts: &[bool] = if want_gpu { &[true, false] } else { &[false] };
+    let m3u8 = dir.join("seg.m3u8");
+    let live_ts = dir.join("live.ts");
+
+    for (attempt_idx, &use_gpu) in attempts.iter().enumerate() {
+        let _ = std::fs::remove_file(&m3u8);
+        if hls.is_none() {
+            let _ = std::fs::remove_file(&live_ts);
+        }
+        remove_tmp_files(&dir);
+
+        let gop = hls.as_ref().map(|(p, _, _)| p.gop).unwrap_or(48);
+        let ovcopts = ovcopts_for(enc, gop);
+        let out = if hls.is_some() { &m3u8 } else { &live_ts }.to_string_lossy().into_owned();
+        let start_s = if hls.is_some() { format!("{:.6}", start.max(0.0)) } else { format!("{:.3}", start.max(0.0)) };
         let (w, h) = (opts.width.max(2) & !1, opts.height.max(2) & !1);
-        let vf = if opts.tone_map && opts.width > 0 {
-            format!("gpu=w={w}:h={h}")
+        let vf = if use_gpu && opts.width > 0 {
+            format!("gpu=w={w}:h={h},format=yuv420p")
+        } else if use_gpu {
+            "gpu,format=yuv420p".into()
         } else if opts.width > 0 {
-            format!("scale={w}:{h}")
+            format!("scale={w}:{h},format=yuv420p")
         } else {
-            String::new()
+            "format=yuv420p".into()
         };
-        let aid = opts.aid.map(|a| a.to_string()).unwrap_or_else(|| "auto".into());
+
+        let aid = opts.aid.filter(|a| *a > 0).map(|a| a.to_string()).unwrap_or_else(|| "auto".into());
+        let sid = opts.sid.filter(|s| *s > 0).map(|s| s.to_string()).unwrap_or_else(|| "no".into());
+        let ofopts = hls.as_ref().map(|(plan, start_seg, _)| {
+            format!(
+                "hls_time={:.6},start_number={start_seg},hls_segment_type=mpegts,hls_list_size=0,hls_flags=temp_file",
+                plan.seg_len
+            )
+        });
+
         let mut options: Vec<(&str, &str)> = vec![
             ("o", &out),
-            ("ovc", ovc),
-            ("ovcopts", ovcopts),
+            ("ovc", enc),
+            ("ovcopts", &ovcopts),
             ("oac", "aac"),
             ("oacopts", "b=192k"),
             ("audio-channels", "stereo"),
             ("audio-samplerate", "48000"),
             ("start", &start_s),
-            ("sid", "no"),
             ("aid", &aid),
+            ("sid", &sid),
+            ("vf", &vf),
             ("hwdec", "auto-copy-safe"),
             ("keep-open", "no"),
         ];
-        if hls {
+        if sid != "no" {
+            options.push(("sub-auto", "fuzzy"));
+            for (k, v) in &opts.sub_style {
+                options.push((k.as_str(), v.as_str()));
+            }
+        }
+        if let Some(ref of_str) = ofopts {
+            options.push(("orawts", "yes"));
             options.push(("of", "hls"));
-            options.push(("ofopts", "hls_time=4,hls_list_size=0,hls_playlist_type=event,hls_segment_type=fmp4,hls_flags=independent_segments+temp_file"));
+            options.push(("ofopts", of_str));
         } else {
             options.push(("of", "mpegts"));
         }
-        if !vf.is_empty() {
-            options.push(("vf", &vf));
-        }
-        if opts.tone_map {
+        if use_gpu {
             options.extend([("target-prim", "bt.709"), ("target-trc", "bt.1886"), ("tone-mapping", "bt.2390")]);
         }
+
         let core = match Core::new(&options) {
             Ok(c) => c,
             Err(e) => {
+                if use_gpu && attempt_idx + 1 < attempts.len() {
+                    GPU_FILTER_BROKEN.store(true, Ordering::Relaxed);
+                    continue;
+                }
                 *error.lock().unwrap() = Some(e);
-                done.store(true, Ordering::Release);
-                return;
+                break;
             }
         };
+
         let file = path.to_string_lossy().into_owned();
+        let mut video_ok = false;
+        let mut reached_eof = false;
+        let mut end_err = false;
+        let mut last_scan = Instant::now();
+
         if let Err(e) = core.api.command(core.h, &["loadfile", &file, "replace"]) {
             *error.lock().unwrap() = Some(e);
-        } else {
-            loop {
-                if cancel.load(Ordering::Acquire) {
+            drop(core);
+            break;
+        }
+
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                let _ = core.api.command(core.h, &["stop"]);
+                break;
+            }
+            if let Some((_, _, ref frontier)) = hls {
+                if last_scan.elapsed() >= Duration::from_millis(200) {
+                    last_scan = Instant::now();
+                    if let Some(last) = last_playlist_seg(&m3u8) {
+                        frontier.store(last, Ordering::Release);
+                    }
+                }
+            }
+            let ev = unsafe { &*(core.api.wait_event)(core.h, 0.10) };
+            if ev.event_id == mpv::EVENT_PLAYBACK_RESTART {
+                if core.get("vo-configured").as_deref() == Some("yes") {
+                    video_ok = true;
+                } else {
+                    // A failed filter (e.g. headless GPU tone-mapping on some Windows setups) silently drops video.
+                    end_err = true;
                     let _ = core.api.command(core.h, &["stop"]);
                     break;
                 }
-                let ev = unsafe { &*(core.api.wait_event)(core.h, 0.25) };
-                if ev.event_id == mpv::EVENT_END_FILE {
-                    if !ev.data.is_null() && unsafe { &*(ev.data as *const mpv::EventEndFile) }.reason == mpv::END_FILE_REASON_ERROR {
-                        *error.lock().unwrap() = Some("The video couldn’t be converted".into());
-                    }
-                    break;
+            } else if ev.event_id == mpv::EVENT_END_FILE {
+                if !ev.data.is_null() && unsafe { &*(ev.data as *const mpv::EventEndFile) }.reason == mpv::END_FILE_REASON_ERROR {
+                    end_err = true;
+                } else {
+                    reached_eof = true;
                 }
-                if ev.event_id == mpv::EVENT_SHUTDOWN {
-                    break;
-                }
+                break;
+            } else if ev.event_id == mpv::EVENT_SHUTDOWN {
+                break;
             }
         }
-        drop(core); // finalises the output
-        done.store(true, Ordering::Release);
+
+        drop(core); // finalises muxer output and closes file handles
+
         if cancel.load(Ordering::Acquire) {
-            let _ = std::fs::remove_dir_all(&dir);
+            if hls.is_some() {
+                // Stopping mid-encode flushes a partial trailing segment; remove only that trailing segment.
+                if let Some(partial) = last_playlist_seg(&m3u8) {
+                    let _ = std::fs::remove_file(dir.join(format!("seg{partial}.ts")));
+                }
+                let _ = std::fs::remove_file(&m3u8);
+                remove_tmp_files(&dir);
+            } else {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            break;
         }
-    });
-    Ok(job)
+
+        if (end_err || !video_ok) && use_gpu && attempt_idx + 1 < attempts.len() {
+            GPU_FILTER_BROKEN.store(true, Ordering::Relaxed);
+            for bad in all_playlist_segs(&m3u8) {
+                let _ = std::fs::remove_file(dir.join(format!("seg{bad}.ts")));
+            }
+            let _ = std::fs::remove_file(&m3u8);
+            remove_tmp_files(&dir);
+            continue;
+        }
+
+        if end_err || !video_ok {
+            for bad in all_playlist_segs(&m3u8) {
+                let _ = std::fs::remove_file(dir.join(format!("seg{bad}.ts")));
+            }
+            *error.lock().unwrap() = Some("The video couldn’t be converted".into());
+        } else {
+            if let Some((_, _, ref frontier)) = hls {
+                if let Some(last) = last_playlist_seg(&m3u8) {
+                    frontier.store(last, Ordering::Release);
+                }
+            }
+            eof.store(reached_eof, Ordering::Release);
+        }
+        break;
+    }
+
+    done.store(true, Ordering::Release);
 }
 
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
+/// Reads duration, frame rate, audio/subtitle tracks (incl. sidecar files) and chapters.
+#[tauri::command]
+pub async fn stream_probe(path: String) -> Result<StreamProbe, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err(format!("File not found: {path}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || probe_file(&p))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Probes and returns the name of the H.264 encoder used for on-the-fly conversions.
+#[tauri::command]
+pub async fn stream_encoder() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| pick_encoder().map(str::to_owned))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Makes a file streamable; returns its token.
 #[tauri::command]
 pub async fn stream_register(path: String, options: StreamOptions) -> Result<String, String> {
     ensure_server(0).await?;
     let s = shared()?;
-    if !Path::new(&path).is_file() {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
         return Err(format!("File not found: {path}"));
     }
+    let hls = if options.format == "hls" {
+        let probe_path = p.clone();
+        let probe = tauri::async_runtime::spawn_blocking(move || probe_file(&probe_path))
+            .await
+            .map_err(|e| e.to_string())??;
+        Some(HlsPlan::from_probe(probe.duration, probe.fps))
+    } else {
+        None
+    };
     let token = random_token();
-    s.inner.lock().unwrap().streams.insert(token.clone(), Stream { path: PathBuf::from(path), opts: options, job: None, touched: Instant::now() });
+    let dir = stream_cache_dir(&token);
+    s.inner.lock().unwrap().streams.insert(
+        token.clone(),
+        Stream { path: p, opts: options, dir, hls, job: None, touched: Instant::now() },
+    );
     Ok(token)
 }
 
@@ -674,65 +1313,74 @@ pub struct StreamUrl {
     url: String,
     /// Same, relative to the server (for the browser app).
     path: String,
-    /// Where the stream starts (conversions start at the requested time).
+    /// Where the stream starts (0 for direct & VOD HLS; requested time for live MPEG-TS).
     offset: f64,
 }
 
 /// URL for a registered stream starting at `start` seconds. `host` is the device that will play
 /// it (its address picks the right network interface for the URL).
 #[tauri::command]
-pub async fn stream_url(app: AppHandle, token: String, start: f64, host: Option<String>) -> Result<StreamUrl, String> {
+pub async fn stream_url(_app: AppHandle, token: String, start: f64, host: Option<String>) -> Result<StreamUrl, String> {
     let port = ensure_server(0).await?;
     let s = shared()?;
-    let root = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("streams").join(&token);
-    let (rel, offset, wait_for) = {
+    let (rel, offset) = {
         let mut inner = s.inner.lock().unwrap();
         let st = inner.streams.get_mut(&token).ok_or("Unknown stream")?;
         st.touched = Instant::now();
-        if st.opts.format == "direct" {
-            (format!("/stream/{token}/file"), 0.0, None)
-        } else {
-            let reuse = st.job.as_ref().is_some_and(|j| (j.start - start).abs() < 0.5 && j.error.lock().unwrap().is_none() && !j.cancel.load(Ordering::Acquire));
-            if !reuse {
-                if let Some(old) = st.job.take() {
-                    old.stop();
+        match st.opts.format.as_str() {
+            "direct" => (format!("/stream/{token}/file"), 0.0),
+            "hls" => {
+                let plan = st.hls.clone().ok_or("Missing HLS plan")?;
+                let seg = ((start.max(0.0) / plan.seg_len).floor() as u32).min(plan.seg_count.saturating_sub(1));
+                let cached = st.dir.join(format!("seg{seg}.ts")).exists();
+                let covered = st.job.as_ref().is_some_and(|j| {
+                    !j.cancel.load(Ordering::Acquire)
+                        && !j.done.load(Ordering::Acquire)
+                        && j.error.lock().unwrap().is_none()
+                        && seg >= j.start_seg
+                        && seg <= j.frontier.load(Ordering::Acquire).saturating_add(LOOKAHEAD_SEGS)
+                });
+                if !cached && !covered {
+                    let prev = st.job.take().map(|old| {
+                        old.stop();
+                        old.done
+                    });
+                    st.job = Some(spawn_hls_job(&st.path, &st.opts, &plan, seg, &st.dir, prev)?);
                 }
-                st.job = Some(start_job(&st.path, &st.opts, start, &root)?);
+                (format!("/stream/{token}/index.m3u8"), 0.0)
             }
-            let job = st.job.as_ref().unwrap();
-            let name = if st.opts.format == "hls" { "index.m3u8" } else { "live.ts" };
-            (format!("/stream/{token}/{}/{name}", job.id), start, (st.opts.format == "hls").then(|| (job.dir.join("index.m3u8"), job.done.clone(), job.error.clone())))
+            _ => {
+                let reuse = st.job.as_ref().is_some_and(|j| {
+                    (j.start - start).abs() < 0.5 && j.error.lock().unwrap().is_none() && !j.cancel.load(Ordering::Acquire)
+                });
+                if !reuse {
+                    let prev = st.job.take().map(|old| {
+                        old.stop();
+                        old.done
+                    });
+                    st.job = Some(spawn_ts_job(&st.path, &st.opts, start, &st.dir, prev)?);
+                }
+                let job = st.job.as_ref().unwrap();
+                (format!("/stream/{token}/{}/live.ts", job.id), start.max(0.0))
+            }
         }
     };
-    // HLS: hand out the URL once the first segments exist, so players don't give up.
-    if let Some((playlist, done, error)) = wait_for {
-        let started = Instant::now();
-        loop {
-            if tokio::fs::read_to_string(&playlist).await.map(|t| t.contains(".m4s")).unwrap_or(false) || done.load(Ordering::Acquire) {
-                break;
-            }
-            let failed = error.lock().unwrap().clone();
-            if let Some(e) = failed {
-                return Err(e);
-            }
-            if started.elapsed() > Duration::from_secs(40) {
-                return Err("The conversion didn’t start in time".into());
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-    let ip = host.as_deref().and_then(local_ip_for).map(|i| i.to_string()).or_else(|| lan_addresses().into_iter().next()).unwrap_or_else(|| "127.0.0.1".into());
+    let ip = host
+        .as_deref()
+        .and_then(local_ip_for)
+        .map(|i| i.to_string())
+        .or_else(|| lan_addresses().into_iter().next())
+        .unwrap_or_else(|| "127.0.0.1".into());
     Ok(StreamUrl { url: format!("http://{ip}:{port}{rel}"), path: rel, offset })
 }
 
-/// Stops a stream's conversion and forgets it.
+/// Stops a stream's conversion and deletes its temporary segments.
 #[tauri::command]
 pub fn stream_release(token: String) {
     if let Ok(s) = shared() {
-        if let Some(st) = s.inner.lock().unwrap().streams.remove(&token) {
-            if let Some(job) = st.job {
-                job.stop();
-            }
+        let removed = s.inner.lock().unwrap().streams.remove(&token);
+        if let Some(st) = removed {
+            cleanup_stream_dir(st.job, st.dir);
         }
     }
 }
@@ -742,6 +1390,7 @@ pub struct ServerInfo {
     port: u16,
     addresses: Vec<String>,
     web_enabled: bool,
+    encoder: Option<String>,
 }
 
 /// Turns the browser app on/off (with its access code and port).
@@ -755,47 +1404,89 @@ pub async fn remote_access_set(enabled: bool, code: String, port: u16) -> Result
     }
     inner.web_enabled = enabled;
     inner.access_code = code;
-    Ok(ServerInfo { port: bound, addresses: lan_addresses(), web_enabled: enabled })
+    let encoder = ENCODER.lock().unwrap().map(str::to_owned);
+    Ok(ServerInfo { port: bound, addresses: lan_addresses(), web_enabled: enabled, encoder })
 }
 
 #[tauri::command]
 pub fn server_info() -> ServerInfo {
-    let (port, web) = shared().map(|s| {
-        let i = s.inner.lock().unwrap();
-        (i.port, i.web_enabled)
-    }).unwrap_or((0, false));
-    ServerInfo { port, addresses: lan_addresses(), web_enabled: web }
+    let (port, web) = shared()
+        .map(|s| {
+            let i = s.inner.lock().unwrap();
+            (i.port, i.web_enabled)
+        })
+        .unwrap_or((0, false));
+    let encoder = ENCODER.lock().unwrap().map(str::to_owned);
+    ServerInfo { port, addresses: lan_addresses(), web_enabled: web, encoder }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `TRUONGFLIX_STREAM_TEST=video.mkv cargo test --release -- --ignored real_stream --nocapture`
+    /// `TRUONGFLIX_STREAM_TEST=video.mkv cargo test -- --ignored real_stream --nocapture`
     #[test]
     #[ignore]
     fn real_stream_jobs_and_ranges() {
         let video = PathBuf::from(std::env::var("TRUONGFLIX_STREAM_TEST").expect("set TRUONGFLIX_STREAM_TEST"));
         let root = std::env::temp_dir().join("truongflix-stream-test");
         let _ = std::fs::remove_dir_all(&root);
-        for (format, tone_map) in [("hls", false), ("ts", false), ("hls", true)] {
-            let opts = StreamOptions { format: format.into(), width: 1280, height: 720, tone_map, aid: None };
+
+        let enc = pick_encoder().expect("a working H.264 encoder");
+        println!("Selected encoder: {enc}");
+        assert!(!test_encoder("definitely_no_such_encoder_123"));
+
+        let probe = probe_file(&video).expect("probe video");
+        println!("Probed: duration={:.2}s fps={:.3} audio={} subs={}", probe.duration, probe.fps, probe.audio.len(), probe.subs.len());
+        assert!(probe.duration > 1.0);
+        let plan = HlsPlan::from_probe(probe.duration, probe.fps);
+        let playlist = plan.playlist();
+        assert!(playlist.contains("#EXT-X-PLAYLIST-TYPE:VOD") && playlist.contains("#EXT-X-ENDLIST"));
+
+        let start_seg = if plan.seg_count > 3 { 2 } else { 0 };
+        for tone_map in [false, true] {
+            let dir = root.join(format!("hls-{tone_map}"));
+            let sid = probe.subs.first().map(|s| s.id);
+            let opts = StreamOptions {
+                format: "hls".into(),
+                width: 1280,
+                height: 720,
+                tone_map,
+                aid: probe.audio.first().map(|a| a.id),
+                sid,
+                sub_style: vec![("sub-font-size".into(), "46".into())],
+            };
             let t = Instant::now();
-            let job = start_job(&video, &opts, 20.0, &root).unwrap();
-            while !job.done.load(Ordering::Acquire) && t.elapsed() < Duration::from_secs(120) {
-                std::thread::sleep(Duration::from_millis(100));
+            let job = spawn_hls_job(&video, &opts, &plan, start_seg, &dir, None).unwrap();
+            let first = dir.join(format!("seg{start_seg}.ts"));
+            while !first.exists() && !job.done.load(Ordering::Acquire) && t.elapsed() < Duration::from_secs(60) {
+                std::thread::sleep(Duration::from_millis(80));
             }
-            assert!(job.error.lock().unwrap().is_none(), "{format}: {:?}", job.error.lock().unwrap());
-            let files: Vec<String> = std::fs::read_dir(&job.dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-            println!("{format} tone_map={tone_map}: {} files in {:?}", files.len(), t.elapsed());
-            if format == "hls" {
-                let playlist = std::fs::read_to_string(job.dir.join("index.m3u8")).unwrap();
-                assert!(playlist.contains("#EXT-X-ENDLIST") && files.contains(&"init.mp4".to_string()), "{playlist}");
-                assert!(!files.iter().any(|f| f.ends_with(".tmp")), "temp files left: {files:?}");
-            } else {
-                assert!(std::fs::metadata(job.dir.join("live.ts")).unwrap().len() > 10_000);
+            assert!(job.error.lock().unwrap().is_none(), "hls tone_map={tone_map}: {:?}", job.error.lock().unwrap());
+            assert!(std::fs::metadata(&first).map(|m| m.len() > 4000).unwrap_or(false), "missing {first:?}");
+            job.stop();
+            while !job.done.load(Ordering::Acquire) && t.elapsed() < Duration::from_secs(15) {
+                std::thread::sleep(Duration::from_millis(50));
             }
+            let files: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            assert!(!files.iter().any(|f| f.ends_with(".tmp")), "temp files left: {files:?}");
+            println!("hls tone_map={tone_map} first+cancel in {:?}: {files:?}", t.elapsed());
         }
+
+        // Live TS job (DLNA fallback).
+        let ts_opts = StreamOptions { format: "ts".into(), width: 1280, height: 720, tone_map: false, aid: None, sid: None, sub_style: Vec::new() };
+        let ts_job = spawn_ts_job(&video, &ts_opts, 0.0, &root, None).unwrap();
+        let t = Instant::now();
+        while std::fs::metadata(ts_job.dir.join("live.ts")).map(|m| m.len()).unwrap_or(0) < 10_000
+            && !ts_job.done.load(Ordering::Acquire)
+            && t.elapsed() < Duration::from_secs(60)
+        {
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        assert!(ts_job.error.lock().unwrap().is_none(), "ts: {:?}", ts_job.error.lock().unwrap());
+        assert!(std::fs::metadata(ts_job.dir.join("live.ts")).unwrap().len() >= 10_000);
+        ts_job.stop();
+
         // Byte ranges over a real socket.
         tauri::async_runtime::block_on(async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -815,13 +1506,28 @@ mod tests {
             let body = &out[out.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..];
             assert_eq!(body, &std::fs::read(&video).unwrap()[100..200]);
         });
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn decodes_query_strings() {
+    fn vod_playlist_and_query_strings() {
         assert_eq!(percent_decode("a%20b+c%2Fd"), "a b c/d");
         assert_eq!(percent_decode("%E2%9C%93"), "✓");
         assert!(local_ip_for("127.0.0.1").is_some());
         assert_eq!(random_token().len(), 32);
+
+        let plan = HlsPlan::from_probe(1441.5, 24000.0 / 1001.0);
+        assert_eq!(plan.gop, 96);
+        assert!((plan.seg_len - 4.004).abs() < 1e-6);
+        assert_eq!(plan.seg_count, 360);
+        let m3u8 = plan.playlist();
+        assert!(m3u8.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
+        assert!(m3u8.contains("#EXT-X-ENDLIST"));
+        assert!(m3u8.contains("seg0.ts") && m3u8.contains("seg359.ts") && !m3u8.contains("seg360.ts"));
+        let sum: f64 = m3u8
+            .lines()
+            .filter_map(|l| l.strip_prefix("#EXTINF:")?.strip_suffix(',')?.parse::<f64>().ok())
+            .sum();
+        assert!((sum - 1441.5).abs() < 0.01, "sum={sum}");
     }
 }

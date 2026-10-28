@@ -65,10 +65,11 @@ export async function castTo(device: CastDevice, target: PlayTarget, start = tar
     token = await registerStream(row.file_path, plan);
     const url = await streamUrl(token, plan.format === 'direct' ? 0 : start, device.host);
     const contentType = plan.format === 'hls' ? 'application/x-mpegurl' : plan.format === 'ts' ? 'video/mp2t' : mimeFor(row.file_path);
+    const seekable = plan.format !== 'ts';
     useLibraryStore.getState().patchCast({ offset: url.offset });
     await invoke('cast_start', {
       device,
-      media: { url: url.url, content_type: contentType, title: info.title, subtitle: info.subtitle, image: info.image, start: plan.format === 'direct' ? start : 0, duration: duration - url.offset },
+      media: { url: url.url, content_type: contentType, title: info.title, subtitle: info.subtitle, image: info.image, start: seekable ? start : 0, duration: duration - url.offset },
     });
   } catch (e) {
     useLibraryStore.getState().patchCast({ state: 'error', message: String(e) });
@@ -84,16 +85,16 @@ export function castControl(action: 'play' | 'pause' | 'stop' | 'volume', value?
   void invoke('cast_control', { action, value: value ?? null }).catch(() => {});
 }
 
-/** Seeks to an absolute time; converted streams restart the conversion there. */
+/** Seeks to an absolute time; direct and VOD HLS streams seek natively on the TV. */
 export async function castSeek(time: number) {
   const cast = useLibraryStore.getState().cast;
   if (!cast) return;
   const t = Math.max(0, Math.min(time, cast.duration - 5));
-  if (!cast.converting) {
+  if (!triedCompat) {
     void invoke('cast_control', { action: 'seek', value: t });
     return;
   }
-  await castTo(cast.device, cast.target, t, triedCompat ? 'dlna-compat' : undefined);
+  await castTo(cast.device, cast.target, t, 'dlna-compat');
 }
 
 export async function stopCasting() {

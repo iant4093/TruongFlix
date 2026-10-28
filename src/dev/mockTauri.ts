@@ -892,13 +892,33 @@ export function installMocks() {
         case 'stream_register':
           return `tok${Math.random().toString(16).slice(2, 10)}`;
         case 'stream_url':
-          return { url: `http://192.168.1.20:8732/stream/${a.token}/job/index.m3u8`, path: `/stream/${a.token}/job/index.m3u8`, offset: Number(a.start) || 0 };
+          return { url: `http://192.168.1.20:8732/stream/${a.token}/index.m3u8`, path: `/stream/${a.token}/index.m3u8`, offset: 0 };
+        case 'stream_probe':
+          return {
+            duration: 3300,
+            fps: 23.976,
+            audio: [
+              { id: 1, lang: 'eng', title: 'TrueHD Atmos 7.1', codec: 'truehd', channels: 8, default: true, selected: true },
+              { id: 2, lang: 'jpn', title: 'Japanese Dub', codec: 'eac3', channels: 6, default: false, selected: false },
+            ],
+            subs: [
+              { id: 1, lang: 'eng', title: null, codec: 'subrip', forced: false, default: true, selected: true, external: false, external_filename: null },
+              { id: 2, lang: 'spa', title: 'Forced', codec: 'ass', forced: true, default: false, selected: false, external: false, external_filename: null },
+            ],
+            chapters: [
+              { title: 'Opening Credits', time: 62 },
+              { title: 'Act One', time: 112 },
+              { title: 'End Credits', time: 3180 },
+            ],
+          };
+        case 'stream_encoder':
+          return 'h264_videotoolbox';
         case 'stream_release':
           return null;
         case 'remote_access_set':
-          return { port: Number(a.port) || 8732, addresses: ['192.168.1.20'], web_enabled: !!a.enabled };
+          return { port: Number(a.port) || 8732, addresses: ['192.168.1.20'], web_enabled: !!a.enabled, encoder: 'h264_videotoolbox' };
         case 'server_info':
-          return { port: 8732, addresses: ['192.168.1.20'], web_enabled: false };
+          return { port: 8732, addresses: ['192.168.1.20'], web_enabled: false, encoder: 'h264_videotoolbox' };
         case 'sidecar_subtitle_languages':
           return ((a.videoPaths as string[]) ?? []).map((p) => (p.includes('Severance/Season 1/') ? ['en'] : []));
         case 'detect_intros':

@@ -114,6 +114,8 @@ fn candidate_paths() -> Vec<PathBuf> {
         #[cfg(target_os = "linux")]
         paths.push(exe_dir.join("libmpv.so.2"));
     }
+    #[cfg(all(target_os = "windows", debug_assertions))]
+    paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libmpv/libmpv-2.dll"));
     #[cfg(target_os = "macos")]
     for p in ["/opt/homebrew/lib/libmpv.2.dylib", "/usr/local/lib/libmpv.2.dylib", "/opt/homebrew/lib/libmpv.dylib", "/usr/local/lib/libmpv.dylib"] {
         paths.push(PathBuf::from(p));

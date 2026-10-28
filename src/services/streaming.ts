@@ -10,6 +10,50 @@ export interface StreamOptions {
   height: number;
   tone_map: boolean;
   aid: number | null;
+  sid: number | null;
+  sub_style: [string, string][];
+}
+
+export interface StreamAudioTrack {
+  id: number;
+  lang: string | null;
+  title: string | null;
+  codec: string | null;
+  channels: number | null;
+  default: boolean;
+  selected: boolean;
+}
+
+export interface StreamSubTrack {
+  id: number;
+  lang: string | null;
+  title: string | null;
+  codec: string | null;
+  forced: boolean;
+  default: boolean;
+  selected: boolean;
+  external: boolean;
+  external_filename: string | null;
+}
+
+export interface StreamChapter {
+  title: string;
+  time: number;
+}
+
+export interface StreamProbe {
+  duration: number;
+  fps: number;
+  audio: StreamAudioTrack[];
+  subs: StreamSubTrack[];
+  chapters: StreamChapter[];
+}
+
+export interface StreamChoice {
+  aid?: number | null;
+  defaultAid?: number | null;
+  sid?: number | null;
+  subStyle?: [string, string][];
 }
 
 const ext = (path: string) => path.split('.').pop()?.toLowerCase() ?? '';
@@ -35,25 +79,62 @@ function outputSize(info: MediaInfo | null): { width: number; height: number } {
 
 /**
  * How a device should get this file: as-is when it can play it, otherwise converted on the fly.
- * Smart TVs (DLNA) usually play the original; `dlna-compat` is the fallback when one refuses.
+ * Burning in subtitles or switching to a non-default audio track also uses HLS conversion.
  */
-export function planStream(row: MovieRow | EpisodeRow, client: StreamClient): StreamOptions {
+export function planStream(row: MovieRow | EpisodeRow, client: StreamClient, choice: StreamChoice = {}): StreamOptions {
   const info = parseMediaInfo(row.media_info);
+  const aid = choice.aid && choice.aid > 0 ? choice.aid : null;
+  const sid = choice.sid && choice.sid > 0 ? choice.sid : null;
+  const sub_style = sid ? (choice.subStyle ?? []) : [];
   const convert = (format: 'hls' | 'ts'): StreamOptions => ({
     format,
     ...outputSize(info),
     tone_map: info?.gamma === 'pq' || info?.gamma === 'hlg',
-    aid: null,
+    aid,
+    sid,
+    sub_style,
   });
-  if (client === 'dlna') return { format: 'direct', width: 0, height: 0, tone_map: false, aid: null };
+  if (client === 'dlna') return { format: 'direct', width: 0, height: 0, tone_map: false, aid: null, sid: null, sub_style: [] };
   if (client === 'dlna-compat') return convert('ts');
-  return webCompatible(row.file_path, info) ? { format: 'direct', width: 0, height: 0, tone_map: false, aid: null } : convert('hls');
+  const needsBurnOrTrack = sid !== null || (aid !== null && choice.defaultAid != null && aid !== choice.defaultAid);
+  return !needsBurnOrTrack && webCompatible(row.file_path, info)
+    ? { format: 'direct', width: 0, height: 0, tone_map: false, aid: null, sid: null, sub_style: [] }
+    : convert('hls');
 }
 
 export interface StreamUrl {
   url: string;
   path: string;
   offset: number;
+}
+
+export async function probeStream(path: string): Promise<StreamProbe> {
+  return invoke<StreamProbe>('stream_probe', { path });
+}
+
+export async function detectStreamEncoder(): Promise<string> {
+  return invoke<string>('stream_encoder');
+}
+
+export function encoderLabel(name: string | null | undefined): string {
+  switch (name) {
+    case 'h264_videotoolbox':
+      return 'Apple VideoToolbox (hardware)';
+    case 'h264_nvenc':
+      return 'NVIDIA NVENC (hardware)';
+    case 'h264_qsv':
+      return 'Intel Quick Sync (hardware)';
+    case 'h264_amf':
+      return 'AMD AMF (hardware)';
+    case 'h264_mf':
+      return 'Windows Media Foundation';
+    case 'h264_vaapi':
+      return 'VA-API (hardware)';
+    case 'libx264':
+      return 'Software (x264)';
+    default:
+      return name || 'Auto';
+  }
 }
 
 export async function registerStream(path: string, options: StreamOptions): Promise<string> {

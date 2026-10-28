@@ -80,6 +80,8 @@ pub fn run() {
             cast::cast_discover,
             cast::cast_start,
             cast::cast_control,
+            stream::stream_probe,
+            stream::stream_encoder,
             stream::stream_register,
             stream::stream_url,
             stream::stream_release,

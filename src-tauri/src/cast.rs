@@ -545,8 +545,8 @@ fn chromecast_session(app: Reporter, device: CastDevice, media: CastMedia, rx: m
         },
     });
     if hls {
-        media_info["hlsSegmentFormat"] = json!("fmp4");
-        media_info["hlsVideoSegmentFormat"] = json!("fmp4");
+        media_info["hlsSegmentFormat"] = json!("ts");
+        media_info["hlsVideoSegmentFormat"] = json!("mpeg2_ts");
     }
     if media.duration > 0.0 {
         media_info["duration"] = json!(media.duration);

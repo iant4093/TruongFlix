@@ -130,6 +130,10 @@ jobs:
           $video = Join-Path $env:RUNNER_TEMP "Big Buck Bunny.mp4"
           Invoke-WebRequest -Uri "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4" -OutFile $video
           Copy-Item src-tauri\libmpv\libmpv-2.dll src-tauri\target\release\ -Force
+          $env:TRUONGFLIX_LIBMPV = (Resolve-Path "src-tauri\libmpv\libmpv-2.dll").Path
+          $env:TRUONGFLIX_STREAM_TEST = $video
+          cargo test --manifest-path src-tauri\Cargo.toml --lib -- --ignored real_stream --nocapture *>&1 | Tee-Object -FilePath smoke\stream-test.log
+          Remove-Item Env:TRUONGFLIX_STREAM_TEST -ErrorAction SilentlyContinue
           $env:TRUONGFLIX_AUTOPLAY = $video
           $env:TRUONGFLIX_PLAYER_DEBUG = "1"
           $proc = Start-Process -FilePath src-tauri\target\release\truongflix.exe -PassThru `

@@ -4,6 +4,7 @@ import { Cast, Copy, Loader2, RefreshCw, Tv } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { applyRemoteAccess } from '../../services/remoteapi';
 import { discoverDevices, type CastDevice } from '../../services/cast';
+import { detectStreamEncoder, encoderLabel } from '../../services/streaming';
 import { Block, BTN, Group, INPUT, Page, Row, StatusText, ToggleRow } from './ui';
 
 const IS_MAC = navigator.userAgent.includes('Mac');
@@ -25,6 +26,8 @@ export default function DevicesPage() {
   const [info, setInfo] = useState<{ port: number; addresses: string[] } | null>(null);
   const [error, setError] = useState('');
   const [port, setPort] = useState(String(settings.remote_port || 8732));
+  const [encoder, setEncoder] = useState<string | null>(null);
+  const [encoderErr, setEncoderErr] = useState('');
 
   const apply = async () => {
     setError('');
@@ -37,6 +40,22 @@ export default function DevicesPage() {
   useEffect(() => {
     void apply();
   }, [settings.remote_access, settings.remote_code, settings.remote_port]);
+  useEffect(() => {
+    let alive = true;
+    detectStreamEncoder()
+      .then((enc) => {
+        if (alive) {
+          setEncoder(enc);
+          setEncoderErr('');
+        }
+      })
+      .catch((e) => {
+        if (alive) setEncoderErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const url = info?.addresses[0] ? `http://${info.addresses[0]}:${info.port}` : null;
 
@@ -100,6 +119,12 @@ export default function DevicesPage() {
             </Row>
           </>
         )}
+        <Row
+          label="Video conversion"
+          description={encoderErr ? <StatusText tone="bad">{encoderErr}</StatusText> : 'Used when a browser or TV can’t play the original file as-is.'}
+        >
+          <span className="text-sm text-nf-secondary">{encoder ? encoderLabel(encoder) : encoderErr ? 'Unavailable' : 'Checking…'}</span>
+        </Row>
       </Group>
       <CastDevices />
     </Page>
