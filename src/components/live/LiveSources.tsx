@@ -160,7 +160,7 @@ export default function Sources({ onClose }: { onClose: () => void }) {
               Cancel edit
             </button>
           )}
-          <button className="nf-btn-primary" disabled={busy || !input.trim()} onClick={() => void save()}>
+          <button className="nf-btn-red" disabled={busy || !input.trim()} onClick={() => void save()}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             {busy ? 'Importing…' : editing ? 'Save playlist' : 'Add playlist'}
           </button>

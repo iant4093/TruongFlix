@@ -165,6 +165,7 @@ it('does not clear a new channel when an earlier close finishes late', async () 
       : (undefined as never),
   );
   const closing = closeBuiltin();
+  expect(useLibraryStore.getState().playerSession).toBeNull();
   await vi.waitFor(() => expect(resolveClose).toBeTypeOf('function'));
   const next = { ...match, channel: { ...channel, id: 'next', name: 'Next feed' }, key: 'one/next' };
   const opening = playLive(next);
@@ -172,6 +173,39 @@ it('does not clear a new channel when an earlier close finishes late', async () 
   resolveClose();
   await Promise.all([closing, opening]);
   expect(useLibraryStore.getState().playerSession?.target.id).toBe('next');
+});
+
+it('returns to the library immediately when a channel is still opening', async () => {
+  let resolveOpen!: () => void;
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === 'player_status' ? { available: true } : command === 'player_open'
+      ? new Promise<void>((resolve) => { resolveOpen = resolve; })
+      : (undefined as never),
+  );
+  const opening = playLive(match);
+  await vi.waitFor(() => expect(resolveOpen).toBeTypeOf('function'));
+  const closing = closeBuiltin();
+  expect(useLibraryStore.getState().playerSession).toBeNull();
+  expect(useLibraryStore.getState().playerMini).toBe(false);
+  resolveOpen();
+  await Promise.all([opening, closing]);
+  expect(invoke).toHaveBeenCalledWith('player_close');
+  expect(useLibraryStore.getState().playerSession).toBeNull();
+});
+
+it('preserves a movie resume point while its close saves in the background', async () => {
+  useLibraryStore.setState({
+    playerSession: { loadId: 'movie', target: { type: 'movie', id: 42, filePath: '/movie.mp4', label: 'Movie', startTime: 0 }, title: 'Movie', subtitle: null, itemKey: null, overview: null, logo: null, next: null, nextLabel: null },
+    playerState: { ...state, duration: 120 },
+  });
+  let resolveSave!: () => void;
+  vi.mocked(db.recordProgress).mockImplementation(() => new Promise<void>((resolve) => { resolveSave = resolve; }));
+  const closing = closeBuiltin();
+  expect(useLibraryStore.getState().playerSession).toBeNull();
+  expect(db.recordProgress).toHaveBeenCalledWith('movie', 42, 50, 120);
+  resolveSave();
+  await closing;
+  expect(invoke).toHaveBeenCalledWith('player_close');
 });
 
 it('keeps a live session open after stream failure so retry remains available', async () => {

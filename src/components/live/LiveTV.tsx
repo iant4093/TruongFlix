@@ -216,11 +216,7 @@ export default function LiveTV() {
     <section className="min-h-screen px-[4%] pb-20 pt-28">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-5">
         <div>
-          <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-nf-red">
-            <Radio className="h-4 w-4" /> Your front-row seat
-          </div>
           <h1 className="text-4xl font-bold tracking-tight">Live TV</h1>
-          <p className="mt-2 text-sm text-nf-secondary">Find your game. Choose your feed. Stay in the action.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <Dropdown
@@ -333,7 +329,7 @@ export default function LiveTV() {
                 <h2 className="text-lg font-bold">Bring your channels</h2>
                 <p className="mt-1 text-sm text-nf-secondary">Add an M3U playlist to find streams for these events.</p>
               </div>
-              <button className="nf-btn-primary" onClick={() => setSourcesOpen(true)}>
+              <button className="nf-btn-red" onClick={() => setSourcesOpen(true)}>
                 <Plus className="h-4 w-4" /> Add playlist
               </button>
             </div>

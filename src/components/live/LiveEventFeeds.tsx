@@ -75,6 +75,7 @@ export default function EventFeeds({
               <button
                 key={m.key}
                 aria-label={`Choose ${m.channel.name} from ${m.playlist.name}`}
+                aria-pressed={choice === m.key}
                 onClick={() => setChoice(m.key)}
                 className={`flex w-full items-center gap-3 rounded border p-3 text-left ${choice === m.key ? 'border-white bg-white/10' : 'border-white/10 bg-white/5 hover:bg-white/10'}`}
               >
@@ -90,24 +91,26 @@ export default function EventFeeds({
               </button>
             ))}
           </div>
-          <button
-            className="nf-btn-primary mt-5 w-full"
-            disabled={!chosen || busy}
-            onClick={async () => {
-              if (!chosen) return;
-              setBusy(true);
-              try {
-                await setLivePreferences({ matches: { ...preferences.matches, [key]: chosen.key } });
-                await playLive(chosen, event, matches);
-                onClose();
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            <Play className="h-4 w-4 fill-current" /> Watch channel
-            {event.status === 'upcoming' ? ' · Event starts later' : ''}
-          </button>
+          <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
+            {event.status === 'upcoming' && <span className="text-xs text-nf-muted">Event starts later</span>}
+            <button
+              className="nf-btn-red"
+              disabled={!chosen || busy}
+              onClick={async () => {
+                if (!chosen) return;
+                setBusy(true);
+                try {
+                  await setLivePreferences({ matches: { ...preferences.matches, [key]: chosen.key } });
+                  await playLive(chosen, event, matches);
+                  onClose();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              <Play className="h-4 w-4 fill-current" /> Watch channel
+            </button>
+          </div>
         </>
       ) : (
         <p className="rounded bg-white/5 p-5 text-sm text-nf-secondary">

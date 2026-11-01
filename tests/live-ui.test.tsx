@@ -107,6 +107,8 @@ it('finds an event by team and saves an explicit mapping to a custom channel', a
   fireEvent.click(screen.getByRole('button', { name: 'Choose any channel' }));
   fireEvent.change(screen.getByRole('textbox', { name: 'Find a channel to match' }), { target: { value: 'Provider' } });
   fireEvent.click(screen.getByRole('button', { name: 'Choose Provider Seven from My playlist' }));
+  expect(playLive).not.toHaveBeenCalled();
+  expect(screen.getAllByRole('button', { name: 'Watch channel', exact: true })).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: /Watch channel/ }));
   await waitFor(() => expect(playLive).toHaveBeenCalled());
   expect(useLiveStore.getState().preferences.matches.fox).toBe('one/custom');

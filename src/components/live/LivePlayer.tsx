@@ -58,6 +58,7 @@ export default function LivePlayer({ session }: { session: LivePlayerSession }) 
   const fresh = !state?.cache_updated_at || now - state.cache_updated_at < 15_000;
   const interrupted = !!error || !!state?.eof;
   const blocked = !!prompt;
+  const buffering = !state?.loaded || state.buffering;
   const reveal = () => {
     setVisible(true);
     window.clearTimeout(hide.current);
@@ -146,7 +147,7 @@ export default function LivePlayer({ session }: { session: LivePlayerSession }) 
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
   }, [blocked, settings, mini]);
-  const show = visible || settings || state?.paused || blocked || interrupted;
+  const show = visible || settings || state?.paused || blocked || interrupted || buffering;
   const audio = tracks.filter((t) => t.type === 'audio');
   const subs = tracks.filter((t) => t.type === 'sub');
   if (mini) return null;
@@ -157,7 +158,7 @@ export default function LivePlayer({ session }: { session: LivePlayerSession }) 
       onClick={reveal}
     >
       <div
-        className={`absolute inset-x-0 top-0 flex items-center gap-5 bg-gradient-to-b from-black/85 to-transparent px-[4%] pb-16 pt-6 transition-opacity ${show ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        className={`absolute inset-x-0 top-0 z-10 flex items-center gap-5 bg-gradient-to-b from-black/85 to-transparent px-[4%] pb-16 pt-6 transition-opacity ${show ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
       >
         <button className={control} aria-label="Back to Live TV" onClick={() => void closeBuiltin()}>
           <ArrowLeft />
@@ -182,11 +183,11 @@ export default function LivePlayer({ session }: { session: LivePlayerSession }) 
             </h2>
             <div className="flex justify-center gap-3">
               {prompt !== 'limit' && prompt !== 'bedtime' && (
-                <button className="nf-btn-primary" onClick={dismissPrompt}>
+                <button className="nf-btn-red" onClick={dismissPrompt}>
                   Resume
                 </button>
               )}
-              <button className="nf-btn-secondary" onClick={() => void closeBuiltin()}>
+              <button className="nf-btn-ghost" onClick={() => void closeBuiltin()}>
                 Back to Live TV
               </button>
             </div>
@@ -203,7 +204,7 @@ export default function LivePlayer({ session }: { session: LivePlayerSession }) 
             </p>
             <div className="mt-6 flex justify-center gap-3">
               <button
-                className="nf-btn-primary"
+                className="nf-btn-red"
                 onClick={() => {
                   setAttempt(0);
                   void retuneLive();
@@ -211,28 +212,28 @@ export default function LivePlayer({ session }: { session: LivePlayerSession }) 
               >
                 <RefreshCw className="h-4 w-4" /> Retry
               </button>
-              <button className="nf-btn-secondary" onClick={() => void retuneLive(1)}>
+              <button className="nf-btn-ghost" onClick={() => void retuneLive(1)}>
                 Next channel
               </button>
             </div>
           </div>
         </div>
       ) : (
-        (!state?.loaded || state.buffering) && (
+        buffering && (
           <div
             role="status"
             aria-label="Buffering live stream"
-            className="absolute inset-0 flex items-center justify-center"
+            className="pointer-events-none absolute inset-0 flex items-center justify-center"
           >
             <Loader2 className="h-12 w-12 animate-spin text-nf-red" />
           </div>
         )
       )}
       <div
-        className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-[4%] pb-7 pt-20 transition-opacity ${show ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-[4%] pb-7 pt-20 transition-opacity ${show ? 'opacity-100' : 'opacity-0'}`}
       >
         {settings && (
-          <div className="ml-auto mb-5 w-96 max-w-full space-y-4 rounded-lg border border-white/15 bg-[#181818] p-5 shadow-xl">
+          <div className="pointer-events-auto ml-auto mb-5 w-96 max-w-full space-y-4 rounded-lg border border-white/15 bg-[#181818] p-5 shadow-xl">
             <div className="flex items-center justify-between font-bold">
               Live playback
               <button aria-label="Close playback settings" onClick={() => setSettings(false)}>
@@ -301,7 +302,7 @@ export default function LivePlayer({ session }: { session: LivePlayerSession }) 
             </p>
           </div>
         )}
-        <div className="mb-4 flex items-center gap-4">
+        <div className={`mb-4 flex items-center gap-4 ${show ? 'pointer-events-auto' : ''}`}>
           <button
             className={`shrink-0 text-xs font-bold tracking-wide ${fresh && !state?.paused && behind < 5 ? 'text-red-400' : 'text-white'}`}
             onClick={() => void goLive()}
@@ -334,7 +335,7 @@ export default function LivePlayer({ session }: { session: LivePlayerSession }) 
             <span className="text-xs text-white/40">Live stream · Rewind becomes available when buffered</span>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className={`flex items-center gap-3 ${show ? 'pointer-events-auto' : ''}`}>
           <button
             className={control}
             disabled={blocked}

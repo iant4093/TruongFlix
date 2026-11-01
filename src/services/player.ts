@@ -594,22 +594,25 @@ export async function closeBuiltin() {
   const store = useLibraryStore.getState();
   if (!store.playerSession) return;
   const generation = ++openGeneration;
-  const loadId = store.playerSession.loadId;
-  await saveBuiltinProgress();
-  await flushWatchTime();
-  await flushLiveTime(); liveTick = null;
-  if (generation !== openGeneration) return;
+  // Capture progress before clearing the session, but never hold the UI behind disk or engine I/O.
+  const saved = Promise.all([saveBuiltinProgress(), flushWatchTime(), flushLiveTime()]);
+  liveTick = null;
+  finishSession(false);
+  const close = openQueue.catch(() => {}).then(async () => {
+    if (generation === openGeneration) await invoke('player_close');
+  });
+  openQueue = close;
   try {
-    const close = openQueue.catch(() => {}).then(async () => { if (generation === openGeneration) await invoke('player_close'); });
-    openQueue = close;
-    await close;
+    await Promise.all([
+      close,
+      saved.then(() => { if (generation === openGeneration) return store.reload(); }),
+    ]);
   } catch (e) {
     console.warn('[player] close failed', e);
   }
-  if (useLibraryStore.getState().playerSession?.loadId === loadId) finishSession();
 }
 
-function finishSession() {
+function finishSession(reload = true) {
   const store = useLibraryStore.getState();
   if (!store.playerSession) return;
   tick = null;
@@ -626,7 +629,7 @@ function finishSession() {
     enteredFullscreen = false;
     void getCurrentWindow().setFullscreen(false);
   }
-  void store.reload();
+  if (reload) void store.reload();
 }
 
 // ---------------------------------------------------------------------------

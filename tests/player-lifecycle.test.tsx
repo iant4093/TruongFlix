@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import PlayerScreen from '../src/components/player/PlayerScreen';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import { autoAdvance, closeBuiltin, retuneLive } from '../src/services/player';
 import type { BuiltinPlayerState, PlayerSession } from '../src/types/media';
+import { useLiveStore } from '../src/services/live';
 
 vi.mock('../src/services/player', () => ({ autoAdvance: vi.fn(), closeBuiltin: vi.fn(), retuneLive: vi.fn(), stopForSleep: () => false }));
 vi.mock('../src/services/frames', () => ({ cancelFrames: vi.fn(), extractFrames: vi.fn(), coarseToFine: () => [] }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ isFullscreen: async () => false }) }));
 const session: PlayerSession = {
   loadId: 'one',
   target: { type: 'movie', id: 1, filePath: '/sample.mp4', label: 'Sample', startTime: 0 },
@@ -22,6 +24,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   useLibraryStore.setState(useLibraryStore.getInitialState(), true);
+  useLiveStore.setState({ playbackError: '' });
   useLibraryStore.setState({
     playerMini: true,
     playerSession: session,
@@ -75,4 +78,23 @@ it('keeps live reconnection active while the mini-player is open', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
   expect(retuneLive).toHaveBeenCalledTimes(1);
   expect(closeBuiltin).not.toHaveBeenCalled();
+});
+
+it.each([false, true])('allows Back and Escape while a live stream is buffering (loaded=%s)', async (loaded) => {
+  useLibraryStore.setState({
+    playerMini: false,
+    playerSession: { loadId: 'buffering', target: { type: 'live', id: 'channel', playlistId: 'source', label: 'Live' }, title: 'Live', subtitle: null, itemKey: null, overview: null, logo: null, next: null, nextLabel: null },
+    playerState: { loaded, buffering: true, eof: false } as BuiltinPlayerState,
+  });
+  render(<PlayerScreen />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+  expect(screen.getByRole('status', { name: 'Buffering live stream' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back to Live TV' }));
+  expect(closeBuiltin).toHaveBeenCalledTimes(1);
+  await act(async () => { fireEvent.keyDown(window, { code: 'Escape' }); });
+  expect(closeBuiltin).toHaveBeenCalledTimes(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(16_001); });
+  expect(screen.getByRole('heading', { name: 'Channel interrupted' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back to Live TV' }));
+  expect(closeBuiltin).toHaveBeenCalledTimes(3);
 });
