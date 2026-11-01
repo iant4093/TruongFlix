@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Check, ChevronDown, Clock, HardDriveDownload, Play, Plus, Wrench } from 'lucide-react';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
 import { formatRuntime, genreBuckets, playTargetFor } from '../../store/selectors';
 import type { MediaItem } from '../../types/media';
-import { extractFrames } from '../../services/frames';
+import { cancelFrames, extractFrames } from '../../services/frames';
 import { parseMediaInfo } from '../../services/mediainfo';
 import { formatExpiryRemaining, formatSpeed, keepStreamPermanently, torrentForItem } from '../../services/torrents';
 import MaturityRating from '../common/MaturityRating';
@@ -23,7 +23,7 @@ const STILL_DELAY_MS = 700;
 const STILL_INTERVAL_MS = 1700;
 
 /** Frames from the actual file (the episode you'd play next, for shows), cycled like a preview. */
-function useStills(item: MediaItem) {
+function useStills(item: MediaItem, available: boolean) {
   const enabled = useLibraryStore((s) => s.settings.hover_stills);
   // A string so the selector result is stable between renders.
   const source = useLibraryStore((s) => {
@@ -32,17 +32,20 @@ function useStills(item: MediaItem) {
     const row = target.type === 'movie' ? s.movies.find((m) => m.id === target.id) : s.episodes.find((e) => e.id === target.id);
     if (!row) return '';
     const duration = parseMediaInfo(row.media_info)?.duration || row.duration_seconds || (row.runtime ?? 0) * 60;
-    return duration > 60 ? JSON.stringify([row.file_path, row.file_mtime, duration]) : '';
+    return JSON.stringify([row.file_path, row.file_mtime, duration]);
   });
   const [frames, setFrames] = useState<string[]>([]);
   const [index, setIndex] = useState(0);
   const [path, mtime, duration] = source ? (JSON.parse(source) as [string, number, number]) : [null, 0, 0];
 
   useEffect(() => {
-    if (!enabled || !path) return;
+    setFrames([]);
+    setIndex(0);
+    if (!enabled || !available || !path) return;
     let alive = true;
     const t = window.setTimeout(() => {
-      const times = STILL_POINTS.map((p) => Math.round(duration * p));
+      // Newly added/unmatched files may not have runtime metadata yet.
+      const times = duration > 0 ? STILL_POINTS.map((p) => Math.round(duration * p)) : [5, 15, 30, 45, 60];
       void extractFrames({ path, mtime, times, width: 640, lane: 'stills' }, (f) => {
         if (alive) setFrames((prev) => (prev.includes(f.url) ? prev : [...prev, f.url]));
       }).catch(() => {});
@@ -50,8 +53,9 @@ function useStills(item: MediaItem) {
     return () => {
       alive = false;
       window.clearTimeout(t);
+      cancelFrames('stills');
     };
-  }, [enabled, path, mtime, duration]);
+  }, [enabled, available, path, mtime, duration]);
 
   useEffect(() => {
     if (frames.length < 1) return;
@@ -102,10 +106,21 @@ function PreviewCard({ hover }: { hover: HoverState }) {
   const isDownloading = Boolean(torrent && !torrent.finished);
   const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
   const { rect } = hover;
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [cardHeight, setCardHeight] = useState(0);
+  useLayoutEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const update = () => setCardHeight(el.offsetHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const layout = useMemo(() => {
     const vw = window.innerWidth;
-    const width = rect.width * SCALE;
+    const width = Math.min(rect.width * SCALE, vw - 16);
     const imgH = (width * 9) / 16;
     let left = rect.left - (width - rect.width) / 2;
     let originX = 'center';
@@ -116,11 +131,12 @@ function PreviewCard({ hover }: { hover: HoverState }) {
       left = rect.left + rect.width - width;
       originX = 'right';
     }
-    const top = Math.max(72, rect.top - (imgH - rect.height) / 2);
+    left = Math.max(8, Math.min(left, vw - width - 8));
+    const top = Math.max(72, Math.min(rect.top - (imgH - rect.height) / 2, window.innerHeight - cardHeight - 8));
     return { width, left, top, origin: `${originX} ${rect.top - top + rect.height / 2}px` };
-  }, [rect]);
+  }, [rect, cardHeight]);
 
-  const still = useStills(item);
+  const still = useStills(item, !isDownloading);
   const genres = genreBuckets(item.genres).slice(0, 3);
   const meta =
     item.kind === 'movie'
@@ -131,6 +147,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
 
   return (
     <motion.div
+      ref={cardRef}
       onMouseLeave={() => setHover(null)}
       initial={{ scale: 1 / SCALE, opacity: 0.4 }}
       animate={{ scale: 1, opacity: 1 }}

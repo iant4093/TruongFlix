@@ -584,8 +584,8 @@ function handleTorrentSql(q: string, values: unknown[]): unknown | undefined {
   if (q.startsWith('SELECT info_hash, file_paths FROM torrents')) {
     return torrentRecords.map((r) => ({ info_hash: r.info_hash, file_paths: r.file_paths }));
   }
-  if (q.startsWith('SELECT mode, completed_at, file_paths FROM torrents')) {
-    return torrentRecords.map((r) => ({ mode: r.mode, completed_at: r.completed_at, file_paths: r.file_paths }));
+  if (q.startsWith('SELECT mode, completed_at, save_path, file_paths FROM torrents')) {
+    return torrentRecords.map((r) => ({ mode: r.mode, completed_at: r.completed_at, save_path: r.save_path, file_paths: r.file_paths }));
   }
   if (q.startsWith('SELECT file_paths FROM torrents WHERE completed_at IS NULL')) {
     return torrentRecords.filter((r) => r.completed_at == null).map((r) => ({ file_paths: r.file_paths }));

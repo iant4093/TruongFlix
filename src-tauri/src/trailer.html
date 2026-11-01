@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <style>html,body,iframe{margin:0;width:100%;height:100%;border:0;overflow:hidden;background:#000}</style>
+</head>
+<body>
+<iframe id="video" title="Trailer" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+<script>
+  const frame = document.getElementById('video');
+  const youtubeOrigin = 'https://www.youtube-nocookie.com';
+  const commands = new Set(['playVideo', 'pauseVideo', 'seekTo', 'mute', 'unMute', 'setPlaybackQuality', 'setPlaybackQualityRange', 'addEventListener']);
+  const send = (message) => frame.contentWindow.postMessage(JSON.stringify(message), youtubeOrigin);
+  let handshake;
+  const subscribe = () => {
+    send({ event: 'listening', id: 1, channel: 'widget' });
+    for (const event of ['onReady', 'onStateChange', 'onError']) {
+      send({ event: 'command', func: 'addEventListener', args: [event] });
+    }
+  };
+  frame.addEventListener('load', () => {
+    subscribe();
+    // WKWebView may load the iframe before YouTube's message listener is installed.
+    handshake = setInterval(subscribe, 250);
+    setTimeout(() => clearInterval(handshake), 15000);
+  });
+  window.addEventListener('message', (event) => {
+    if (typeof event.data !== 'string') return;
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (!message || typeof message !== 'object') return;
+    if (event.source === frame.contentWindow && event.origin === youtubeOrigin) {
+      if (message.event === 'onReady' || message.event === 'infoDelivery') clearInterval(handshake);
+      window.parent.postMessage(event.data, '*');
+    } else if (event.source === window.parent && message.event === 'command' && commands.has(message.func)) {
+      send(message);
+    }
+  });
+  const params = new URLSearchParams({ autoplay: '1', mute: '1', controls: '0', disablekb: '1', fs: '0', iv_load_policy: '3', playsinline: '1', rel: '0', vq: 'hd1080', enablejsapi: '1', origin: window.location.origin });
+  frame.src = `${youtubeOrigin}/embed/__VIDEO_KEY__?${params}`;
+</script>
+</body>
+</html>

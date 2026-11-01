@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Info, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { playTargetFor } from '../../store/selectors';
@@ -72,10 +73,32 @@ export default function HeroBillboard({ item }: Props) {
   const [phase, setPhase] = useState<TrailerPhase>('waiting');
   const [ytState, setYtState] = useState<number | null>(null);
   const [muted, setMuted] = useState(true);
+  const [trailerSrc, setTrailerSrc] = useState<string | null>(null);
+  const pausedByUs = useRef(false);
   const sectionRef = useRef<HTMLElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const trailerKey = enabled ? item.trailerKey : null;
   const [box, setBox] = useState(() => ({ w: window.innerWidth || 1920, h: Math.max(520, (window.innerHeight || 1080) * 0.85) }));
+
+  useEffect(() => {
+    setPhase('waiting');
+    setYtState(null);
+    setTrailerSrc(null);
+    setMuted(true);
+    pausedByUs.current = false;
+  }, [trailerKey, item.key]);
+
+  useEffect(() => {
+    if (!trailerKey || phase !== 'loading' || trailerSrc) return;
+    let alive = true;
+    // A real HTTP parent supplies the Referer YouTube requires. The packaged macOS app
+    // uses tauri://, so its embed lives in a tiny loopback wrapper which relays API messages.
+    const source = window.location.protocol.startsWith('http')
+      ? Promise.resolve(trailerUrl(trailerKey))
+      : invoke<string>('trailer_embed_url', { key: trailerKey });
+    void source.then((url) => { if (alive) setTrailerSrc(url); }).catch(() => { if (alive) setPhase('failed'); });
+    return () => { alive = false; };
+  }, [trailerKey, phase, trailerSrc]);
 
   useEffect(() => {
     const el = sectionRef.current;
@@ -109,14 +132,18 @@ export default function HeroBillboard({ item }: Props) {
     if (phase === 'waiting' || phase === 'failed') return;
     const onMessage = (e: MessageEvent) => {
       if (e.source !== frame.current?.contentWindow || typeof e.data !== 'string') return;
+      if (!trailerSrc || e.origin !== new URL(trailerSrc).origin) return;
       let msg: { event?: string; info?: unknown };
       try {
         msg = JSON.parse(e.data);
       } catch {
         return;
       }
+      if (!msg || typeof msg !== 'object') return;
       if (msg.event === 'onReady') {
         forceHd();
+        send('mute');
+        if (playing) send('playVideo');
         return;
       }
       const state =
@@ -141,11 +168,10 @@ export default function HeroBillboard({ item }: Props) {
       window.removeEventListener('message', onMessage);
       window.clearTimeout(giveUp);
     };
-  }, [phase]);
+  }, [phase, trailerSrc, playing]);
 
   // Fade the iframe out first when something covers the banner, then pause once hidden so YouTube's
   // pause icon / end-screen overlay never flashes; resume afterwards if we paused it.
-  const pausedByUs = useRef(false);
   useEffect(() => {
     if (phase !== 'playing') return;
     if (!playing) {
@@ -197,7 +223,7 @@ export default function HeroBillboard({ item }: Props) {
         />
       )}
 
-      {trailerKey && (phase === 'loading' || phase === 'playing' || phase === 'ended') && (
+      {trailerSrc && (phase === 'loading' || phase === 'playing' || phase === 'ended') && (
         <motion.div
           className="pointer-events-none absolute inset-0 overflow-hidden"
           initial={{ opacity: 0 }}
@@ -206,7 +232,7 @@ export default function HeroBillboard({ item }: Props) {
         >
           <iframe
             ref={frame}
-            src={trailerUrl(trailerKey)}
+            src={trailerSrc}
             title={`${item.title} trailer`}
             tabIndex={-1}
             allow="autoplay; encrypted-media"

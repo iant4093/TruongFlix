@@ -217,6 +217,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     remote_port: 8732,
     torrent_default_mode: 'download',
     torrent_delete_after_complete: false,
+    torrent_history_days: 0,
     torrent_seed_ratio_limit: 0,
     torrent_seed_time_mins: 0,
     torrent_stream_cache_hours: 72,
@@ -314,6 +315,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     const episodesBySeries = groupEpisodes(episodes);
     const all = buildItems(movies, series, episodesBySeries);
     const maturity = get().activeProfile?.maturity ?? 'all';
+    const items = all.filter((i) => allowedForMaturity(i, maturity));
     set((s) => ({
       movies,
       series,
@@ -321,7 +323,13 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       episodesBySeries,
       allItems: all,
       collections,
-      items: all.filter((i) => allowedForMaturity(i, maturity)),
+      items,
+      // Close removed titles in the same update as their rows, so overlays never lose their
+      // contents while still locking the page. DetailModal retains its snapshot for the fade-out.
+      detailKey: items.some((i) => i.key === s.detailKey) ? s.detailKey : null,
+      detailEpisodeId: items.some((i) => i.key === s.detailKey) && episodes.some((e) => e.id === s.detailEpisodeId) ? s.detailEpisodeId : null,
+      fixMatchKey: items.some((i) => i.key === s.fixMatchKey) ? s.fixMatchKey : null,
+      hover: items.some((i) => i.key === s.hover?.item.key) ? s.hover : null,
       libraryVersion: s.libraryVersion + 1,
     }));
   },

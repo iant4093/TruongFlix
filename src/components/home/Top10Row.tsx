@@ -46,6 +46,7 @@ function Top10Card({ item, rank }: { item: MediaItem; rank: number }) {
     <div
       ref={hover.ref}
       onMouseEnter={hover.onMouseEnter}
+      onMouseMove={hover.onMouseMove}
       onMouseLeave={hover.onMouseLeave}
       onClick={() => openDetail(item.key)}
       className="relative flex aspect-[1.42] w-full cursor-pointer items-stretch"

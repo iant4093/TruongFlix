@@ -7,6 +7,7 @@ import { useLibraryStore } from '../../store/useLibraryStore';
 import * as db from '../../services/db';
 import { MATURITY_LABEL } from '../../store/selectors';
 import ProfileAvatar from '../common/ProfileAvatar';
+import Dropdown from '../common/Dropdown';
 import { Wordmark } from '../layout/Navbar';
 
 const MATURITY_HINT: Record<Maturity, string> = {
@@ -24,7 +25,6 @@ const LIMITS: [number, string][] = [
   [180, '3 hours'],
 ];
 const TIMES = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`);
-const SELECT = 'rounded border border-white/30 bg-[#333] px-2 py-1.5 text-sm text-white outline-none';
 const chip = (on: boolean) => `rounded border px-3 py-1.5 text-sm ${on ? 'border-white bg-white text-black' : 'border-white/30 text-nf-secondary hover:text-white'}`;
 
 /** Netflix's "Who's watching?" screen, plus profile management. */
@@ -48,68 +48,70 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, scale: 1.04 }}
       transition={{ duration: 0.3 }}
-      className="fixed inset-0 z-[150] flex flex-col items-center justify-center bg-nf-bg"
+      className="fixed inset-0 z-[150] overflow-y-auto bg-nf-bg px-[5%] pb-10 pt-24"
     >
       <div className="absolute left-[4%] top-6">
         <Wordmark className="text-[2.2rem]" />
       </div>
 
-      <AnimatePresence mode="wait">
-        {editing ? (
-          <ProfileEditor key="editor" profile={editing === 'new' ? null : editing} onDone={() => setEditing(null)} canDelete={profiles.length > 1} />
-        ) : (
-          <motion.div key="grid" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="flex flex-col items-center">
-            <h1 className="mb-10 text-[clamp(2rem,3.5vw,3.5rem)] font-medium">{managing ? 'Manage Profiles:' : 'Who’s watching?'}</h1>
-            <div className="flex flex-wrap justify-center gap-[2vw]">
-              {profiles.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => (managing ? setEditing(p) : switchProfileGuarded(p.id))}
-                  className="group flex w-[clamp(84px,10vw,160px)] flex-col items-center gap-3"
-                >
-                  <span className="relative">
-                    <ProfileAvatar
-                      color={p.color}
-                      maturity={p.maturity}
-                      size={150}
-                      className="!h-[clamp(84px,10vw,150px)] !w-[clamp(84px,10vw,150px)] ring-white transition group-hover:ring-[3px]"
-                    />
-                    {managing && (
-                      <span className="absolute inset-0 flex items-center justify-center rounded bg-black/55">
-                        <Pencil className="h-8 w-8" />
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-[clamp(0.9rem,1.2vw,1.25rem)] text-nf-muted transition group-hover:text-white">{p.name}</span>
-                  {p.maturity !== 'all' && <span className="-mt-2 text-xs text-nf-muted">{MATURITY_LABEL[p.maturity]}</span>}
-                </button>
-              ))}
-              {profiles.length < 6 && (
-                <button onClick={() => setEditing('new')} className="group flex w-[clamp(84px,10vw,160px)] flex-col items-center gap-3">
-                  <span className="flex h-[clamp(84px,10vw,150px)] w-[clamp(84px,10vw,150px)] items-center justify-center rounded text-nf-muted transition group-hover:bg-white/10 group-hover:text-white">
-                    <Plus className="h-16 w-16" strokeWidth={1.5} />
-                  </span>
-                  <span className="text-[clamp(0.9rem,1.2vw,1.25rem)] text-nf-muted group-hover:text-white">Add Profile</span>
-                </button>
-              )}
-            </div>
-            <div className="mt-14 flex gap-3">
-              {managing ? (
-                <button onClick={() => setGate(openedAs.current === 'manage' && active ? null : 'select')} className="bg-white px-8 py-2 text-lg font-semibold text-black hover:bg-nf-red hover:text-white">
-                  Done
-                </button>
-              ) : (
-                <button
-                  onClick={() => guardAdult(() => setGate('manage'), { atGate: true })}
-                  className="border border-nf-muted px-8 py-2 text-lg tracking-widest text-nf-muted hover:border-white hover:text-white"
-                >
-                  MANAGE PROFILES
-                </button>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <div className="flex min-h-full items-center justify-center">
+        <AnimatePresence mode="wait">
+          {editing ? (
+            <ProfileEditor key="editor" profile={editing === 'new' ? null : editing} onDone={() => setEditing(null)} canDelete={profiles.length > 1} />
+          ) : (
+            <motion.div key="grid" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="flex flex-col items-center">
+              <h1 className="mb-10 text-[clamp(2rem,3.5vw,3.5rem)] font-medium">{managing ? 'Manage Profiles:' : 'Who’s watching?'}</h1>
+              <div className="flex flex-wrap justify-center gap-[2vw]">
+                {profiles.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => (managing ? setEditing(p) : switchProfileGuarded(p.id))}
+                    className="group flex w-[clamp(84px,10vw,160px)] flex-col items-center gap-3"
+                  >
+                    <span className="relative inline-flex">
+                      <ProfileAvatar
+                        color={p.color}
+                        maturity={p.maturity}
+                        size={150}
+                        className="!h-[clamp(84px,10vw,150px)] !w-[clamp(84px,10vw,150px)] ring-white transition group-hover:ring-[3px]"
+                      />
+                      {managing && (
+                        <span className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/55">
+                          <Pencil className="h-8 w-8" />
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-[clamp(0.9rem,1.2vw,1.25rem)] text-nf-muted transition group-hover:text-white">{p.name}</span>
+                    {p.maturity !== 'all' && <span className="-mt-2 text-xs text-nf-muted">{MATURITY_LABEL[p.maturity]}</span>}
+                  </button>
+                ))}
+                {profiles.length < 6 && (
+                  <button onClick={() => setEditing('new')} className="group flex w-[clamp(84px,10vw,160px)] flex-col items-center gap-3">
+                    <span className="flex h-[clamp(84px,10vw,150px)] w-[clamp(84px,10vw,150px)] items-center justify-center rounded text-nf-muted transition group-hover:bg-white/10 group-hover:text-white">
+                      <Plus className="h-16 w-16" strokeWidth={1.5} />
+                    </span>
+                    <span className="text-[clamp(0.9rem,1.2vw,1.25rem)] text-nf-muted group-hover:text-white">Add Profile</span>
+                  </button>
+                )}
+              </div>
+              <div className="mt-14 flex gap-3">
+                {managing ? (
+                  <button onClick={() => setGate(openedAs.current === 'manage' && active ? null : 'select')} className="bg-white px-8 py-2 text-lg font-semibold text-black hover:bg-nf-red hover:text-white">
+                    Done
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => guardAdult(() => setGate('manage'), { atGate: true })}
+                    className="border border-nf-muted px-8 py-2 text-lg tracking-widest text-nf-muted hover:border-white hover:text-white"
+                  >
+                    MANAGE PROFILES
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     </motion.div>
   );
 }
@@ -167,11 +169,11 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
   };
 
   return (
-    <motion.div key="editor" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="w-[min(640px,90vw)]">
+    <motion.div key="editor" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="w-full max-w-[640px]">
       <h1 className="text-5xl font-medium">{profile ? 'Edit Profile' : 'Add Profile'}</h1>
       <div className="mt-6 flex gap-6 border-y border-white/15 py-6">
         <ProfileAvatar color={color} maturity={maturity} size={120} />
-        <div className="max-h-[58vh] flex-1 space-y-5 overflow-y-auto pr-2">
+        <div className="min-w-0 flex-1 space-y-5 px-1">
           <input
             autoFocus
             value={name}
@@ -183,13 +185,13 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
           />
           <div>
             <div className="mb-2 text-sm text-nf-secondary">Colour</div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2 p-1">
               {db.PROFILE_PALETTE.map((c) => (
                 <button
                   key={c}
                   onClick={() => setColor(c)}
                   aria-label={`Colour ${c}`}
-                  className={`h-8 w-8 rounded transition ${c === color ? 'ring-2 ring-white ring-offset-2 ring-offset-nf-bg' : 'opacity-80 hover:opacity-100'}`}
+                  className={`h-8 w-8 shrink-0 rounded transition ${c === color ? 'ring-2 ring-white ring-offset-2 ring-offset-nf-bg' : 'opacity-80 hover:opacity-100'}`}
                   style={{ background: c }}
                 />
               ))}
@@ -222,24 +224,21 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
           </div>
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <span className="text-nf-secondary">Bedtime</span>
-            <select value={bedtime} onChange={(e) => setBedtime(e.target.value)} className={SELECT}>
-              <option value="">No bedtime</option>
-              {TIMES.filter((t) => t >= '18:00').map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
+            <Dropdown
+              value={bedtime}
+              onChange={setBedtime}
+              ariaLabel="Bedtime"
+              options={[{ value: '', label: 'No bedtime' }, ...TIMES.filter((t) => t >= '18:00').map((t) => ({ value: t, label: t }))]}
+            />
             {bedtime && (
               <>
                 <span className="text-nf-secondary">until</span>
-                <select value={wakeTime} onChange={(e) => setWakeTime(e.target.value)} className={SELECT}>
-                  {TIMES.filter((t) => t >= '05:00' && t <= '10:00').map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
+                <Dropdown
+                  value={wakeTime}
+                  onChange={setWakeTime}
+                  ariaLabel="Wake time"
+                  options={TIMES.filter((t) => t >= '05:00' && t <= '10:00').map((t) => ({ value: t, label: t }))}
+                />
               </>
             )}
           </div>

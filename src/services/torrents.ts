@@ -498,10 +498,28 @@ export async function resumeTorrent(infoHash: string) {
 }
 
 export async function stopSeedingTorrent(infoHash: string) {
-  await invoke('torrent_action', { infoHash, action: 'delete_keep_files' });
+  const item = useLibraryStore.getState().torrents.find((t) => t.infoHash === infoHash.toLowerCase());
+  await stopSeedingHandle(infoHash, item?.filePaths ?? []);
   await db.updateTorrentRecord(infoHash, { seeding_stopped: true });
   await pollTorrents();
   useLibraryStore.getState().toast('Stopped seeding (downloaded files kept in library)', 'info');
+}
+
+/** Completed HTTP streams still need their torrent handle for subsequent byte-range requests. */
+function isPlayingTorrent(paths: string[]): boolean {
+  const store = useLibraryStore.getState();
+  const targets = [store.playerSession?.target, store.cast?.target];
+  if (targets.some((t) => t && paths.includes(t.filePath))) return true;
+  if (!store.playback.active) return false;
+  const row = store.playback.type === 'movie'
+    ? store.movies.find((m) => m.id === store.playback.id)
+    : store.episodes.find((e) => e.id === store.playback.id);
+  return !!row && paths.includes(row.file_path);
+}
+
+async function stopSeedingHandle(infoHash: string, paths: string[]) {
+  // Pausing keeps storage and range requests alive, while stopping uploads immediately.
+  await invoke('torrent_action', { infoHash, action: isPlayingTorrent(paths) ? 'pause' : 'delete_keep_files' });
 }
 
 export async function setTorrentDeleteOnComplete(infoHash: string, value: boolean) {
@@ -578,7 +596,7 @@ export async function keepStreamPermanently(infoHash: string, explicitRoot?: str
   );
   const targetDir = joinPath(destRoot, subName);
 
-  if (item.finished) {
+  if (item.finished && !isPlayingTorrent(item.filePaths)) {
     // Release open file handles in session first, then move completed files to permanent library folder.
     if (item.inSession) {
       await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' }).catch(() => {});
@@ -600,8 +618,7 @@ export async function keepStreamPermanently(infoHash: string, explicitRoot?: str
       seeding_stopped: true,
     });
   } else {
-    // Still downloading: remove expiry immediately and record `targetDir` as `save_path`;
-    // completion handler will move the files into `targetDir` as soon as download hits 100%.
+    // Remove expiry immediately; polling moves the files once complete and no longer playing.
     await db.updateTorrentRecord(hash, {
       mode: 'download',
       cache_hours: null,
@@ -809,17 +826,21 @@ async function reconcileMagnetFilesIfNeeded(rec: TorrentRecord, live: TorrentSta
   } catch {
     storedPaths = [];
   }
-  const liveVideoFiles = live.files.filter((f) => f.included && f.is_video);
+  let liveVideoFiles = live.files.filter((f) => f.included && f.is_video);
   if (!liveVideoFiles.length) return storedPaths;
+  // Movie torrents may contain extras. Ingestion represents the largest video as the movie;
+  // comparing that single stored path to every extra used to delete/recreate it on every poll.
+  if (rec.media_kind !== 'tv') liveVideoFiles = [liveVideoFiles.reduce((best, f) => f.size >= best.size ? f : best)];
 
   const livePaths = liveVideoFiles.map((f) => f.full_path);
   const same =
-    storedPaths.length === livePaths.length && storedPaths.every((p, idx) => p === livePaths[idx]);
+    storedPaths.length === livePaths.length && storedPaths.every((p) => livePaths.includes(p));
   if (same) return storedPaths;
 
   // Replace placeholder rows from magnet resolution with actual video files!
-  if (storedPaths.length) {
-    await db.deleteMediaPaths(storedPaths, storedPaths);
+  const obsoletePaths = storedPaths.filter((p) => !livePaths.includes(p));
+  if (obsoletePaths.length) {
+    await db.deleteMediaPaths(obsoletePaths, obsoletePaths);
   }
   const kind: MediaKind = rec.media_kind ?? 'movie';
   const ingested = await ingestTorrentFilesIntoLibrary({
@@ -839,6 +860,9 @@ async function reconcileMagnetFilesIfNeeded(rec: TorrentRecord, live: TorrentSta
     movie_id: ingested.movieId,
     series_id: ingested.seriesId,
   });
+  rec.name = live.name || rec.name;
+  rec.movie_id = ingested.movieId;
+  rec.series_id = ingested.seriesId;
   await useLibraryStore.getState().reload();
   return ingested.filePaths;
 }
@@ -892,41 +916,53 @@ export async function pollTorrents(): Promise<TorrentItem[]> {
         });
         triggerProbe = true;
         needsLibraryReload = true;
+      }
 
-        // If user promoted a stream to permanent download mid-transfer, move files out of stream-cache now!
-        if (rec.mode === 'download' && live.output_folder && savePath && live.output_folder !== savePath) {
-          await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' }).catch(() => {});
+      // A promoted stream moves on a later poll if it is still being watched at completion.
+      // Use persisted paths so a failed move can also be retried after its handle was removed.
+      if (completedAt && rec.mode === 'download' && savePath && filePaths.some((p) => !isUnder(p, savePath)) && !isPlayingTorrent(filePaths)) {
+        try {
+          await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' });
           const moves: FileMove[] = filePaths.map((from) => ({
             from,
             to: joinPath(savePath, from.split(/[\\/]/).pop() ?? 'video.mkv'),
           }));
-          if (moves.length) {
-            await invoke('apply_moves', { moves }).catch((e) => console.warn('[torrents] post-complete move failed', e));
-            await db.updateFilePaths(moves);
-            filePaths = moves.map((m) => m.to);
-            seedingStopped = true;
-            await db.updateTorrentRecord(hash, { file_paths: filePaths, seeding_stopped: true });
-          }
-        } else if (rec.delete_on_complete === 1) {
-          // Hit-and-run / Stop seeding when complete!
-          await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' }).catch(() => {});
+          await invoke('apply_moves', { moves });
+          await db.updateFilePaths(moves);
+          filePaths = moves.map((m) => m.to);
           seedingStopped = true;
-          await db.updateTorrentRecord(hash, { seeding_stopped: true });
+          needsLibraryReload = true;
+          await db.updateTorrentRecord(hash, { file_paths: filePaths, seeding_stopped: true });
+        } catch (e) {
+          console.warn('[torrents] post-complete move failed; will retry', e);
         }
       }
 
       // Check global seed ratio / seed time limits for active seeders
-      if (live && live.finished && !seedingStopped && live.state === 'seeding') {
+      if (live && live.finished && !seedingStopped) {
         const total = live.total_bytes || rec.total_bytes;
         const ratio = total > 0 ? live.uploaded_bytes / total : 0;
         const ratioReached = settings.torrent_seed_ratio_limit > 0 && ratio >= settings.torrent_seed_ratio_limit;
         const elapsedMins = completedAt ? (Date.now() - Date.parse(completedAt)) / 60_000 : 0;
         const timeReached = settings.torrent_seed_time_mins > 0 && elapsedMins >= settings.torrent_seed_time_mins;
         if (ratioReached || timeReached || rec.delete_on_complete === 1) {
-          await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' }).catch(() => {});
+          await stopSeedingHandle(hash, filePaths);
           seedingStopped = true;
           await db.updateTorrentRecord(hash, { seeding_stopped: true });
         }
+      }
+
+      // Release handles paused for playback as soon as the viewer leaves that torrent.
+      if (live && seedingStopped && !isPlayingTorrent(filePaths)) {
+        await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' });
+      }
+
+      const historyDays = settings.torrent_history_days;
+      const historyExpired = historyDays > 0 && completedAt != null && Date.now() - Date.parse(completedAt) >= historyDays * 864e5;
+      const filesInLibrary = filePaths.every((p) => isUnder(p, savePath));
+      if (rec.mode === 'download' && historyExpired && filesInLibrary && (!live || (live.finished && seedingStopped)) && !isPlayingTorrent(filePaths)) {
+        await db.deleteTorrentRecord(hash);
+        continue;
       }
 
       const totalBytes = live?.total_bytes || rec.total_bytes || 0;
@@ -1003,14 +1039,18 @@ function scheduleAdaptivePoll() {
     .torrents.some((t) => t.inSession && (t.state === 'resolving' || t.state === 'initializing' || t.state === 'downloading' || t.state === 'seeding'));
   const interval = hasActive ? 1500 : 6000;
   pollTimer = window.setTimeout(async () => {
-    await pollTorrents();
-    scheduleAdaptivePoll();
+    try {
+      await pollTorrents();
+    } catch (e) {
+      console.warn('[torrents] poll failed', e);
+    } finally {
+      scheduleAdaptivePoll();
+    }
   }, interval);
 }
 
 export async function reapExpiredStreams() {
   const store = useLibraryStore.getState();
-  const activePlayPath = store.playerSession?.target.filePath ?? store.cast?.target.filePath ?? null;
   const records = await db.listTorrentRecords();
   const now = Date.now();
 
@@ -1025,7 +1065,7 @@ export async function reapExpiredStreams() {
     } catch {
       paths = [];
     }
-    if (activePlayPath && paths.includes(activePlayPath)) continue; // never delete while actively watching!
+    if (isPlayingTorrent(paths)) continue; // never delete while actively watching!
 
     await removeTorrent(r.info_hash, true);
     store.toast(`Stream cache expired & cleared: “${r.name}”`, 'info');
@@ -1062,9 +1102,14 @@ export async function initTorrentService() {
   initialized = true;
 
   await syncTorrentEngineConfig();
-  await reapExpiredStreams();
-  await pollTorrents();
-  scheduleAdaptivePoll();
+  try {
+    await reapExpiredStreams();
+    await pollTorrents();
+  } catch (e) {
+    console.warn('[torrents] initial poll failed', e);
+  } finally {
+    scheduleAdaptivePoll();
+  }
 
   reaperTimer = window.setInterval(() => {
     void reapExpiredStreams();

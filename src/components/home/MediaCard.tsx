@@ -17,6 +17,8 @@ export const HOVER_DELAY_MS = 350;
 export function useHoverIntent(build: () => Omit<HoverState, 'rect'>) {
   const ref = useRef<HTMLDivElement>(null);
   const timer = useRef<number | null>(null);
+  const buildRef = useRef(build);
+  buildRef.current = build;
   const setHover = useLibraryStore((s) => s.setHover);
 
   const cancel = useCallback(() => {
@@ -30,14 +32,20 @@ export function useHoverIntent(build: () => Omit<HoverState, 'rect'>) {
       const el = ref.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      if (r.right < 0 || r.left > window.innerWidth) return;
-      setHover({ ...build(), rect: { top: r.top, left: r.left, width: r.width, height: r.height } });
+      timer.current = null;
+      if (r.right <= 0 || r.left >= window.innerWidth || r.bottom <= 68 || r.top >= window.innerHeight) return;
+      setHover({ ...buildRef.current(), rect: { top: r.top, left: r.left, width: r.width, height: r.height } });
     }, HOVER_DELAY_MS);
-  }, [build, cancel, setHover]);
+  }, [cancel, setHover]);
+
+  const onMouseMove = useCallback(() => {
+    // Scroll/reloads can dismiss a preview without a new mouseenter on the underlying card.
+    if (timer.current == null && !useLibraryStore.getState().hover) onMouseEnter();
+  }, [onMouseEnter]);
 
   useEffect(() => cancel, [cancel]);
 
-  return { ref, onMouseEnter, onMouseLeave: cancel };
+  return { ref, onMouseEnter, onMouseMove, onMouseLeave: cancel };
 }
 
 /** Small ClearLogo (or title) overlaid on 16:9 boxart, like Netflix title treatments. */
@@ -102,6 +110,7 @@ export default function MediaCard({ item, entry }: Props) {
       <div
         ref={hover.ref}
         onMouseEnter={hover.onMouseEnter}
+        onMouseMove={hover.onMouseMove}
         onMouseLeave={hover.onMouseLeave}
         onClick={() => openDetail(item.key)}
         data-torrent-downloading={isDownloading ? 'true' : undefined}

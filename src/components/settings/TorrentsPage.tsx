@@ -460,6 +460,16 @@ export default function TorrentsPage() {
           onChange={(v) => void update({ torrent_delete_after_complete: v })}
         />
 
+        <Row label="Automatically clear torrent history" description="Age is counted from download completion, and tasks stay while seeding or playing. Library files are kept; temporary streams follow their cache timer.">
+          <Dropdown
+            value={settings.torrent_history_days}
+            options={[[0, 'Never'], [1, 'After 1 day'], [7, 'After 7 days'], [30, 'After 30 days'], [90, 'After 90 days']].map(([value, label]) => ({ value: Number(value), label: String(label) }))}
+            onChange={(v) => void update({ torrent_history_days: v })}
+            ariaLabel="Automatically clear torrent history"
+            align="right"
+          />
+        </Row>
+
         <Row
           label="Stream cache retention"
           description="How long streamed titles stay in your library before being automatically cleared (shown as a countdown on posters and info pages)."

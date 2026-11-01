@@ -70,7 +70,7 @@ export default function DetailModal() {
   const lastItem = useRef<MediaItem | null>(null);
   if (liveItem) lastItem.current = liveItem;
   // Keep rendering the last item while the modal plays its exit animation.
-  const item = liveItem ?? (detailKey ? null : lastItem.current);
+  const item = liveItem ?? lastItem.current;
 
   const episodeId = useLibraryStore((s) => s.detailEpisodeId);
   const openEpisode = useLibraryStore((s) => s.openEpisode);
@@ -323,8 +323,8 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
 
           {isDownloading && (
             <div className="space-y-2.5 rounded-lg border border-sky-400/25 bg-sky-500/[0.07] px-4 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex flex-wrap items-center gap-2.5">
+              <div className="space-y-3 text-xs">
+                <div className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-2 tabular-nums">
                   <span className="inline-flex items-center gap-1.5 font-semibold text-sky-300">
                     <Download className="h-3.5 w-3.5" />
                     {torrent.state === 'resolving'
@@ -333,21 +333,17 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                         ? 'Download paused'
                         : 'Downloading via BitTorrent'}
                   </span>
-                  <span className="tabular-nums text-white/80">
+                  <span className="whitespace-nowrap text-right text-white/80">
                     {torrent.progressPct.toFixed(1)}% ({formatBytes(torrent.progressBytes)} /{' '}
                     {torrent.totalBytes > 0 ? formatBytes(torrent.totalBytes) : '—'})
                   </span>
-                  {!torrent.paused && torrent.downloadSpeedBps > 0 && (
-                    <span className="tabular-nums text-sky-200">↓ {formatSpeed(torrent.downloadSpeedBps)}</span>
-                  )}
-                  {!torrent.paused && (
-                    <span className="tabular-nums text-nf-secondary">
-                      Peers {torrent.peersLive} · ETA {formatEta(torrent.etaSecs)}
-                    </span>
-                  )}
+                  <span className="text-sky-200">↓ {formatSpeed(torrent.paused ? 0 : torrent.downloadSpeedBps)}</span>
+                  <span className="whitespace-nowrap text-right text-nf-secondary">
+                    Peers {torrent.peersLive} · ETA {formatEta(torrent.etaSecs)}
+                  </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-3 border-t border-sky-400/10 pt-2.5">
                   <label className="flex cursor-pointer items-center gap-1.5 text-xs text-nf-secondary select-none">
                     <input
                       type="checkbox"
@@ -404,7 +400,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
       )}
 
       {/* Two-column body */}
-      <div className="grid grid-cols-[65%_35%] gap-8 px-12 pb-8 pt-2">
+      <div className="grid grid-cols-[minmax(0,1.85fr)_minmax(0,1fr)] gap-8 px-12 pb-8 pt-2">
         <div className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[15px]">
             <ImdbRating rating={item.imdbRating} votes={item.imdbVotes} imdbId={item.imdbId} showVotes size="md" />

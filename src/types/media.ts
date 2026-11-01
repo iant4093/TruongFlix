@@ -408,6 +408,8 @@ export interface Settings {
   /** Built-in BitTorrent client settings. */
   torrent_default_mode: TorrentMode;
   torrent_delete_after_complete: boolean;
+  /** Remove completed, inactive download tasks from history after this many days (0 = keep). */
+  torrent_history_days: number;
   torrent_seed_ratio_limit: number;
   torrent_seed_time_mins: number;
   torrent_stream_cache_hours: number;

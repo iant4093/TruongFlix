@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Check, ChevronDown } from 'lucide-react';
@@ -38,7 +38,8 @@ export default function Dropdown<T extends string | number>({
 }: Props<T>) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number; up: boolean } | null>(null);
+  const [pos, setPos] = useState<{ left: number; width: number; maxHeight: number; top?: number; bottom?: number; up: boolean } | null>(null);
+  const menuId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const current = options.find((o) => o.value === value);
@@ -49,20 +50,23 @@ export default function Dropdown<T extends string | number>({
     const el = triggerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const width = Math.max(r.width, 180);
-    const menuH = Math.min(MENU_MAX_HEIGHT, options.length * 38 + 8);
-    const below = window.innerHeight - r.bottom;
-    const up = below < menuH + GAP + 8 && r.top > below;
+    const width = Math.min(Math.max(r.width, options.some((o) => o.hint) ? 280 : 180), window.innerWidth - 16);
+    const menuH = Math.min(MENU_MAX_HEIGHT, options.reduce((h, o) => h + (o.hint ? 56 : 38), 8));
+    const below = Math.max(0, window.innerHeight - r.bottom - GAP - 8);
+    const above = Math.max(0, r.top - GAP - 8);
+    const up = below < menuH && above > below;
     const left = align === 'right' ? r.right - width : r.left;
     setPos({
       left: Math.max(8, Math.min(left, window.innerWidth - width - 8)),
       width,
+      maxHeight: Math.min(MENU_MAX_HEIGHT, up ? above : below),
       up,
       ...(up ? { bottom: window.innerHeight - r.top + GAP } : { top: r.bottom + GAP }),
     });
-  }, [align, options.length]);
+  }, [align, options]);
 
   const openMenu = () => {
+    if (!options.length) return;
     place();
     setActive(Math.max(0, options.findIndex((o) => o.value === value)));
     setOpen(true);
@@ -109,7 +113,7 @@ export default function Dropdown<T extends string | number>({
       else if (e.key === 'ArrowUp') setActive((i) => Math.max(0, i - 1));
       else if (e.key === 'Home') setActive(0);
       else if (e.key === 'End') setActive(options.length - 1);
-      else if (e.key === 'Enter') choose(options[active].value);
+      else if (e.key === 'Enter' && options[active]) choose(options[active].value);
       else close();
     };
     window.addEventListener('keydown', onKey, true);
@@ -118,7 +122,14 @@ export default function Dropdown<T extends string | number>({
 
   useLayoutEffect(() => {
     if (!open) return;
-    menuRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' });
+    const menu = menuRef.current;
+    const option = menu?.querySelector<HTMLElement>(`[data-index="${active}"]`);
+    if (!menu || !option) return;
+    // Scroll only the menu. scrollIntoView can also move a modal/the page and close the menu.
+    if (option.offsetTop < menu.scrollTop) menu.scrollTop = option.offsetTop;
+    else if (option.offsetTop + option.offsetHeight > menu.scrollTop + menu.clientHeight) {
+      menu.scrollTop = option.offsetTop + option.offsetHeight - menu.clientHeight;
+    }
   }, [open, active]);
 
   const height = size === 'lg' ? 'h-11 px-4 text-lg' : 'h-10 px-3 text-sm';
@@ -130,6 +141,8 @@ export default function Dropdown<T extends string | number>({
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        aria-activedescendant={open ? `${menuId}-${active}` : undefined}
         aria-label={ariaLabel}
         onClick={() => (open ? close() : openMenu())}
         onKeyDown={(e) => {
@@ -151,7 +164,9 @@ export default function Dropdown<T extends string | number>({
           {open && pos && (
             <motion.div
               ref={menuRef}
+              id={menuId}
               role="listbox"
+              aria-label={ariaLabel}
               initial={{ opacity: 0, y: pos.up ? 6 : -6, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: pos.up ? 6 : -6, scale: 0.98, transition: { duration: 0.1 } }}
@@ -162,7 +177,7 @@ export default function Dropdown<T extends string | number>({
                 width: pos.width,
                 top: pos.top,
                 bottom: pos.bottom,
-                maxHeight: MENU_MAX_HEIGHT,
+                maxHeight: pos.maxHeight,
                 transformOrigin: pos.up ? 'bottom' : 'top',
               }}
               className="z-[250] overflow-y-auto overscroll-contain rounded-md border border-[#4d4d4d] bg-[#242424]/[0.98] py-1 shadow-[0_10px_30px_rgba(0,0,0,0.6)] backdrop-blur"
@@ -172,7 +187,9 @@ export default function Dropdown<T extends string | number>({
                 return (
                   <div
                     key={String(o.value)}
+                    id={`${menuId}-${i}`}
                     role="option"
+                    aria-label={o.hint ? `${o.label}, ${o.hint}` : o.label}
                     aria-selected={selected}
                     data-index={i}
                     onMouseEnter={() => setActive(i)}
@@ -182,8 +199,10 @@ export default function Dropdown<T extends string | number>({
                     } ${selected ? 'font-semibold text-white' : 'text-[#d2d2d2]'}`}
                   >
                     <Check className={`h-4 w-4 shrink-0 ${selected ? 'text-white' : 'text-transparent'}`} />
-                    <span className="flex-1 truncate">{o.label}</span>
-                    {o.hint && <span className="shrink-0 text-xs font-normal text-nf-muted">{o.hint}</span>}
+                    <span className="min-w-0 flex-1">
+                      <span className="block break-words">{o.label}</span>
+                      {o.hint && <span className="block truncate text-xs font-normal text-nf-muted" title={o.hint}>{o.hint}</span>}
+                    </span>
                   </div>
                 );
               })}

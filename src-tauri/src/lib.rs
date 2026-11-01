@@ -12,6 +12,7 @@ mod stream;
 mod subsync;
 mod subtitles;
 mod torrent;
+mod trailer;
 mod vlc;
 mod watcher;
 
@@ -83,6 +84,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
+            trailer::trailer_embed_url,
             update_feed_status,
             cast::cast_discover,
             cast::cast_start,

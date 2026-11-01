@@ -2106,6 +2106,18 @@ mod tests {
         assert!(downloaded_file.is_file());
         assert_eq!(std::fs::read(&downloaded_file).unwrap(), payload);
 
+        // Stop uploads without invalidating an in-progress viewer's URL. mpv seeks and
+        // opens new byte ranges after completion, so the paused handle must keep serving.
+        mgr.action(&added.info_hash, "pause").await.unwrap();
+        for (start, end) in [(4096, 5119), (payload.len() - 1024, payload.len() - 1)] {
+            let response = client.get(&stream_url)
+                .header("Range", format!("bytes={start}-{end}"))
+                .send().await.unwrap();
+            assert_eq!(response.status().as_u16(), 206);
+            assert_eq!(&response.bytes().await.unwrap()[..], &payload[start..=end]);
+        }
+        assert!(mgr.list_torrents().await[0].paused, "range requests must not resume seeding");
+
         // 5. Verify `delete_keep_files` (hit-and-run / stop seeding on complete):
         // removes torrent from active session while keeping the downloaded media file intact!
         mgr.action(&added.info_hash, "delete_keep_files")

@@ -391,6 +391,7 @@ export async function getSettings(): Promise<Settings> {
     remote_port: Number(map.remote_port) || 8732,
     torrent_default_mode: map.torrent_default_mode === 'stream' ? 'stream' : 'download',
     torrent_delete_after_complete: map.torrent_delete_after_complete === 'true',
+    torrent_history_days: Math.max(0, Math.floor(Number(map.torrent_history_days) || 0)),
     torrent_seed_ratio_limit: map.torrent_seed_ratio_limit != null ? Number(map.torrent_seed_ratio_limit) || 0 : 0,
     torrent_seed_time_mins: map.torrent_seed_time_mins != null ? Number(map.torrent_seed_time_mins) || 0 : 0,
     torrent_stream_cache_hours: map.torrent_stream_cache_hours != null ? Math.max(1, Number(map.torrent_stream_cache_hours) || 72) : 72,
@@ -1417,15 +1418,18 @@ export async function findMovieIdByPath(filePath: string): Promise<number | null
  * files don't exist on disk until pieces arrive).
  */
 export async function getTorrentProtectedPaths(): Promise<Set<string>> {
-  const rows = await select<{ mode: string; completed_at: string | null; file_paths: string }[]>(
-    'SELECT mode, completed_at, file_paths FROM torrents',
+  const rows = await select<{ mode: string; completed_at: string | null; save_path: string; file_paths: string }[]>(
+    'SELECT mode, completed_at, save_path, file_paths FROM torrents',
   );
   const out = new Set<string>();
   for (const r of rows) {
-    if (r.mode !== 'stream' && r.completed_at != null) continue;
     try {
       const list = JSON.parse(r.file_paths) as string[];
-      if (Array.isArray(list)) for (const p of list) out.add(p);
+      if (!Array.isArray(list)) continue;
+      const root = r.save_path.replace(/[\\/]+$/, '');
+      // Promoted streams can remain in cache until the current viewer finishes watching.
+      const pendingMove = list.some((p) => !p.startsWith(root + '/') && !p.startsWith(root + '\\'));
+      if (r.mode === 'stream' || r.completed_at == null || pendingMove) for (const p of list) out.add(p);
     } catch {
       /* ignore */
     }
