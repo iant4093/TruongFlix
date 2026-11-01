@@ -50,7 +50,7 @@ async fn serve(mut conn: TcpStream) -> std::io::Result<()> {
         ("200 OK", PAGE.replace("__VIDEO_KEY__", key))
     };
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: strict-origin-when-cross-origin\r\nContent-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src https://www.youtube-nocookie.com\r\nConnection: close\r\n\r\n", body.len()
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: strict-origin-when-cross-origin\r\nContent-Security-Policy: default-src 'none'; script-src 'unsafe-inline' https://www.youtube.com https://s.ytimg.com; style-src 'unsafe-inline'; frame-src https://www.youtube-nocookie.com\r\nConnection: close\r\n\r\n", body.len()
     );
     conn.write_all(header.as_bytes()).await?;
     if method != "HEAD" {
@@ -100,7 +100,8 @@ mod tests {
             "strict-origin-when-cross-origin"
         );
         let page = response.text().await.unwrap();
-        assert!(page.contains("/embed/vKQi3bBA1y8"));
+        assert!(page.contains("videoId: 'vKQi3bBA1y8'"));
+        assert!(page.contains("captionSafe"));
         assert!(!page.contains("__VIDEO_KEY__"));
         let base = url.split("/embed/").next().unwrap();
         for path in [

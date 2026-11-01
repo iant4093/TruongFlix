@@ -15,27 +15,6 @@ const TRAILER_DELAY_MS = 4000;
 
 type TrailerPhase = 'waiting' | 'loading' | 'playing' | 'ended' | 'failed';
 
-function trailerUrl(key: string) {
-  const params = new URLSearchParams({
-    autoplay: '1',
-    mute: '1',
-    controls: '0',
-    disablekb: '1',
-    fs: '0',
-    iv_load_policy: '3',
-    cc_load_policy: '0',
-    modestbranding: '1',
-    playsinline: '1',
-    rel: '0',
-    vq: 'hd1080',
-    enablejsapi: '1',
-  });
-  if (window.location.protocol.startsWith('http')) {
-    params.set('origin', window.location.origin);
-  }
-  return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(key)}?${params}`;
-}
-
 /** Whether the banner trailer may play right now (nothing on top of it, window visible, scrolled to top). */
 function useTrailerAllowed() {
   const enabled = useLibraryStore((s) => s.settings.trailers_autoplay);
@@ -72,6 +51,8 @@ export default function HeroBillboard({ item }: Props) {
   const { enabled, playing } = useTrailerAllowed();
   const [phase, setPhase] = useState<TrailerPhase>('waiting');
   const [ytState, setYtState] = useState<number | null>(null);
+  const [captionSafe, setCaptionSafe] = useState(false);
+  const [settled, setSettled] = useState(false);
   const [muted, setMuted] = useState(true);
   const [trailerSrc, setTrailerSrc] = useState<string | null>(null);
   const pausedByUs = useRef(false);
@@ -83,6 +64,7 @@ export default function HeroBillboard({ item }: Props) {
   useEffect(() => {
     setPhase('waiting');
     setYtState(null);
+    setCaptionSafe(false);
     setTrailerSrc(null);
     setMuted(true);
     pausedByUs.current = false;
@@ -93,9 +75,7 @@ export default function HeroBillboard({ item }: Props) {
     let alive = true;
     // A real HTTP parent supplies the Referer YouTube requires. The packaged macOS app
     // uses tauri://, so its embed lives in a tiny loopback wrapper which relays API messages.
-    const source = window.location.protocol.startsWith('http')
-      ? Promise.resolve(trailerUrl(trailerKey))
-      : invoke<string>('trailer_embed_url', { key: trailerKey });
+    const source = invoke<string>('trailer_embed_url', { key: trailerKey });
     void source.then((url) => { if (alive) setTrailerSrc(url); }).catch(() => { if (alive) setPhase('failed'); });
     return () => { alive = false; };
   }, [trailerKey, phase, trailerSrc]);
@@ -140,6 +120,7 @@ export default function HeroBillboard({ item }: Props) {
         return;
       }
       if (!msg || typeof msg !== 'object') return;
+      if (msg.event === 'captionSafe') { setCaptionSafe(msg.info === true); return; }
       if (msg.event === 'onReady') {
         forceHd();
         send('mute');
@@ -198,7 +179,19 @@ export default function HeroBillboard({ item }: Props) {
   };
 
   // Only reveal the embed while YouTube is actively playing (never while paused, buffering, or covered).
-  const trailerOn = phase === 'playing' && playing && ytState === 1;
+  useEffect(() => {
+    setSettled(false);
+    if (phase !== 'playing' || !playing || ytState !== 1 || !captionSafe) return;
+    const timer = window.setTimeout(() => setSettled(true), 600);
+    return () => window.clearTimeout(timer);
+  }, [phase, playing, ytState, captionSafe]);
+  const trailerOn = phase === 'playing' && playing && ytState === 1 && captionSafe && settled;
+
+  useEffect(() => {
+    if (phase !== 'playing' || captionSafe) return;
+    const timer = window.setTimeout(() => setPhase('failed'), 3000);
+    return () => window.clearTimeout(timer);
+  }, [phase, captionSafe]);
 
   // Render the iframe at >= 1920x1080 CSS px and scale via transform so YouTube ABR picks 1080p+
   // even on Windows high-DPI displays (125%–175% scaling) where the CSS viewport is < 1280x720.
@@ -228,7 +221,7 @@ export default function HeroBillboard({ item }: Props) {
           className="pointer-events-none absolute inset-0 overflow-hidden"
           initial={{ opacity: 0 }}
           animate={{ opacity: trailerOn ? 1 : 0 }}
-          transition={{ duration: trailerOn ? 0.9 : 0.15, ease: 'easeOut' }}
+          transition={{ duration: trailerOn ? 0.9 : 0, ease: 'easeOut' }}
         >
           <iframe
             ref={frame}
@@ -327,7 +320,7 @@ export default function HeroBillboard({ item }: Props) {
 
       {/* Right side: trailer sound / replay + maturity rating, as on Netflix */}
       <div className="absolute bottom-[32%] right-0 z-10 flex items-center gap-3">
-        {(phase === 'playing' || phase === 'ended') && (
+        {captionSafe && (phase === 'playing' || phase === 'ended') && (
           <button
             onClick={toggleMute}
             title={phase === 'ended' ? 'Replay trailer' : muted ? 'Unmute trailer' : 'Mute trailer'}

@@ -3,42 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="referrer" content="strict-origin-when-cross-origin">
-  <style>html,body,iframe{margin:0;width:100%;height:100%;border:0;overflow:hidden;background:#000}</style>
+  <style>html,body,#video,iframe{margin:0;width:100%;height:100%;border:0;overflow:hidden;background:#000}</style>
 </head>
 <body>
-<iframe id="video" title="Trailer" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+<div id="video"></div>
 <script>
-  const frame = document.getElementById('video');
-  const youtubeOrigin = 'https://www.youtube-nocookie.com';
-  const commands = new Set(['playVideo', 'pauseVideo', 'seekTo', 'mute', 'unMute', 'setPlaybackQuality', 'setPlaybackQualityRange', 'addEventListener']);
-  const send = (message) => frame.contentWindow.postMessage(JSON.stringify(message), youtubeOrigin);
-  let handshake;
-  const subscribe = () => {
-    send({ event: 'listening', id: 1, channel: 'widget' });
-    for (const event of ['onReady', 'onStateChange', 'onError']) {
-      send({ event: 'command', func: 'addEventListener', args: [event] });
-    }
+  let player;
+  let revision = 0;
+  const commands = new Set(['playVideo', 'pauseVideo', 'seekTo', 'mute', 'unMute', 'setPlaybackQuality', 'setPlaybackQualityRange']);
+  const relay = (event, info) => window.parent.postMessage(JSON.stringify({ event, info }), '*');
+  // Reveal only after caption modules are confirmed absent. Preserve the viewer's saved preferences.
+  function checkCaptions() {
+    const current = ++revision;
+    relay('captionSafe', false);
+    try {
+      if (typeof player.getOptions !== 'function') return;
+      const modules = player.getOptions();
+      if (!Array.isArray(modules)) return;
+      if (modules.includes('captions')) {
+        // Module unloading is optional. Unsupported builds keep the parent's artwork visible.
+        if (typeof player.unloadModule !== 'function') return;
+        player.unloadModule('captions');
+      }
+      setTimeout(() => {
+        if (current !== revision) return;
+        try { relay('captionSafe', !player.getOptions().includes('captions')); } catch { /* artwork fallback */ }
+      }, 150);
+    } catch { /* artwork fallback */ }
+  }
+  window.onYouTubeIframeAPIReady = () => {
+    player = new YT.Player('video', {
+      host: 'https://www.youtube-nocookie.com',
+      videoId: '__VIDEO_KEY__',
+      playerVars: { autoplay: 1, mute: 1, controls: 0, disablekb: 1, fs: 0, iv_load_policy: 3, playsinline: 1, rel: 0, enablejsapi: 1, origin: window.location.origin },
+      events: {
+        onReady: () => { checkCaptions(); relay('onReady', null); },
+        onApiChange: checkCaptions,
+        onStateChange: (event) => { if (event.data === 1) checkCaptions(); relay('onStateChange', event.data); },
+        onError: (event) => relay('onError', event.data),
+        onAutoplayBlocked: () => relay('onError', 'autoplay-blocked'),
+      },
+    });
   };
-  frame.addEventListener('load', () => {
-    subscribe();
-    // WKWebView may load the iframe before YouTube's message listener is installed.
-    handshake = setInterval(subscribe, 250);
-    setTimeout(() => clearInterval(handshake), 15000);
-  });
   window.addEventListener('message', (event) => {
-    if (typeof event.data !== 'string') return;
+    if (event.source !== window.parent || typeof event.data !== 'string' || !player) return;
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
-    if (!message || typeof message !== 'object') return;
-    if (event.source === frame.contentWindow && event.origin === youtubeOrigin) {
-      if (message.event === 'onReady' || message.event === 'infoDelivery') clearInterval(handshake);
-      window.parent.postMessage(event.data, '*');
-    } else if (event.source === window.parent && message.event === 'command' && commands.has(message.func)) {
-      send(message);
-    }
+    if (message?.event !== 'command' || !commands.has(message.func) || !Array.isArray(message.args)) return;
+    try { if (typeof player[message.func] === 'function') player[message.func](...message.args); } catch { /* optional command */ }
   });
-  const params = new URLSearchParams({ autoplay: '1', mute: '1', controls: '0', disablekb: '1', fs: '0', iv_load_policy: '3', playsinline: '1', rel: '0', vq: 'hd1080', enablejsapi: '1', origin: window.location.origin });
-  frame.src = `${youtubeOrigin}/embed/__VIDEO_KEY__?${params}`;
 </script>
+<script src="https://www.youtube.com/iframe_api" async></script>
 </body>
 </html>
