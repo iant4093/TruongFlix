@@ -2,6 +2,7 @@ mod audio;
 mod cast;
 mod files;
 mod imdb;
+mod live;
 mod media;
 mod nas;
 mod nowplaying;
@@ -84,6 +85,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
+            live::live_import,
+            live::live_check_begin,
+            live::live_check,
+            live::live_sports,
+            live::live_artwork,
             trailer::trailer_embed_url,
             update_feed_status,
             cast::cast_discover,

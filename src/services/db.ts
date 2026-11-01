@@ -34,6 +34,8 @@ const SCHEMA = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS live_data (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS live_viewing (profile_id INTEGER NOT NULL, day TEXT NOT NULL, seconds REAL NOT NULL DEFAULT 0, PRIMARY KEY (profile_id, day))`,
   `CREATE TABLE IF NOT EXISTS movies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tmdb_id INTEGER,
@@ -472,7 +474,25 @@ export async function secondsWatchedToday(profileId = activeProfile): Promise<nu
   const d = new Date();
   const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const rows = await select<{ total: number | null }[]>('SELECT SUM(seconds) AS total FROM watch_log WHERE profile_id = $1 AND day = $2', [profileId, day]);
-  return rows[0]?.total ?? 0;
+  const live = await select<{ total: number | null }[]>('SELECT SUM(seconds) AS total FROM live_viewing WHERE profile_id = $1 AND day = $2', [profileId, day]);
+  return (rows[0]?.total ?? 0) + (live[0]?.total ?? 0);
+}
+
+/** Live settings/cache share SQLite, but never create synthetic movie or episode rows. */
+export async function readLiveData<T>(key: string, fallback: T): Promise<T> {
+  const rows = await select<{ value: string }[]>('SELECT value FROM live_data WHERE key = $1', [key]);
+  try { return rows.length ? JSON.parse(rows[0].value) as T : fallback; } catch { return fallback; }
+}
+
+export async function writeLiveData(key: string, value: unknown) {
+  await exec('INSERT INTO live_data (key, value) VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, JSON.stringify(value)]);
+}
+
+export async function logLiveViewing(profileId: number, seconds: number) {
+  if (!(seconds > 0)) return;
+  const d = new Date();
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  await exec('INSERT INTO live_viewing (profile_id, day, seconds) VALUES ($1,$2,$3) ON CONFLICT(profile_id, day) DO UPDATE SET seconds = seconds + excluded.seconds', [profileId, day, seconds]);
 }
 
 export async function saveOmdbRatings(table: 'movies' | 'tv_series', imdbId: string, rt: number | null, metacritic: number | null) {
@@ -480,6 +500,8 @@ export async function saveOmdbRatings(table: 'movies' | 'tv_series', imdbId: str
 }
 
 export async function deleteProfile(id: number) {
+  await exec('DELETE FROM live_viewing WHERE profile_id = $1', [id]);
+  await exec('DELETE FROM live_data WHERE key = $1', [`profile:${id}`]);
   await exec('DELETE FROM profile_state WHERE profile_id = $1', [id]);
   await exec('DELETE FROM watch_log WHERE profile_id = $1', [id]);
   await exec('DELETE FROM profiles WHERE id = $1', [id]);

@@ -16,7 +16,9 @@ import type {
   Settings,
   SubtitleStyle,
 } from '../types/media';
-import { getSelectedSubtitlePath, logWatchTime, recordProgress } from './db';
+import { getSelectedSubtitlePath, logLiveViewing, logWatchTime, recordProgress } from './db';
+import { useLiveStore, verifiedChannel, type ChannelMatch } from './live';
+import type { LivePlayerSession, SportsEvent } from '../types/live';
 import { parseMediaInfo } from './mediainfo';
 import { ensureReachable } from './nas';
 import { blockedMessage, formatLeft, limitStatus } from './limits';
@@ -394,7 +396,7 @@ function describe(target: PlayTarget): PlayerSession {
 /** Saves the current position of the built-in player's item (resume point / watched). */
 async function saveBuiltinProgress() {
   const { playerSession, playerState, patchProgress } = useLibraryStore.getState();
-  if (!playerSession || !playerState?.loaded || !playerState.duration) return;
+  if (!playerSession || playerSession.target.type === 'live' || !playerState?.loaded || !playerState.duration) return;
   const { type, id } = playerSession.target;
   const time = playerState.eof ? playerState.duration : playerState.time;
   await recordProgress(type, id, time, playerState.duration).catch(() => {});
@@ -407,8 +409,11 @@ export async function playBuiltin(target: PlayTarget) {
   if (store.playerSession) {
     await saveBuiltinProgress();
     await flushWatchTime();
+    await flushLiveTime(); liveTick = null;
   }
-  store.setPlayerSession(describe(target));
+  const generation = ++openGeneration;
+  const loadId = crypto.randomUUID();
+  store.setPlayerSession({ ...describe(target), loadId });
   store.setPlayerState(null);
   store.setPlayerTracks([]);
   store.setPlayerChapters([]);
@@ -417,7 +422,8 @@ export async function playBuiltin(target: PlayTarget) {
     const { settings } = useLibraryStore.getState();
     appliedAf = audioFilterChain(settings, mediaInfoFor(target)?.audio.find((a) => a.default)?.channels ?? 2);
     const [subtitlePath, sourcePath] = await Promise.all([subtitleFor(target), resolvePlaybackSource(target.filePath)]);
-    await invoke('player_open', {
+    await queueOpen(generation, {
+      loadId,
       filePath: sourcePath,
       startTime: Math.max(0, target.startTime),
       subtitlePath,
@@ -430,16 +436,147 @@ export async function playBuiltin(target: PlayTarget) {
         ...passthroughOptions(settings.audio_passthrough),
       ],
     });
+    if (generation !== openGeneration) return;
     void syncOutput(true);
     startOutputWatch();
     // Keep the video surface in sync with the UI (e.g. the next episode starting inside the mini-player).
     const mini = useLibraryStore.getState().playerMini;
     await invoke('player_layout', { rect: mini ? miniRect() : null }).catch(() => {});
   } catch (e) {
+    if (generation !== openGeneration) return;
     store.setPlayerSession(null);
     store.toast(`Built-in player couldn’t start (${String(e)}). Opening in VLC instead.`, 'error');
     await playInVlc(target);
   }
+}
+
+let openGeneration = 0;
+let openQueue: Promise<unknown> = Promise.resolve();
+function queueOpen(generation: number, args: Record<string, unknown>) {
+  const next = openQueue
+    .catch(() => {})
+    .then(async () => {
+      if (generation !== openGeneration) return;
+      await invoke('player_open', args);
+    });
+  openQueue = next;
+  return next;
+}
+
+let liveTick: { profile: number; wall: number } | null = null;
+let liveSeconds = 0;
+async function flushLiveTime() {
+  const seconds = liveSeconds;
+  const profile = liveTick?.profile;
+  liveSeconds = 0;
+  if (profile != null && seconds > 0) await logLiveViewing(profile, seconds).catch(() => {});
+}
+
+/** Live sessions share the native renderer without library resume points or episode policy. */
+export async function playLive(match: ChannelMatch, event?: SportsEvent, channels?: ChannelMatch[]) {
+  const store = useLibraryStore.getState();
+  const limit = await limitStatus(store.activeProfile, liveSeconds + pendingSeconds);
+  if (limit.blocked) return store.toast(blockedMessage(store.activeProfile!, limit.blocked), 'error');
+  if (store.activeProfile?.maturity !== 'all')
+    return store.toast('Live channels have no verified age ratings. Switch to an adult profile to watch.', 'info');
+  if (!(await engineStatus()).available)
+    return store.toast(
+      'Live TV needs the built-in player. Reinstall TruongFlix to restore its player engine.',
+      'error',
+    );
+  await saveBuiltinProgress();
+  await flushWatchTime();
+  await flushLiveTime();
+  tick = null;
+  liveTick = null;
+  noteUserActivity();
+  if (store.sleepTimer?.mode === 'episode') setSleepTimer(null);
+  const generation = ++openGeneration;
+  useLiveStore.setState({ playbackError: '' });
+  const loadId = crypto.randomUUID();
+  const session: LivePlayerSession = {
+    event,
+    channels: channels?.map((m) => ({ playlistId: m.playlist.id, id: m.channel.id })),
+    loadId,
+    target: { type: 'live', id: match.channel.id, playlistId: match.playlist.id, label: match.channel.name },
+    title: match.channel.name,
+    subtitle: event?.name ?? match.playlist.name,
+    overview: event?.detail ?? null,
+    logo: null,
+    itemKey: null,
+    next: null,
+    nextLabel: null,
+  };
+  store.setPlayerSession(session);
+  store.setPlayerState(null);
+  store.setPlayerTracks([]);
+  store.setPlayerChapters([]);
+  store.setPlayerPrompt(null);
+  try {
+    const { settings } = store;
+    await queueOpen(generation, {
+      loadId,
+      filePath: match.channel.transport.url,
+      liveSource: match.channel.transport,
+      startTime: 0,
+      subtitlePath: null,
+      audioLang: null,
+      subLang: null,
+      options: [
+        ...subtitleOptions(settings.subtitle_style),
+        ['audio-device', settings.audio_device || 'auto'],
+        ['af', audioFilterChain(settings, 2)],
+        ...passthroughOptions(settings.audio_passthrough),
+      ],
+    });
+    if (generation !== openGeneration) return;
+    startOutputWatch();
+    void syncOutput(true);
+    await invoke('player_layout', { rect: store.playerMini ? miniRect() : null });
+  } catch {
+    if (generation === openGeneration) {
+      useLiveStore.setState({ playbackError: 'This channel could not start.' });
+      store.toast('This channel could not start. Retry or choose another feed.', 'error');
+    }
+  }
+}
+
+export async function retuneLive(direction = 0) {
+  const session = useLibraryStore.getState().playerSession;
+  if (session?.target.type !== 'live') return;
+  const target = session.target;
+  const sources = useLiveStore.getState().playlists;
+  const playlist = sources.find((p) => p.id === target.playlistId);
+  if (!playlist) return;
+  const order = 'channels' in session ? session.channels : undefined;
+  const channels = (order ?? playlist.channels.map((c) => ({ playlistId: playlist.id, id: c.id }))).flatMap((entry) => {
+    const source = sources.find((p) => p.id === entry.playlistId);
+    const channel = source?.channels.find((c) => c.id === entry.id);
+    return source && channel && (channel.id === target.id || source.health[channel.id]?.state !== 'unavailable')
+      ? [{ playlist: source, channel, key: `${source.id}/${channel.id}` }]
+      : [];
+  });
+  const index = channels.findIndex((m) => m.channel.id === target.id && m.playlist.id === target.playlistId);
+  const next = channels[(index + direction + channels.length) % channels.length];
+  if (next) await playLive(next, 'event' in session ? session.event : undefined, channels);
+}
+
+export function seekLive(delta: number) {
+  const state = useLibraryStore.getState().playerState;
+  const range = state?.seekable_ranges?.find((r) => state.time >= r.start - 1 && state.time <= r.end + 1);
+  if (state && range)
+    return playerCommand('seek', Math.max(range.start, Math.min(range.end, state.time + delta)), 'absolute+exact');
+}
+
+/** Seek to the newest buffered media; reconnect when no usable buffer remains. */
+export async function goLive() {
+  const state = useLibraryStore.getState().playerState;
+  const range = state?.seekable_ranges?.at(-1);
+  const fresh = !state?.cache_updated_at || Date.now() - state.cache_updated_at < 15_000;
+  if (state?.loaded && !state.eof && fresh && range && range.end > range.start + 1) {
+    await playerCommand('seek', Math.max(range.start, range.end - 1), 'absolute+exact');
+    await playerSet('pause', 'no');
+  } else await retuneLive();
 }
 
 let enteredFullscreen = false;
@@ -456,14 +593,20 @@ export async function toggleFullscreen() {
 export async function closeBuiltin() {
   const store = useLibraryStore.getState();
   if (!store.playerSession) return;
+  const generation = ++openGeneration;
+  const loadId = store.playerSession.loadId;
   await saveBuiltinProgress();
   await flushWatchTime();
+  await flushLiveTime(); liveTick = null;
+  if (generation !== openGeneration) return;
   try {
-    await invoke('player_close');
+    const close = openQueue.catch(() => {}).then(async () => { if (generation === openGeneration) await invoke('player_close'); });
+    openQueue = close;
+    await close;
   } catch (e) {
     console.warn('[player] close failed', e);
   }
-  finishSession();
+  if (useLibraryStore.getState().playerSession?.loadId === loadId) finishSession();
 }
 
 function finishSession() {
@@ -610,7 +753,7 @@ function startLimitWatch() {
     const profile = store.activeProfile;
     const playing = !!store.playerSession || store.playback.active;
     if (!playing || !profile || (!profile.daily_limit && !profile.bedtime) || store.playerPrompt === 'limit' || store.playerPrompt === 'bedtime') return;
-    const st = await limitStatus(profile, pendingSeconds);
+    const st = await limitStatus(profile, pendingSeconds + liveSeconds);
     if (st.blocked) {
       store.toast(blockedMessage(profile, st.blocked), 'info');
       if (store.playerSession) void pauseForPrompt(st.blocked);
@@ -635,7 +778,7 @@ export const MINI = { width: 400, margin: 24, bar: 64 };
 export function miniRect() {
   const w = Math.min(MINI.width, Math.round(window.innerWidth * 0.36));
   const h = Math.round((w * 9) / 16);
-  return { x: window.innerWidth - MINI.margin - w, y: window.innerHeight - MINI.margin - MINI.bar - h, w, h };
+  return { x: window.innerWidth - MINI.margin - w, y: window.innerHeight - MINI.margin - MINI.bar - h, w, h, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight };
 }
 
 /** Shrinks playback into a corner so you can keep browsing. */
@@ -666,7 +809,7 @@ export function syncMiniLayout() {
 /** Hands the current item to external VLC at the same position. */
 export async function openCurrentInVlc() {
   const { playerSession, playerState } = useLibraryStore.getState();
-  if (!playerSession) return;
+  if (!playerSession || playerSession.target.type === 'live') return;
   const target = { ...playerSession.target, startTime: playerState?.time ?? playerSession.target.startTime };
   await closeBuiltin();
   await playInVlc(target);
@@ -689,6 +832,9 @@ export async function initPlayerEvents() {
   if (unlisteners.length) return;
   startLimitWatch();
   unlisteners = await Promise.all([
+    Promise.resolve(useLibraryStore.subscribe((state, previous) => {
+      if (previous.playerSession?.target.type === 'live' && state.activeProfile?.id !== previous.activeProfile?.id) void closeBuiltin();
+    })),
     listen<ProgressPayload>('vlc-progress', async ({ payload }) => {
       const store = useLibraryStore.getState();
       store.setPlayback({ active: true, type: payload.media_type, id: payload.media_id, time: payload.time, length: payload.length });
@@ -720,7 +866,22 @@ export async function initPlayerEvents() {
     listen<BuiltinPlayerState>('player-state', ({ payload }) => {
       const store = useLibraryStore.getState();
       if (!store.playerSession) return;
+      if (payload.load_id && payload.load_id !== store.playerSession.loadId) return;
       store.setPlayerState(payload);
+      if (store.playerSession.target.type === 'live') {
+        const profile = store.activeProfile?.id;
+        const now = Date.now();
+        if (payload.loaded && !payload.paused && !payload.buffering && !payload.eof && profile != null) {
+          if (payload.time > 1 && useLiveStore.getState().playbackError) useLiveStore.setState({ playbackError: '' });
+          if (liveTick?.profile === profile) liveSeconds += Math.min(1, (now - liveTick.wall) / 1000);
+          liveTick = { profile, wall: now };
+          const target = store.playerSession.target;
+          const health = useLiveStore.getState().playlists.find((p) => p.id === target.playlistId)?.health[target.id];
+          if (payload.time > 1 && health?.state !== 'verified') verifiedChannel(target.playlistId, target.id);
+        } else if (liveTick) liveTick.wall = now;
+        if (Date.now() - lastSave > 5000) { lastSave = Date.now(); void flushLiveTime(); }
+        return;
+      }
       if (payload.loaded && !payload.paused) countWatchTime(store.playerSession.target.type, store.playerSession.target.id, payload.time, payload.speed);
       // Persist the resume point every few seconds (and right away at the end).
       if (payload.loaded && payload.duration > 0 && (payload.eof || Date.now() - lastSave > 5000)) {
@@ -745,12 +906,17 @@ export async function initPlayerEvents() {
         /* ignore */
       }
     }),
-    listen<{ message: string }>('player-error', ({ payload }) => {
+    listen<{ message: string; load_id?: string }>('player-error', ({ payload }) => {
       const store = useLibraryStore.getState();
+      if (payload.load_id && payload.load_id !== store.playerSession?.loadId) return;
       store.toast(`Playback error: ${payload.message}`, 'error');
+      if (store.playerSession?.target.type === 'live') { useLiveStore.setState({ playbackError: 'The stream could not be played.' }); return; }
       if (!store.playerState?.loaded) void closeBuiltin();
     }),
-    listen('player-closed', () => finishSession()),
+    listen<BuiltinPlayerState>('player-closed', ({ payload }) => {
+      if (!payload?.load_id || payload.load_id !== useLibraryStore.getState().playerSession?.loadId) return;
+      finishSession();
+    }),
     // Screen locked, display asleep or the computer going to sleep (lid closed).
     listen<{ reason: 'lock' | 'display' | 'sleep' }>('system-pause', ({ payload }) => {
       const store = useLibraryStore.getState();

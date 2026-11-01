@@ -14,6 +14,7 @@ const LINKS: { view: View; label: string }[] = [
   { view: 'home', label: 'Home' },
   { view: 'tv', label: 'TV Shows' },
   { view: 'movies', label: 'Movies' },
+  { view: 'live', label: 'Live TV' },
   { view: 'mylist', label: 'My List' },
 ];
 
@@ -79,11 +80,11 @@ export default function Navbar() {
         background: scrolled ? '#141414' : 'linear-gradient(180deg, rgba(0,0,0,0.7) 10%, transparent)',
       }}
     >
-      <button onClick={() => setView('home')} className="mr-10 shrink-0" aria-label="TruongFlix home">
+      <button onClick={() => setView('home')} className="mr-6 shrink-0 xl:mr-10" aria-label="TruongFlix home">
         <Wordmark className="text-[1.9rem]" />
       </button>
 
-      <nav className="flex items-center gap-5 text-sm">
+      <nav className="flex items-center gap-3 text-sm xl:gap-5">
         {LINKS.map((l) => (
           <button
             key={l.view}
@@ -117,7 +118,15 @@ export default function Navbar() {
           </div>
         )}
 
-        <div
+        {view === 'live' ? (
+          <button
+            aria-label="Search live TV"
+            className="p-1.5"
+            onClick={() => document.querySelector<HTMLInputElement>('input[aria-label="Search live TV"]')?.focus()}
+          >
+            <Search className="h-5 w-5" />
+          </button>
+        ) : <div
           className={`flex items-center transition-all duration-300 ${
             searchOpen ? 'border border-white bg-black/75' : 'border border-transparent'
           }`}
@@ -155,7 +164,7 @@ export default function Navbar() {
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
+        </div>}
 
         <button
           onClick={() => runScan()}

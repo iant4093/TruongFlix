@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useLibraryStore } from '../store/useLibraryStore';
-import { closeBuiltin, noteUserActivity, playBuiltin, playerCommand, playerSet } from './player';
+import { closeBuiltin, noteUserActivity, playBuiltin, playerCommand, playerSet, retuneLive, seekLive } from './player';
 import { resize } from './tmdb';
 
 interface SessionUpdate {
@@ -23,6 +23,7 @@ let active = false;
 function describeNowPlaying(): SessionUpdate | null {
   const { playerSession: session, playerState: state, allItems, episodes } = useLibraryStore.getState();
   if (!session || !state?.loaded) return null;
+  if (session.target.type === 'live') return { title: session.title, artist: session.subtitle || 'Live TV', album: 'TruongFlix Live TV', duration: 0, position: 0, state: state.paused ? 'paused' : 'playing', rate: 1, cover_url: null, can_next: true };
   const item = allItems.find((i) => i.key === session.itemKey);
   const ep = session.target.type === 'episode' ? episodes.find((e) => e.id === session.target.id) : undefined;
   const cover = resize(ep?.still_path ?? item?.backdrop ?? item?.poster ?? null, 'w780');
@@ -88,15 +89,19 @@ async function handle(action: string, value: number) {
       await playerCommand('cycle', 'pause');
       break;
     case 'next':
+      if (session.target.type === 'live') { await retuneLive(1); break; }
       if (session.next) await playBuiltin(session.next);
       break;
     case 'previous':
+      if (session.target.type === 'live') { await retuneLive(-1); break; }
       await playerCommand('seek', 0, 'absolute');
       break;
     case 'seek_by':
+      if (session.target.type === 'live') { await seekLive(value); break; }
       await playerCommand('seek', value, 'relative');
       break;
     case 'set_position':
+      if (session.target.type === 'live') break;
       if (state?.duration) await playerCommand('seek', Math.max(0, Math.min(value, state.duration - 1)).toFixed(2), 'absolute');
       break;
     case 'stop':

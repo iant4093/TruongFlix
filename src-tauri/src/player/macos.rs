@@ -339,7 +339,7 @@ fn view_class() -> Result<&'static AnyClass, String> {
 
 /// Switches between the full-window surface (below the page) and the mini-player (a small
 /// rectangle floating above the page). `rect` is in CSS pixels from the top-left. Main thread only.
-pub fn set_layout(mini: Option<(f64, f64, f64, f64)>) {
+pub fn set_layout(mini: Option<(f64, f64, f64, f64)>, viewport: Option<(f64, f64)>) {
     let view = VIEW.load(Ordering::Acquire) as *mut AnyObject;
     if view.is_null() {
         return;
@@ -354,9 +354,21 @@ pub fn set_layout(mini: Option<(f64, f64, f64, f64)>) {
         let _: () = msg_send![view, removeFromSuperview];
         match mini {
             Some((x, y, w, h)) => {
-                let flipped: bool = msg_send![content, isFlipped];
-                let oy = if flipped { y } else { bounds.size.height - y - h };
-                let frame = NSRect::new(NSPoint::new(x, oy), objc2_foundation::NSSize::new(w, h));
+                // CSS coordinates start at the webview, which can be inset below the title bar.
+                // Convert through NSView instead of treating the content view as the same origin.
+                let origin = if webview.is_null() { content } else { webview };
+                let local_bounds: NSRect = msg_send![origin, bounds];
+                // WKWebView can include the title-bar safe area in its bounds while excluding it
+                // from window.innerHeight. Also account for webview zoom when converting CSS px.
+                let (scale, top_inset) = viewport.filter(|(w, h)| *w > 0.0 && *h > 0.0).map(|(vw, vh)| {
+                    let scale = local_bounds.size.width / vw;
+                    (scale, (local_bounds.size.height - vh * scale).max(0.0))
+                }).unwrap_or((1.0, 0.0));
+                let (x, y, w, h) = (x * scale, y * scale + top_inset, w * scale, h * scale);
+                let flipped: bool = msg_send![origin, isFlipped];
+                let oy = if flipped { y } else { local_bounds.size.height - y - h };
+                let local = NSRect::new(NSPoint::new(x, oy), objc2_foundation::NSSize::new(w, h));
+                let frame: NSRect = msg_send![content, convertRect: local, fromView: origin];
                 let _: () = msg_send![view, setAutoresizingMask: 0usize];
                 let _: () = msg_send![view, setFrame: frame];
                 // NSWindowAbove = 1

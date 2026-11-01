@@ -509,7 +509,7 @@ export async function stopSeedingTorrent(infoHash: string) {
 function isPlayingTorrent(paths: string[]): boolean {
   const store = useLibraryStore.getState();
   const targets = [store.playerSession?.target, store.cast?.target];
-  if (targets.some((t) => t && paths.includes(t.filePath))) return true;
+  if (targets.some((t) => t && t.type !== 'live' && paths.includes(t.filePath))) return true;
   if (!store.playback.active) return false;
   const row = store.playback.type === 'movie'
     ? store.movies.find((m) => m.id === store.playback.id)

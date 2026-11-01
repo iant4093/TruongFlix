@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Maximize2, Pause, Play, RotateCcw, X } from 'lucide-react';
-import type { PlayerSession } from '../../types/media';
+import type { PlaybackSession } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { closeBuiltin, dismissPrompt, exitMini, MINI, miniRect, noteUserActivity, playerCommand } from '../../services/player';
+import { closeBuiltin, dismissPrompt, exitMini, goLive, MINI, miniRect, noteUserActivity, playerCommand } from '../../services/player';
 
 /**
  * Mini-player: the native video floats in the bottom-right corner (above the page, click-through),
@@ -16,7 +16,7 @@ export default function MiniPlayer() {
   return <AnimatePresence>{session && mini && <Mini key="mini" session={session} />}</AnimatePresence>;
 }
 
-function Mini({ session }: { session: PlayerSession }) {
+function Mini({ session }: { session: PlaybackSession }) {
   const state = useLibraryStore((s) => s.playerState);
   const prompt = useLibraryStore((s) => s.playerPrompt);
   const [rect, setRect] = useState(miniRect);
@@ -27,7 +27,8 @@ function Mini({ session }: { session: PlayerSession }) {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  const progress = state?.duration ? state.time / state.duration : 0;
+  const live = session.target.type === 'live';
+  const progress = !live && state?.duration ? state.time / state.duration : 0;
   const btn = 'flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15 hover:text-white';
 
   return (
@@ -70,11 +71,11 @@ function Mini({ session }: { session: PlayerSession }) {
           <button type="button" className={btn} title={state?.paused ? 'Play' : 'Pause'} onClick={() => void playerCommand('cycle', 'pause')}>
             {state?.paused ? <Play className="h-5 w-5 fill-white" strokeWidth={0} /> : <Pause className="h-5 w-5 fill-white" strokeWidth={0} />}
           </button>
-          <button type="button" className={btn} title="Back 10 seconds" onClick={() => void playerCommand('seek', -10, 'relative')}>
+          <button type="button" className={btn} title={live ? 'Go live' : 'Back 10 seconds'} onClick={() => void (live ? goLive() : playerCommand('seek', -10, 'relative'))}>
             <RotateCcw className="h-[18px] w-[18px]" />
           </button>
           <div className="min-w-0 flex-1 px-2 leading-tight">
-            <div className="truncate text-sm font-semibold">{session.title}</div>
+            <div className="truncate text-sm font-semibold">{live && <span className="mr-2 text-[10px] text-red-400">LIVE</span>}{session.title}</div>
             {session.subtitle && <div className="truncate text-xs text-nf-muted">{session.subtitle}</div>}
           </div>
           <button type="button" className={btn} title="Expand" onClick={() => void exitMini()}>

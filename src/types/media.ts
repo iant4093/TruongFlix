@@ -584,6 +584,9 @@ export interface EngineStatus {
 
 /** Live state of the built-in player (`player-state` events). */
 export interface BuiltinPlayerState {
+  load_id?: string;
+  seekable_ranges?: { start: number; end: number }[];
+  cache_updated_at?: number;
   time: number;
   duration: number;
   paused: boolean;
@@ -620,6 +623,7 @@ export interface PlayerTrack {
 }
 
 export interface PlayerSession {
+  loadId?: string;
   target: PlayTarget;
   itemKey: string | null;
   title: string;
@@ -630,6 +634,8 @@ export interface PlayerSession {
   next: PlayTarget | null;
   nextLabel: string | null;
 }
+
+export type PlaybackSession = PlayerSession | import('./live').LivePlayerSession;
 
 export interface ImdbInfo {
   imdb_id: string | null;

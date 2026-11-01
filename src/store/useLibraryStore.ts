@@ -11,7 +11,7 @@ import type {
   PlaybackState,
   PlayableType,
   PlayTarget,
-  PlayerSession,
+  PlaybackSession,
   PlayerTrack,
   Profile,
   ScanState,
@@ -22,7 +22,7 @@ import type {
 } from '../types/media';
 import { allowedForMaturity, buildItems, groupEpisodes } from './selectors';
 
-export type View = 'home' | 'tv' | 'movies' | 'mylist';
+export type View = 'home' | 'tv' | 'movies' | 'mylist' | 'live';
 
 export interface HoverState {
   item: MediaItem;
@@ -121,11 +121,11 @@ interface LibraryState {
   confirmRequest: ConfirmRequest | null;
 
   /** Built-in (in-window) player. */
-  playerSession: PlayerSession | null;
+  playerSession: PlaybackSession | null;
   playerState: BuiltinPlayerState | null;
   playerTracks: PlayerTrack[];
   playerChapters: { title: string; time: number }[];
-  setPlayerSession: (s: PlayerSession | null) => void;
+  setPlayerSession: (s: PlaybackSession | null) => void;
   setPlayerState: (s: BuiltinPlayerState | null) => void;
   setPlayerTracks: (t: PlayerTrack[]) => void;
   setPlayerChapters: (c: { title: string; time: number }[]) => void;

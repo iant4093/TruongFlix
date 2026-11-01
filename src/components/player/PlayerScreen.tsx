@@ -25,6 +25,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioDevice, BuiltinPlayerState, PlayerSession, PlayerTrack, Segment } from '../../types/media';
 import Dropdown from '../common/Dropdown';
+import LivePlayer from '../live/LivePlayer';
+import type { LivePlayerSession } from '../../types/live';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { formatTimestamp } from '../../store/selectors';
 import { languageName } from '../../services/subtitles';
@@ -66,21 +68,32 @@ type Panel = 'tracks' | 'speed' | 'sleep' | 'chapters' | null;
 export default function PlayerScreen() {
   const session = useLibraryStore((s) => s.playerSession);
   const mini = useLibraryStore((s) => s.playerMini);
-  useAutoAdvance(session);
-  useScrubThumbnails(session);
-  return <AnimatePresence>{session && !mini && <PlayerChrome key="player" session={session} />}</AnimatePresence>;
+  const library = session && session.target.type !== 'live' ? (session as PlayerSession) : null;
+  useAutoAdvance(library);
+  useScrubThumbnails(library);
+  return (
+    <AnimatePresence>
+      {session && (library
+        ? !mini && <PlayerChrome key="player" session={library} />
+        : <LivePlayer key="live-player" session={session as LivePlayerSession} />)}
+    </AnimatePresence>
+  );
 }
 
 /** End of file: roll into the next episode, or return to the library (also in the mini-player). */
 function useAutoAdvance(session: PlayerSession | null) {
   const eof = useLibraryStore((s) => !!s.playerState?.eof);
   const advancedFor = useRef<number | null>(null);
+  useEffect(() => { advancedFor.current = null; }, [session?.loadId]);
   useEffect(() => {
     if (!session || !eof || advancedFor.current === session.target.id) return;
     advancedFor.current = session.target.id;
     if (stopForSleep()) return;
     if (session.next) autoAdvance(session.next);
-    else window.setTimeout(() => void closeBuiltin(), 1200);
+    else {
+      const timer = window.setTimeout(() => void closeBuiltin(), 1200);
+      return () => window.clearTimeout(timer);
+    }
   }, [eof, session]);
 
   // Sleep timer "end of episode": stop as the credits begin rather than after them.
@@ -512,6 +525,7 @@ function SubtitleSync({ subtitlePath }: { subtitlePath: string }) {
     setBusy(0);
     const off = await listen<{ fraction: number }>('subsync-progress', ({ payload }) => setBusy(payload.fraction));
     try {
+      if (session.target.type === 'live') return;
       const res = await invoke<{ applied: boolean; message: string }>('sync_subtitle', { videoPath: session.target.filePath, subtitlePath });
       if (res.applied) {
         await playerSet('sub-delay', '0');

@@ -29,6 +29,8 @@ struct Session {
     handle: usize,
     closing: bool,
     pending_subtitle: Option<String>,
+    load_id: String,
+    expected_path: String,
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -42,6 +44,7 @@ fn debug_enabled() -> bool {
 
 #[derive(Clone, Default, Serialize)]
 struct PlayerState {
+    load_id: String,
     time: f64,
     duration: f64,
     paused: bool,
@@ -57,11 +60,17 @@ struct PlayerState {
     /// Transfer function of the current video (e.g. "pq"/"hlg" for HDR).
     gamma: Option<String>,
     loaded: bool,
+    seekable_ranges: Vec<SeekRange>,
+    cache_updated_at: f64,
 }
+
+#[derive(Clone, Default, serde::Deserialize, Serialize)]
+struct SeekRange { start: f64, end: f64 }
 
 #[derive(Clone, Serialize)]
 struct ErrorPayload {
     message: String,
+    load_id: String,
 }
 
 const PROPS: &[(u64, &str, c_int)] = &[
@@ -80,6 +89,7 @@ const PROPS: &[(u64, &str, c_int)] = &[
     (13, "video-params/gamma", mpv::FORMAT_STRING),
     (14, "core-idle", mpv::FORMAT_FLAG),
     (15, "chapter-list", mpv::FORMAT_STRING),
+    (16, "demuxer-cache-state", mpv::FORMAT_STRING),
 ];
 
 /// mpv's built-in Lua scripts (OSC, console, stats, …). We draw our own UI, and LuaJIT's JIT code
@@ -247,6 +257,14 @@ fn create_core(api: &mpv::Api, audio_lang: &str, sub_lang: &str, video_window: O
 fn read_double(p: &mpv::EventProperty) -> Option<f64> {
     (p.format == mpv::FORMAT_DOUBLE && !p.data.is_null()).then(|| unsafe { *(p.data as *const f64) })
 }
+
+fn source_matches(actual: &str, expected: &str) -> bool {
+    if actual == expected { return true; }
+    if expected.starts_with("http://") || expected.starts_with("https://") { return false; }
+    let normalize = |path: &str| path.strip_prefix("\\\\?\\").unwrap_or(path).replace('\\', "/");
+    let (actual, expected) = (normalize(actual), normalize(expected));
+    if cfg!(windows) { actual.eq_ignore_ascii_case(&expected) } else { actual == expected }
+}
 fn read_flag(p: &mpv::EventProperty) -> Option<bool> {
     (p.format == mpv::FORMAT_FLAG && !p.data.is_null()).then(|| unsafe { *(p.data as *const c_int) != 0 })
 }
@@ -285,6 +303,16 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
         }
         match ev.event_id {
             mpv::EVENT_SHUTDOWN => break,
+            mpv::EVENT_START_FILE => {
+                state.loaded = false;
+                state.eof = false;
+                state.time = 0.0;
+                state.duration = 0.0;
+                state.seekable_ranges.clear();
+                state.cache_updated_at = 0.0;
+                if let Some(id) = SESSION.lock().unwrap().as_ref().filter(|s| s.handle == handle_addr).map(|s| s.load_id.clone()) { state.load_id = id; }
+                dirty = true;
+            }
             mpv::EVENT_FILE_LOADED => {
                 if debug {
                     eprintln!("[player] file loaded");
@@ -302,7 +330,7 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
             mpv::EVENT_END_FILE if !ev.data.is_null() => {
                 let end = unsafe { &*(ev.data as *const mpv::EventEndFile) };
                 if end.reason == mpv::END_FILE_REASON_ERROR {
-                    let _ = app.emit("player-error", ErrorPayload { message: api.err(end.error) });
+                    let _ = app.emit("player-error", ErrorPayload { message: api.err(end.error), load_id: state.load_id.clone() });
                 }
             }
             mpv::EVENT_PROPERTY_CHANGE if !ev.data.is_null() => {
@@ -330,6 +358,14 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
                     15 => {
                         let _ = app.emit("player-chapters", read_string(p).unwrap_or_else(|| "[]".into()));
                     }
+                    16 => {
+                        let old_end = state.seekable_ranges.last().map(|r| r.end);
+                        state.seekable_ranges = read_string(p).and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                            .and_then(|v| serde_json::from_value(v.get("seekable-ranges")?.clone()).ok()).unwrap_or_default();
+                        if state.seekable_ranges.last().map(|r| r.end) != old_end {
+                            state.cache_updated_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as f64;
+                        }
+                    }
                     _ => {}
                 }
                 dirty = true;
@@ -341,7 +377,13 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
         }
         // Position updates arrive every frame; send at most ~5/s, other changes immediately.
         if dirty && last_emit.elapsed() >= Duration::from_millis(200) {
-            let _ = app.emit("player-state", state.clone());
+            let expected = SESSION.lock().unwrap().as_ref().filter(|s| s.handle == handle_addr).map(|s| (s.load_id.clone(), s.expected_path.clone()));
+            if let Some((id, path)) = expected {
+                state.load_id = id;
+                let mut payload = state.clone();
+                if !api.get_property(h, "path").is_some_and(|actual| source_matches(&actual, &path)) { payload.loaded = false; payload.eof = false; payload.seekable_ranges.clear(); }
+                let _ = app.emit("player-state", payload);
+            }
             last_emit = Instant::now();
             dirty = false;
         }
@@ -381,13 +423,19 @@ pub async fn player_open(
     audio_lang: Option<String>,
     sub_lang: Option<String>,
     options: Option<Vec<(String, String)>>,
+    live_source: Option<crate::live::Transport>,
+    load_id: Option<String>,
 ) -> Result<(), String> {
     if let Some(reason) = unavailable_reason() {
         return Err(reason);
     }
     let api = mpv::api()?;
     let is_local_stream = file_path.starts_with("http://127.0.0.1:");
-    if !is_local_stream && !std::path::Path::new(&file_path).is_file() {
+    if let Some(ref source) = live_source {
+        source.validate()?;
+        if source.url != file_path { return Err("Stream source does not match".into()); }
+    }
+    if live_source.is_none() && !is_local_stream && !std::path::Path::new(&file_path).is_file() {
         return Err(format!("File not found: {file_path}"));
     }
     let subtitle = subtitle_path.filter(|p| std::path::Path::new(p).is_file());
@@ -399,6 +447,8 @@ pub async fn player_open(
             let h = addr as *mut mpv::Handle;
             if let Some(s) = SESSION.lock().unwrap().as_mut() {
                 s.pending_subtitle = subtitle.clone();
+                s.load_id = load_id.clone().unwrap_or_default();
+                s.expected_path = file_path.clone();
             }
             h
         }
@@ -424,7 +474,7 @@ pub async fn player_open(
                 }
             };
             let addr = h as usize;
-            *SESSION.lock().unwrap() = Some(Session { handle: addr, closing: false, pending_subtitle: subtitle.clone() });
+            *SESSION.lock().unwrap() = Some(Session { handle: addr, closing: false, pending_subtitle: subtitle.clone(), load_id: load_id.unwrap_or_default(), expected_path: file_path.clone() });
 
             #[cfg(target_os = "macos")]
             {
@@ -449,12 +499,22 @@ pub async fn player_open(
     };
 
     // Per-play settings (subtitle style, audio filters, preferred tracks) applied before loading.
+    // The core is reused: a live provider's headers/cache/offset must never leak into the next file.
+    for (name, value) in [("http-header-fields", ""), ("referrer", ""), ("user-agent", "mpv"), ("speed", "1"),
+        ("start", "none"), ("cache", "auto"), ("cache-on-disk", "no"), ("demuxer-max-bytes", "150MiB"), ("demuxer-max-back-bytes", "50MiB")] {
+        let _ = api.set_property(h, name, value);
+    }
+    if let Some(ref source) = live_source {
+        if !source.referrer.is_empty() { api.set_property(h, "referrer", &source.referrer)?; }
+        if !source.user_agent.is_empty() { api.set_property(h, "user-agent", &source.user_agent)?; }
+        for (k, v) in [("cache", "yes"), ("demuxer-max-bytes", "128MiB"), ("demuxer-max-back-bytes", "64MiB")] { api.set_property(h, k, v)?; }
+    }
     for (name, value) in options.unwrap_or_default() {
         if let Err(e) = api.set_property(h, &name, &value) {
             eprintln!("[player] {e}");
         }
     }
-    api.set_property(h, "start", &format!("{:.3}", start_time.max(0.0)))?;
+    if live_source.is_none() { api.set_property(h, "start", &format!("{:.3}", start_time.max(0.0)))?; }
     api.set_property(h, "pause", "no")?;
     api.command(h, &["loadfile", &file_path, "replace"])
 }
@@ -532,15 +592,21 @@ pub struct MiniRect {
     y: f64,
     w: f64,
     h: f64,
+    #[serde(default, rename = "viewportWidth")]
+    viewport_width: Option<f64>,
+    #[serde(default, rename = "viewportHeight")]
+    viewport_height: Option<f64>,
 }
 
 /// Full-window video (`rect` = null) or a mini-player at `rect` (CSS pixels, top-left origin).
 #[tauri::command]
 pub async fn player_layout(app: AppHandle, rect: Option<MiniRect>) -> Result<(), String> {
     current_handle()?;
+    #[cfg(target_os = "macos")]
+    let viewport = rect.as_ref().and_then(|r| r.viewport_width.zip(r.viewport_height));
     let mini = rect.map(|r| (r.x, r.y, r.w, r.h));
     #[cfg(target_os = "macos")]
-    on_main(&app, move || macos::set_layout(mini))?;
+    on_main(&app, move || macos::set_layout(mini, viewport))?;
     #[cfg(windows)]
     on_main(&app, move || win32::set_layout(mini))?;
     #[cfg(not(any(target_os = "macos", windows)))]
