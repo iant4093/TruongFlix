@@ -85,9 +85,13 @@ class SourceSession {
 let activeController: AbortController | null = null;
 export function cancelSourceBrowser() { activeController?.abort(); activeController = null; }
 export async function browseSource(item: SearchResult, imdbId: string, sourceUrl: string, onSelected?: () => void) {
+  const profile = useLibraryStore.getState().activeProfile?.id;
+  const permitted = () => { const state = useLibraryStore.getState(); return !!profile && state.activeProfile?.id === profile && state.activeProfile.maturity === 'all' && !state.profileGate; };
+  if (!permitted()) throw canceled();
   cancelSourceBrowser();
   const controller = new AbortController(); activeController = controller;
   const session = new SourceSession(controller.signal, (e) => {
+    if (!permitted()) { session.close(); return; }
     if (e.kind === 'magnet' && e.magnet) {
       session.close();
       onSelected?.();

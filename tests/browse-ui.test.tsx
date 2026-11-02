@@ -100,3 +100,10 @@ it('retains the episode selection while its dialog is suspended for source setti
   view.rerender(<CatalogTitle item={item} onClose={close} onSource={vi.fn()} />);
   expect(screen.getByRole('button', { name: 'Choose episode or entire season' }).textContent).toContain('Episode 2');
 });
+
+it('suspends Browse when the profile selector is open', () => {
+  useLibraryStore.setState({ profileGate: 'select' });
+  render(<Discover />);
+  expect(screen.queryByRole('button', { name: 'Add torrent source' })).toBeNull();
+  expect(tmdb.getCatalog).not.toHaveBeenCalled();
+});

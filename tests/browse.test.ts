@@ -187,3 +187,17 @@ it('starts a download with only the verified season files after confirmation', a
   await running;
   expect(initiateTorrent).toHaveBeenCalledWith(expect.objectContaining({ mode: 'download', onlyFiles: [0, 1], destinationRoot: '/Movies', playImmediately: false }));
 });
+
+it('ignores a manual browser magnet after the profile selector opens', async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    const result = await original(command, args);
+    if (command === 'source_browser_open') queueMicrotask(() => emit({ payload: { requestId, kind: 'ready' } }));
+    return result;
+  });
+  await browseSource(item, target.imdbId, 'https://ext.to');
+  useLibraryStore.setState({ profileGate: 'select' });
+  emit({ payload: { requestId, kind: 'magnet', magnet: 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000' } });
+  expect(useLibraryStore.getState().addTorrentModal).toBeNull();
+  expect(initiateTorrent).not.toHaveBeenCalled();
+});

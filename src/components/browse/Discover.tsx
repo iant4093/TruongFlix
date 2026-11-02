@@ -17,6 +17,7 @@ const cache = new Map<string, { items: SearchResult[]; pages: number; time: numb
 export default function Discover() {
   const settings = useLibraryStore((s) => s.settings);
   const profile = useLibraryStore((s) => s.activeProfile);
+  const profileGate = useLibraryStore((s) => s.profileGate);
   const items = useLibraryStore((s) => s.items);
   const [kind, setKind] = useState<'movie' | 'tv'>('movie');
   const [list, setList] = useState<CatalogList>('trending');
@@ -31,7 +32,7 @@ export default function Discover() {
   const [selected, setSelected] = useState<SearchResult | null>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
   const request = useRef(0);
-  const allowed = profile?.maturity === 'all';
+  const allowed = profile?.maturity === 'all' && !profileGate;
   const key = `${kind}:${list}:${query.trim().toLowerCase()}:${page}`;
   useEffect(() => { setPage(1); setData([]); setSelected(null); }, [kind, list, query, profile?.id]);
   useEffect(() => {
@@ -60,7 +61,8 @@ export default function Discover() {
     }, query.trim() ? 300 : 0);
     return () => { clearTimeout(timer); request.current++; };
   }, [key, refresh, settings.tmdb_api_key, allowed, profile?.id]);
-  useEffect(() => () => cancelSourceBrowser(), [profile?.id]);
+  useEffect(() => () => cancelSourceBrowser(), [profile?.id, profileGate]);
+  useEffect(() => { if (!allowed) { setSelected(null); setSourceOpen(false); } }, [allowed]);
 
   if (!allowed) return <div className="px-[4%] pt-32"><h1 className="text-4xl font-bold">Browse</h1><p className="mt-5 text-nf-secondary">Switch to an unrestricted profile to browse titles and torrent sources.</p></div>;
   if (!settings.tmdb_api_key) return <div className="px-[4%] pt-32"><h1 className="text-4xl font-bold">Browse</h1><p className="my-5 text-nf-secondary">Connect TMDB in Settings to discover movies and TV shows.</p><button className="nf-btn-red" onClick={() => useLibraryStore.getState().setSettingsOpen(true, 'ratings')}>Connect TMDB</button></div>;
