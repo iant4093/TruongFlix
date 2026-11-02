@@ -1,6 +1,7 @@
 import type { CastMember, CollectionPart } from '../types/media';
 import type { EpisodeMetadata, MovieExtras, MovieMetadata, SeriesExtras, SeriesMetadata } from './db';
 import { saveSeasonCache } from './db';
+import type { CatalogDetail, CatalogSeason } from '../types/browse';
 
 const API = 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p';
@@ -179,6 +180,8 @@ interface TmdbTv {
   videos?: { results?: TmdbVideo[] };
   status?: string;
   next_episode_to_air?: TmdbNextEpisode | null;
+  last_episode_to_air?: TmdbNextEpisode | null;
+  seasons?: { season_number: number; name: string; episode_count: number; air_date?: string | null }[];
 }
 interface TmdbEpisode {
   id: number;
@@ -584,4 +587,54 @@ export async function searchTitles(kind: 'movie' | 'tv', query: string, year: nu
     backdrop: img(r.backdrop_path, 'w780'),
     voteAverage: r.vote_average ?? 0,
   }));
+}
+
+// Discovery uses TMDB's lists, independently of the local library.
+export type CatalogList = 'trending' | 'popular' | 'new' | 'top';
+interface CatalogHit extends MovieSearchHit, Partial<Omit<TvSearchHit, 'id'>> { adult?: boolean }
+export async function getCatalog(kind: 'movie' | 'tv', list: CatalogList, page = 1, query = '') {
+  const path = query.trim() ? `/search/${kind}` : list === 'trending' ? `/trending/${kind}/week`
+    : `/${kind}/${list === 'new' ? (kind === 'movie' ? 'now_playing' : 'on_the_air') : list === 'top' ? 'top_rated' : 'popular'}`;
+  const data = await request<{ results?: CatalogHit[]; total_pages?: number }>(path, {
+    page, query: query.trim() || undefined, include_adult: 'false', language: 'en-US', region: 'US',
+  });
+  return {
+    pages: Math.min(500, data.total_pages ?? 1),
+    items: (data.results ?? []).filter((r) => !r.adult).map((r): SearchResult => ({
+      id: r.id, kind, title: (kind === 'movie' ? r.title : r.name) || 'Untitled',
+      year: yearOf(kind === 'movie' ? r.release_date : r.first_air_date), overview: r.overview ?? '',
+      poster: img(r.poster_path, 'w342'), backdrop: img(r.backdrop_path, 'w1280'), voteAverage: r.vote_average ?? 0,
+    })),
+  };
+}
+
+export async function getCatalogDetail(item: SearchResult): Promise<CatalogDetail> {
+  if (item.kind === 'movie') {
+    const d = await getMovieDetails(item.id);
+    return { ...item, title: d.title, year: d.year, overview: d.overview ?? '', poster: d.poster_path,
+      backdrop: d.backdrop_path, imdbId: d.imdb_id ?? '', certification: d.extras?.certification ?? '',
+      genres: d.genres, runtime: d.runtime, seasons: [], status: '', nextSeason: null, lastSeason: null, lastEpisode: null };
+  }
+  const d = await request<TmdbTv>(`/tv/${item.id}`, { append_to_response: 'external_ids,content_ratings' });
+  return { ...item, title: d.name, year: yearOf(d.first_air_date), overview: d.overview ?? '',
+    imdbId: d.external_ids?.imdb_id ?? '', certification: seriesExtras(d).certification,
+    genres: (d.genres ?? []).map((g) => g.name), runtime: null, status: d.status ?? '',
+    seasons: (d.seasons ?? []).filter((s) => s.season_number > 0).map((s) => ({
+      number: s.season_number, name: s.name, count: s.episode_count, airDate: s.air_date ?? null,
+    })), nextSeason: d.next_episode_to_air?.season_number ?? null,
+    lastSeason: d.last_episode_to_air?.season_number ?? null, lastEpisode: d.last_episode_to_air?.episode_number ?? null };
+}
+
+export async function getCatalogSeason(detail: CatalogDetail, season: number): Promise<CatalogSeason> {
+  const episodes = [...(await getSeasonEpisodes(detail.id, season)).values()].sort((a, b) => a.episode_number - b.episode_number);
+  const declared = detail.seasons.find((s) => s.number === season)?.count ?? 0;
+  // An aired list alone cannot establish that an ongoing season has finished.
+  const closed = ['Ended', 'Canceled'].includes(detail.status)
+    || (detail.nextSeason != null && detail.nextSeason > season)
+    || (detail.lastSeason != null && detail.lastSeason > season);
+  const today = new Date().toISOString().slice(0, 10);
+  const complete = closed && declared > 0 && episodes.length === declared
+    && episodes.every((e) => !!e.air_date && e.air_date < today)
+    && new Set(episodes.map((e) => e.episode_number)).size === declared;
+  return { episodes, complete };
 }

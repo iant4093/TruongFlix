@@ -9,6 +9,9 @@ edition = "2021"
 name = "truongflix_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+source-browser-smoke = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -36,10 +39,12 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 librqbit = { version = "9", default-features = false, features = ["default-tls"] }
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+adblock = { version = "=0.13.5", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling", "content-blocking"] }
 
 [target.'cfg(windows)'.dependencies]
 mdns-sd = "0.13"
 souvlaki = { version = "0.8", default-features = false }
+webview2-com = "=0.39.1"
 # Same version souvlaki uses, so it is only compiled once.
 windows = { version = "0.44", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com"] }
 # Borderless video window behind the transparent TruongFlix window (built-in player).
@@ -52,6 +57,7 @@ windows-sys = { version = "0.60", features = [
   "Win32_UI_HiDpi",
   "Win32_UI_WindowsAndMessaging",
 ] }
+windows-webview = { version = "0.62", package = "windows", features = ["Win32_System_Com"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Native video view (CAOpenGLLayer) for the built-in player.
@@ -59,6 +65,7 @@ objc2 = "0.6"
 block2 = "0.6"
 libc = "0.2"
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSValue"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKFrameInfo"] }
 
 [profile.release]
 codegen-units = 1
@@ -70,3 +77,7 @@ strip = true
 # Proc-macros (e.g. sqlx-macros) are dlopen'ed at compile time; stripping them breaks loading on macOS.
 [profile.release.build-override]
 strip = false
+
+[[example]]
+name = "source_browser_smoke"
+required-features = ["source-browser-smoke"]

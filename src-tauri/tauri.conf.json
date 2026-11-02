@@ -39,8 +39,14 @@
   },
   "bundle": {
     "active": true,
-    "externalBin": ["bin/yt-dlp", "bin/deno"],
-    "resources": { "bin/licenses/": "trailer-licenses/" },
+    "externalBin": [
+      "bin/yt-dlp",
+      "bin/deno"
+    ],
+    "resources": {
+      "bin/licenses/": "trailer-licenses/",
+      "resources/source-filters/": "source-filters/"
+    },
     "targets": "all",
     "category": "Entertainment",
     "shortDescription": "Local media center with a Netflix-style UI",

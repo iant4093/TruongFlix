@@ -341,6 +341,7 @@ export interface PlaybackState {
 }
 
 export interface Settings {
+  browse_source_url: string;
   tmdb_api_key: string;
   vlc_executable_path: string;
   media_directories: string[];

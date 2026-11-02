@@ -353,6 +353,7 @@ export async function getSettings(): Promise<Settings> {
     dirs = [];
   }
   return {
+    browse_source_url: map.browse_source_url ?? '',
     tmdb_api_key: map.tmdb_api_key ?? '',
     vlc_executable_path: map.vlc_executable_path ?? '',
     media_directories: Array.isArray(dirs) ? dirs : [],

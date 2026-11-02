@@ -398,12 +398,14 @@ export interface InitiateTorrentOptions {
   fallbackTitle: string;
   fallbackYear: number | null;
   playImmediately?: boolean;
+  abortSignal?: AbortSignal;
 }
 
 const autoPlayQueue = new Set<string>();
 
 export async function initiateTorrent(opts: InitiateTorrentOptions): Promise<TorrentStatus> {
   await syncTorrentEngineConfig();
+  if (opts.abortSignal?.aborted) throw new DOMException('Canceled', 'AbortError');
 
   const kind: MediaKind = opts.match?.kind ?? opts.fallbackKind;
   const cleanTitleStr = opts.match?.title ?? (opts.fallbackTitle || cleanTitle(opts.name) || opts.name);
@@ -463,7 +465,7 @@ export async function initiateTorrent(opts: InitiateTorrentOptions): Promise<Tor
   scheduleAdaptivePoll();
 
   const store = useLibraryStore.getState();
-  if (opts.playImmediately) {
+  if (opts.playImmediately && !opts.abortSignal?.aborted) {
     if (status.files.length > 0) {
       await playTorrentByHash(status.info_hash);
     } else {
@@ -647,11 +649,12 @@ export async function playTorrentByHash(infoHash: string) {
   }
   if (t.seriesId != null) {
     const item = store.items.find((i) => i.kind === 'tv' && i.id === t.seriesId);
+    const included = store.episodes.filter((e) => e.series_id === t.seriesId && t.filePaths.includes(e.file_path));
     if (item) {
-      const target = playTargetFor(item, store.episodesBySeries);
+      const target = playTargetFor(item, new Map([[t.seriesId, included]]));
       if (target) return play(target);
     }
-    const ep = store.episodes.find((e) => e.series_id === t.seriesId);
+    const ep = included[0];
     if (ep) return play(episodeTarget(ep, { title: t.name }));
   }
 

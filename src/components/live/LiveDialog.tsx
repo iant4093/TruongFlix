@@ -5,13 +5,16 @@ export default function Modal({
   title,
   onClose,
   children,
+  active = true,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  active?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    if (!active) return;
     const previous = document.activeElement as HTMLElement | null;
     const old = document.documentElement.style.overflow;
     document.documentElement.style.overflow = 'hidden';
@@ -40,7 +43,8 @@ export default function Modal({
       document.removeEventListener('keydown', key);
       previous?.focus();
     };
-  }, []);
+  }, [active]);
+  if (!active) return null;
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-6"

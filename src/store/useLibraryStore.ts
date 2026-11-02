@@ -20,9 +20,10 @@ import type {
   SleepTimer,
   TorrentItem,
 } from '../types/media';
+import type { SearchResult } from '../services/tmdb';
 import { allowedForMaturity, buildItems, groupEpisodes } from './selectors';
 
-export type View = 'home' | 'tv' | 'movies' | 'mylist' | 'live';
+export type View = 'home' | 'tv' | 'movies' | 'mylist' | 'live' | 'browse';
 
 export interface HoverState {
   item: MediaItem;
@@ -116,7 +117,7 @@ interface LibraryState {
   scan: ScanState;
   playback: PlaybackState;
   torrents: TorrentItem[];
-  addTorrentModal: { open: boolean; initialSource?: string } | null;
+  addTorrentModal: { open: boolean; initialSource?: string; catalogMatch?: SearchResult } | null;
   toasts: Toast[];
   confirmRequest: ConfirmRequest | null;
 
@@ -148,7 +149,7 @@ interface LibraryState {
   setScan: (patch: Partial<ScanState>) => void;
   setPlayback: (patch: Partial<PlaybackState>) => void;
   setTorrents: (t: TorrentItem[]) => void;
-  openAddTorrent: (initialSource?: string) => void;
+  openAddTorrent: (initialSource?: string, catalogMatch?: SearchResult) => void;
   closeAddTorrent: () => void;
   patchProgress: (type: PlayableType, id: number, time: number, length: number) => void;
   toggleMyList: (item: MediaItem) => Promise<void>;
@@ -177,6 +178,7 @@ let toastId = 0;
 export const useLibraryStore = create<LibraryState>((set, get) => ({
   ready: false,
   settings: {
+    browse_source_url: '',
     tmdb_api_key: '',
     vlc_executable_path: '',
     media_directories: [],
@@ -384,7 +386,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   setScan: (patch) => set((s) => ({ scan: { ...s.scan, ...patch } })),
   setPlayback: (patch) => set((s) => ({ playback: { ...s.playback, ...patch } })),
   setTorrents: (torrents) => set({ torrents }),
-  openAddTorrent: (initialSource) => set({ addTorrentModal: { open: true, initialSource }, hover: null }),
+  openAddTorrent: (initialSource, catalogMatch) => set({ addTorrentModal: { open: true, initialSource, catalogMatch }, hover: null }),
   closeAddTorrent: () => set({ addTorrentModal: null }),
 
   /** Live in-memory progress update while VLC is playing (DB is written by the player service). */

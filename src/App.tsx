@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useLibraryStore } from './store/useLibraryStore';
 import Navbar, { Wordmark } from './components/layout/Navbar';
+import Discover from './components/browse/Discover';
 import LiveTV from './components/live/LiveTV';
 import SettingsDialog from './components/settings/SettingsDialog';
 import { BrowseView, MyListView, SearchView } from './components/home/Browse';
@@ -191,7 +192,9 @@ export default function App() {
       <div id="app-shell">
         <Navbar />
         <main>
-          {view === 'live' ? (
+          {view === 'browse' ? (
+            <Discover />
+          ) : view === 'live' ? (
             <LiveTV />
           ) : search.trim() ? (
             <SearchView query={search} />

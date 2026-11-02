@@ -1,3 +1,4 @@
+import tmdbLogo from '../../assets/tmdb.svg';
 import { useEffect, useState } from 'react';
 import { Download, RefreshCw, RotateCcw } from 'lucide-react';
 import type { EngineStatus } from '../../types/media';
@@ -112,6 +113,21 @@ export default function AboutPage() {
           checked={autoCheck}
           onChange={(v) => void updateSettings({ updates_auto_check: v })}
         />
+      </Group>
+
+      <Group title="Metadata">
+        <Block className="space-y-3 text-xs leading-relaxed text-nf-secondary">
+          <img src={tmdbLogo} alt="TMDB" className="h-4 w-auto" />
+          <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+          <p>Browse discovery and popularity lists come from TMDB. IMDb ratings, when enabled and available, come from IMDb’s non-commercial datasets.</p>
+        </Block>
+      </Group>
+
+      <Group title="Source browser">
+        <Block className="space-y-2 text-xs leading-relaxed text-nf-secondary">
+          <p>Ad filtering uses adblock-rust by Brave Software and contributors (MPL 2.0).</p>
+          <p>EasyList and EasyPrivacy by The EasyList authors (easylist.to), CC BY-SA 3.0 or later. Filter lists and licenses are included with the app. Cached updates are checked daily when the source browser opens and apply after restarting TruongFlix.</p>
+        </Block>
       </Group>
 
       <Group title="Setup">

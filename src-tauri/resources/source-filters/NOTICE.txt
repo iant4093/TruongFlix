@@ -1,0 +1,14 @@
+Source browser filtering
+
+adblock-rust 0.13.5, by Brave Software and contributors
+https://github.com/brave/adblock-rust
+Mozilla Public License 2.0; see LICENSE-adblock.txt.
+
+EasyList and EasyPrivacy, by The EasyList authors (https://easylist.to/)
+https://github.com/easylist/easylist
+Unmodified filter-list snapshots; version, attribution and source are retained in each list header.
+Used under Creative Commons Attribution-ShareAlike 3.0 Unported (or any later version).
+https://creativecommons.org/licenses/by-sa/3.0/
+https://easylist.to/pages/licence.html
+The original filter lists are distributed alongside this notice. App-specific supplemental rules
+are maintained separately in the application source; they do not alter these snapshots.

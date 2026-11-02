@@ -9,6 +9,8 @@ mod nowplaying;
 mod player;
 mod power;
 mod scanner;
+mod source_blocker;
+mod source_browser;
 mod stream;
 mod subsync;
 mod subtitles;
@@ -20,6 +22,10 @@ mod watcher;
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub use player::smoke_test as player_smoke_test;
+
+#[cfg(feature = "source-browser-smoke")]
+#[doc(hidden)]
+pub use source_browser::smoke::run as source_browser_smoke;
 
 use tauri::Manager;
 
@@ -59,6 +65,10 @@ async fn update_feed_status(app: tauri::AppHandle) -> String {
     }
 }
 
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -71,6 +81,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .manage(source_browser::SourceState::default())
         .manage(vlc::VlcState::default())
         .manage(subtitles::SubtitleState::default())
         .setup(|app| {
@@ -85,6 +96,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
+            source_browser::source_browser_open,
+            source_browser::source_browser_control,
             live::live_import,
             live::live_check_begin,
             live::live_check,
@@ -155,7 +168,7 @@ pub fn run() {
             torrent::torrent_check_os_handler,
             torrent::torrent_register_os_handler,
         ])
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building TruongFlix")
         .run(|app, event| {
             #[cfg(any(target_os = "macos", target_os = "ios"))]

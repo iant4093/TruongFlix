@@ -131,3 +131,17 @@ describe('torrent history retention', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 });
+
+describe('playing a selected season transfer', () => {
+  it('starts an episode from that transfer rather than another season in the library', async () => {
+    const { playTorrentByHash } = await import('../src/services/torrents');
+    const { play } = await import('../src/services/player');
+    const earlier = { id: 10, series_id: 9, season_number: 1, episode_number: 1, file_path: '/Shows/S01E01.mp4', watched: 0, progress_seconds: 0 };
+    const selected = { id: 20, series_id: 9, season_number: 2, episode_number: 1, file_path: '/Shows/S02E01.mp4', watched: 0, progress_seconds: 0 };
+    useLibraryStore.setState({ torrents: [{ infoHash: 'season-pack', seriesId: 9, movieId: null, filePaths: [selected.file_path] }] as never,
+      episodes: [earlier, selected] as never, episodesBySeries: new Map([[9, [earlier, selected]]]) as never,
+      items: [{ kind: 'tv', id: 9, title: 'Example', key: 'tv-9' }] as never });
+    await playTorrentByHash('season-pack');
+    expect(play).toHaveBeenCalledWith(expect.objectContaining({ type: 'episode', id: 20, filePath: selected.file_path }));
+  });
+});

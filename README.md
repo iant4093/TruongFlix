@@ -22,7 +22,7 @@ A local media center for macOS and Windows that turns the movies and shows on yo
 
 ---
 
-TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Nothing is uploaded; the only network requests are metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers on the home banner, plus optional subtitle downloads.
+TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Library metadata stays on your device. Network features include metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers, optional subtitles, Live TV, and the torrent sources you choose.
 
 ## Screenshots
 
@@ -72,6 +72,17 @@ Library screenshots use the development preview with sample metadata and artwork
 - Hover cards that cycle through still frames taken from your actual file
 - Continue Watching with TV "Next Up", My List, Top 10, genre rows and search
 - A short animated launch intro with its own sound (both can be turned off)
+
+**Browse**
+
+- Discover movies and TV shows beyond your library: trending, popular, new releases, top rated, and title search powered by TMDB
+- Open title pages with IMDb ratings when available; choose a movie, an exact episode, or an entire season
+- Quick stream/download actions for advertised 1080p or 4K releases, ranked by reported seed counts and checked against torrent file metadata before starting
+- Automatic season selection requires confirmed episode coverage; uncertain packs remain available through manual browsing
+- Add your own EXT-compatible source website in Browse › Source settings. No torrent source is configured by default
+- Browse the source in an isolated native window with EasyList/EasyPrivacy network and cosmetic filtering, blocked popups, persistent sessions, and magnet handoff into the existing torrent review dialog
+- Quick searches can be canceled and may ask you to complete the source website's human verification. Source pages can change; manual browsing remains available when automatic matching fails
+- Available to unrestricted profiles. Downloads use your configured library folders; streams use the existing temporary torrent cache
 
 **Profiles**
 

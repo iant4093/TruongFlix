@@ -122,14 +122,17 @@ export default function AddTorrentModal() {
         setSelectedFiles(defaultIdx);
 
         setMatching(true);
-        const proposal = await matchTorrentMetadata(res.name, res.files);
+        const proposal = modal?.catalogMatch ? {
+          detectedKind: modal.catalogMatch.kind, parsedTitle: modal.catalogMatch.title, parsedYear: modal.catalogMatch.year,
+          match: modal.catalogMatch, candidates: [modal.catalogMatch], recommendedFolder: pickDestinationFolder(modal.catalogMatch.kind),
+        } : await matchTorrentMetadata(res.name, res.files);
         if (inspectSeq.current !== seq) return;
 
         setFallbackKind(proposal.detectedKind);
         setFallbackTitle(proposal.parsedTitle);
         setFallbackYear(proposal.parsedYear);
         setMatch(proposal.match);
-        setMatchOrigin(proposal.match ? 'auto' : 'none');
+        setMatchOrigin(proposal.match ? (modal?.catalogMatch ? 'manual' : 'auto') : 'none');
         setSearchKind(proposal.detectedKind);
         setSearchQuery(proposal.parsedTitle);
         setSearchYear(proposal.parsedYear ? String(proposal.parsedYear) : '');
@@ -157,7 +160,10 @@ export default function AddTorrentModal() {
                 ),
               );
               // Re-run matcher with exact video filenames if user hasn't manually picked a match
-              const refined = await matchTorrentMetadata(liveRes.name, liveRes.files);
+              const refined = modal?.catalogMatch ? {
+                detectedKind: modal.catalogMatch.kind, parsedTitle: modal.catalogMatch.title, parsedYear: modal.catalogMatch.year,
+                match: modal.catalogMatch, recommendedFolder: pickDestinationFolder(modal.catalogMatch.kind),
+              } : await matchTorrentMetadata(liveRes.name, liveRes.files);
               if (inspectSeq.current !== seq) return;
               setFallbackKind(refined.detectedKind);
               setFallbackTitle(refined.parsedTitle);

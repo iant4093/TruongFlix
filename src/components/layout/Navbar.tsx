@@ -15,6 +15,7 @@ const LINKS: { view: View; label: string }[] = [
   { view: 'tv', label: 'TV Shows' },
   { view: 'movies', label: 'Movies' },
   { view: 'live', label: 'Live TV' },
+  { view: 'browse', label: 'Browse' },
   { view: 'mylist', label: 'My List' },
 ];
 
@@ -118,7 +119,9 @@ export default function Navbar() {
           </div>
         )}
 
-        {view === 'live' ? (
+        {view === 'browse' ? (
+          <button aria-label="Search Browse" className="p-1.5" onClick={() => document.querySelector<HTMLInputElement>('input[aria-label="Search titles to browse"]')?.focus()}><Search className="h-5 w-5" /></button>
+        ) : view === 'live' ? (
           <button
             aria-label="Search live TV"
             className="p-1.5"

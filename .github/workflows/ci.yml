@@ -89,6 +89,28 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked
 
+      - name: Source browser smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --locked --example source_browser_smoke --features source-browser-smoke
+          if ($LASTEXITCODE -ne 0) { throw "Source browser smoke build failed" }
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          $env:TRUONGFLIX_SOURCE_SMOKE_REPORT = Join-Path $env:RUNNER_TEMP 'source-browser-smoke.json'
+          $probe = Start-Process 'src-tauri/target/debug/examples/source_browser_smoke.exe' -PassThru `
+            -RedirectStandardError smoke/source-browser-stderr.log -RedirectStandardOutput smoke/source-browser-stdout.log
+          if (-not $probe.WaitForExit(60000)) {
+            Stop-Process -Id $probe.Id -Force
+            throw "Source browser smoke timed out"
+          }
+          if (-not (Test-Path $env:TRUONGFLIX_SOURCE_SMOKE_REPORT)) { throw "Source browser smoke did not produce a report" }
+          Copy-Item $env:TRUONGFLIX_SOURCE_SMOKE_REPORT smoke/source-browser-report.json
+          $report = Get-Content $env:TRUONGFLIX_SOURCE_SMOKE_REPORT -Raw | ConvertFrom-Json
+          if (-not $report.passed) { throw $report.message }
+          $probe.Refresh()
+          if ($probe.ExitCode -ne 0) { throw "Source browser smoke exited with code $($probe.ExitCode)" }
+          Write-Output $report.message
+
       - name: Build installers
         shell: bash
         env:
