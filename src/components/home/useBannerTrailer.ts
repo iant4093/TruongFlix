@@ -1,0 +1,165 @@
+import { useEffect, useRef, useState } from 'react';
+import type { MediaItem } from '../../types/media';
+import { resolveTrailer, type TrailerSource } from '../../services/trailers';
+import { trailerInsets } from '../../services/trailerFrame';
+
+type Phase = 'waiting' | 'loading' | 'playing' | 'ended' | 'failed';
+const DELAY = 4000;
+
+/** Background trailers never share the main player's sessions, history, audio devices or subtitles. */
+export function useBannerTrailer(item: MediaItem, enabled: boolean, playing: boolean) {
+  const identity = `${item.key}/${item.trailerKey}`;
+  const [resolved, setResolved] = useState<{ identity: string; source: TrailerSource } | null>(null);
+  const source = enabled && resolved?.identity === identity ? resolved.source : null;
+  const [phase, setPhase] = useState<Phase>('waiting');
+  const [active, setActive] = useState(false);
+  const [muted, setMuted] = useState(true);
+  const [delayPassed, setDelayPassed] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const allowedRef = useRef(false);
+  allowedRef.current = enabled && playing && delayPassed;
+  const visible = !!source && active && allowedRef.current;
+
+  useEffect(() => {
+    setResolved(null); setPhase('waiting'); setActive(false); setMuted(true); setDelayPassed(false); setCrop({ x: 0, y: 0 });
+  }, [identity, enabled, retry]);
+
+  useEffect(() => {
+    if (!enabled || !playing || delayPassed) return;
+    const timer = window.setTimeout(() => setDelayPassed(true), DELAY);
+    return () => window.clearTimeout(timer);
+  }, [identity, enabled, playing, delayPassed, retry]);
+
+  useEffect(() => {
+    if (!enabled || !playing || source || phase === 'failed' || phase === 'ended' || (!item.trailerKey && !item.tmdbId)) return;
+    let alive = true;
+    setPhase('loading');
+    void resolveTrailer(item, retry > 0).then((source) => {
+      if (alive) setResolved({ identity, source });
+    }).catch(() => { if (alive) setPhase('failed'); });
+    return () => { alive = false; };
+  }, [identity, enabled, playing, source, retry]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const audio = audioRef.current;
+    if (!video || !source) return;
+    let alive = true;
+    let frame = 0;
+    let audioPending = false;
+    let nextAudioAttempt = 0;
+    let samples = 0;
+    let stable = 0;
+    let previous = { x: 0, y: 0 };
+    const canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 90;
+    const sampleFrame = () => {
+      if (!allowedRef.current || video.paused || video.readyState < 2 || video.currentTime < 2 || !video.videoWidth || samples >= 12) return;
+      samples++;
+      try {
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        if (!context) return;
+        context.drawImage(video, 0, 0, 160, 90);
+        const next = trailerInsets(context.getImageData(0, 0, 160, 90).data, 160, 90);
+        stable = Math.abs(previous.x - next.x) < 0.01 && Math.abs(previous.y - next.y) < 0.015 ? stable + 1 : 0;
+        previous = next;
+        // Require matching borders across three decoded frames; dark opening shots never decide the crop.
+        if (stable >= 2 && (next.x || next.y)) { setCrop(next); samples = 12; }
+      } catch { samples = 12; /* Keep the natural frame when pixel access is unavailable. */ }
+    };
+    const sync = () => {
+      if (!audio || audio.muted || !allowedRef.current || video.paused || video.readyState < 3 || video.seeking) return;
+      if (audio.readyState && !audio.seeking && Math.abs(audio.currentTime - video.currentTime) > 0.3) audio.currentTime = video.currentTime;
+      if (audio.paused && !audioPending && Date.now() >= nextAudioAttempt) {
+        audioPending = true;
+        void audio.play().catch(() => { nextAudioAttempt = Date.now() + 2000; }).finally(() => { audioPending = false; });
+      }
+    };
+    const reveal = () => {
+      if (!alive || !allowedRef.current || video.paused || video.ended || video.readyState < 2) return;
+      setActive(true); setPhase('playing'); sync();
+    };
+    const started = () => {
+      if (typeof video.requestVideoFrameCallback === 'function') frame = video.requestVideoFrameCallback(reveal);
+      else reveal();
+    };
+    const hide = () => { setActive(false); audio?.pause(); };
+    const ended = () => { hide(); setPhase('ended'); };
+    const failed = () => { hide(); video.pause(); setPhase('failed'); };
+    video.addEventListener('playing', started);
+    video.addEventListener('waiting', hide);
+    video.addEventListener('seeking', hide);
+    video.addEventListener('pause', hide);
+    video.addEventListener('ended', ended);
+    video.addEventListener('error', failed);
+    audio?.addEventListener('canplay', sync);
+    const timer = window.setInterval(sync, 250);
+    const frameTimer = window.setInterval(sampleFrame, 750);
+    return () => {
+      alive = false;
+      if (frame && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frame);
+      window.clearInterval(timer);
+      window.clearInterval(frameTimer);
+      video.pause(); audio?.pause();
+      video.removeEventListener('playing', started);
+      video.removeEventListener('waiting', hide);
+      video.removeEventListener('seeking', hide);
+      video.removeEventListener('pause', hide);
+      video.removeEventListener('ended', ended);
+      video.removeEventListener('error', failed);
+      audio?.removeEventListener('canplay', sync);
+    };
+  }, [source]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const audio = audioRef.current;
+    if (!video || !source) return;
+    video.muted = source.audioUrl ? true : muted;
+    if (audio) audio.muted = muted;
+    if (!enabled || !playing || !delayPassed || phase === 'failed') {
+      video.pause(); audio?.pause(); setActive(false); return;
+    }
+    if (video.ended || phase === 'ended') return;
+    let cancelled = false;
+    void video.play().catch(() => { if (!cancelled) { setActive(false); setPhase('failed'); } });
+    return () => { cancelled = true; };
+  }, [enabled, playing, delayPassed, source, muted]);
+
+  useEffect(() => {
+    if (!source || !playing || !delayPassed || active || phase === 'ended' || phase === 'failed') return;
+    const timer = window.setTimeout(() => {
+      videoRef.current?.pause(); audioRef.current?.pause(); setPhase('failed');
+    }, 25_000);
+    return () => window.clearTimeout(timer);
+  }, [source, playing, delayPassed, active, phase]);
+
+  const toggleMute = () => {
+    const video = videoRef.current;
+    const audio = audioRef.current;
+    if (phase === 'failed') { setRetry((n) => n + 1); return; }
+    if (!video) return;
+    if (phase === 'ended') {
+      video.currentTime = 0;
+      if (audio) audio.currentTime = 0;
+      setPhase('loading');
+      void video.play().catch(() => setPhase('failed'));
+      return;
+    }
+    const next = !muted;
+    setMuted(next);
+    if (audio) {
+      audio.muted = next;
+      if (!next && allowedRef.current && !video.paused) {
+        audio.currentTime = video.currentTime;
+        // Start within the button's user gesture for WebKit's audio policy.
+        void audio.play().catch(() => setMuted(true));
+      } else audio.pause();
+    } else video.muted = next;
+  };
+  const frameStyle = { width: `${100 / (1 - crop.x * 2)}%`, height: `${100 / (1 - crop.y * 2)}%`, transform: 'translate(-50%, -50%)' };
+  return { source, phase, active: visible, muted, videoRef, audioRef, toggleMute, frameStyle };
+}

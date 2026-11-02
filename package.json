@@ -12,6 +12,7 @@
     "tauri": "tauri",
     "app:dev": "tauri dev",
     "bundle:libmpv": "node scripts/bundle-libmpv.mjs",
+    "bundle:trailers": "node scripts/bundle-trailers.mjs",
     "app:build": "node scripts/release.mjs"
   },
   "dependencies": {

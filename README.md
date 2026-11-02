@@ -68,7 +68,7 @@ Library screenshots use the development preview with sample metadata and artwork
 
 **Home**
 
-- Netflix-style billboard that fades into the title's muted trailer after a few seconds
+- Netflix-style billboard with muted HD trailers (up to the source's 1080p), optional sound and replay, without an embedded site's controls or closed captions
 - Hover cards that cycle through still frames taken from your actual file
 - Continue Watching with TV "Next Up", My List, Top 10, genre rows and search
 - A short animated launch intro with its own sound (both can be turned off)
@@ -158,10 +158,13 @@ npm run dev
 
 # Copy the player engine into src-tauri/libmpv/ (macOS: Homebrew's libmpv; Windows: downloads libmpv-2.dll)
 npm run bundle:libmpv
+npm run bundle:trailers
 
-# Release build: bundles libmpv, builds installers, signs the updater archive, writes latest.json
+# Release build: bundles libmpv and the trailer helpers, builds installers, signs updates, writes latest.json
 npm run app:build
 ```
+
+Desktop dev/build commands automatically prepare checksum-verified yt-dlp and Deno sidecars for HD trailers. The helpers and their licenses are included in installers; users do not need to install them. Run `npm run bundle:trailers` before running Rust tests directly.
 
 `app:build` signs updates with `~/.tauri/truongflix.key` or `$TAURI_SIGNING_PRIVATE_KEY`. Generate a key once with `npx tauri signer generate -w ~/.tauri/truongflix.key`. Without it, use `npx tauri build` for an unsigned local build.
 

@@ -153,6 +153,7 @@ interface TmdbVideo {
   official?: boolean;
   iso_639_1?: string;
   published_at?: string;
+  size?: number;
 }
 interface TmdbNextEpisode {
   season_number: number;
@@ -330,11 +331,17 @@ function stingerOf(d: TmdbMovie): string {
 }
 
 /** Best YouTube trailer: official English trailer, then any trailer, then a teaser. */
-function pickTrailer(videos: TmdbVideo[] | undefined): string {
-  const yt = (videos ?? []).filter((v) => v.site === 'YouTube' && v.key);
+function rankedTrailers(videos: TmdbVideo[] | undefined): TmdbVideo[] {
+  const yt = (videos ?? []).filter((v) => v.site === 'YouTube' && /^[\w-]{11}$/.test(v.key) && ['Trailer', 'Teaser'].includes(v.type));
   const rank = (v: TmdbVideo) =>
     (v.type === 'Trailer' ? 4 : v.type === 'Teaser' ? 2 : 0) + (v.official ? 2 : 0) + (v.iso_639_1 === 'en' ? 1 : 0);
-  return [...yt].sort((a, b) => rank(b) - rank(a) || (b.published_at ?? '').localeCompare(a.published_at ?? ''))[0]?.key ?? '';
+  return [...yt].sort((a, b) => rank(b) - rank(a) || Math.min(b.size ?? 0, 1080) - Math.min(a.size ?? 0, 1080) || (b.published_at ?? '').localeCompare(a.published_at ?? ''));
+}
+function pickTrailer(videos: TmdbVideo[] | undefined): string { return rankedTrailers(videos)[0]?.key ?? ''; }
+
+export async function getTrailerCandidates(kind: 'movie' | 'tv', tmdbId: number): Promise<string[]> {
+  const data = await request<{ results?: TmdbVideo[] }>(`/${kind}/${tmdbId}/videos`);
+  return [...new Set(rankedTrailers(data.results).map((v) => v.key))];
 }
 
 /** Rating, collection and trailer for a movie already in the library (one request). */

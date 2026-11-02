@@ -136,3 +136,10 @@ html.player-mode #app-shell {
     display: none;
   }
 }
+
+/* Banner trailers use our own media elements, without browser or provider player chrome. */
+.trailer-video::-webkit-media-controls,
+.trailer-video::-webkit-media-controls-enclosure,
+.trailer-video::-webkit-media-controls-panel {
+  display: none !important;
+}

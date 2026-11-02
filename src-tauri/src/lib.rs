@@ -90,7 +90,7 @@ pub fn run() {
             live::live_check,
             live::live_sports,
             live::live_artwork,
-            trailer::trailer_embed_url,
+            trailer::trailer_resolve,
             update_feed_status,
             cast::cast_discover,
             cast::cast_start,

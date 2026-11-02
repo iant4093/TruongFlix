@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.iantruong.truongflix",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run bundle:trailers && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run bundle:trailers && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https://image.tmdb.org data: blob:; connect-src 'self' ipc: http://ipc.localhost https://api.themoviedb.org https://www.omdbapi.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src https://www.youtube-nocookie.com https://www.youtube.com https://iant4093.github.io http://127.0.0.1:*",
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https://image.tmdb.org data: blob:; media-src 'self' http://127.0.0.1:*; connect-src 'self' ipc: http://ipc.localhost https://api.themoviedb.org https://www.omdbapi.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src https://www.youtube-nocookie.com https://www.youtube.com https://iant4093.github.io http://127.0.0.1:*",
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -39,6 +39,8 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": ["bin/yt-dlp", "bin/deno"],
+    "resources": { "bin/licenses/": "trailer-licenses/" },
     "targets": "all",
     "category": "Entertainment",
     "shortDescription": "Local media center with a Netflix-style UI",

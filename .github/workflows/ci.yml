@@ -80,6 +80,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/bundle-libmpv.mjs
 
+      - name: Bundle trailer helpers
+        # Sidecars must exist before tauri-build validates the bundle configuration.
+        working-directory: .
+        run: node scripts/bundle-trailers.mjs
+
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --locked

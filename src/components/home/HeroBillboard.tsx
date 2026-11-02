@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Info, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { useBannerTrailer } from './useBannerTrailer';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { playTargetFor } from '../../store/selectors';
@@ -9,11 +9,6 @@ import { playItem } from '../../services/player';
 import TechBadges from '../common/TechBadges';
 import ImdbRating from '../common/ImdbRating';
 import CriticScores from '../common/CriticScores';
-
-/** Seconds of still backdrop before the trailer fades in (like Netflix's home page). */
-const TRAILER_DELAY_MS = 4000;
-
-type TrailerPhase = 'waiting' | 'loading' | 'playing' | 'ended' | 'failed';
 
 /** Whether the banner trailer may play right now (nothing on top of it, window visible, scrolled to top). */
 function useTrailerAllowed() {
@@ -47,161 +42,11 @@ export default function HeroBillboard({ item }: Props) {
   const target = playTargetFor(item, episodesBySeries);
   const resume = !!target && target.startTime > 0;
 
-  // Trailer (muted YouTube embed) that takes over from the backdrop after a few seconds.
   const { enabled, playing } = useTrailerAllowed();
-  const [phase, setPhase] = useState<TrailerPhase>('waiting');
-  const [ytState, setYtState] = useState<number | null>(null);
-  const [captionSafe, setCaptionSafe] = useState(false);
-  const [settled, setSettled] = useState(false);
-  const [muted, setMuted] = useState(true);
-  const [trailerSrc, setTrailerSrc] = useState<string | null>(null);
-  const pausedByUs = useRef(false);
-  const sectionRef = useRef<HTMLElement>(null);
-  const frame = useRef<HTMLIFrameElement>(null);
-  const trailerKey = enabled ? item.trailerKey : null;
-  const [box, setBox] = useState(() => ({ w: window.innerWidth || 1920, h: Math.max(520, (window.innerHeight || 1080) * 0.85) }));
-
-  useEffect(() => {
-    setPhase('waiting');
-    setYtState(null);
-    setCaptionSafe(false);
-    setTrailerSrc(null);
-    setMuted(true);
-    pausedByUs.current = false;
-  }, [trailerKey, item.key]);
-
-  useEffect(() => {
-    if (!trailerKey || phase !== 'loading' || trailerSrc) return;
-    let alive = true;
-    // A real HTTP parent supplies the Referer YouTube requires. The packaged macOS app
-    // uses tauri://, so its embed lives in a tiny loopback wrapper which relays API messages.
-    const source = invoke<string>('trailer_embed_url', { key: trailerKey });
-    void source.then((url) => { if (alive) setTrailerSrc(url); }).catch(() => { if (alive) setPhase('failed'); });
-    return () => { alive = false; };
-  }, [trailerKey, phase, trailerSrc]);
-
-  useEffect(() => {
-    const el = sectionRef.current;
-    if (!el) return;
-    const update = () => {
-      const r = el.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) setBox({ w: r.width, h: r.height });
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const send = (func: string, args: unknown[] = []) =>
-    frame.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
-
-  const forceHd = () => {
-    send('setPlaybackQualityRange', ['hd1080', 'highres']);
-    send('setPlaybackQuality', ['hd1080']);
-  };
-
-  useEffect(() => {
-    if (!trailerKey || phase !== 'waiting' || !playing) return;
-    const t = window.setTimeout(() => setPhase('loading'), TRAILER_DELAY_MS);
-    return () => window.clearTimeout(t);
-  }, [trailerKey, phase, playing]);
-
-  // YouTube iframe API messages: playing / paused / buffering / ended / errors.
-  useEffect(() => {
-    if (phase === 'waiting' || phase === 'failed') return;
-    const onMessage = (e: MessageEvent) => {
-      if (e.source !== frame.current?.contentWindow || typeof e.data !== 'string') return;
-      if (!trailerSrc || e.origin !== new URL(trailerSrc).origin) return;
-      let msg: { event?: string; info?: unknown };
-      try {
-        msg = JSON.parse(e.data);
-      } catch {
-        return;
-      }
-      if (!msg || typeof msg !== 'object') return;
-      if (msg.event === 'captionSafe') { setCaptionSafe(msg.info === true); return; }
-      if (msg.event === 'onReady') {
-        forceHd();
-        send('mute');
-        if (playing) send('playVideo');
-        return;
-      }
-      const state =
-        msg.event === 'onStateChange'
-          ? typeof msg.info === 'number'
-            ? msg.info
-            : undefined
-          : msg.event === 'infoDelivery'
-            ? (msg.info as { playerState?: number })?.playerState
-            : undefined;
-      if (typeof state === 'number') setYtState(state);
-      if (msg.event === 'onError') setPhase('failed');
-      else if (state === 1) {
-        forceHd();
-        setPhase((p) => (p === 'ended' ? p : 'playing'));
-      } else if (state === 0) setPhase('ended');
-    };
-    window.addEventListener('message', onMessage);
-    // Give up quietly if the video never starts (blocked embed, offline, …).
-    const giveUp = window.setTimeout(() => setPhase((p) => (p === 'loading' ? 'failed' : p)), 15000);
-    return () => {
-      window.removeEventListener('message', onMessage);
-      window.clearTimeout(giveUp);
-    };
-  }, [phase, trailerSrc, playing]);
-
-  // Fade the iframe out first when something covers the banner, then pause once hidden so YouTube's
-  // pause icon / end-screen overlay never flashes; resume afterwards if we paused it.
-  useEffect(() => {
-    if (phase !== 'playing') return;
-    if (!playing) {
-      pausedByUs.current = true;
-      const t = window.setTimeout(() => send('pauseVideo'), 180);
-      return () => window.clearTimeout(t);
-    }
-    if (pausedByUs.current) {
-      send('playVideo');
-      pausedByUs.current = false;
-    }
-  }, [playing, phase]);
-
-  const toggleMute = () => {
-    if (phase === 'ended') {
-      setYtState(null);
-      setPhase('loading');
-      send('seekTo', [0, true]);
-      send('playVideo');
-      return;
-    }
-    send(muted ? 'unMute' : 'mute');
-    setMuted(!muted);
-  };
-
-  // Only reveal the embed while YouTube is actively playing (never while paused, buffering, or covered).
-  useEffect(() => {
-    setSettled(false);
-    if (phase !== 'playing' || !playing || ytState !== 1 || !captionSafe) return;
-    const timer = window.setTimeout(() => setSettled(true), 600);
-    return () => window.clearTimeout(timer);
-  }, [phase, playing, ytState, captionSafe]);
-  const trailerOn = phase === 'playing' && playing && ytState === 1 && captionSafe && settled;
-
-  useEffect(() => {
-    if (phase !== 'playing' || captionSafe) return;
-    const timer = window.setTimeout(() => setPhase('failed'), 3000);
-    return () => window.clearTimeout(timer);
-  }, [phase, captionSafe]);
-
-  // Render the iframe at >= 1920x1080 CSS px and scale via transform so YouTube ABR picks 1080p+
-  // even on Windows high-DPI displays (125%–175% scaling) where the CSS viewport is < 1280x720.
-  const coverW = Math.max(box.w, (box.h * 16) / 9) * 1.18;
-  const iframeW = Math.max(1920, Math.ceil(coverW));
-  const iframeH = Math.ceil((iframeW * 9) / 16);
-  const iframeScale = coverW / iframeW;
+  const { source, phase, active: trailerOn, muted, videoRef, audioRef, toggleMute, frameStyle } = useBannerTrailer(item, enabled, playing);
 
   return (
-    <section ref={sectionRef} className="relative h-[85vh] min-h-[520px] w-full overflow-hidden">
+    <section className="relative h-[85vh] min-h-[520px] w-full overflow-hidden">
       {item.backdrop && (
         <motion.img
           key={item.backdrop}
@@ -216,35 +61,30 @@ export default function HeroBillboard({ item }: Props) {
         />
       )}
 
-      {trailerSrc && (phase === 'loading' || phase === 'playing' || phase === 'ended') && (
+      {source && (
         <motion.div
           className="pointer-events-none absolute inset-0 overflow-hidden"
           initial={{ opacity: 0 }}
           animate={{ opacity: trailerOn ? 1 : 0 }}
-          transition={{ duration: trailerOn ? 0.9 : 0, ease: 'easeOut' }}
+          transition={{ duration: trailerOn ? 0.6 : 0, ease: 'easeOut' }}
         >
-          <iframe
-            ref={frame}
-            src={trailerSrc}
-            title={`${item.title} trailer`}
+          <video
+            key={source.videoUrl}
+            ref={videoRef}
+            crossOrigin="anonymous"
+            src={source.videoUrl}
+            aria-label={`${item.title} trailer`}
+            muted={source.audioUrl ? true : muted}
+            playsInline
+            preload="auto"
+            disablePictureInPicture
+            disableRemotePlayback
+            controlsList="nodownload nofullscreen noremoteplayback"
             tabIndex={-1}
-            allow="autoplay; encrypted-media"
-            referrerPolicy="strict-origin-when-cross-origin"
-            onLoad={() => {
-              const win = frame.current?.contentWindow;
-              if (!win) return;
-              win.postMessage(JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*');
-              for (const ev of ['onReady', 'onStateChange', 'onError']) {
-                win.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: [ev] }), '*');
-              }
-            }}
-            className="pointer-events-none absolute left-1/2 top-1/2 border-0"
-            style={{
-              width: `${iframeW}px`,
-              height: `${iframeH}px`,
-              transform: `translate(-50%, -50%) scale(${iframeScale})`,
-            }}
+            className="trailer-video absolute left-1/2 top-1/2 border-0 object-cover transition-[width,height] duration-500"
+            style={frameStyle}
           />
+          {source.audioUrl && <audio ref={audioRef} src={source.audioUrl} preload="auto" className="hidden" />}
         </motion.div>
       )}
 
@@ -320,13 +160,14 @@ export default function HeroBillboard({ item }: Props) {
 
       {/* Right side: trailer sound / replay + maturity rating, as on Netflix */}
       <div className="absolute bottom-[32%] right-0 z-10 flex items-center gap-3">
-        {captionSafe && (phase === 'playing' || phase === 'ended') && (
+        {(phase === 'playing' || phase === 'ended' || phase === 'failed') && (
           <button
             onClick={toggleMute}
-            title={phase === 'ended' ? 'Replay trailer' : muted ? 'Unmute trailer' : 'Mute trailer'}
+            aria-label={phase === 'failed' ? 'Retry trailer' : phase === 'ended' ? 'Replay trailer' : muted ? 'Unmute trailer' : 'Mute trailer'}
+            title={`${phase === 'failed' ? 'Retry trailer' : phase === 'ended' ? 'Replay trailer' : muted ? 'Unmute trailer' : 'Mute trailer'}${source ? ` · ${source.height}p` : ''}`}
             className="flex h-11 w-11 items-center justify-center rounded-full border border-white/60 bg-black/20 transition hover:bg-white/10"
           >
-            {phase === 'ended' ? <RotateCcw className="h-5 w-5" /> : muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+            {phase === 'ended' || phase === 'failed' ? <RotateCcw className="h-5 w-5" /> : muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
           </button>
         )}
         {item.certification && (
