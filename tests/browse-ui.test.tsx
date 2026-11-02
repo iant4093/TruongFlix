@@ -18,7 +18,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   useLibraryStore.setState(useLibraryStore.getInitialState(), true);
   useLibraryStore.setState((s) => ({ activeProfile: { id: 1, name: 'Adult', maturity: 'all' } as Profile,
-    settings: { ...s.settings, tmdb_api_key: 'test', imdb_enabled: false, browse_source_url: 'https://ext.to' } }));
+    settings: { ...s.settings, tmdb_api_key: 'test', imdb_enabled: false, browse_source_url: 'https://source.example' } }));
   vi.mocked(tmdb.getCatalog).mockResolvedValue({ pages: 1, items: [item] });
   vi.mocked(tmdb.getCatalogDetail).mockResolvedValue(detail);
   vi.mocked(tmdb.getCatalogSeason).mockResolvedValue({ complete: true, episodes: [1, 2].map((episode_number) => ({

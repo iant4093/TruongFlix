@@ -490,13 +490,13 @@ mod tests {
     #[test]
     fn validates_source_and_identity() {
         assert_eq!(
-            source_origin("https://ext.to/browse/").unwrap(),
-            "https://ext.to"
+            source_origin("https://source.example/browse/").unwrap(),
+            "https://source.example"
         );
         for bad in [
-            "http://ext.to",
+            "http://source.example",
             "file:///etc/passwd",
-            "https://user:pass@ext.to",
+            "https://user:pass@source.example",
             "https://127.0.0.1",
             "https://localhost",
         ] {

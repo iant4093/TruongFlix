@@ -126,7 +126,7 @@ function SourceSettings({ onClose }: { onClose: () => void }) {
     finally { setSaving(false); }
   };
   return <Modal title="Torrent source" onClose={onClose}>
-    <p className="mb-5 text-sm leading-relaxed text-white/60">Add your source website to search titles by IMDb ID. EXT-compatible websites are supported. Its browser session stays on this device.</p>
+    <p className="mb-5 text-sm leading-relaxed text-white/60">Add your source website to search titles by IMDb ID. The browser session stays on this device.</p>
     <label className="mb-2 block text-sm" htmlFor="source-address">Website address</label>
     <input id="source-address" type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://your-source.example" className="w-full rounded border border-white/20 bg-black/50 px-4 py-3 text-sm outline-none focus:border-white/60" />
     <p className="mt-4 flex items-center gap-2 text-xs text-white/55"><ShieldCheck className="h-4 w-4" />Ad and popup blocking is enabled automatically.</p>

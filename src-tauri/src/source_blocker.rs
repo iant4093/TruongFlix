@@ -187,7 +187,7 @@ mod tests {
         ));
         assert!(!rules.blocks(
             "https://challenges.cloudflare.com/widget",
-            "https://ext.to",
+            "https://source.example",
             "subdocument"
         ));
         assert!(rules.webkit.contains("css-display-none"));
@@ -199,12 +199,12 @@ mod tests {
         assert!(rules.status.rules > 1000);
         assert!(rules.blocks(
             "https://www.predictivdisplay.com/jump/next.php",
-            "https://ext.to",
+            "https://source.example",
             "subdocument"
         ));
         assert!(!rules.blocks(
-            "https://ext.to/static/js/advanced-search-list.js",
-            "https://ext.to",
+            "https://source.example/static/js/advanced-search-list.js",
+            "https://source.example",
             "script"
         ));
     }

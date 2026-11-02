@@ -44,7 +44,7 @@ beforeEach(() => {
   vi.mocked(initiateTorrent).mockResolvedValue(torrentStatus());
 });
 afterEach(() => { vi.useRealTimers(); });
-const run = (signal = new AbortController().signal) => quickTorrent({ item, target, mode: 'stream', sourceUrl: 'https://ext.to', signal, progress: vi.fn() });
+const run = (signal = new AbortController().signal) => quickTorrent({ item, target, mode: 'stream', sourceUrl: 'https://source.example', signal, progress: vi.fn() });
 
 describe('Browse transfer lifecycle', () => {
   it('preserves catalog identity and verified file selection when starting', async () => {
@@ -96,8 +96,8 @@ describe('Browse transfer lifecycle', () => {
 
 describe('source and advertised candidate filtering', () => {
   it('requires public HTTPS without embedded credentials', () => {
-    expect(validateSourceUrl('https://ext.to/browse/?q=test')).toBe('https://ext.to');
-    for (const url of ['http://ext.to', 'file:///etc/passwd', 'https://user:pass@ext.to', 'https://localhost']) expect(() => validateSourceUrl(url)).toThrow();
+    expect(validateSourceUrl('https://source.example/browse/?q=test')).toBe('https://source.example');
+    for (const url of ['http://source.example', 'file:///etc/passwd', 'https://user:pass@source.example', 'https://localhost']) expect(() => validateSourceUrl(url)).toThrow();
   });
   it('does not substitute quality, episode or playlist identity', () => {
     expect(candidateMatches(target, row)).toBe(true);
@@ -137,7 +137,7 @@ it('dismisses its season confirmation on cancellation without starting a transfe
   const controller = new AbortController();
   const running = quickTorrent({ item: { ...item, kind: 'tv', title: 'Example Show' },
     target: { ...target, title: 'Example Show', kind: 'season', season: 1, expected: [1, 2], complete: true },
-    mode: 'stream', sourceUrl: 'https://ext.to', signal: controller.signal, progress: vi.fn() });
+    mode: 'stream', sourceUrl: 'https://source.example', signal: controller.signal, progress: vi.fn() });
   await vi.waitFor(() => expect(useLibraryStore.getState().confirmRequest).not.toBeNull());
   controller.abort();
   await expect(running).rejects.toMatchObject({ name: 'AbortError' });
@@ -153,7 +153,7 @@ it('hands a manually selected magnet to review with its catalog identity and sta
     return result;
   });
   const selected = vi.fn();
-  await browseSource(item, target.imdbId, 'https://ext.to', selected);
+  await browseSource(item, target.imdbId, 'https://source.example', selected);
   const magnet = 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000';
   emit({ payload: { requestId, kind: 'magnet', magnet } });
   expect(selected).toHaveBeenCalledOnce();
@@ -181,7 +181,7 @@ it('starts a download with only the verified season files after confirmation', a
     })) });
   const running = quickTorrent({ item: { ...item, kind: 'tv', title: 'Example Show' },
     target: { ...target, title: 'Example Show', kind: 'season', season: 1, expected: [1, 2], complete: true },
-    mode: 'download', sourceUrl: 'https://ext.to', signal: new AbortController().signal, progress: vi.fn() });
+    mode: 'download', sourceUrl: 'https://source.example', signal: new AbortController().signal, progress: vi.fn() });
   await vi.waitFor(() => expect(useLibraryStore.getState().confirmRequest).not.toBeNull());
   useLibraryStore.getState().resolveConfirm(true);
   await running;
@@ -195,7 +195,7 @@ it('ignores a manual browser magnet after the profile selector opens', async () 
     if (command === 'source_browser_open') queueMicrotask(() => emit({ payload: { requestId, kind: 'ready' } }));
     return result;
   });
-  await browseSource(item, target.imdbId, 'https://ext.to');
+  await browseSource(item, target.imdbId, 'https://source.example');
   useLibraryStore.setState({ profileGate: 'select' });
   emit({ payload: { requestId, kind: 'magnet', magnet: 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000' } });
   expect(useLibraryStore.getState().addTorrentModal).toBeNull();

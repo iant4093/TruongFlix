@@ -79,7 +79,7 @@ Library screenshots use the development preview with sample metadata and artwork
 - Open title pages with IMDb ratings when available; choose a movie, an exact episode, or an entire season
 - Quick stream/download actions for advertised 1080p or 4K releases, ranked by reported seed counts and checked against torrent file metadata before starting
 - Automatic season selection requires confirmed episode coverage; uncertain packs remain available through manual browsing
-- Add your own EXT-compatible source website in Browse › Source settings. No torrent source is configured by default
+- Add your own compatible source website in Browse › Source settings. No torrent source is configured by default
 - Browse the source in an isolated native window with EasyList/EasyPrivacy network and cosmetic filtering, blocked popups, persistent sessions, and magnet handoff into the existing torrent review dialog
 - Quick searches can be canceled and may ask you to complete the source website's human verification. Source pages can change; manual browsing remains available when automatic matching fails
 - Available to unrestricted profiles. Downloads use your configured library folders; streams use the existing temporary torrent cache

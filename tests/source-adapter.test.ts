@@ -11,7 +11,7 @@ beforeEach(() => {
   vi.spyOn(document, 'readyState', 'get').mockReturnValue('complete');
 });
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ''; });
-function run(url = 'https://ext.to/browse/?imdb_id=tt1234567', platform: 'mac' | 'windows' = 'mac') {
+function run(url = 'https://source.example/browse/?imdb_id=tt1234567', platform: 'mac' | 'windows' = 'mac') {
   const window = { top: null as unknown, self: null as unknown,
     webkit: platform === 'mac' ? { messageHandlers: { truongflixSource: { postMessage: (data: string) => messages.push(JSON.parse(data)) } } } : undefined,
     chrome: platform === 'windows' ? { webview: { postMessage: (data: string) => messages.push(JSON.parse(data)) } } : undefined };
@@ -29,7 +29,7 @@ it('leaves security verification pages untouched', () => {
   document.title = 'Just a moment...'; const html = document.body.innerHTML; run(); expect(messages).toMatchObject([{ kind: 'challenge' }]); expect(document.body.innerHTML).toBe(html);
 });
 it('does not attribute results from another title to the selected title', () => {
-  run('https://ext.to/browse/?imdb_id=tt9999999'); expect(messages.filter((m) => m.kind === 'results')).toEqual([]);
+  run('https://source.example/browse/?imdb_id=tt9999999'); expect(messages.filter((m) => m.kind === 'results')).toEqual([]);
 });
 it('rejects malformed release ids instead of invoking arbitrary page elements', () => {
   document.querySelector('.search-magnet-btn')!.setAttribute('data-id', '1] script'); run();
