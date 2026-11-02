@@ -76,6 +76,20 @@ pub fn run() {
     let rules = Arc::new(Rules::compile("/source-test-ad.js$script\n##.qa-ad", 0, true).unwrap());
     let phase = Arc::new(AtomicU8::new(0));
     let done = Arc::new(AtomicBool::new(false));
+    // Independent of the UI/runtime: initialization deadlocks must still produce a CI report.
+    let timeout_done = done.clone();
+    let timeout_phase = phase.clone();
+    let timeout_output = output.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(35));
+        if !timeout_done.swap(true, Ordering::SeqCst) {
+            let result = serde_json::json!({"passed":false,"message":format!("Native source browser smoke timed out at phase {}", timeout_phase.load(Ordering::SeqCst))});
+            let _ = fs::write(timeout_output, result.to_string());
+            if std::env::var_os("CI").is_some() {
+                std::process::exit(1);
+            }
+        }
+    });
     let mut context = crate::app_context();
     context.config_mut().identifier = "com.iantruong.truongflix.sourcesmoke".into();
     context.config_mut().product_name = Some("Source Browser Smoke".into());
@@ -87,7 +101,6 @@ pub fn run() {
         *app.state::<SourceState>().0.lock().unwrap() = Some(Session { request_id: REQUEST.into(), origin: origin.clone(), imdb_id: "tt1234567".into(), pending: None, manual: false,
             releases: vec![], page: 1, challenge_shown: false, rules: Some(rules.clone()) });
         let event_app = app.handle().clone(); let event_main = main.clone();
-        let timeout_phase = phase.clone();
         let event_done = done.clone(); let event_output = output.clone(); let event_requests = requests.clone();
         app.listen_any("source-browser", move |event| {
             let Ok(event) = serde_json::from_str::<SourceEvent>(event.payload()) else { return; };
@@ -118,11 +131,6 @@ pub fn run() {
             .on_permission_request(|_, _| tauri::webview::PermissionResponse::Deny).on_download(|_,_|false).build()?;
         let url = format!("{origin}/browse/?imdb_id=tt1234567").parse().unwrap();
         install(&browser, rules, url, REQUEST.into())?;
-        let timeout_app = app.handle().clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(35)).await;
-            if !done.swap(true, Ordering::SeqCst) { report(&timeout_app, &output, false, &format!("Native source browser smoke timed out at phase {}", timeout_phase.load(Ordering::SeqCst))); }
-        });
         Ok(())
     }).run(context).expect("source browser smoke failed");
 }

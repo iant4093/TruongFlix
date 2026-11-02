@@ -56,7 +56,9 @@ pub fn install(
         }};
         match setup() {
             Ok(()) => {
-                finish_open(&target, url, &id);
+                // Tauri holds the webview dispatcher lock during with_webview on Windows.
+                // Re-entering navigate/show here deadlocks; dispatch after this callback returns.
+                tauri::async_runtime::spawn(async move { finish_open(&target, url, &id); });
             }
             Err(_) => { let mut e = event(&id, "error"); e.message = Some("Ad protection could not be prepared. Update the WebView2 runtime and retry.".into()); publish(target.app_handle(), e); }
         }
