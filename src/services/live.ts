@@ -216,7 +216,7 @@ interface RawEvent {
   competitions?: {
     date?: string;
     status?: RawEvent['status'];
-    competitors?: { team?: RawTeam; score?: string }[];
+    competitors?: { team?: RawTeam; score?: string | number }[];
     broadcasts?: { names?: string[] }[];
     geoBroadcasts?: { region?: string; lang?: string; media?: { shortName?: string } }[];
   }[];
@@ -253,7 +253,7 @@ export function parseSports(data: unknown, league: string): SportsEvent[] {
           id: `${league}:${team?.id ?? team?.displayName}`,
           name: team?.displayName ?? '',
           abbreviation: team?.abbreviation ?? '',
-          score: score ?? '',
+          score: /^(?:\d+)(?:\.\d+)?$/.test(String(score ?? '').trim()) ? String(score).trim() : '',
           color: /^[0-9a-f]{6}$/i.test(team?.color ?? '') ? `#${team!.color}` : '#303030',
           logo: team?.logo ?? '',
         })),
@@ -268,7 +268,8 @@ export function sportsSchedule(league: string, date: string, force = false) {
   if (schedules.has(key)) return schedules.get(key)!;
   const promise = (async () => {
     const old = await readLiveData<{ events: SportsEvent[]; fetchedAt: number } | null>(`sports:${key}`, null);
-    if (!force && old && Date.now() - old.fetchedAt < (old.events.some((e) => e.status === 'live') ? 60_000 : 600_000))
+    const ttl = old?.events.some((e) => e.status === 'live') ? 30_000 : date === localDate() ? 60_000 : 600_000;
+    if (!force && old && Date.now() - old.fetchedAt < ttl)
       return { ...old, stale: false };
     try {
       const data = await invoke<unknown>('live_sports', { league, date });

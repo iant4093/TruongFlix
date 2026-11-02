@@ -81,6 +81,19 @@ describe('event discovery and feed matching', () => {
     expect(parsed.broadcasts).toEqual(['Fox']);
     expect(parsed.teams[0]).toMatchObject({ name: 'San Francisco 49ers', score: '14', id: 'football/nfl:25' });
   });
+  it('keeps zero scores and normalizes numeric scores without inventing missing or invalid ones', () => {
+    const parsed = parseSports({ events: [{
+      ...api.events[0],
+      competitions: [{ competitors: [
+        { team: { id: '1' }, score: 0 },
+        { team: { id: '2' }, score: ' 17 ' },
+        { team: { id: '3' } },
+        { team: { id: '4' }, score: 'NaN' },
+        { team: { id: '5' }, score: { value: 9 } },
+      ] }],
+    }] }, 'football/nfl')[0];
+    expect(parsed.teams.map((team) => team.score)).toEqual(['0', '17', '', '', '']);
+  });
   it('rejects invalid provider payloads and skips malformed events', () => {
     expect(() => parseSports({}, 'football/nfl')).toThrow();
     expect(parseSports({ events: [{ id: '1', name: 'Invalid date', date: 'no' }] }, 'football/nfl')).toEqual([]);
@@ -217,5 +230,24 @@ describe('source persistence and schedule caching', () => {
     const response = await sportsSchedule('football/nfl', '20261101', true);
     expect(response.stale).toBe(true);
     expect(response.events).toEqual([event]);
+  });
+  it('refreshes live scores after 30 seconds and today’s upcoming schedules after a minute', async () => {
+    const now = Date.now();
+    const date = new Date();
+    const today = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
+    const old = { events: [{ ...event, status: 'live' }], fetchedAt: now - 20_000 };
+    vi.mocked(db.readLiveData).mockResolvedValue(old);
+    vi.mocked(invoke).mockResolvedValue(api as never);
+    await sportsSchedule('football/nfl', today);
+    expect(invoke).not.toHaveBeenCalled();
+    old.fetchedAt = now - 31_000;
+    await sportsSchedule('football/nfl', today);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    old.events[0].status = 'upcoming';
+    await sportsSchedule('football/nfl', today);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    old.fetchedAt = now - 61_000;
+    await sportsSchedule('football/nfl', today);
+    expect(invoke).toHaveBeenCalledTimes(2);
   });
 });

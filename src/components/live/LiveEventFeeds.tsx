@@ -5,7 +5,8 @@ import { channelKey, eventMatches, eventMappingKey, setLivePreferences, useLiveS
 import { playLive } from '../../services/player';
 import Modal from './LiveDialog';
 import { LiveArtwork } from './LiveArtwork';
-import { button, leagueLabel } from './ui';
+import { button, eventStatusLabel, leagueLabel } from './ui';
+import EventScoreboard from './LiveEventScoreboard';
 
 export default function EventFeeds({
   event,
@@ -50,6 +51,12 @@ export default function EventFeeds({
       <p className="mb-2 text-sm text-nf-secondary">
         {leagueLabel(event.league)} · {new Date(event.date).toLocaleString()}
       </p>
+      <div className="mb-4 overflow-hidden rounded-lg border border-white/10">
+        <EventScoreboard event={event} compact />
+        <p className={`px-4 pb-3 text-center text-sm font-semibold ${event.status === 'live' ? 'text-red-400' : 'text-nf-secondary'}`}>
+          {eventStatusLabel(event)}
+        </p>
+      </div>
       <p className="mb-5 text-sm">Broadcast: {event.broadcasts.join(' · ') || 'Not listed by the sports provider'}</p>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <button className={button} onClick={() => setManual(!manual)}>

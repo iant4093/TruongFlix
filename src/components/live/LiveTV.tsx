@@ -40,6 +40,7 @@ const dateLabel = (date: Date) =>
 export default function LiveTV() {
   const profile = useLibraryStore((s) => s.activeProfile);
   const toast = useLibraryStore((s) => s.toast);
+  const playerOpen = useLibraryStore((s) => !!s.playerSession);
   const state = useLiveStore();
   const [tab, setTab] = useState<'sports' | 'channels'>('sports');
   const [league, setLeague] = useState('football/nfl');
@@ -82,20 +83,36 @@ export default function LiveTV() {
   const date = localDate(day);
 
   useEffect(() => {
-    let alive = true;
-    if (profile?.maturity !== 'all') return;
-    setLoading(true);
-    setScheduleError('');
     setEvents([]);
+    setUpdated(0);
+    setStale(false);
+    setScheduleError('');
+    setSelectedEvent(null);
+  }, [league, date]);
+
+  useEffect(() => {
+    let alive = true;
+    let busy = false;
+    let timer = 0;
+    if (profile?.maturity !== 'all' || tab !== 'sports' || playerOpen) return;
     const leagues = league === 'all' ? LEAGUES.map(([id]) => id) : [league];
-    const force = refresh !== forcedRefresh.current;
+    let force = refresh !== forcedRefresh.current;
     forcedRefresh.current = refresh;
-    void Promise.allSettled(leagues.map((id) => sportsSchedule(id, date, force))).then((results) => {
+    const poll = async () => {
+      if (!alive || busy || document.hidden) return;
+      busy = true;
+      setLoading(true);
+      const results = await Promise.allSettled(leagues.map((id) => sportsSchedule(id, date, force)));
+      force = false;
+      busy = false;
       if (!alive) return;
       const good = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
-      setEvents(good.flatMap((r) => r.events).sort((a, b) => Date.parse(a.date) - Date.parse(b.date)));
-      setStale(good.some((r) => r.stale));
-      setUpdated(good.length ? Math.min(...good.map((r) => r.fetchedAt)) : 0);
+      const next = good.flatMap((r) => r.events).sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+      if (good.length) {
+        setEvents(next);
+        setUpdated(Math.min(...good.map((r) => r.fetchedAt)));
+      }
+      setStale(!good.length || good.some((r) => r.stale));
       setScheduleError(
         results.some((r) => r.status === 'rejected')
           ? good.length
@@ -104,11 +121,20 @@ export default function LiveTV() {
           : '',
       );
       setLoading(false);
-    });
+      timer = window.setTimeout(() => void poll(), next.some((e) => e.status === 'live') ? 30_000 : 60_000);
+    };
+    const visibility = () => {
+      window.clearTimeout(timer);
+      if (!document.hidden) void poll();
+    };
+    document.addEventListener('visibilitychange', visibility);
+    void poll();
     return () => {
       alive = false;
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', visibility);
     };
-  }, [profile?.maturity, league, date, refresh, Math.floor(clock / 2)]);
+  }, [profile?.maturity, league, date, refresh, tab, playerOpen]);
 
   useEffect(() => {
     if (!state.ready || profile?.maturity !== 'all') return;
@@ -310,16 +336,23 @@ export default function LiveTV() {
                 Today
               </button>
             </div>
-            <button className={button} disabled={loading} onClick={() => setRefresh((v) => v + 1)}>
-              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Refresh events
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              {updated > 0 && (
+                <span className="text-xs text-nf-muted">
+                  Updated {new Date(updated).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                </span>
+              )}
+              <button className={button} disabled={loading} onClick={() => setRefresh((v) => v + 1)}>
+                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Refresh scores
+              </button>
+            </div>
           </div>
           {(scheduleError || stale) && (
             <p
               role="status"
               className="mb-5 rounded border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200"
             >
-              {scheduleError || 'Showing a saved schedule. Refresh to check for changes.'}
+              {scheduleError || 'Showing saved scores and schedules. Refresh to check for changes.'}
               {updated > 0 && ` Last updated ${new Date(updated).toLocaleString()}.`}
             </p>
           )}
@@ -467,11 +500,15 @@ export default function LiveTV() {
         </>
       )}
       <p className="mt-8 text-xs text-nf-muted">
-        Schedules describe the advertised broadcast. Regional feeds and stream availability can vary.
+        Scores and schedules from ESPN. Live games refresh every 30 seconds. Regional feeds and stream availability can vary.
       </p>
       {sourcesOpen && <Sources onClose={() => setSourcesOpen(false)} />}
       {selectedEvent && (
-        <EventFeeds event={selectedEvent} playlists={playlists} onClose={() => setSelectedEvent(null)} />
+        <EventFeeds
+          event={events.find((event) => event.id === selectedEvent.id) ?? selectedEvent}
+          playlists={playlists}
+          onClose={() => setSelectedEvent(null)}
+        />
       )}
     </section>
   );

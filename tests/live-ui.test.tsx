@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import LiveTV from '../src/components/live/LiveTV';
 import { useLibraryStore } from '../src/store/useLibraryStore';
@@ -14,8 +14,22 @@ vi.mock('../src/services/db', () => ({ readLiveData: vi.fn(), writeLiveData: vi.
 vi.mock('../src/services/player', () => ({ playLive: vi.fn() }));
 
 let playlist: LivePlaylist;
+const scoreboard = (state = 'in', score = '14', otherScore = '0', detail = '6:13 - 3rd') => ({
+  events: [{
+    id: '1', name: '49ers at Rams', date: new Date().toISOString(),
+    competitions: [{
+      status: { type: { state, completed: state === 'post', shortDetail: detail } },
+      broadcasts: [{ names: ['Fox'] }],
+      competitors: [
+        { team: { id: '25', displayName: 'San Francisco 49ers', abbreviation: 'SF' }, score },
+        { team: { id: '14', displayName: 'Los Angeles Rams', abbreviation: 'LAR' }, score: otherScore },
+      ],
+    }],
+  }],
+});
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
   vi.stubGlobal(
     'IntersectionObserver',
     class {
@@ -81,6 +95,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -141,4 +157,89 @@ it('keeps unrated channels out of restricted profile views', () => {
   expect(screen.getByText(/Switch to an adult profile/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Sources' })).toBeNull();
   expect(invoke).not.toHaveBeenCalledWith('live_sports', expect.anything());
+});
+
+it.each([
+  ['in', '14', '0', '6:13 - 3rd', true],
+  ['post', '17', '0', 'Final/OT', true],
+  ['pre', '0', '0', '8:20 PM', false],
+  ['post', '0', '0', 'Canceled', false],
+] as const)('shows appropriate scores for %s games (%s–%s, %s)', async (state, first, second, detail, show) => {
+  vi.mocked(invoke).mockResolvedValue(scoreboard(state, first, second, detail) as never);
+  render(<LiveTV />);
+  await screen.findByText('49ers at Rams');
+  if (show) {
+    expect(screen.getByLabelText(`San Francisco 49ers score: ${first}`).textContent).toBe(first);
+    expect(screen.getByLabelText(`Los Angeles Rams score: ${second}`).textContent).toBe(second);
+    expect(screen.getByText(new RegExp(detail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeTruthy();
+  } else expect(screen.queryByLabelText(/score:/)).toBeNull();
+});
+
+it('shows unavailable scores as dashes, not zeroes', async () => {
+  vi.mocked(invoke).mockResolvedValue(scoreboard('in', '', '', 'Halftime') as never);
+  render(<LiveTV />);
+  expect((await screen.findByLabelText('San Francisco 49ers score: unavailable')).textContent).toBe('—');
+  expect(screen.getByLabelText('Los Angeles Rams score: unavailable').textContent).toBe('—');
+});
+
+it('updates live cards and the open channel picker in place and preserves stale scores offline', async () => {
+  vi.useFakeTimers();
+  const saved = new Map<string, unknown>();
+  vi.mocked(db.readLiveData).mockImplementation(async (key, fallback) => saved.get(key) ?? fallback);
+  vi.mocked(db.writeLiveData).mockImplementation(async (key, value) => { saved.set(key, value); });
+  let response = scoreboard();
+  let pending: Promise<typeof response> | null = null;
+  vi.mocked(invoke).mockImplementation(async (command) => command === 'live_sports' ? (pending ?? response) as never : undefined as never);
+  render(<LiveTV />);
+  await act(async () => { await Promise.resolve(); });
+  const card = screen.getByText('49ers at Rams').closest('button')!;
+  fireEvent.click(card);
+  expect(within(screen.getByRole('dialog')).getByLabelText('San Francisco 49ers score: 14')).toBeTruthy();
+  response = scoreboard('in', '21', '7', '2:40 - 3rd');
+  let finish!: (value: typeof response) => void;
+  pending = new Promise((resolve) => { finish = resolve; });
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(card.isConnected).toBe(true);
+  expect(screen.getAllByLabelText('San Francisco 49ers score: 14')).toHaveLength(2);
+  expect((screen.getByRole('button', { name: 'Refresh scores' }) as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => { finish(response); });
+  pending = null;
+  expect(screen.getByRole('heading', { level: 3, name: '49ers at Rams' }).closest('button')).toBe(card);
+  expect(screen.getAllByLabelText('San Francisco 49ers score: 21')).toHaveLength(2);
+  expect(screen.getAllByText('● Live · 2:40 - 3rd')).toHaveLength(2);
+  vi.mocked(invoke).mockRejectedValue(new Error('Offline'));
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(screen.getAllByLabelText('San Francisco 49ers score: 21')).toHaveLength(2);
+  expect(screen.getByText(/Showing saved scores and schedules/)).toBeTruthy();
+});
+
+it('pauses score polling in Channels, while hidden, and during playback, then refreshes on return', async () => {
+  vi.useFakeTimers();
+  let hidden = false;
+  vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+  vi.mocked(invoke).mockResolvedValue(scoreboard() as never);
+  render(<LiveTV />);
+  await act(async () => { await Promise.resolve(); });
+  const requests = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === 'live_sports').length;
+  expect(requests()).toBe(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Channels', exact: true }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(requests()).toBe(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Sports', exact: true }));
+  await act(async () => { await Promise.resolve(); });
+  expect(requests()).toBe(2);
+  hidden = true;
+  fireEvent(document, new Event('visibilitychange'));
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(requests()).toBe(2);
+  hidden = false;
+  fireEvent(document, new Event('visibilitychange'));
+  await act(async () => { await Promise.resolve(); });
+  expect(requests()).toBe(3);
+  act(() => useLibraryStore.setState({ playerSession: { itemKey: null } as never }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(requests()).toBe(3);
+  act(() => useLibraryStore.setState({ playerSession: null }));
+  await act(async () => { await Promise.resolve(); });
+  expect(requests()).toBe(4);
 });
