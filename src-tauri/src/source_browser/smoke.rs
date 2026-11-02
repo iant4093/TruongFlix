@@ -3,7 +3,7 @@ use super::*;
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
     time::Duration,
@@ -54,25 +54,53 @@ pub fn run() {
             let Ok(mut stream) = stream else {
                 continue;
             };
-            let mut buffer = [0; 4096];
-            let n = stream.read(&mut buffer).unwrap_or(0);
-            let path = String::from_utf8_lossy(&buffer[..n])
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("/")
-                .to_owned();
-            server_requests.lock().unwrap().push(path.clone());
-            let (body, kind) = if path == "/essential.js" {
-                ("window.essentialLoaded=true;", "text/javascript")
-            } else if path == "/source-test-ad.js" {
-                ("window.unwantedAdLoaded=true;", "text/javascript")
-            } else {
-                (FIXTURE, "text/html")
-            };
-            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len());
-            let _ = stream.write_all(response.as_bytes());
+            let requests = server_requests.clone();
+            // WebView2 may open idle speculative connections before requesting page assets.
+            // Each connection must be independent so an idle socket cannot starve actual requests.
+            std::thread::spawn(move || {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                let mut buffer = [0; 4096];
+                let Ok(n) = stream.read(&mut buffer) else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                let request = String::from_utf8_lossy(&buffer[..n]);
+                let Some(path) = request.split_whitespace().nth(1) else {
+                    return;
+                };
+                requests.lock().unwrap().push(path.to_owned());
+                let (body, kind) = if path == "/essential.js" {
+                    ("window.essentialLoaded=true;", "text/javascript")
+                } else if path == "/source-test-ad.js" {
+                    ("window.unwantedAdLoaded=true;", "text/javascript")
+                } else {
+                    (FIXTURE, "text/html")
+                };
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(response.as_bytes());
+            });
         }
     });
+    // Reproduce a browser preconnection: the page must load while this socket sends nothing.
+    let preconnection = TcpStream::connect(origin.trim_start_matches("http://")).unwrap();
+    let mut check = TcpStream::connect(origin.trim_start_matches("http://")).unwrap();
+    check
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    check
+        .write_all(
+            b"GET /preconnect-check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    let mut header = [0; 13];
+    check
+        .read_exact(&mut header)
+        .expect("Idle preconnection blocked the fixture server");
+    assert_eq!(&header, b"HTTP/1.1 200 ");
+    drop(check);
     let rules = Arc::new(Rules::compile("/source-test-ad.js$script\n##.qa-ad", 0, true).unwrap());
     let phase = Arc::new(AtomicU8::new(0));
     let done = Arc::new(AtomicBool::new(false));
@@ -80,10 +108,13 @@ pub fn run() {
     let timeout_done = done.clone();
     let timeout_phase = phase.clone();
     let timeout_output = output.clone();
+    let timeout_requests = requests.clone();
+    let stage = Arc::new(Mutex::new(String::from("creating application context")));
+    let timeout_stage = stage.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(35));
         if !timeout_done.swap(true, Ordering::SeqCst) {
-            let result = serde_json::json!({"passed":false,"message":format!("Native source browser smoke timed out at phase {}", timeout_phase.load(Ordering::SeqCst))});
+            let result = serde_json::json!({"passed":false,"message":format!("Native source browser smoke timed out at phase {}", timeout_phase.load(Ordering::SeqCst)),"stage":*timeout_stage.lock().unwrap(),"requests":*timeout_requests.lock().unwrap()});
             let _ = fs::write(timeout_output, result.to_string());
             if std::env::var_os("CI").is_some() {
                 std::process::exit(1);
@@ -95,16 +126,19 @@ pub fn run() {
     context.config_mut().product_name = Some("Source Browser Smoke".into());
     context.config_mut().app.windows.clear();
     tauri::Builder::default().manage(SourceState::default()).setup(move |app| {
+        *stage.lock().unwrap() = "creating main window".into();
         let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::External("about:blank".parse().unwrap()))
             .title("Source browser integration checks").inner_size(800.0, 550.0).build()?;
         let _ = main.eval("document.body.textContent='Running native source browser checks…';document.body.style='background:#141414;color:white;font:24px system-ui;padding:60px';");
         *app.state::<SourceState>().0.lock().unwrap() = Some(Session { request_id: REQUEST.into(), origin: origin.clone(), imdb_id: "tt1234567".into(), pending: None, manual: false,
             releases: vec![], page: 1, challenge_shown: false, rules: Some(rules.clone()) });
         let event_app = app.handle().clone(); let event_main = main.clone();
+        let event_stage = stage.clone();
         let event_done = done.clone(); let event_output = output.clone(); let event_requests = requests.clone();
         app.listen_any("source-browser", move |event| {
             let Ok(event) = serde_json::from_str::<SourceEvent>(event.payload()) else { return; };
             if event.request_id != REQUEST || event_done.load(Ordering::SeqCst) { return; }
+            *event_stage.lock().unwrap() = format!("{}: {}", event.kind, event.releases.as_ref().and_then(|r| r.first()).map(|r| r.title.as_str()).unwrap_or(""));
             let current = phase.load(Ordering::SeqCst);
             if current == 0 && event.kind == "results" && event.releases.as_ref().is_some_and(|r| r.len() == 1 && r[0].title == "Fixture Film 2024 1080p" && r[0].seeders == Some(25) && r[0].size == "1 MB") {
                 if phase.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() { return; }
@@ -124,13 +158,16 @@ pub fn run() {
         });
         let nav_app = app.handle().clone(); let popup_app = app.handle().clone();
         let script = include_str!("adapter.js").replace("__SOURCE_CONFIG__", &serde_json::json!({"requestId":REQUEST,"imdbId":"tt1234567"}).to_string());
+        *stage.lock().unwrap() = "creating source window".into();
         let browser = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External("about:blank".parse().unwrap()))
             .title("Source fixture").visible(false).focused(false).initialization_script(script)
             .on_navigation(move |url| handle_navigation(&nav_app, REQUEST, url))
             .on_new_window(move |url, _| { if url.scheme() == "magnet" { handle_navigation(&popup_app, REQUEST, &url); } NewWindowResponse::Deny })
             .on_permission_request(|_, _| tauri::webview::PermissionResponse::Deny).on_download(|_,_|false).build()?;
         let url = format!("{origin}/browse/?imdb_id=tt1234567").parse().unwrap();
+        *stage.lock().unwrap() = "installing source protection".into();
         install(&browser, rules, url, REQUEST.into())?;
         Ok(())
     }).run(context).expect("source browser smoke failed");
+    drop(preconnection);
 }
