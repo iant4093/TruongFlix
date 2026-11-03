@@ -1,4 +1,5 @@
 import type { SearchResult } from '../services/tmdb';
+import type { CastMember } from './media';
 import type { EpisodeMetadata } from '../services/db';
 
 export interface CatalogDetail extends SearchResult {
@@ -6,6 +7,13 @@ export interface CatalogDetail extends SearchResult {
   certification: string;
   genres: string[];
   runtime: number | null;
+  logo?: string | null;
+  tagline?: string;
+  cast?: CastMember[];
+  language?: string;
+  releaseDate?: string | null;
+  totalEpisodes?: number;
+  networks?: string[];
   seasons: { number: number; name: string; count: number; airDate: string | null }[];
   status: string;
   nextSeason: number | null;

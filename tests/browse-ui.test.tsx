@@ -107,3 +107,16 @@ it('suspends Browse when the profile selector is open', () => {
   expect(screen.queryByRole('button', { name: 'Add torrent source' })).toBeNull();
   expect(tmdb.getCatalog).not.toHaveBeenCalled();
 });
+
+it('shows fuller title information in a wide library-style dialog', async () => {
+  vi.mocked(tmdb.getCatalogDetail).mockResolvedValue({ ...detail, tagline: 'A larger story.', language: 'en', releaseDate: '2024-01-01',
+    totalEpisodes: 2, networks: ['A Network'], cast: [{ id: 5, name: 'An Actor', character: 'Lead' }, { id: 6, name: 'A Creator', job: 'Creator' }] });
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  await screen.findByText('A larger story.');
+  expect(screen.getByText('An Actor')).toBeTruthy();
+  expect(screen.getByText('Lead')).toBeTruthy();
+  expect(screen.getByText('A Creator')).toBeTruthy();
+  expect(screen.getByText('A Network')).toBeTruthy();
+  expect(screen.getByText('English')).toBeTruthy();
+  expect(screen.getByRole('dialog').className).toContain('max-w-5xl');
+});

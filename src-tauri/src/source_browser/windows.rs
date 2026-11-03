@@ -64,3 +64,67 @@ pub fn install(
         }
     }).map_err(|e| e.to_string())
 }
+
+pub struct PaneParent {
+    window: usize,
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+}
+pub fn pane_parent(parent: &tauri::webview::PlatformWebview) -> Result<PaneParent, String> {
+    use windows_webview::Win32::Foundation::{HWND, RECT};
+    unsafe {
+        let controller = parent.controller();
+        let mut window = HWND::default();
+        let mut bounds = RECT::default();
+        controller
+            .ParentWindow(&mut window)
+            .map_err(|e| e.to_string())?;
+        controller.Bounds(&mut bounds).map_err(|e| e.to_string())?;
+        Ok(PaneParent {
+            window: window.0 as usize,
+            left: bounds.left,
+            top: bounds.top,
+            width: bounds.right - bounds.left,
+            height: bounds.bottom - bounds.top,
+        })
+    }
+}
+pub fn place_pane(
+    view: &tauri::webview::PlatformWebview,
+    parent: PaneParent,
+    rect: super::pane::PaneRect,
+) -> Result<(), String> {
+    use windows_webview::Win32::Foundation::{HWND, RECT};
+    unsafe {
+        let controller = view.controller();
+        let sx = f64::from(parent.width) / rect.viewport_width;
+        let sy = f64::from(parent.height) / rect.viewport_height;
+        let left = parent.left + (rect.x * sx).round() as i32;
+        let top = parent.top + (rect.y * sy).round() as i32;
+        controller
+            .SetParentWindow(HWND(parent.window as *mut _))
+            .map_err(|e| e.to_string())?;
+        controller
+            .SetBounds(RECT {
+                left,
+                top,
+                right: left + (rect.width * sx).round() as i32,
+                bottom: top + (rect.height * sy).round() as i32,
+            })
+            .map_err(|e| e.to_string())?;
+        controller
+            .NotifyParentWindowPositionChanged()
+            .map_err(|e| e.to_string())?;
+        controller.SetIsVisible(true).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+pub fn hide_pane(view: &tauri::webview::PlatformWebview, _detach: bool) -> Result<(), String> {
+    unsafe {
+        view.controller()
+            .SetIsVisible(false)
+            .map_err(|e| e.to_string())
+    }
+}

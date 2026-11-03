@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Film, Loader2, RefreshCw, Search, Settings2, ShieldCheck } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { getCatalog, type CatalogList, type SearchResult } from '../../services/tmdb';
+import type { CatalogList, SearchResult } from '../../services/tmdb';
+import useCatalogFeed from '../../hooks/useCatalogFeed';
 import { cancelSourceBrowser, validateSourceUrl } from '../../services/browse';
 import Dropdown from '../common/Dropdown';
 import Artwork from '../common/Artwork';
@@ -12,7 +13,6 @@ const lists: { value: CatalogList; label: string }[] = [
   { value: 'trending', label: 'Trending this week' }, { value: 'popular', label: 'Popular' },
   { value: 'new', label: 'New releases' }, { value: 'top', label: 'Top rated' },
 ];
-const cache = new Map<string, { items: SearchResult[]; pages: number; time: number }>();
 
 export default function Discover() {
   const settings = useLibraryStore((s) => s.settings);
@@ -22,45 +22,22 @@ export default function Discover() {
   const [kind, setKind] = useState<'movie' | 'tv'>('movie');
   const [list, setList] = useState<CatalogList>('trending');
   const [query, setQuery] = useState('');
-  const [data, setData] = useState<SearchResult[]>([]);
-  const [page, setPage] = useState(1);
-  const [pages, setPages] = useState(1);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [stale, setStale] = useState(false);
-  const [refresh, setRefresh] = useState(0);
   const [selected, setSelected] = useState<SearchResult | null>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
-  const request = useRef(0);
+  const sentinel = useRef<HTMLDivElement>(null);
   const allowed = profile?.maturity === 'all' && !profileGate;
-  const key = `${kind}:${list}:${query.trim().toLowerCase()}:${page}`;
-  useEffect(() => { setPage(1); setData([]); setSelected(null); }, [kind, list, query, profile?.id]);
+  const feed = useCatalogFeed(kind, list, query, settings.tmdb_api_key, profile?.id, allowed);
+  const { items: data, loading, error } = feed;
+  useEffect(() => { setSelected(null); }, [kind, list, query, profile?.id]);
   useEffect(() => {
-    const seq = ++request.current;
-    if (!allowed || !settings.tmdb_api_key) return;
-    const saved = cache.get(key);
-    setError(''); setStale(false);
-    if (saved) { setData(saved.items); setPages(saved.pages); }
-    setLoading(true);
-    const timer = window.setTimeout(() => {
-      if (saved && !refresh && Date.now() - saved.time < 15 * 60_000) { setLoading(false); return; }
-      void getCatalog(kind, list, page, query).then((result) => {
-        if (seq !== request.current) return;
-        setData((previous) => {
-          const combined = page === 1 ? result.items : [...previous, ...result.items];
-          const next = [...new Map(combined.map((item) => [`${item.kind}:${item.id}`, item])).values()];
-          cache.set(key, { items: next, pages: result.pages, time: Date.now() });
-          if (cache.size > 30) cache.delete(cache.keys().next().value!);
-          return next;
-        });
-        setPages(result.pages);
-      }).catch((e) => {
-        if (seq !== request.current) return;
-        setStale(!!saved); setError(e instanceof Error ? e.message : String(e));
-      }).finally(() => { if (seq === request.current) setLoading(false); });
-    }, query.trim() ? 300 : 0);
-    return () => { clearTimeout(timer); request.current++; };
-  }, [key, refresh, settings.tmdb_api_key, allowed, profile?.id]);
+    const target = sentinel.current;
+    if (!target || !allowed || loading || error || selected || sourceOpen || !feed.page || feed.page >= feed.pages) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) feed.loadMore();
+    }, { rootMargin: '0px 0px 320px 0px' });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [allowed, loading, error, selected, sourceOpen, feed.page, feed.pages, feed.loadMore]);
   useEffect(() => () => cancelSourceBrowser(), [profile?.id, profileGate]);
   useEffect(() => { if (!allowed) { setSelected(null); setSourceOpen(false); } }, [allowed]);
 
@@ -91,7 +68,7 @@ export default function Discover() {
         <Dropdown value={list} options={lists} onChange={setList} ariaLabel="Browse list" />
         <label className="ml-auto flex min-w-[220px] items-center gap-2 rounded border border-white/25 bg-black/40 px-3 py-2.5"><Search className="h-4 w-4 text-white/60" /><input aria-label="Search titles to browse" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search movies and TV shows" className="w-60 bg-transparent text-sm outline-none placeholder:text-white/40" /></label>
       </div>
-      {error && <div role="alert" className="mb-6 flex items-center gap-3 rounded border border-white/15 bg-white/5 p-4 text-sm text-white/70"><span>{stale ? 'Showing saved results. ' : ''}{error}</span><button className="nf-btn-ghost ml-auto" onClick={() => setRefresh((v) => v + 1)}><RefreshCw className="h-4 w-4" />Retry</button></div>}
+      {error && <div role="alert" className="mb-6 flex items-center gap-3 rounded border border-white/15 bg-white/5 p-4 text-sm text-white/70"><span>{data.length ? (feed.page ? 'Could not load more titles. ' : 'Showing saved titles. ') : ''}{error}</span><button className="nf-btn-ghost ml-auto" onClick={feed.retry}><RefreshCw className="h-4 w-4" />Retry</button></div>}
       <div className="grid grid-cols-3 gap-x-4 gap-y-7 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
         {data.map((item) => <button key={`${item.kind}:${item.id}`} onClick={() => setSelected(item)} className="group min-w-0 text-left" aria-label={`View ${item.title}`}>
           <div className="relative overflow-hidden rounded-md bg-white/5 ring-white/70 transition duration-200 group-hover:-translate-y-1 group-hover:ring-2 group-focus-visible:ring-2">
@@ -103,7 +80,7 @@ export default function Discover() {
       </div>
       {loading && <div role="status" className="flex justify-center gap-3 py-12 text-white/60"><Loader2 className="h-5 w-5 animate-spin" />Loading titles…</div>}
       {!loading && !error && !data.length && <div className="py-20 text-center text-white/50"><Film className="mx-auto mb-4 h-10 w-10" />No titles found.</div>}
-      {!loading && page < pages && data.length > 0 && <div className="mt-10 text-center"><button className="nf-btn-ghost" onClick={() => setPage((p) => p + 1)}>Show more</button></div>}
+      <div ref={sentinel} aria-hidden="true" className="h-1" />
       <p className="mt-12 text-xs text-white/35">Discovery and popularity lists provided by TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
     </section>
     {selected && <CatalogTitle key={`${profile?.id}:${selected.kind}:${selected.id}`} item={selected} suspended={sourceOpen} onClose={() => setSelected(null)} onSource={() => setSourceOpen(true)} />}

@@ -9,6 +9,7 @@ use tauri::{
 
 #[cfg(target_os = "macos")]
 mod macos;
+pub(crate) mod pane;
 #[cfg(feature = "source-browser-smoke")]
 pub mod smoke;
 #[cfg(target_os = "windows")]
@@ -101,10 +102,6 @@ fn handle_message(app: &tauri::AppHandle, id: &str, origin: &str, data: &str) {
         }
         session.challenge_shown = true;
         drop(guard);
-        if let Some(browser) = app.get_webview_window(LABEL) {
-            let _ = browser.show();
-            let _ = browser.set_focus();
-        }
         publish(app, event(id, "challenge"));
         return;
     }
@@ -158,11 +155,26 @@ fn handle_message(app: &tauri::AppHandle, id: &str, origin: &str, data: &str) {
                         && r.size.len() < 100
                 })
                 .collect();
+            let inline = !session.manual;
             session.releases = rows.clone();
             session.challenge_shown = false;
             e.releases = Some(rows);
             drop(guard);
-            publish(app, e);
+            if inline {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let current = app.state::<SourceState>().0.lock().unwrap().as_ref()
+                        .is_some_and(|s| s.request_id == e.request_id);
+                    if current {
+                        if let Some(browser) = app.get_webview_window(LABEL) {
+                            let _ = pane::hide(&browser, false).await;
+                        }
+                    }
+                    publish(&app, e);
+                });
+            } else {
+                publish(app, e);
+            }
         }
     }
 }
@@ -261,6 +273,10 @@ pub async fn source_browser_open(
         challenge_shown: false,
         rules: None,
     });
+    if let Some(old) = app.get_webview_window(LABEL) {
+        let _ = pane::hide(&old, true).await;
+        let _ = old.destroy();
+    }
     let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
     let compile_cache = cache.clone();
     let rules = tauri::async_runtime::spawn_blocking(move || source_blocker::load(&compile_cache))
@@ -290,9 +306,6 @@ pub async fn source_browser_open(
             .is_some_and(|s| s.request_id == id);
         if !still_current {
             return;
-        }
-        if let Some(old) = handle.get_webview_window(LABEL) {
-            let _ = old.destroy();
         }
         let nav_app = handle.clone();
         let nav_id = id.clone();
@@ -368,12 +381,14 @@ pub fn source_browser_control(
     main_only(&window)?;
     let mut script = None;
     let mut destination = None;
+    let manual;
     {
         let state = app.state::<SourceState>();
         let mut guard = state.0.lock().unwrap();
         let Some(session) = guard.as_mut().filter(|s| s.request_id == request_id) else {
             return Ok(());
         };
+        manual = session.manual;
         match action.as_str() {
             "close" => *guard = None,
             "capture" => {
@@ -420,7 +435,14 @@ pub fn source_browser_control(
     match action.as_str() {
         "close" => {
             let visible = browser.is_visible().unwrap_or(false);
-            browser.destroy().map_err(|e| e.to_string())?;
+            if manual {
+                browser.destroy().map_err(|e| e.to_string())?;
+            } else {
+                tauri::async_runtime::spawn(async move {
+                    let _ = pane::hide(&browser, true).await;
+                    let _ = browser.destroy();
+                });
+            }
             if visible {
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.set_focus();
@@ -428,12 +450,21 @@ pub fn source_browser_control(
             }
         }
         "hide" => {
-            browser.hide().map_err(|e| e.to_string())?;
+            if manual {
+                browser.hide().map_err(|e| e.to_string())?;
+            } else {
+                tauri::async_runtime::spawn(async move {
+                    let _ = pane::hide(&browser, false).await;
+                });
+            }
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_focus();
             }
         }
         "show" => {
+            if !manual {
+                return Err("Complete verification in the title dialog".into());
+            }
             browser.show().map_err(|e| e.to_string())?;
             browser.set_focus().map_err(|e| e.to_string())?;
         }
@@ -510,5 +541,16 @@ mod tests {
                 .parse()
                 .unwrap()
         ));
+    }
+}
+
+/// Do not leave the hidden source host alive after the library window closes.
+pub fn close_with_library(app: &tauri::AppHandle) {
+    app.state::<SourceState>().0.lock().unwrap().take();
+    if let Some(browser) = app.get_webview_window(LABEL) {
+        tauri::async_runtime::spawn(async move {
+            let _ = pane::hide(&browser, true).await;
+            let _ = browser.destroy();
+        });
     }
 }

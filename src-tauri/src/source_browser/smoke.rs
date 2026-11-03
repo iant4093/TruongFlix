@@ -5,20 +5,22 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
 use tauri::Listener;
 
 const REQUEST: &str = "native-source-smoke";
 const MAGNET: &str = "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=Fixture";
-const FIXTURE: &str = r##"<!doctype html><html><head><meta charset="utf-8"><title>Fixture (1 Results)</title></head><body>
+const MAIN_FIXTURE: &str = "<!doctype html><meta charset='utf-8'><body style='background:#141414;color:white;font:24px system-ui;padding:60px'>Running native source browser checks…<script>let frame=0;function tick(){document.title='frame:'+ ++frame;requestAnimationFrame(tick)}requestAnimationFrame(tick);</script></body>";
+const FIXTURE: &str = r##"<!doctype html><html><head><meta charset="utf-8"><title>Security verification</title><style>body{background:#092238;color:white;font:18px system-ui;margin:0;padding:20px}.verifying .qa-ad,.verifying table,#manual-link{display:none}#fixture-verify{padding:60px 20px;text-align:center}button{background:#e50914;border:0;color:white;padding:14px 22px;font-size:18px;border-radius:6px}</style></head><body class="verifying"><div id="fixture-verify"><h1>Verification panel</h1><p>Local fixture — not a CAPTCHA</p><button id="verify-test-page">Continue test</button></div>
 <div class="qa-ad">This test advertisement must be hidden</div>
 <script src="/source-test-ad.js"></script><script src="/essential.js"></script>
 <table><thead><tr><th>TORRENT NAME</th><th>SIZE</th><th>FILES</th><th>AGE</th><th>SEEDS</th><th>LEECHS</th></tr></thead><tbody><tr><td><a id="release" href="#">Waiting</a><a class="search-magnet-btn" data-id="123" href="javascript:void(0)">Download</a></td><td><span class="add-block">Size</span>1 MB</td><td>1</td><td>Today</td><td><span class="add-block">Seeds</span>25</td><td>0</td></tr></tbody></table>
 <a id="manual-link" href="magnet:?xt=urn:btih:0000000000000000000000000000000000000000&amp;dn=Fixture">Manual magnet</a>
 <script>
-const timer=setInterval(()=>{if(getComputedStyle(document.querySelector('.qa-ad')).display==='none' && window.essentialLoaded){document.querySelector('#release').textContent='Fixture Film 2024 1080p';clearInterval(timer);}},50);
+document.getElementById('verify-test-page').onclick=()=>{document.title='Fixture (1 Results)';document.body.classList.remove('verifying');document.getElementById('fixture-verify').remove();};
+const timer=setInterval(()=>{if(!document.body.classList.contains('verifying') && getComputedStyle(document.querySelector('.qa-ad')).display==='none' && window.essentialLoaded){document.querySelector('#release').textContent='Fixture Film 2024 1080p';clearInterval(timer);}},50);
 document.querySelector('.search-magnet-btn').onclick=()=>setTimeout(()=>{const link=document.createElement('a');link.href='magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=Fixture';link.hidden=true;document.body.appendChild(link);link.click();link.remove();},100);
 window.open('https://popup.invalid/', '_blank');
 </script></body></html>"##;
@@ -28,7 +30,13 @@ fn report(app: &tauri::AppHandle, path: &PathBuf, passed: bool, message: &str) {
     let _ = fs::write(path, result.to_string());
     let ui_app = app.clone();
     let message = message.to_owned();
-    let _ = app.run_on_main_thread(move || {
+    tauri::async_runtime::spawn(async move {
+        if let Some(browser) = ui_app.get_webview_window(LABEL) {
+            let _ = pane::hide(&browser, true).await;
+        }
+        let handle = ui_app.clone();
+        let _ = ui_app.run_on_main_thread(move || {
+    let ui_app = handle;
     if let Some(browser) = ui_app.get_webview_window(LABEL) { let _ = browser.destroy(); }
     if let Some(main) = ui_app.get_webview_window("main") {
         let _ = main.set_title(if passed { "Source browser checks passed" } else { "Source browser checks failed" });
@@ -38,6 +46,7 @@ fn report(app: &tauri::AppHandle, path: &PathBuf, passed: bool, message: &str) {
     }
     if std::env::var_os("CI").is_some() { ui_app.exit(if passed { 0 } else { 1 }); }
     });
+    });
 }
 
 pub fn run() {
@@ -45,6 +54,7 @@ pub fn run() {
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("truongflix-source-smoke-result.json"));
     let _ = fs::remove_file(&output);
+    let _ = fs::remove_file(output.with_extension("panel-ready"));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let requests = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -72,7 +82,9 @@ pub fn run() {
                     return;
                 };
                 requests.lock().unwrap().push(path.to_owned());
-                let (body, kind) = if path == "/essential.js" {
+                let (body, kind) = if path == "/main" {
+                    (MAIN_FIXTURE, "text/html")
+                } else if path == "/essential.js" {
                     ("window.essentialLoaded=true;", "text/javascript")
                 } else if path == "/source-test-ad.js" {
                     ("window.unwantedAdLoaded=true;", "text/javascript")
@@ -127,9 +139,11 @@ pub fn run() {
     context.config_mut().app.windows.clear();
     tauri::Builder::default().manage(SourceState::default()).setup(move |app| {
         *stage.lock().unwrap() = "creating main window".into();
-        let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::External("about:blank".parse().unwrap()))
+        let frames = Arc::new(AtomicU64::new(0));
+        let frame_events = frames.clone();
+        let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(format!("{origin}/main").parse().unwrap()))
+            .on_document_title_changed(move |_, title| { if let Some(frame) = title.strip_prefix("frame:").and_then(|n| n.parse().ok()) { frame_events.store(frame, Ordering::SeqCst); } })
             .title("Source browser integration checks").inner_size(800.0, 550.0).build()?;
-        let _ = main.eval("document.body.textContent='Running native source browser checks…';document.body.style='background:#141414;color:white;font:24px system-ui;padding:60px';");
         *app.state::<SourceState>().0.lock().unwrap() = Some(Session { request_id: REQUEST.into(), origin: origin.clone(), imdb_id: "tt1234567".into(), pending: None, manual: false,
             releases: vec![], page: 1, challenge_shown: false, rules: Some(rules.clone()) });
         let event_app = app.handle().clone(); let event_main = main.clone();
@@ -140,7 +154,29 @@ pub fn run() {
             if event.request_id != REQUEST || event_done.load(Ordering::SeqCst) { return; }
             *event_stage.lock().unwrap() = format!("{}: {}", event.kind, event.releases.as_ref().and_then(|r| r.first()).map(|r| r.title.as_str()).unwrap_or(""));
             let current = phase.load(Ordering::SeqCst);
-            if current == 0 && event.kind == "results" && event.releases.as_ref().is_some_and(|r| r.len() == 1 && r[0].title == "Fixture Film 2024 1080p" && r[0].seeders == Some(25) && r[0].size == "1 MB") {
+            if current == 0 && event.kind == "challenge" {
+                let app = event_app.clone(); let main = event_main.clone(); let output = event_output.clone(); let done = event_done.clone();
+                tauri::async_runtime::spawn(async move {
+                    let rect = pane::PaneRect { x:40.0, y:110.0, width:700.0, height:350.0, viewport_width:800.0, viewport_height:550.0 };
+                    if let Err(error) = pane::source_browser_place(app.clone(), main, REQUEST.into(), Some(rect)).await {
+                        done.store(true, Ordering::SeqCst); report(&app, &output, false, &error); return;
+                    }
+                    let Some(browser) = app.get_webview_window(LABEL) else { return; };
+                    if browser.is_visible().unwrap_or(true) || app.get_webview_window("main").is_none() {
+                        done.store(true, Ordering::SeqCst); report(&app, &output, false, "Quick search exposed a browser window or changed the library window"); return;
+                    }
+                    if let Some(main) = app.get_webview_window("main") {
+                        if let (Ok(position), Ok(scale)) = (main.inner_position(), main.scale_factor()) {
+                            let panel = serde_json::json!({"left":f64::from(position.x)+40.0*scale,"top":f64::from(position.y)+110.0*scale,"width":700.0*scale,"height":350.0*scale});
+                            let _ = fs::write(output.with_extension("panel-ready"), panel.to_string());
+                        }
+                    }
+                    if std::env::var_os("CI").is_some() {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        let _ = browser.eval("document.getElementById('verify-test-page').click()");
+                    } else { let _ = app.get_webview_window("main").map(|w| w.set_title("Click Continue test in the verification panel")); }
+                });
+            } else if current == 0 && event.kind == "results" && event.releases.as_ref().is_some_and(|r| r.len() == 1 && r[0].title == "Fixture Film 2024 1080p" && r[0].seeders == Some(25) && r[0].size == "1 MB") {
                 if phase.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() { return; }
                 let app = event_app.clone(); let main = event_main.clone();
                 tauri::async_runtime::spawn(async move { let _ = source_browser_control(app, main, REQUEST.into(), "capture".into(), Some("123".into()), None); });
@@ -153,7 +189,20 @@ pub fn run() {
                 let paths = event_requests.lock().unwrap();
                 let ok = paths.iter().any(|p| p == "/essential.js") && !paths.iter().any(|p| p == "/source-test-ad.js") && event_app.webview_windows().len() == 2;
                 drop(paths);
-                report(&event_app, &event_output, ok, if ok { "Native source browser checks passed: request filtering, cosmetic filtering, rendered results, automatic and manual magnet capture, and popup blocking." } else { "Native request filtering or popup blocking failed" });
+                let app = event_app.clone(); let main = event_main.clone(); let output = event_output.clone(); let frames = frames.clone();
+                if let Some(session) = app.state::<SourceState>().0.lock().unwrap().as_mut() { session.manual = false; }
+                tauri::async_runtime::spawn(async move {
+                    let closed = source_browser_control(app.clone(), main, REQUEST.into(), "close".into(), None, None).is_ok();
+                    for _ in 0..30 {
+                        if app.get_webview_window(LABEL).is_none() { break; }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    let before = frames.load(Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let animating = frames.load(Ordering::SeqCst) > before;
+                    let ok = ok && closed && app.get_webview_window(LABEL).is_none() && animating;
+                    report(&app, &output, ok, &format!("Native checks: inline verification, hidden quick-search window, request/cosmetic filtering, results, magnet capture and popup blocking={ok}; source closed={closed}; library animation frames={before}->{}", frames.load(Ordering::SeqCst)));
+                });
             }
         });
         let nav_app = app.handle().clone(); let popup_app = app.handle().clone();

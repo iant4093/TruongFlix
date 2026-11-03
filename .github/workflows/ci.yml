@@ -99,6 +99,31 @@ jobs:
           $env:TRUONGFLIX_SOURCE_SMOKE_REPORT = Join-Path $env:RUNNER_TEMP 'source-browser-smoke.json'
           $probe = Start-Process 'src-tauri/target/debug/examples/source_browser_smoke.exe' -PassThru `
             -RedirectStandardError smoke/source-browser-stderr.log -RedirectStandardOutput smoke/source-browser-stdout.log
+          $panelCaptured = $false
+          $panelReady = [IO.Path]::ChangeExtension($env:TRUONGFLIX_SOURCE_SMOKE_REPORT, 'panel-ready')
+          $panelDeadline = [DateTime]::UtcNow.AddSeconds(25)
+          while (-not (Test-Path $panelReady) -and -not $probe.HasExited -and [DateTime]::UtcNow -lt $panelDeadline) {
+            Start-Sleep -Milliseconds 100
+            $probe.Refresh()
+          }
+          if (Test-Path $panelReady) {
+            Start-Sleep -Milliseconds 400
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $panel = Get-Content $panelReady -Raw | ConvertFrom-Json
+            $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $capture = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($capture)
+            $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+            $capture.Save('smoke/source-browser-panel.png')
+            $panelMatches = 0
+            foreach ($fraction in 0.15, 0.5, 0.85) {
+              $pixel = $capture.GetPixel([int]($panel.left + $panel.width * $fraction), [int]($panel.top + $panel.height - 25))
+              if ([Math]::Abs([int]$pixel.R - 9) -le 12 -and [Math]::Abs([int]$pixel.G - 34) -le 12 -and [Math]::Abs([int]$pixel.B - 56) -le 12) { $panelMatches++ }
+            }
+            $graphics.Dispose(); $capture.Dispose()
+            if ($panelMatches -lt 2) { throw "Inline source verification did not render in the main window" }
+            $panelCaptured = $true
+          }
           if (-not $probe.WaitForExit(60000)) {
             Stop-Process -Id $probe.Id -Force
             throw "Source browser smoke timed out"
@@ -107,6 +132,7 @@ jobs:
           Copy-Item $env:TRUONGFLIX_SOURCE_SMOKE_REPORT smoke/source-browser-report.json
           $report = Get-Content $env:TRUONGFLIX_SOURCE_SMOKE_REPORT -Raw | ConvertFrom-Json
           if (-not $report.passed) { throw $report.message }
+          if (-not $panelCaptured) { throw "Inline verification did not produce a visual check" }
           $probe.Refresh()
           if ($probe.ExitCode -ne 0) { throw "Source browser smoke exited with code $($probe.ExitCode)" }
           Write-Output $report.message

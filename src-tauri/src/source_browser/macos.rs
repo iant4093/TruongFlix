@@ -80,3 +80,65 @@ pub fn install(
         let _: () = msg_send![store, compileContentRuleListForIdentifier:&*name, encodedContentRuleList:&*json, completionHandler:&*done];
     }).map_err(|e| e.to_string())
 }
+
+pub struct PaneParent {
+    view: usize,
+    content: usize,
+}
+pub fn pane_parent(parent: &tauri::webview::PlatformWebview) -> Result<PaneParent, String> {
+    unsafe {
+        let window = parent.ns_window().cast::<AnyObject>();
+        let content: *mut AnyObject = msg_send![window, contentView];
+        if content.is_null() {
+            return Err("The library window is closed".into());
+        }
+        Ok(PaneParent {
+            view: parent.inner() as usize,
+            content: content as usize,
+        })
+    }
+}
+pub fn place_pane(
+    view: &tauri::webview::PlatformWebview,
+    parent: PaneParent,
+    rect: super::pane::PaneRect,
+) -> Result<(), String> {
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    unsafe {
+        let source = view.inner().cast::<AnyObject>();
+        let origin = parent.view as *mut AnyObject;
+        let content = parent.content as *mut AnyObject;
+        let bounds: NSRect = msg_send![origin, bounds];
+        let scale = bounds.size.width / rect.viewport_width;
+        let inset = (bounds.size.height - rect.viewport_height * scale).max(0.0);
+        let y = rect.y * scale + inset;
+        let height = rect.height * scale;
+        let flipped: bool = msg_send![origin, isFlipped];
+        let y = if flipped {
+            y
+        } else {
+            bounds.size.height - y - height
+        };
+        let local = NSRect::new(
+            NSPoint::new(rect.x * scale, y),
+            NSSize::new(rect.width * scale, height),
+        );
+        let frame: NSRect = msg_send![content, convertRect: local, fromView: origin];
+        let _: () = msg_send![source, removeFromSuperview];
+        let _: () = msg_send![source, setAutoresizingMask: 0usize];
+        let _: () = msg_send![source, setFrame: frame];
+        let _: () = msg_send![content, addSubview: source, positioned: 1isize, relativeTo: origin];
+        let _: () = msg_send![source, setHidden: false];
+    }
+    Ok(())
+}
+pub fn hide_pane(view: &tauri::webview::PlatformWebview, detach: bool) -> Result<(), String> {
+    unsafe {
+        let source = view.inner().cast::<AnyObject>();
+        let _: () = msg_send![source, setHidden: true];
+        if detach {
+            let _: () = msg_send![source, removeFromSuperview];
+        }
+    }
+    Ok(())
+}

@@ -75,13 +75,14 @@ Library screenshots use the development preview with sample metadata and artwork
 
 **Browse**
 
-- Discover movies and TV shows beyond your library: trending, popular, new releases, top rated, and title search powered by TMDB
-- Open title pages with IMDb ratings when available; choose a movie, an exact episode, or an entire season
+- Discover movies and TV shows beyond your library: trending, popular, new releases, top rated, and title search powered by TMDB, with more titles loaded automatically as you scroll
+- Open expanded title pages with artwork, ratings, overview, cast, creators and release details; choose a movie, an exact episode with its synopsis, or an entire season
 - Quick stream/download actions for advertised 1080p or 4K releases, ranked by reported seed counts and checked against torrent file metadata before starting
 - Automatic season selection requires confirmed episode coverage; uncertain packs remain available through manual browsing
 - Add your own compatible source website in Browse › Source settings. No torrent source is configured by default
 - Browse the source in an isolated native window with EasyList/EasyPrivacy network and cosmetic filtering, blocked popups, persistent sessions, and magnet handoff into the existing torrent review dialog
-- Quick searches can be canceled and may ask you to complete the source website's human verification. Source pages can change; manual browsing remains available when automatic matching fails
+- Quick searches keep the source browser hidden. If the website requires human verification, complete it inside the title popup and the search resumes automatically; cancel or close the popup at any time
+- Source pages can change; manual browsing remains available when automatic matching fails
 - Available to unrestricted profiles. Downloads use your configured library folders; streams use the existing temporary torrent cache
 
 **Profiles**

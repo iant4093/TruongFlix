@@ -128,6 +128,8 @@ interface TmdbCredits {
   crew?: { id: number; name: string; job?: string; profile_path?: string | null }[];
 }
 interface TmdbMovie {
+  status?: string;
+  original_language?: string;
   id: number;
   title: string;
   original_title?: string;
@@ -163,6 +165,11 @@ interface TmdbNextEpisode {
   air_date: string | null;
 }
 interface TmdbTv {
+  tagline?: string;
+  original_language?: string;
+  episode_run_time?: number[];
+  number_of_episodes?: number;
+  networks?: { name: string }[];
   id: number;
   name: string;
   first_air_date?: string;
@@ -610,15 +617,20 @@ export async function getCatalog(kind: 'movie' | 'tv', list: CatalogList, page =
 
 export async function getCatalogDetail(item: SearchResult): Promise<CatalogDetail> {
   if (item.kind === 'movie') {
-    const d = await getMovieDetails(item.id);
-    return { ...item, title: d.title, year: d.year, overview: d.overview ?? '', poster: d.poster_path,
-      backdrop: d.backdrop_path, imdbId: d.imdb_id ?? '', certification: d.extras?.certification ?? '',
-      genres: d.genres, runtime: d.runtime, seasons: [], status: '', nextSeason: null, lastSeason: null, lastEpisode: null };
+    const d = await request<TmdbMovie>(`/movie/${item.id}`, { append_to_response: 'credits,images,release_dates', include_image_language: 'en,null' });
+    return { ...item, title: d.title, year: yearOf(d.release_date), overview: d.overview ?? '',
+      poster: img(d.poster_path, 'w500'), backdrop: img(d.backdrop_path, 'w1280'), voteAverage: d.vote_average ?? item.voteAverage,
+      imdbId: d.imdb_id ?? '', certification: movieExtras(d).certification, genres: (d.genres ?? []).map((g) => g.name), runtime: d.runtime || null,
+      logo: pickLogo(d.images?.logos), tagline: d.tagline ?? '', cast: castFrom(d.credits), language: d.original_language ?? '', releaseDate: d.release_date ?? null,
+      seasons: [], status: d.status ?? '', nextSeason: null, lastSeason: null, lastEpisode: null };
   }
-  const d = await request<TmdbTv>(`/tv/${item.id}`, { append_to_response: 'external_ids,content_ratings' });
+  const d = await request<TmdbTv>(`/tv/${item.id}`, { append_to_response: 'external_ids,content_ratings,credits,images', include_image_language: 'en,null' });
   return { ...item, title: d.name, year: yearOf(d.first_air_date), overview: d.overview ?? '',
+    poster: img(d.poster_path, 'w500'), backdrop: img(d.backdrop_path, 'w1280'), voteAverage: d.vote_average ?? item.voteAverage,
     imdbId: d.external_ids?.imdb_id ?? '', certification: seriesExtras(d).certification,
-    genres: (d.genres ?? []).map((g) => g.name), runtime: null, status: d.status ?? '',
+    genres: (d.genres ?? []).map((g) => g.name), runtime: d.episode_run_time?.[0] || null, status: d.status ?? '',
+    logo: pickLogo(d.images?.logos), tagline: d.tagline ?? '', cast: castFrom(d.credits, d.created_by), language: d.original_language ?? '',
+    releaseDate: d.first_air_date ?? null, totalEpisodes: d.number_of_episodes, networks: (d.networks ?? []).map((n) => n.name),
     seasons: (d.seasons ?? []).filter((s) => s.season_number > 0).map((s) => ({
       number: s.season_number, name: s.name, count: s.episode_count, airDate: s.air_date ?? null,
     })), nextSeason: d.next_episode_to_air?.season_number ?? null,

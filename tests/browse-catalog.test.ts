@@ -26,3 +26,19 @@ it('uses TV and movie discovery endpoints and omits adult results', async () => 
   expect(new URL(fetcher.mock.calls[0][0]).pathname).toBe('/3/tv/on_the_air');
   expect(data.items.map((i) => i.title)).toEqual(['A Show']);
 });
+
+it('loads cast, crew, artwork and full movie information for the catalog dialog', async () => {
+  const { getCatalogDetail } = await import('../src/services/tmdb');
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 5, title: 'A Film', release_date: '2024-03-01',
+    tagline: 'A tagline', overview: 'Full overview', runtime: 110, status: 'Released', original_language: 'en', imdb_id: 'tt1234567',
+    vote_average: 8.2, poster_path: '/poster.jpg', backdrop_path: '/backdrop.jpg', genres: [{ name: 'Drama' }],
+    credits: { cast: [{ id: 10, name: 'An Actor', character: 'A Character', profile_path: '/person.jpg' }], crew: [{ id: 11, name: 'A Director', job: 'Director' }] },
+    release_dates: { results: [{ iso_3166_1: 'US', release_dates: [{ certification: 'PG-13', type: 3 }] }] },
+  }), { status: 200 }));
+  vi.stubGlobal('fetch', fetcher);
+  const result = await getCatalogDetail({ id: 5, title: 'A Film', kind: 'movie', year: 2024, overview: '', poster: null, backdrop: null, voteAverage: 0 });
+  expect(result).toMatchObject({ tagline: 'A tagline', certification: 'PG-13', runtime: 110, status: 'Released', language: 'en', releaseDate: '2024-03-01',
+    cast: [{ id: 10, name: 'An Actor', character: 'A Character' }, { id: 11, name: 'A Director', job: 'Director' }] });
+  expect(result.backdrop).toContain('/w1280/backdrop.jpg');
+  expect(new URL(fetcher.mock.calls[0][0]).searchParams.get('append_to_response')).toContain('credits');
+});

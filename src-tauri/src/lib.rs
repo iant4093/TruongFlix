@@ -98,6 +98,7 @@ pub fn run() {
             startup_autoplay,
             source_browser::source_browser_open,
             source_browser::source_browser_control,
+            source_browser::pane::source_browser_place,
             live::live_import,
             live::live_check_begin,
             live::live_check,
@@ -171,6 +172,9 @@ pub fn run() {
         .build(app_context())
         .expect("error while building TruongFlix")
         .run(|app, event| {
+            if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { .. }, .. } = &event {
+                if label == "main" { source_browser::close_with_library(app); }
+            }
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = event {
                 torrent::handle_opened_urls(app, urls.iter().map(|u| u.as_str()));

@@ -65,7 +65,7 @@ class SourceSession {
     return new Promise((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); this.signal.removeEventListener('abort', stop); this.waiter = null; };
       const stop = () => { cleanup(); reject(canceled()); };
-      const timer = window.setTimeout(() => { cleanup(); reject(new Error('The source took too long. Complete any verification in its window, or browse torrents manually.')); }, timeout);
+      const timer = window.setTimeout(() => { cleanup(); reject(new Error('The source took too long. Complete any verification in the title dialog, or browse torrents manually.')); }, timeout);
       this.signal.addEventListener('abort', stop, { once: true });
       this.waiter = (e) => {
         try { if (consume(e)) { cleanup(); resolve(e); } }
@@ -156,6 +156,7 @@ export async function useOwnedTitle(item: SearchResult, target: BrowseTarget, mo
 export interface QuickOptions {
   item: SearchResult; target: BrowseTarget; mode: TorrentMode; sourceUrl: string;
   signal: AbortSignal; progress: (message: string) => void;
+  verification?: (requestId: string | null) => void;
 }
 
 /** Metadata verification is bounded and never starts a payload transfer after cancellation. */
@@ -171,7 +172,10 @@ export async function quickTorrent(opts: QuickOptions) {
     const s = useLibraryStore.getState();
     if (s.activeProfile?.id !== profile || s.activeProfile?.maturity !== 'all' || s.profileGate) throw canceled();
   };
-  const session = new SourceSession(signal);
+  const session = new SourceSession(signal, (event) => {
+    if (event.kind === 'challenge') { opts.verification?.(session.id); opts.progress('Complete the verification below to continue.'); }
+    if (event.kind === 'results') { opts.verification?.(null); opts.progress('Finding releases for your selection…'); }
+  });
   try {
     valid();
     if (await useOwnedTitle(opts.item, opts.target, opts.mode, signal)) return;
@@ -180,7 +184,7 @@ export async function quickTorrent(opts: QuickOptions) {
     const destination = pickDestinationFolder(opts.item.kind, settings);
     if (opts.mode === 'download' && !destination) throw new Error('Add a library folder in Settings before downloading.');
     if (opts.target.kind === 'season' && !opts.target.complete) throw new Error('This season’s completeness is uncertain. Choose an episode or browse torrents manually.');
-    opts.progress('Opening your source. Complete any verification in its browser window.');
+    opts.progress('Searching your source…');
     await session.open(opts.sourceUrl, opts.target.imdbId, false);
     let attempts = 0;
     let resolved = 0;
@@ -250,7 +254,7 @@ export async function quickTorrent(opts: QuickOptions) {
       : `Checked ${attempts} releases; their files did not match this title, quality, or episode selection.`;
     throw new Error(`No verified release matched this quality and selection. ${reason} Browse torrents to choose another release.`);
   } finally {
-    session.close(); opts.signal.removeEventListener('abort', cancel);
+    opts.verification?.(null); session.close(); opts.signal.removeEventListener('abort', cancel);
     if (activeController === controller) activeController = null;
   }
 }

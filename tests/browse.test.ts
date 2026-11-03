@@ -201,3 +201,24 @@ it('ignores a manual browser magnet after the profile selector opens', async () 
   expect(useLibraryStore.getState().addTorrentModal).toBeNull();
   expect(initiateTorrent).not.toHaveBeenCalled();
 });
+
+it('requests inline verification and resumes without showing the quick-search browser window', async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === 'source_browser_open') {
+      requestId = (args as { requestId: string }).requestId;
+      queueMicrotask(() => {
+        emit({ payload: { requestId, kind: 'challenge' } });
+        emit({ payload: { requestId, kind: 'results', releases: [row] } });
+      });
+      return undefined as never;
+    }
+    return original(command, args);
+  });
+  const verification = vi.fn();
+  await quickTorrent({ item, target, mode: 'stream', sourceUrl: 'https://source.example', signal: new AbortController().signal, progress: vi.fn(), verification });
+  expect(verification.mock.calls[0][0]).toBe(requestId);
+  expect(verification).toHaveBeenLastCalledWith(null);
+  expect(initiateTorrent).toHaveBeenCalledOnce();
+  expect(invoke).not.toHaveBeenCalledWith('source_browser_control', expect.objectContaining({ action: 'show' }));
+});
