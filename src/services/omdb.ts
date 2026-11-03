@@ -14,6 +14,25 @@ export interface CriticScores {
   metacritic: number | null;
 }
 
+const browseScores = new Map<string, { scores: CriticScores; at: number }>();
+const pendingScores = new Map<string, Promise<CriticScores>>();
+
+/** Opening a title repeatedly should not spend more of the user's OMDb quota. Empty scores cache too. */
+export function cachedCriticScores(apiKey: string, imdbId: string): Promise<CriticScores> {
+  const key = JSON.stringify([apiKey, imdbId]);
+  const saved = browseScores.get(key);
+  if (saved && Date.now() - saved.at < 864e5) return Promise.resolve(saved.scores);
+  const pending = pendingScores.get(key);
+  if (pending) return pending;
+  const request = fetchCriticScores(apiKey, imdbId).then((scores) => {
+    browseScores.set(key, { scores, at: Date.now() });
+    if (browseScores.size > 200) browseScores.delete(browseScores.keys().next().value!);
+    return scores;
+  }).finally(() => pendingScores.delete(key));
+  pendingScores.set(key, request);
+  return request;
+}
+
 interface OmdbResponse {
   Response: 'True' | 'False';
   Error?: string;

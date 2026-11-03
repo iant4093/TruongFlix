@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { ChevronDown, Download, Search, Loader2, Play, ShieldCheck, Star, CalendarDays, Clock, UserRound } from 'lucide-react';
+import { ChevronDown, Download, Search, Loader2, Play, Star, CalendarDays, Clock, UserRound } from 'lucide-react';
 import { getCatalogDetail, getCatalogSeason, type SearchResult } from '../../services/tmdb';
 import { cancelSourceBrowser, quickTorrent } from '../../services/browse';
 import type { BrowseScope, CatalogDetail, CatalogSeason } from '../../types/browse';
@@ -12,11 +12,16 @@ import SourceVerification from './SourceVerification';
 import SourceBrowser from './SourceBrowser';
 import Dropdown from '../common/Dropdown';
 import Artwork from '../common/Artwork';
+import CriticScores from '../common/CriticScores';
+import { cachedCriticScores, type CriticScores as Scores } from '../../services/omdb';
 
 export default function CatalogTitle({ item, onClose, onSource, suspended = false }: { item: SearchResult; onClose: () => void; onSource: () => void; suspended?: boolean }) {
   const sourceUrl = useLibraryStore((s) => s.settings.browse_source_url);
   const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
   const library = useLibraryStore((s) => s.items);
+  const omdbKey = useLibraryStore((s) => s.settings.omdb_api_key);
+  const owned = library.find((i) => i.kind === item.kind && i.tmdbId === item.id);
+  const [critics, setCritics] = useState<Scores | null>(null);
   const [detail, setDetail] = useState<CatalogDetail | null>(null);
   const [error, setError] = useState('');
   const [detailError, setDetailError] = useState('');
@@ -49,6 +54,15 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
     }).catch((e) => { if (alive) setDetailError(String(e)); });
     return () => { alive = false; };
   }, [item.id, item.kind, retry]);
+  useEffect(() => {
+    let alive = true; setCritics(null);
+    if (owned?.rtScore != null || owned?.metacritic != null) {
+      setCritics({ rt: owned.rtScore, metacritic: owned.metacritic }); return;
+    }
+    if (!omdbKey || !detail?.imdbId) return;
+    void cachedCriticScores(omdbKey, detail.imdbId).then((scores) => { if (alive) setCritics(scores); }).catch(() => {});
+    return () => { alive = false; };
+  }, [omdbKey, detail?.imdbId, owned?.rtScore, owned?.metacritic]);
   useEffect(() => {
     if (!detail || detail.kind !== 'tv') return;
     let alive = true; setSeasonData(null); setSeasonError('');
@@ -94,7 +108,6 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   const scope: BrowseScope = item.kind === 'movie' ? { kind: 'movie' } : episode === 'season'
     ? { kind: 'season', season, expected: seasonData?.episodes.map((e) => e.episode_number) ?? [], complete: seasonData?.complete ?? false }
     : { kind: 'episode', season, episode };
-  const owned = library.find((i) => i.kind === item.kind && i.tmdbId === item.id);
   const ready = !!detail?.imdbId && (item.kind === 'movie' || !!seasonData?.episodes.length);
   const selection = scope.kind === 'movie' ? item.title : scope.kind === 'season' ? `Season ${season}` : `S${String(season).padStart(2, '0')} · E${String(episode).padStart(2, '0')}`;
   const run = async (mode: TorrentMode, quality: '1080p' | '4K') => {
@@ -126,11 +139,11 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
     return Number.isFinite(value.getTime()) ? value.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) : '';
   };
   return <><CatalogDialog title={item.title} onClose={onClose} active={!suspended && !browsing}>
-    <div className="relative h-[46vh] min-h-[280px] max-h-[520px] overflow-hidden rounded-t-xl bg-[#202020]">
+    <div className="relative grid min-h-[clamp(280px,46vh,520px)] items-end overflow-hidden rounded-t-xl bg-[#202020]">
       <Artwork key={detail?.backdrop || item.backdrop} src={detail?.backdrop || item.backdrop || item.poster} alt="" eager className="absolute inset-0 h-full w-full object-cover" />
       <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-black/15 to-transparent" />
       <div className="absolute inset-0 bg-gradient-to-r from-black/65 via-black/10 to-transparent" />
-      <div className="absolute bottom-7 left-7 right-7 md:bottom-9 md:left-10 md:right-10">
+      <div className="relative px-7 pb-7 pt-16 md:px-10 md:pb-9">
         <p className="mb-3 text-xs font-semibold uppercase tracking-[0.22em] text-white/65">{item.kind === 'movie' ? 'Movie' : 'TV Series'}</p>
         {detail?.logo && !logoFailed ? <><h1 className="sr-only">{detail.title}</h1><img src={detail.logo} alt={detail.title} onError={() => setLogoFailed(true)} className="max-h-28 max-w-[75%] object-contain object-left drop-shadow-lg" /></>
           : <h1 className="max-w-[85%] text-4xl font-black leading-tight tracking-tight drop-shadow-lg md:text-6xl">{detail?.title || item.title}</h1>}
@@ -138,9 +151,10 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
       </div>
     </div>
     <div className="px-7 pb-9 md:px-10 md:pb-11">
-      <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-white/60">
+      <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 pt-3 text-sm text-white/60">
         {rating != null && <span className="rounded bg-[#f5c518] px-2 py-0.5 text-xs font-bold text-black">IMDb {rating.toFixed(1)}</span>}
         {(detail?.voteAverage ?? item.voteAverage) > 0 && <span className="flex items-center gap-1.5 text-white/80"><Star className="h-3.5 w-3.5 fill-current text-amber-300" />{(detail?.voteAverage ?? item.voteAverage).toFixed(1)}<span className="text-xs text-white/40">TMDB</span></span>}
+        <CriticScores rt={critics?.rt ?? null} metacritic={critics?.metacritic ?? null} size="md" />
         <span>{detail?.year ?? item.year}</span>
         {detail?.certification && <span className="border border-white/35 px-1.5 text-xs">{detail.certification}</span>}
         {!!detail?.runtime && <span className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" />{detail.runtime} min{item.kind === 'tv' ? ' / episode' : ''}</span>}
@@ -204,7 +218,6 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
       {!!people.length && <section className="mt-9"><h2 className="mb-5 text-lg font-semibold">Cast</h2><div className="grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-5">
         {people.map((person) => <div key={person.id ?? person.name} className="min-w-0">{person.profile_path ? <Artwork src={person.profile_path} alt={person.name} className="aspect-[3/4] w-full rounded-lg" /> : <div className="flex aspect-[3/4] items-center justify-center rounded-lg bg-white/5"><UserRound className="h-12 w-12 text-white/20" /></div>}<p className="mt-2 truncate text-sm font-medium">{person.name}</p>{person.character && <p className="mt-1 truncate text-xs text-white/40">{person.character}</p>}</div>)}
       </div></section>}
-      <p className="mt-8 flex items-center gap-2 border-t border-white/10 pt-5 text-xs text-white/40"><ShieldCheck className="h-4 w-4" />{sourceUrl ? 'Source browser protected by ad and popup blocking' : 'Add your source website to use torrent actions'}</p>
     </div>
   </CatalogDialog>
     {browsing && !suspended && detail && <SourceBrowser item={detail} sourceUrl={sourceUrl} onBack={() => setBrowsing(false)} onSelected={onClose} />}

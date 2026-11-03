@@ -18,6 +18,8 @@ mod torrent;
 mod trailer;
 mod vlc;
 mod watcher;
+#[cfg(target_os = "macos")]
+mod window;
 
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
@@ -86,6 +88,8 @@ pub fn run() {
         .manage(subtitles::SubtitleState::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "macos")]
+                window::configure_main(&window)?;
                 window.on_window_event(player::on_main_window_event);
             }
             power::start(app.handle());

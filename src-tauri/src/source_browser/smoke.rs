@@ -185,6 +185,8 @@ pub fn run() {
         let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(format!("{origin}/main").parse().unwrap()))
             .on_document_title_changed(move |_, title| { if let Some(frame) = title.strip_prefix("frame:").and_then(|n| n.parse().ok()) { frame_events.store(frame, Ordering::SeqCst); } })
             .title("Source browser integration checks").inner_size(800.0, 550.0).build()?;
+        #[cfg(target_os = "macos")]
+        crate::window::configure_main(&main)?;
         *app.state::<SourceState>().0.lock().unwrap() = Some(Session { request_id: REQUEST.into(), origin: origin.clone(), imdb_id: "tt1234567".into(), pending: None, manual: false,
             releases: vec![], page: 1, challenge_shown: false, rules: Some(rules.clone()) });
         let event_app = app.handle().clone(); let event_main = main.clone();

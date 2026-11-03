@@ -76,7 +76,7 @@ Library screenshots use the development preview with sample metadata and artwork
 **Browse**
 
 - Discover movies and TV shows beyond your library: trending, popular, new releases, top rated, and title search powered by TMDB, with more titles loaded automatically as you scroll
-- Open expanded title pages with artwork, ratings, overview, cast, creators and release details; choose a movie, an exact episode with its synopsis, or an entire season
+- Open expanded title pages with artwork, IMDb and optional Rotten Tomatoes/Metacritic ratings, overview, cast, creators and release details; choose a movie, an exact episode with its synopsis, or an entire season
 - Quick stream/download actions for advertised 1080p or 4K releases, ranked by reported seed counts and checked against torrent file metadata before starting
 - Automatic season selection requires confirmed episode coverage; uncertain packs remain available through manual browsing
 - Add your own compatible source website in Browse › Source settings. No torrent source is configured by default

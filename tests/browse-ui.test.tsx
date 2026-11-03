@@ -9,6 +9,8 @@ import { browseSource, quickTorrent } from '../src/services/browse';
 import SourceBrowser from '../src/components/browse/SourceBrowser';
 import type { CatalogDetail } from '../src/types/browse';
 import type { Profile } from '../src/types/media';
+import { cachedCriticScores } from '../src/services/omdb';
+vi.mock('../src/services/omdb', () => ({ cachedCriticScores: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../src/services/db');
 vi.mock('../src/services/tmdb', () => ({ setApiKey: vi.fn(), getCatalog: vi.fn(), getCatalogDetail: vi.fn(), getCatalogSeason: vi.fn() }));
@@ -123,6 +125,37 @@ it('shows fuller title information in a wide library-style dialog', async () => 
   expect(screen.getByText('A Network')).toBeTruthy();
   expect(screen.getByText('English')).toBeTruthy();
   expect(screen.getByRole('dialog').className).toContain('max-w-5xl');
+});
+
+it('shows Rotten Tomatoes and Metacritic using the configured OMDb key', async () => {
+  useLibraryStore.setState((state) => ({ settings: { ...state.settings, omdb_api_key: 'critic-fixture' } }));
+  vi.mocked(cachedCriticScores).mockResolvedValue({ rt: 98, metacritic: 82 });
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  await screen.findByTitle('Rotten Tomatoes: 98% of critics');
+  expect(screen.getByTitle('Metacritic: 82/100')).toBeTruthy();
+  expect(cachedCriticScores).toHaveBeenCalledWith('critic-fixture', detail.imdbId);
+});
+
+it('reuses critic scores already in the library without another request', async () => {
+  useLibraryStore.setState({ items: [{ ...item, tmdbId: item.id, rtScore: 0, metacritic: 45 }] as never });
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  await screen.findByTitle('Rotten Tomatoes: 0% of critics');
+  expect(screen.getByTitle('Metacritic: 45/100')).toBeTruthy();
+  expect(cachedCriticScores).not.toHaveBeenCalled();
+});
+
+it('ignores critic results from the old key after the configuration changes', async () => {
+  let finish!: (value: { rt: number; metacritic: number }) => void;
+  useLibraryStore.setState((state) => ({ settings: { ...state.settings, omdb_api_key: 'old-fixture' } }));
+  vi.mocked(cachedCriticScores).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+    .mockResolvedValueOnce({ rt: 80, metacritic: 60 });
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  await waitFor(() => expect(cachedCriticScores).toHaveBeenCalledOnce());
+  act(() => useLibraryStore.setState((state) => ({ settings: { ...state.settings, omdb_api_key: 'new-fixture' } })));
+  await screen.findByTitle('Rotten Tomatoes: 80% of critics');
+  await act(async () => finish({ rt: 98, metacritic: 82 }));
+  expect(screen.queryByTitle('Rotten Tomatoes: 98% of critics')).toBeNull();
+  expect(screen.getByTitle('Metacritic: 60/100')).toBeTruthy();
 });
 
 it('browses torrents inside the app and restores the selected episode on return', async () => {

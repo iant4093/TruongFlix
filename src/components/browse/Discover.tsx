@@ -81,7 +81,6 @@ export default function Discover() {
       {loading && <div role="status" className="flex justify-center gap-3 py-12 text-white/60"><Loader2 className="h-5 w-5 animate-spin" />Loading titles…</div>}
       {!loading && !error && !data.length && <div className="py-20 text-center text-white/50"><Film className="mx-auto mb-4 h-10 w-10" />No titles found.</div>}
       <div ref={sentinel} aria-hidden="true" className="h-1" />
-      <p className="mt-12 text-xs text-white/35">Discovery and popularity lists provided by TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
     </section>
     {selected && <CatalogTitle key={`${profile?.id}:${selected.kind}:${selected.id}`} item={selected} suspended={sourceOpen} onClose={() => setSelected(null)} onSource={() => setSourceOpen(true)} />}
     {sourceOpen && <SourceSettings onClose={() => setSourceOpen(false)} />}

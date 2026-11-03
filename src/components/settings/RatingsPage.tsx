@@ -5,6 +5,7 @@ import { useLibraryStore } from '../../store/useLibraryStore';
 import { runImdbSync } from '../../services/scanner';
 import { refreshCriticScores } from '../../services/enrich';
 import { verifyOmdbKey } from '../../services/omdb';
+import ProviderCredits from './ProviderCredits';
 import { TmdbKeyField } from '../common/SetupControls';
 import { BTN, BTN_PRIMARY, Group, INPUT, Page, Row, StatusText, ToggleRow } from './ui';
 
@@ -56,6 +57,7 @@ export default function RatingsPage() {
       </Group>
 
       <CriticScores />
+      <ProviderCredits />
     </Page>
   );
 }
