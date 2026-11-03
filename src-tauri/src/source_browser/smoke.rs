@@ -13,6 +13,7 @@ use tauri::Listener;
 const REQUEST: &str = "native-source-smoke";
 const MAGNET: &str = "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=Fixture";
 const MAIN_FIXTURE: &str = "<!doctype html><meta charset='utf-8'><body style='background:#141414;color:white;font:24px system-ui;padding:60px'>Running native source browser checks…<script>let frame=0;function tick(){document.title='frame:'+ ++frame;requestAnimationFrame(tick)}requestAnimationFrame(tick);</script></body>";
+const DETAIL_FIXTURE: &str = "<!doctype html><meta charset='utf-8'><title>Manual release</title><body style='background:#092238;color:white'><h1>Manual release page</h1><a id='manual-link' href='magnet:?xt=urn:btih:0000000000000000000000000000000000000000&amp;dn=Fixture'>Select test magnet</a></body>";
 const FIXTURE: &str = r##"<!doctype html><html><head><meta charset="utf-8"><title>Security verification</title><style>body{background:#092238;color:white;font:18px system-ui;margin:0;padding:20px}.verifying .qa-ad,.verifying table,#manual-link{display:none}#fixture-verify{padding:60px 20px;text-align:center}button{background:#e50914;border:0;color:white;padding:14px 22px;font-size:18px;border-radius:6px}</style></head><body class="verifying"><div id="fixture-verify"><h1>Verification panel</h1><p>Local fixture — not a CAPTCHA</p><button id="verify-test-page">Continue test</button></div>
 <div class="qa-ad">This test advertisement must be hidden</div>
 <script src="/source-test-ad.js"></script><script src="/essential.js"></script>
@@ -47,6 +48,44 @@ fn report(app: &tauri::AppHandle, path: &PathBuf, passed: bool, message: &str) {
     if std::env::var_os("CI").is_some() { ui_app.exit(if passed { 0 } else { 1 }); }
     });
     });
+}
+
+async fn wait_for_path(browser: &WebviewWindow, loaded: &Mutex<String>, path: &str) -> Result<(), String> {
+    for _ in 0..40 {
+        if loaded.lock().unwrap().as_str() == path && browser.url().is_ok_and(|url| url.path() == path) { return Ok(()); }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!("Manual source navigation did not reach {path}; loaded={}; current={:?}", *loaded.lock().unwrap(), browser.url()))
+}
+
+async fn check_manual_browser(app: tauri::AppHandle, main: WebviewWindow, loaded: Arc<Mutex<String>>) -> Result<(), String> {
+    // Quick results cleared the challenge flag. Manual placement must work without a challenge.
+    let origin = {
+        let state = app.state::<SourceState>(); let mut guard = state.0.lock().unwrap();
+        let session = guard.as_mut().ok_or("Source session closed")?;
+        if session.challenge_shown { return Err("Challenge did not clear".into()); }
+        session.manual = true; session.origin.clone()
+    };
+    pane::source_browser_place(app.clone(), main.clone(), REQUEST.into(), Some(pane::PaneRect {
+        x: 0.0, y: 64.0, width: 800.0, height: 478.0, viewport_width: 800.0, viewport_height: 550.0,
+    })).await?;
+    let browser = app.get_webview_window(LABEL).ok_or("Source view closed")?;
+    if browser.is_visible().unwrap_or(true) || app.get_webview_window("main").is_none() {
+        return Err("Manual browsing exposed a separate window".into());
+    }
+    if source_browser_control(app.clone(), main.clone(), REQUEST.into(), "show".into(), None, None).is_ok() {
+        return Err("The source host can be shown separately".into());
+    }
+    browser.navigate(format!("{origin}/detail").parse().unwrap()).map_err(|e| e.to_string())?;
+    wait_for_path(&browser, &loaded, "/detail").await?;
+    source_browser_control(app.clone(), main.clone(), REQUEST.into(), "back".into(), None, None)?;
+    wait_for_path(&browser, &loaded, "/browse/").await?;
+    source_browser_control(app.clone(), main.clone(), REQUEST.into(), "forward".into(), None, None)?;
+    wait_for_path(&browser, &loaded, "/detail").await?;
+    loaded.lock().unwrap().clear();
+    source_browser_control(app.clone(), main.clone(), REQUEST.into(), "reload".into(), None, None)?;
+    wait_for_path(&browser, &loaded, "/detail").await?;
+    browser.eval("(()=>{const select=()=>document.getElementById('manual-link')?.click();if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',select,{once:true});else select()})()").map_err(|e| e.to_string())
 }
 
 pub fn run() {
@@ -84,6 +123,8 @@ pub fn run() {
                 requests.lock().unwrap().push(path.to_owned());
                 let (body, kind) = if path == "/main" {
                     (MAIN_FIXTURE, "text/html")
+                } else if path == "/detail" {
+                    (DETAIL_FIXTURE, "text/html")
                 } else if path == "/essential.js" {
                     ("window.essentialLoaded=true;", "text/javascript")
                 } else if path == "/source-test-ad.js" {
@@ -149,6 +190,7 @@ pub fn run() {
         let event_app = app.handle().clone(); let event_main = main.clone();
         let event_stage = stage.clone();
         let event_done = done.clone(); let event_output = output.clone(); let event_requests = requests.clone();
+        let loaded = Arc::new(Mutex::new(String::new())); let loaded_events = loaded.clone();
         app.listen_any("source-browser", move |event| {
             let Ok(event) = serde_json::from_str::<SourceEvent>(event.payload()) else { return; };
             if event.request_id != REQUEST || event_done.load(Ordering::SeqCst) { return; }
@@ -182,15 +224,18 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move { let _ = source_browser_control(app, main, REQUEST.into(), "capture".into(), Some("123".into()), None); });
             } else if current == 1 && event.kind == "magnet" && event.release_id.as_deref() == Some("123") && event.magnet.as_deref() == Some(MAGNET) {
                 phase.store(2, Ordering::SeqCst);
-                if let Some(session) = event_app.state::<SourceState>().0.lock().unwrap().as_mut() { session.manual = true; }
-                if let Some(browser) = event_app.get_webview_window(LABEL) { let _ = browser.eval("document.getElementById('manual-link').click()"); }
+                let app = event_app.clone(); let main = event_main.clone(); let output = event_output.clone(); let done = event_done.clone(); let loaded = loaded.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = check_manual_browser(app.clone(), main, loaded).await {
+                        done.store(true, Ordering::SeqCst); report(&app, &output, false, &error);
+                    }
+                });
             } else if current == 2 && event.kind == "magnet" && event.release_id.is_none() && event.magnet.as_deref() == Some(MAGNET) {
                 phase.store(3, Ordering::SeqCst); event_done.store(true, Ordering::SeqCst);
                 let paths = event_requests.lock().unwrap();
                 let ok = paths.iter().any(|p| p == "/essential.js") && !paths.iter().any(|p| p == "/source-test-ad.js") && event_app.webview_windows().len() == 2;
                 drop(paths);
                 let app = event_app.clone(); let main = event_main.clone(); let output = event_output.clone(); let frames = frames.clone();
-                if let Some(session) = app.state::<SourceState>().0.lock().unwrap().as_mut() { session.manual = false; }
                 tauri::async_runtime::spawn(async move {
                     let closed = source_browser_control(app.clone(), main, REQUEST.into(), "close".into(), None, None).is_ok();
                     for _ in 0..30 {
@@ -201,7 +246,7 @@ pub fn run() {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     let animating = frames.load(Ordering::SeqCst) > before;
                     let ok = ok && closed && app.get_webview_window(LABEL).is_none() && animating;
-                    report(&app, &output, ok, &format!("Native checks: inline verification, hidden quick-search window, request/cosmetic filtering, results, magnet capture and popup blocking={ok}; source closed={closed}; library animation frames={before}->{}", frames.load(Ordering::SeqCst)));
+                    report(&app, &output, ok, &format!("Native checks: inline verification, embedded manual browsing with back/forward navigation, hidden source host, request/cosmetic filtering, results, magnet capture and popup blocking={ok}; source closed={closed}; library animation frames={before}->{}", frames.load(Ordering::SeqCst)));
                 });
             }
         });
@@ -210,6 +255,7 @@ pub fn run() {
         *stage.lock().unwrap() = "creating source window".into();
         let browser = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External("about:blank".parse().unwrap()))
             .title("Source fixture").visible(false).focused(false).initialization_script(script)
+            .on_page_load(move |_, payload| { if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) { *loaded_events.lock().unwrap() = payload.url().path().to_owned(); } })
             .on_navigation(move |url| handle_navigation(&nav_app, REQUEST, url))
             .on_new_window(move |url, _| { if url.scheme() == "magnet" { handle_navigation(&popup_app, REQUEST, &url); } NewWindowResponse::Deny })
             .on_permission_request(|_, _| tauri::webview::PermissionResponse::Deny).on_download(|_,_|false).build()?;

@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { invoke } from '@tauri-apps/api/core';
 import Discover from '../src/components/browse/Discover';
 import CatalogTitle from '../src/components/browse/CatalogTitle';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import * as tmdb from '../src/services/tmdb';
-import { quickTorrent } from '../src/services/browse';
+import { browseSource, quickTorrent } from '../src/services/browse';
+import SourceBrowser from '../src/components/browse/SourceBrowser';
 import type { CatalogDetail } from '../src/types/browse';
 import type { Profile } from '../src/types/media';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -16,6 +18,8 @@ const detail: CatalogDetail = { ...item, imdbId: 'tt1234567', certification: 'TV
   status: 'Ended', seasons: [{ number: 1, name: 'Season 1', count: 2, airDate: '2024-01-01' }], nextSeason: null, lastSeason: 1, lastEpisode: 2 };
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(invoke).mockResolvedValue(undefined);
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   useLibraryStore.setState(useLibraryStore.getInitialState(), true);
   useLibraryStore.setState((s) => ({ activeProfile: { id: 1, name: 'Adult', maturity: 'all' } as Profile,
     settings: { ...s.settings, tmdb_api_key: 'test', imdb_enabled: false, browse_source_url: 'https://source.example' } }));
@@ -25,7 +29,7 @@ beforeEach(() => {
     tmdb_episode_id: episode_number, season_number: 1, episode_number, title: `Episode ${episode_number}`, overview: '', air_date: '2024-01-01', runtime: 40, still_path: null,
   })) });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it('requires an unrestricted profile before fetching discovery', () => {
   useLibraryStore.setState({ activeProfile: { id: 2, name: 'Child', maturity: 'kids' } as Profile });
   render(<Discover />);
@@ -119,4 +123,48 @@ it('shows fuller title information in a wide library-style dialog', async () => 
   expect(screen.getByText('A Network')).toBeTruthy();
   expect(screen.getByText('English')).toBeTruthy();
   expect(screen.getByRole('dialog').className).toContain('max-w-5xl');
+});
+
+it('browses torrents inside the app and restores the selected episode on return', async () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  vi.mocked(browseSource).mockResolvedValue({ requestId: 'manual-fixture', control, close: vi.fn() });
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  await screen.findByRole('button', { name: 'Choose episode or entire season' });
+  fireEvent.click(screen.getByRole('button', { name: 'Choose episode or entire season' }));
+  fireEvent.click(screen.getByRole('option', { name: /Episode 2/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Browse torrents' }));
+  await screen.findByRole('dialog', { name: 'Browse torrents for Example' });
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Reload source' }) as HTMLButtonElement).disabled).toBe(false));
+  for (const name of ['Back one page', 'Forward one page', 'Reload source']) fireEvent.click(screen.getByRole('button', { name }));
+  expect(control.mock.calls.map(([action]) => action)).toEqual(['back', 'forward', 'reload']);
+  const signal = vi.mocked(browseSource).mock.calls[0][3]!.signal!;
+  fireEvent.click(screen.getByRole('button', { name: 'Back to title' }));
+  expect(signal.aborted).toBe(true);
+  expect(screen.getByRole('button', { name: 'Choose episode or entire season' }).textContent).toContain('Episode 2');
+  expect(screen.queryByRole('dialog', { name: 'Browse torrents for Example' })).toBeNull();
+});
+
+it('closes a late source session after the embedded browser was already dismissed', async () => {
+  let finish!: (session: Awaited<ReturnType<typeof browseSource>>) => void;
+  vi.mocked(browseSource).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const view = render(<SourceBrowser item={detail} sourceUrl="https://source.example" onBack={vi.fn()} onSelected={vi.fn()} />);
+  const signal = vi.mocked(browseSource).mock.calls[0][3]!.signal!;
+  expect(screen.getByRole('status').textContent).toContain('Opening your source');
+  view.unmount(); expect(signal.aborted).toBe(true);
+  const close = vi.fn();
+  await act(async () => finish({ requestId: 'late-fixture', control: vi.fn(), close }));
+  expect(close).toHaveBeenCalledOnce();
+});
+
+it('offers a retry and accessible exit when the embedded source fails to open', async () => {
+  vi.mocked(browseSource).mockRejectedValueOnce(new Error('Source unavailable'))
+    .mockResolvedValueOnce({ requestId: 'retry-fixture', control: vi.fn(), close: vi.fn() });
+  const back = vi.fn();
+  render(<SourceBrowser item={detail} sourceUrl="https://source.example" onBack={back} onSelected={vi.fn()} />);
+  await screen.findByText('Source unavailable');
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  expect(browseSource).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Close torrent browser' }));
+  expect(back).toHaveBeenCalledOnce();
 });

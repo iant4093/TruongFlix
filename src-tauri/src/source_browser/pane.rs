@@ -1,4 +1,4 @@
-//! Positions the isolated source view inside the trusted title dialog without exposing remote IPC.
+//! Positions the isolated source view inside the trusted application window without exposing remote IPC.
 use super::*;
 
 #[derive(Clone, Copy, Deserialize)]
@@ -27,7 +27,7 @@ impl PaneRect {
             || self.viewport_width < 320.0
             || self.viewport_height < 200.0
         {
-            return Err("Invalid verification panel bounds".into());
+            return Err("Invalid source view bounds".into());
         }
         // Keep the title's close control and the window's own controls outside the native view.
         let x = self.x.max(0.0);
@@ -60,8 +60,8 @@ pub async fn hide(browser: &WebviewWindow, detach: bool) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         return tokio::time::timeout(std::time::Duration::from_secs(3), rx)
             .await
-            .map_err(|_| "Verification panel did not close in time")?
-            .map_err(|_| "Verification panel is closed")?;
+            .map_err(|_| "Source view did not close in time")?
+            .map_err(|_| "Source view is closed")?;
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -83,7 +83,7 @@ pub async fn source_browser_place(
         let state = app.state::<SourceState>();
         let guard = state.0.lock().unwrap();
         guard.as_ref().is_some_and(|s| {
-            s.request_id == request_id && !s.manual && (rect.is_none() || s.challenge_shown)
+            s.request_id == request_id && (rect.is_none() || s.manual || s.challenge_shown)
         })
     };
     if !allowed {
@@ -112,7 +112,7 @@ pub async fn source_browser_place(
                             .unwrap()
                             .as_ref()
                             .is_some_and(|s| {
-                                s.request_id == request_id && !s.manual && s.challenge_shown
+                                s.request_id == request_id && (s.manual || s.challenge_shown)
                             });
                         let result = if current {
                             platform::place_pane(&view, parent, rect)
@@ -126,13 +126,13 @@ pub async fn source_browser_place(
             .map_err(|e| e.to_string())?;
         return tokio::time::timeout(std::time::Duration::from_secs(3), rx)
             .await
-            .map_err(|_| "Verification panel could not be displayed")?
-            .map_err(|_| "Verification panel is closed")?;
+            .map_err(|_| "Source view could not be displayed")?
+            .map_err(|_| "Source view is closed")?;
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (app, browser, rect);
-        Err("Inline verification is unavailable on this platform".into())
+        Err("Embedded source browsing is unavailable on this platform".into())
     }
 }
 

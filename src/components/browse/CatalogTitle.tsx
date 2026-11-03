@@ -1,14 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { ChevronDown, Download, ExternalLink, Loader2, Play, ShieldCheck, Star, CalendarDays, Clock, UserRound } from 'lucide-react';
+import { ChevronDown, Download, Search, Loader2, Play, ShieldCheck, Star, CalendarDays, Clock, UserRound } from 'lucide-react';
 import { getCatalogDetail, getCatalogSeason, type SearchResult } from '../../services/tmdb';
-import { browseSource, cancelSourceBrowser, quickTorrent } from '../../services/browse';
+import { cancelSourceBrowser, quickTorrent } from '../../services/browse';
 import type { BrowseScope, CatalogDetail, CatalogSeason } from '../../types/browse';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import type { TorrentMode } from '../../types/media';
 import CatalogDialog from './CatalogDialog';
 import SourceVerification from './SourceVerification';
+import SourceBrowser from './SourceBrowser';
 import Dropdown from '../common/Dropdown';
 import Artwork from '../common/Artwork';
 
@@ -36,6 +37,7 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   const [retry, setRetry] = useState(0);
   const [verification, setVerification] = useState<string | null>(null);
   const [logoFailed, setLogoFailed] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   useEffect(() => {
     let alive = true;
     setDetailError('');
@@ -108,14 +110,11 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
     } catch (e) { if (active.current && !(e instanceof DOMException && e.name === 'AbortError')) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (active.current) { setBusy(false); setProgress(''); setCommitting(false); setVerification(null); } }
   };
-  const manual = async () => {
+  const manual = () => {
     setError('');
     if (!sourceUrl) { onSource(); return; }
     if (!detail?.imdbId) return;
-    setBusy(true); setProgress('Opening your source browser…'); setCommitting(false);
-    try { await browseSource(detail, detail.imdbId, sourceUrl, onClose); }
-    catch (e) { if (active.current && !(e instanceof DOMException && e.name === 'AbortError')) setError(e instanceof Error ? e.message : String(e)); }
-    finally { if (active.current) { setBusy(false); setProgress(''); } }
+    setBrowsing(true);
   };
   const people = detail?.cast?.filter((person) => !person.job) ?? [];
   const crew = detail?.cast?.filter((person) => person.job) ?? [];
@@ -126,7 +125,7 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
     const value = new Date(`${raw?.slice(0, 10)}T12:00:00Z`);
     return Number.isFinite(value.getTime()) ? value.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) : '';
   };
-  return <CatalogDialog title={item.title} onClose={onClose} active={!suspended}>
+  return <><CatalogDialog title={item.title} onClose={onClose} active={!suspended && !browsing}>
     <div className="relative h-[46vh] min-h-[280px] max-h-[520px] overflow-hidden rounded-t-xl bg-[#202020]">
       <Artwork key={detail?.backdrop || item.backdrop} src={detail?.backdrop || item.backdrop || item.poster} alt="" eager className="absolute inset-0 h-full w-full object-cover" />
       <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-black/15 to-transparent" />
@@ -165,7 +164,7 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
             {(['stream', 'download'] as const).flatMap((mode) => (['1080p', '4K'] as const).map((quality) => <button key={`${mode}:${quality}`} role="menuitem" className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-white/10 focus:bg-white/10" onClick={() => void run(mode, quality)}>{mode === 'stream' ? <Play className="h-4 w-4" /> : <Download className="h-4 w-4" />}{mode === 'stream' ? 'Stream' : 'Download'} {quality}</button>))}
           </div>, document.body)}
         </div>
-        <button className="nf-btn-ghost" disabled={!detail?.imdbId || busy} onClick={() => void manual()}><ExternalLink className="h-4 w-4" />Browse torrents</button>
+        <button className="nf-btn-ghost" disabled={!detail?.imdbId || busy} onClick={manual}><Search className="h-4 w-4" />Browse torrents</button>
       </div>
       {busy && <div role="status" className="mt-5 rounded-lg border border-white/15 bg-white/5 p-5">
         <p className="mb-2 text-xs font-semibold text-white/50">{selection}</p><div className="flex flex-wrap items-center justify-between gap-4"><p className="flex min-w-0 items-center gap-2 break-words text-sm"><Loader2 className="h-4 w-4 shrink-0 animate-spin" />{progress}</p>
@@ -207,5 +206,7 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
       </div></section>}
       <p className="mt-8 flex items-center gap-2 border-t border-white/10 pt-5 text-xs text-white/40"><ShieldCheck className="h-4 w-4" />{sourceUrl ? 'Source browser protected by ad and popup blocking' : 'Add your source website to use torrent actions'}</p>
     </div>
-  </CatalogDialog>;
+  </CatalogDialog>
+    {browsing && !suspended && detail && <SourceBrowser item={detail} sourceUrl={sourceUrl} onBack={() => setBrowsing(false)} onSelected={onClose} />}
+  </>;
 }

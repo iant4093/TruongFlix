@@ -42,7 +42,8 @@ class SourceSession {
     this.unlisten = await listen<SourceEvent>('source-browser', ({ payload }) => {
       if (payload.requestId !== this.id || this.closed || this.signal.aborted) return;
       this.onEvent?.(payload);
-      if (this.waiter) this.waiter(payload); else this.queue.push(payload);
+      if (this.waiter) this.waiter(payload);
+      else if (!manual || ['ready', 'error', 'closed'].includes(payload.kind)) this.queue.push(payload);
     });
     if (this.signal.aborted) { this.unlisten?.(); this.close(); throw canceled(); }
     try {
@@ -84,23 +85,59 @@ class SourceSession {
 
 let activeController: AbortController | null = null;
 export function cancelSourceBrowser() { activeController?.abort(); activeController = null; }
-export async function browseSource(item: SearchResult, imdbId: string, sourceUrl: string, onSelected?: () => void) {
+export interface SourceBrowserSession {
+  requestId: string;
+  control: (action: 'back' | 'forward' | 'reload') => Promise<unknown>;
+  close: () => void;
+}
+export interface SourceBrowserOptions {
+  signal?: AbortSignal;
+  onSelected?: () => void;
+  onClosed?: () => void;
+  onError?: (message: string) => void;
+}
+export async function browseSource(item: SearchResult, imdbId: string, sourceUrl: string, options: SourceBrowserOptions = {}): Promise<SourceBrowserSession> {
   const profile = useLibraryStore.getState().activeProfile?.id;
   const permitted = () => { const state = useLibraryStore.getState(); return !!profile && state.activeProfile?.id === profile && state.activeProfile.maturity === 'all' && !state.profileGate; };
   if (!permitted()) throw canceled();
   cancelSourceBrowser();
   const controller = new AbortController(); activeController = controller;
+  const cancel = () => controller.abort();
+  options.signal?.addEventListener('abort', cancel, { once: true });
+  let selecting = false;
   const session = new SourceSession(controller.signal, (e) => {
-    if (!permitted()) { session.close(); return; }
+    if (!permitted()) { controller.abort(); return; }
     if (e.kind === 'magnet' && e.magnet) {
-      session.close();
-      onSelected?.();
-      useLibraryStore.getState().openAddTorrent(e.magnet, item);
-    } else if (e.kind === 'closed') session.close();
-    else if (e.kind === 'error') useLibraryStore.getState().toast(e.message || 'Source browser error', 'error');
+      if (selecting) return;
+      selecting = true;
+      const magnet = e.magnet;
+      // Remove the native view before presenting the trusted torrent-review controls beneath it.
+      void invoke('source_browser_place', { requestId: session.id, rect: null }).catch(() => {}).then(() => {
+        if (controller.signal.aborted || !permitted()) { controller.abort(); return; }
+        controller.abort();
+        options.onSelected?.();
+        useLibraryStore.getState().openAddTorrent(magnet, item);
+      });
+    } else if (e.kind === 'closed') controller.abort();
+    else if (e.kind === 'error') {
+      const message = e.message || 'Source browser error';
+      if (options.onError) options.onError(message); else useLibraryStore.getState().toast(message, 'error');
+    }
   });
-  try { await session.open(sourceUrl, imdbId, true); await session.wait('ready', 30_000); }
-  catch (e) { session.close(); throw e; }
+  controller.signal.addEventListener('abort', () => {
+    session.close(); options.signal?.removeEventListener('abort', cancel);
+    if (activeController === controller) activeController = null;
+    options.onClosed?.();
+  }, { once: true });
+  if (options.signal?.aborted) controller.abort();
+  try {
+    await session.open(sourceUrl, imdbId, true); await session.wait('ready', 30_000);
+    abort(controller.signal);
+    return { requestId: session.id, close: cancel, control: async (action) => {
+      if (!permitted()) { controller.abort(); throw canceled(); }
+      return session.control(action);
+    } };
+  } catch (e) { controller.abort(); throw e; }
 }
 
 export function candidateMatches(target: BrowseTarget, row: SourceRelease) {

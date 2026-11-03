@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { abortable, browseSource, candidateMatches, quickTorrent, validateSourceUrl } from '../src/services/browse';
+import { abortable, browseSource, cancelSourceBrowser, candidateMatches, quickTorrent, validateSourceUrl } from '../src/services/browse';
 import { initiateTorrent, inspectTorrentFilesLive } from '../src/services/torrents';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import type { BrowseTarget, SourceEvent } from '../src/types/browse';
@@ -153,11 +153,54 @@ it('hands a manually selected magnet to review with its catalog identity and sta
     return result;
   });
   const selected = vi.fn();
-  await browseSource(item, target.imdbId, 'https://source.example', selected);
+  await browseSource(item, target.imdbId, 'https://source.example', { onSelected: selected });
   const magnet = 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000';
   emit({ payload: { requestId, kind: 'magnet', magnet } });
-  expect(selected).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(selected).toHaveBeenCalledOnce());
   expect(useLibraryStore.getState().addTorrentModal).toMatchObject({ open: true, initialSource: magnet, catalogMatch: item });
+  expect(initiateTorrent).not.toHaveBeenCalled();
+});
+
+it('exposes embedded navigation and closes a manual session when its view unmounts', async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    const result = await original(command, args);
+    if (command === 'source_browser_open') queueMicrotask(() => emit({ payload: { requestId, kind: 'ready' } }));
+    return result;
+  });
+  const controller = new AbortController(); const closed = vi.fn();
+  const session = await browseSource(item, target.imdbId, 'https://source.example', { signal: controller.signal, onClosed: closed });
+  expect(session.requestId).toBe(requestId);
+  for (const action of ['back', 'forward', 'reload'] as const) {
+    await session.control(action);
+    expect(invoke).toHaveBeenCalledWith('source_browser_control', expect.objectContaining({ requestId, action }));
+  }
+  controller.abort();
+  expect(closed).toHaveBeenCalledOnce();
+  expect(invoke).toHaveBeenLastCalledWith('source_browser_control', expect.objectContaining({ requestId, action: 'close' }));
+  await expect(session.control('reload')).rejects.toMatchObject({ name: 'AbortError' });
+  expect(initiateTorrent).not.toHaveBeenCalled();
+  cancelSourceBrowser();
+  expect(closed).toHaveBeenCalledOnce();
+});
+
+it('waits for the embedded view to hide and ignores a selection canceled during that handoff', async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let hidden!: () => void;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === 'source_browser_place') return new Promise<void>((resolve) => { hidden = resolve; }) as never;
+    const result = await original(command, args);
+    if (command === 'source_browser_open') queueMicrotask(() => emit({ payload: { requestId, kind: 'ready' } }));
+    return result;
+  });
+  const controller = new AbortController(); const selected = vi.fn();
+  await browseSource(item, target.imdbId, 'https://source.example', { signal: controller.signal, onSelected: selected });
+  emit({ payload: { requestId, kind: 'magnet', magnet: 'magnet:?xt=urn:btih:0000000000000000000000000000000000000000' } });
+  expect(useLibraryStore.getState().addTorrentModal).toBeNull();
+  controller.abort(); hidden();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(selected).not.toHaveBeenCalled();
+  expect(useLibraryStore.getState().addTorrentModal).toBeNull();
   expect(initiateTorrent).not.toHaveBeenCalled();
 });
 

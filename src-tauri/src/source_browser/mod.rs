@@ -381,14 +381,12 @@ pub fn source_browser_control(
     main_only(&window)?;
     let mut script = None;
     let mut destination = None;
-    let manual;
     {
         let state = app.state::<SourceState>();
         let mut guard = state.0.lock().unwrap();
         let Some(session) = guard.as_mut().filter(|s| s.request_id == request_id) else {
             return Ok(());
         };
-        manual = session.manual;
         match action.as_str() {
             "close" => *guard = None,
             "capture" => {
@@ -414,6 +412,9 @@ pub fn source_browser_control(
                     .append_pair("page", &p.to_string());
                 destination = Some(url);
             }
+            "back" | "forward" if session.manual => {
+                script = Some(if action == "back" { "history.back()" } else { "history.forward()" }.into());
+            }
             "show" | "hide" | "reload" => (),
             _ => return Err("Unknown source browser action".into()),
         }
@@ -434,40 +435,17 @@ pub fn source_browser_control(
     }
     match action.as_str() {
         "close" => {
-            let visible = browser.is_visible().unwrap_or(false);
-            if manual {
-                browser.destroy().map_err(|e| e.to_string())?;
-            } else {
-                tauri::async_runtime::spawn(async move {
-                    let _ = pane::hide(&browser, true).await;
-                    let _ = browser.destroy();
-                });
-            }
-            if visible {
-                if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.set_focus();
-                }
-            }
+            tauri::async_runtime::spawn(async move {
+                let _ = pane::hide(&browser, true).await;
+                let _ = browser.destroy();
+            });
         }
         "hide" => {
-            if manual {
-                browser.hide().map_err(|e| e.to_string())?;
-            } else {
-                tauri::async_runtime::spawn(async move {
-                    let _ = pane::hide(&browser, false).await;
-                });
-            }
-            if let Some(main) = app.get_webview_window("main") {
-                let _ = main.set_focus();
-            }
+            tauri::async_runtime::spawn(async move {
+                let _ = pane::hide(&browser, false).await;
+            });
         }
-        "show" => {
-            if !manual {
-                return Err("Complete verification in the title dialog".into());
-            }
-            browser.show().map_err(|e| e.to_string())?;
-            browser.set_focus().map_err(|e| e.to_string())?;
-        }
+        "show" => return Err("Source browsing is displayed inside the TruongFlix window".into()),
         "reload" => browser.reload().map_err(|e| e.to_string())?,
         _ => (),
     }
@@ -476,21 +454,9 @@ pub fn source_browser_control(
 
 fn finish_open(browser: &WebviewWindow, url: tauri::Url, id: &str) {
     let app = browser.app_handle();
-    let reveal = {
-        let state = app.state::<SourceState>();
-        let guard = state.0.lock().unwrap();
-        let Some(session) = guard.as_ref().filter(|s| s.request_id == id) else {
-            return;
-        };
-        session.manual
-    };
-    if browser.navigate(url).is_err() {
-        return;
-    }
-    if reveal {
-        let _ = browser.show();
-        let _ = browser.set_focus();
-    }
+    let current = app.state::<SourceState>().0.lock().unwrap().as_ref()
+        .is_some_and(|session| session.request_id == id);
+    if !current || browser.navigate(url).is_err() { return; }
     publish(app, event(id, "ready"));
 }
 
