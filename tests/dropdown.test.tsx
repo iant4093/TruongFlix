@@ -38,3 +38,18 @@ it('keeps menus inside the viewport and Escape does not close the surrounding sc
   window.removeEventListener('keydown', closeScreen);
   vi.unstubAllGlobals();
 });
+
+it('removes a selected menu immediately even when animation frames are paused', () => {
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+  const change = vi.fn();
+  render(<Dropdown value={1} options={options} onChange={change} ariaLabel="Season" />);
+  const trigger = screen.getByRole('button', { name: 'Season' });
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole('option', { name: /Season 2/ }));
+  expect(change).toHaveBeenCalledWith(2);
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(trigger);
+  fireEvent.keyDown(window, { key: 'Escape' });
+  expect(screen.queryByRole('listbox')).toBeNull();
+});

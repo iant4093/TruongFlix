@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AnimatePresence, motion } from 'framer-motion';
 import { Check, ChevronDown } from 'lucide-react';
 
 export interface DropdownOption<T extends string | number> {
@@ -160,55 +159,49 @@ export default function Dropdown<T extends string | number>({
       </button>
 
       {createPortal(
-        <AnimatePresence>
-          {open && pos && (
-            <motion.div
-              ref={menuRef}
-              id={menuId}
-              role="listbox"
-              aria-label={ariaLabel}
-              initial={{ opacity: 0, y: pos.up ? 6 : -6, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: pos.up ? 6 : -6, scale: 0.98, transition: { duration: 0.1 } }}
-              transition={{ duration: 0.15, ease: [0.21, 0, 0.27, 1] }}
-              style={{
-                position: 'fixed',
-                left: pos.left,
-                width: pos.width,
-                top: pos.top,
-                bottom: pos.bottom,
-                maxHeight: pos.maxHeight,
-                transformOrigin: pos.up ? 'bottom' : 'top',
-              }}
-              className="z-[250] overflow-y-auto overscroll-contain rounded-md border border-[#4d4d4d] bg-[#242424]/[0.98] py-1 shadow-[0_10px_30px_rgba(0,0,0,0.6)] backdrop-blur"
-            >
-              {options.map((o, i) => {
-                const selected = o.value === value;
-                return (
-                  <div
-                    key={String(o.value)}
-                    id={`${menuId}-${i}`}
-                    role="option"
-                    aria-label={o.hint ? `${o.label}, ${o.hint}` : o.label}
-                    aria-selected={selected}
-                    data-index={i}
-                    onMouseEnter={() => setActive(i)}
-                    onClick={() => choose(o.value)}
-                    className={`flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm ${
-                      i === active ? 'bg-white/10' : ''
-                    } ${selected ? 'font-semibold text-white' : 'text-[#d2d2d2]'}`}
-                  >
-                    <Check className={`h-4 w-4 shrink-0 ${selected ? 'text-white' : 'text-transparent'}`} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block break-words">{o.label}</span>
-                      {o.hint && <span className="block truncate text-xs font-normal text-nf-muted" title={o.hint}>{o.hint}</span>}
-                    </span>
-                  </div>
-                );
-              })}
-            </motion.div>
-          )}
-        </AnimatePresence>,
+        open && pos ? (
+          <div
+            ref={menuRef}
+            id={menuId}
+            role="listbox"
+            aria-label={ariaLabel}
+            style={{
+              position: 'fixed',
+              left: pos.left,
+              width: pos.width,
+              top: pos.top,
+              bottom: pos.bottom,
+              maxHeight: pos.maxHeight,
+              transformOrigin: pos.up ? 'bottom' : 'top',
+            }}
+            className="nf-menu-enter z-[250] overflow-y-auto overscroll-contain rounded-md border border-[#4d4d4d] bg-[#242424]/[0.98] py-1 shadow-[0_10px_30px_rgba(0,0,0,0.6)] backdrop-blur"
+          >
+            {options.map((o, i) => {
+              const selected = o.value === value;
+              return (
+                <div
+                  key={String(o.value)}
+                  id={`${menuId}-${i}`}
+                  role="option"
+                  aria-label={o.hint ? `${o.label}, ${o.hint}` : o.label}
+                  aria-selected={selected}
+                  data-index={i}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => choose(o.value)}
+                  className={`flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm ${
+                    i === active ? 'bg-white/10' : ''
+                  } ${selected ? 'font-semibold text-white' : 'text-[#d2d2d2]'}`}
+                >
+                  <Check className={`h-4 w-4 shrink-0 ${selected ? 'text-white' : 'text-transparent'}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block break-words">{o.label}</span>
+                    {o.hint && <span className="block truncate text-xs font-normal text-nf-muted" title={o.hint}>{o.hint}</span>}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : null,
         document.body,
       )}
     </>

@@ -64,6 +64,21 @@
   }
 }
 
+/* Final styles are visible immediately; opening and closing never wait for a JS animation loop. */
+@keyframes nf-menu-enter {
+  from { opacity: 0.8; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes nf-dialog-enter {
+  from { transform: translateY(12px) scale(0.99); }
+  to { transform: translateY(0) scale(1); }
+}
+.nf-menu-enter { animation: nf-menu-enter 0.15s ease-out; }
+.nf-dialog-enter { animation: nf-dialog-enter 0.2s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .nf-menu-enter, .nf-dialog-enter { animation: none; }
+}
+
 /* Built-in player: the page turns transparent so the native video view underneath shows through. */
 html.player-mode,
 html.player-mode body,

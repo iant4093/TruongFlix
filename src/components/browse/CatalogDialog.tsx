@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
 import { X } from 'lucide-react';
 
 export default function CatalogDialog({ title, onClose, active, children }: {
@@ -24,16 +23,15 @@ export default function CatalogDialog({ title, onClose, active, children }: {
     return () => { document.documentElement.style.overflow = old; document.removeEventListener('keydown', key); previous?.focus(); };
   }, [active]);
   if (!active) return null;
-  return <motion.div data-catalog-scroll initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18 }}
+  return <div data-catalog-scroll
     className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain bg-black/80 px-4 pb-10 pt-8 backdrop-blur-sm"
     onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-    <motion.div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title}
-      initial={{ y: 24, scale: 0.97 }} animate={{ y: 0, scale: 1 }} transition={{ duration: 0.23 }}
-      className="relative mx-auto w-full max-w-5xl rounded-xl bg-nf-surface shadow-2xl outline-none">
+    <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title}
+      className="nf-dialog-enter relative mx-auto w-full max-w-5xl rounded-xl bg-nf-surface shadow-2xl outline-none">
       <div data-catalog-close className="pointer-events-none sticky top-0 z-20 flex h-0 justify-end pr-4 pt-4">
         <button aria-label="Close dialog" onClick={onClose} className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-[#181818]/90 hover:bg-[#333] focus-visible:ring-2 focus-visible:ring-white"><X className="h-5 w-5" /></button>
       </div>
       {children}
-    </motion.div>
-  </motion.div>;
+    </div>
+  </div>;
 }
