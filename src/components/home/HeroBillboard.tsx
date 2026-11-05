@@ -81,7 +81,7 @@ export default function HeroBillboard({ item }: Props) {
             disableRemotePlayback
             controlsList="nodownload nofullscreen noremoteplayback"
             tabIndex={-1}
-            className="trailer-video absolute left-1/2 top-1/2 border-0 object-cover transition-[width,height] duration-500"
+            className="trailer-video absolute left-1/2 top-1/2 border-0 object-cover"
             style={frameStyle}
           />
           {source.audioUrl && <audio ref={audioRef} src={source.audioUrl} preload="auto" className="hidden" />}

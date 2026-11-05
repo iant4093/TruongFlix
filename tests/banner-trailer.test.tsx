@@ -128,3 +128,25 @@ it('renders a real video without third-party controls or caption tracks in the b
   expect(video.querySelector('track')).toBeNull();
   expect(document.querySelector('iframe')).toBeNull();
 });
+
+it('sets the crop before the trailer appears and keeps it as the shots change', async () => {
+  const pixels = new Uint8ClampedArray(160 * 90 * 4);
+  const drawImage = vi.fn();
+  const getImageData = vi.fn(() => ({ data: pixels }));
+  vi.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1920);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage, getImageData } as unknown as CanvasRenderingContext2D);
+  for (let y = 0; y < 90; y++) pixels.fill(150, (y * 160 + 20) * 4, (y * 160 + 140) * 4);
+  render(<HeroBillboard item={item} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+  const video = screen.getByLabelText('Sintel trailer') as HTMLVideoElement;
+  fireEvent.playing(video);
+  const width = video.style.width;
+  expect(parseFloat(width)).toBeGreaterThan(100);
+  pixels.fill(150);
+  video.currentTime = 5;
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  fireEvent.waiting(video);
+  fireEvent.playing(video);
+  expect(video.style.width).toBe(width);
+  expect(drawImage).toHaveBeenCalledOnce();
+});

@@ -51,24 +51,18 @@ export function useBannerTrailer(item: MediaItem, enabled: boolean, playing: boo
     let frame = 0;
     let audioPending = false;
     let nextAudioAttempt = 0;
-    let samples = 0;
-    let stable = 0;
-    let previous = { x: 0, y: 0 };
-    const canvas = document.createElement('canvas');
-    canvas.width = 160; canvas.height = 90;
-    const sampleFrame = () => {
-      if (!allowedRef.current || video.paused || video.readyState < 2 || video.currentTime < 2 || !video.videoWidth || samples >= 12) return;
-      samples++;
+    let framed = false;
+    const frameTrailer = () => {
+      if (framed || !video.videoWidth) return;
+      framed = true;
       try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 160; canvas.height = 90;
         const context = canvas.getContext('2d', { willReadFrequently: true });
         if (!context) return;
         context.drawImage(video, 0, 0, 160, 90);
-        const next = trailerInsets(context.getImageData(0, 0, 160, 90).data, 160, 90);
-        stable = Math.abs(previous.x - next.x) < 0.01 && Math.abs(previous.y - next.y) < 0.015 ? stable + 1 : 0;
-        previous = next;
-        // Require matching borders across three decoded frames; dark opening shots never decide the crop.
-        if (stable >= 2 && (next.x || next.y)) { setCrop(next); samples = 12; }
-      } catch { samples = 12; /* Keep the natural frame when pixel access is unavailable. */ }
+        setCrop(trailerInsets(context.getImageData(0, 0, 160, 90).data, 160, 90));
+      } catch { /* Keep the natural frame when pixel access is unavailable. */ }
     };
     const sync = () => {
       if (!audio || audio.muted || !allowedRef.current || video.paused || video.readyState < 3 || video.seeking) return;
@@ -80,6 +74,8 @@ export function useBannerTrailer(item: MediaItem, enabled: boolean, playing: boo
     };
     const reveal = () => {
       if (!alive || !allowedRef.current || video.paused || video.ended || video.readyState < 2) return;
+      // Set the framing before showing the first frame and keep it for the whole trailer.
+      frameTrailer();
       setActive(true); setPhase('playing'); sync();
     };
     const started = () => {
@@ -97,12 +93,10 @@ export function useBannerTrailer(item: MediaItem, enabled: boolean, playing: boo
     video.addEventListener('error', failed);
     audio?.addEventListener('canplay', sync);
     const timer = window.setInterval(sync, 250);
-    const frameTimer = window.setInterval(sampleFrame, 750);
     return () => {
       alive = false;
       if (frame && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frame);
       window.clearInterval(timer);
-      window.clearInterval(frameTimer);
       video.pause(); audio?.pause();
       video.removeEventListener('playing', started);
       video.removeEventListener('waiting', hide);
