@@ -1,14 +1,16 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, Download, Search, Loader2, Play, Star, UserRound } from 'lucide-react';
+import { Bookmark } from 'lucide-react';
+import { ChevronDown, Download, ListOrdered, Search, Loader2, Play, Star, UserRound } from 'lucide-react';
 import { getCatalogDetail, getCatalogSeason, type SearchResult } from '../../services/tmdb';
-import { cancelSourceBrowser, quickTorrent } from '../../services/browse';
-import type { BrowseScope, CatalogDetail, CatalogSeason } from '../../types/browse';
+import { cancelSourceBrowser, quickTorrent, searchTorrentReleases, type ReleaseSearchOptions } from '../../services/browse';
+import type { BrowseScope, BrowseTarget, CatalogDetail, CatalogSeason, SourceRelease } from '../../types/browse';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import type { TorrentMode } from '../../types/media';
 import CatalogDialog from './CatalogDialog';
 import SourceVerification from './SourceVerification';
 import SourceBrowser from './SourceBrowser';
+import ReleasePicker from './ReleasePicker';
 import Dropdown from '../common/Dropdown';
 import Artwork from '../common/Artwork';
 import CriticScores from '../common/CriticScores';
@@ -17,7 +19,13 @@ import MaturityRating from '../common/MaturityRating';
 import { formatRuntime } from '../../store/selectors';
 import useCatalogRatings from '../../hooks/useCatalogRatings';
 
-export default function CatalogTitle({ item, onClose, onSource, suspended = false }: { item: SearchResult; onClose: () => void; onSource: () => void; suspended?: boolean }) {
+export default function CatalogTitle({ item, onClose, onSource, suspended = false, save }: {
+  item: SearchResult;
+  onClose: () => void;
+  onSource: () => void;
+  suspended?: boolean;
+  save?: { saved: boolean; pending: boolean; onToggle: (item: SearchResult) => void };
+}) {
   const sourceUrl = useLibraryStore((s) => s.settings.browse_source_url);
   const library = useLibraryStore((s) => s.items);
   const owned = library.find((i) => i.kind === item.kind && i.tmdbId === item.id);
@@ -37,12 +45,18 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   const active = useRef(true);
   const actionRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef<HTMLDivElement>(null);
+  const pickerButton = useRef<HTMLButtonElement>(null);
+  const cancelSearchButton = useRef<HTMLButtonElement>(null);
+  const pickerTask = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuPosition, setMenuPosition] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
   const [retry, setRetry] = useState(0);
   const [verification, setVerification] = useState<string | null>(null);
   const [logoFailed, setLogoFailed] = useState(false);
   const [browsing, setBrowsing] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [releaseSearch, setReleaseSearch] = useState<{ key: string; quality: BrowseTarget['quality']; releases: SourceRelease[] | null } | null>(null);
+  const pickerId = useId();
   useEffect(() => {
     let alive = true;
     setDetailError('');
@@ -63,8 +77,11 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   }, [detail, season, retry]);
   useEffect(() => { active.current = true; return () => { active.current = false; controller.current?.abort(); cancelSourceBrowser(); }; }, []);
   useEffect(() => {
-    if ((busy || error) && !verification) statusRef.current?.scrollIntoView?.({ block: 'nearest' });
-  }, [busy, error, verification]);
+    if ((busy || error || pickerOpen) && !verification) statusRef.current?.scrollIntoView?.({ block: pickerOpen ? 'start' : 'nearest' });
+  }, [busy, error, pickerOpen, verification]);
+  useLayoutEffect(() => {
+    if (busy && pickerTask.current) cancelSearchButton.current?.focus({ preventScroll: true });
+  }, [busy]);
   useLayoutEffect(() => {
     if (!actionsOpen) return;
     const rect = actionRef.current?.getBoundingClientRect();
@@ -102,18 +119,39 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
     : { kind: 'episode', season, episode };
   const ready = !!detail?.imdbId && (item.kind === 'movie' || !!seasonData?.episodes.length);
   const selection = scope.kind === 'movie' ? item.title : scope.kind === 'season' ? `Season ${season}` : `S${String(season).padStart(2, '0')} · E${String(episode).padStart(2, '0')}`;
-  const run = async (mode: TorrentMode, quality: '1080p' | '4K') => {
-    setActionsOpen(false); setError('');
-    if (!sourceUrl) { onSource(); return; }
-    if (!detail || !ready) return;
+  const releaseKey = JSON.stringify([item.kind, item.id, detail?.imdbId, scope, sourceUrl]);
+  const currentReleases = releaseSearch?.key === releaseKey ? releaseSearch : null;
+  const runSource = async (task: (options: Pick<ReleaseSearchOptions, 'signal' | 'progress' | 'verification'>) => Promise<void>, fromPicker = false) => {
+    if (controller.current) return;
+    pickerTask.current = fromPicker;
+    setError('');
     const abort = new AbortController(); controller.current = abort; setBusy(true); setCommitting(false);
     try {
-      await quickTorrent({ item: detail, target: { ...scope, imdbId: detail.imdbId, title: detail.title, year: detail.year, quality },
-        mode, sourceUrl, signal: abort.signal, verification: (id) => { if (active.current) setVerification(id); }, progress: (message) => {
+      await task({ signal: abort.signal, verification: (id) => { if (active.current) setVerification(id); }, progress: (message) => {
           if (active.current) { setProgress(message); if (message === 'Preparing playback…' || message === 'Starting download…') setCommitting(true); }
         } });
     } catch (e) { if (active.current && !(e instanceof DOMException && e.name === 'AbortError')) setError(e instanceof Error ? e.message : String(e)); }
-    finally { if (active.current) { setBusy(false); setProgress(''); setCommitting(false); setVerification(null); } }
+    finally {
+      controller.current = null;
+      if (active.current) { setBusy(false); setProgress(''); setCommitting(false); setVerification(null); }
+    }
+  };
+  const run = (mode: TorrentMode, quality: BrowseTarget['quality'], release?: SourceRelease) => {
+    setActionsOpen(false);
+    if (!sourceUrl) { onSource(); return; }
+    if (!detail || !ready) return;
+    void runSource((options) => quickTorrent({ ...options, item: detail, mode, sourceUrl, release,
+      target: { ...scope, imdbId: detail.imdbId, title: detail.title, year: detail.year, quality } }), !!release);
+  };
+  const findReleases = (quality: BrowseTarget['quality']) => {
+    if (!sourceUrl) { onSource(); return; }
+    if (!detail || !ready || controller.current) return;
+    setReleaseSearch({ key: releaseKey, quality, releases: null });
+    void runSource(async (options) => {
+      const releases = await searchTorrentReleases({ ...options, sourceUrl,
+        target: { ...scope, imdbId: detail.imdbId, title: detail.title, year: detail.year, quality } });
+      if (active.current && !options.signal.aborted) setReleaseSearch({ key: releaseKey, quality, releases });
+    }, true);
   };
   const manual = () => {
     setError('');
@@ -153,19 +191,30 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
               {(['stream', 'download'] as const).flatMap((mode) => (['1080p', '4K'] as const).map((quality) => <button key={`${mode}:${quality}`} role="menuitem" className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-white/10 focus:bg-white/10" onClick={() => void run(mode, quality)}>{mode === 'stream' ? <Play className="h-4 w-4" /> : <Download className="h-4 w-4" />}{mode === 'stream' ? 'Stream' : 'Download'} {quality}</button>))}
             </div>, document.body)}
           </div>
+          <button ref={pickerButton} type="button" className="nf-btn-info px-4 disabled:opacity-50" aria-controls={pickerOpen ? pickerId : undefined}
+            aria-expanded={pickerOpen} disabled={!ready || busy || (scope.kind === 'season' && !scope.complete)}
+            onClick={() => { setError(''); setPickerOpen((open) => !open); }}><ListOrdered className="h-4 w-4" />Compare releases</button>
           <button className="nf-btn-info px-4 disabled:opacity-50" disabled={!detail?.imdbId || busy} onClick={manual}><Search className="h-4 w-4" />Browse torrents</button>
           {owned && <button className="nf-btn-ghost" onClick={() => { onClose(); useLibraryStore.getState().openDetail(owned.key); }}>In your library</button>}
+          {save && <button type="button" className="nf-btn-ghost disabled:opacity-50" aria-label="Save to Browse"
+            aria-pressed={save.saved} disabled={save.pending} onClick={() => save.onToggle(detail ?? item)}>
+            <Bookmark aria-hidden="true" className={`h-4 w-4 ${save.saved ? 'fill-current' : ''}`} />
+            {save.saved ? 'Saved in Browse' : 'Save to Browse'}
+          </button>}
         </div>
       </div>
     </div>
     <div className="px-6 pb-9 pt-2 md:px-12">
-      <div ref={statusRef}>
+      <div ref={statusRef} className="scroll-mt-16">
         {busy && <div role="status" className="mb-5 rounded-lg border border-white/15 bg-white/5 p-5">
           <p className="mb-2 text-xs font-semibold text-white/50">{selection}</p><div className="flex flex-wrap items-center justify-between gap-4"><p className="flex min-w-0 items-center gap-2 break-words text-sm"><Loader2 className="h-4 w-4 shrink-0 animate-spin" />{progress}</p>
-            {!committing && <button className="nf-btn-ghost shrink-0 text-sm" onClick={() => { controller.current?.abort(); cancelSourceBrowser(); }}>Cancel search</button>}</div>
+            {!committing && <button ref={cancelSearchButton} className="nf-btn-ghost shrink-0 text-sm" onClick={() => { controller.current?.abort(); cancelSourceBrowser(); }}>Cancel search</button>}</div>
         </div>}
         {verification && <SourceVerification requestId={verification} />}
         {error && <p role="alert" className="mb-5 text-sm leading-relaxed text-red-300">{error}</p>}
+        {pickerOpen && ready && (scope.kind !== 'season' || scope.complete) && <ReleasePicker id={pickerId} selection={selection} busy={busy}
+          quality={currentReleases?.quality ?? null} releases={currentReleases?.releases ?? null}
+          onClose={() => { setPickerOpen(false); setError(''); pickerButton.current?.focus(); }} onSearch={findReleases} onSelect={run} />}
       </div>
       <div className="grid gap-6 md:grid-cols-[minmax(0,1.85fr)_minmax(0,1fr)] md:gap-8">
         <div className="min-w-0 space-y-4">
@@ -186,7 +235,7 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
           {!!detail?.genres.length && <p><span className="text-nf-muted">Genres: </span>{detail.genres.join(', ')}</p>}
           {crew.map((person) => <p key={`${person.job}:${person.id ?? person.name}`}><span className="text-nf-muted">{person.job}: </span>{person.name}</p>)}
           {detail?.status && <p><span className="text-nf-muted">Status: </span>{detail.status}</p>}
-          {detail?.releaseDate && <p><span className="text-nf-muted">{item.kind === 'movie' ? 'Release date' : 'First aired'}: </span>{date(detail.releaseDate)}</p>}
+          {(detail?.releaseDate || item.releaseDate) && <p><span className="text-nf-muted">{item.kind === 'movie' ? 'Release date' : 'First aired'}: </span>{date(detail?.releaseDate || item.releaseDate)}</p>}
           {language && <p><span className="text-nf-muted">Original language: </span>{language}</p>}
           {!!detail?.totalEpisodes && <p><span className="text-nf-muted">Episodes: </span>{detail.totalEpisodes}</p>}
           {!!detail?.networks?.length && <p><span className="text-nf-muted">Network: </span>{detail.networks.join(', ')}</p>}

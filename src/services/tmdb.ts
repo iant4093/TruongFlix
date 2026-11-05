@@ -206,6 +206,7 @@ export interface SearchResult {
   kind: 'movie' | 'tv';
   title: string;
   year: number | null;
+  releaseDate?: string | null;
   overview: string;
   poster: string | null;
   backdrop: string | null;
@@ -610,6 +611,7 @@ export async function getCatalog(kind: 'movie' | 'tv', list: CatalogList, page =
     items: (data.results ?? []).filter((r) => !r.adult).map((r): SearchResult => ({
       id: r.id, kind, title: (kind === 'movie' ? r.title : r.name) || 'Untitled',
       year: yearOf(kind === 'movie' ? r.release_date : r.first_air_date), overview: r.overview ?? '',
+      releaseDate: (kind === 'movie' ? r.release_date : r.first_air_date) || null,
       poster: img(r.poster_path, 'w342'), backdrop: img(r.backdrop_path, 'w1280'), voteAverage: r.vote_average ?? 0,
     })),
   };

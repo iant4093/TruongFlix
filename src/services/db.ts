@@ -1,4 +1,5 @@
 import Database from '@tauri-apps/plugin-sql';
+import type { SearchResult } from './tmdb';
 import type {
   CollectionPart,
   CollectionRow,
@@ -138,6 +139,20 @@ const SCHEMA = [
     color TEXT NOT NULL,
     maturity TEXT NOT NULL DEFAULT 'all',  -- 'kids' | 'teen' | 'all'
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS browse_saved (
+    profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('movie', 'tv')),
+    tmdb_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    year INTEGER,
+    overview TEXT NOT NULL,
+    poster TEXT,
+    backdrop TEXT,
+    vote_average REAL NOT NULL,
+    release_date TEXT,
+    saved_at INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, kind, tmdb_id)
   )`,
   // Per-profile watch state; the matching columns on movies/episodes/tv_series are legacy.
   `CREATE TABLE IF NOT EXISTS profile_state (
@@ -503,6 +518,7 @@ export async function saveOmdbRatings(table: 'movies' | 'tv_series', imdbId: str
 export async function deleteProfile(id: number) {
   await exec('DELETE FROM live_viewing WHERE profile_id = $1', [id]);
   await exec('DELETE FROM live_data WHERE key = $1', [`profile:${id}`]);
+  await exec('DELETE FROM browse_saved WHERE profile_id = $1', [id]);
   await exec('DELETE FROM profile_state WHERE profile_id = $1', [id]);
   await exec('DELETE FROM watch_log WHERE profile_id = $1', [id]);
   await exec('DELETE FROM profiles WHERE id = $1', [id]);
@@ -510,6 +526,28 @@ export async function deleteProfile(id: number) {
 
 export const nextProfileColor = (used: string[]) => PROFILE_COLORS.find((c) => !used.includes(c)) ?? PROFILE_COLORS[used.length % PROFILE_COLORS.length];
 export const PROFILE_PALETTE = PROFILE_COLORS;
+
+export async function listSavedBrowseTitles(profileId: number) {
+  return select<SearchResult[]>(
+    `SELECT tmdb_id AS id, kind, title, year, overview, poster, backdrop,
+       vote_average AS voteAverage, release_date AS releaseDate
+     FROM browse_saved WHERE profile_id = $1 ORDER BY saved_at DESC, rowid DESC`,
+    [profileId],
+  );
+}
+
+export async function setSavedBrowseTitle(profileId: number, item: SearchResult, saved: boolean) {
+  if (!saved) {
+    await exec('DELETE FROM browse_saved WHERE profile_id = $1 AND kind = $2 AND tmdb_id = $3', [profileId, item.kind, item.id]);
+    return;
+  }
+  await exec(
+    `INSERT INTO browse_saved (profile_id, kind, tmdb_id, title, year, overview, poster, backdrop, vote_average, release_date, saved_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     ON CONFLICT(profile_id, kind, tmdb_id) DO NOTHING`,
+    [profileId, item.kind, item.id, item.title, item.year, item.overview, item.poster, item.backdrop, item.voteAverage, item.releaseDate ?? null, Date.now()],
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Library reads

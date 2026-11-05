@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { abortable, browseSource, cancelSourceBrowser, candidateMatches, quickTorrent, validateSourceUrl } from '../src/services/browse';
+import { abortable, browseSource, cancelSourceBrowser, candidateMatches, quickTorrent, searchTorrentReleases, validateSourceUrl } from '../src/services/browse';
 import { initiateTorrent, inspectTorrentFilesLive } from '../src/services/torrents';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import type { BrowseTarget, SourceEvent } from '../src/types/browse';
@@ -103,8 +103,12 @@ describe('source and advertised candidate filtering', () => {
     expect(candidateMatches(target, row)).toBe(true);
     expect(candidateMatches(target, { ...row, title: 'Example.Film.2024.1080i' })).toBe(false);
     expect(candidateMatches(target, { ...row, imdbId: 'tt0000000' })).toBe(false);
+    const fromUhd = { ...row, title: 'Example.Film.2024.1080p.UHD.BluRay' };
+    expect(candidateMatches(target, fromUhd)).toBe(true);
+    expect(candidateMatches({ ...target, quality: '4K' }, fromUhd)).toBe(false);
     const episode = { ...target, kind: 'episode' as const, season: 1, episode: 3 };
     expect(candidateMatches(episode, { ...row, title: 'Example.S01E030.1080p' })).toBe(false);
+    expect(candidateMatches(episode, { ...row, title: 'Example.S01E03E04.1080p' })).toBe(false);
     expect(candidateMatches(episode, { ...row, title: 'Example.S01E03.1080p' })).toBe(true);
   });
 });
@@ -125,6 +129,63 @@ it('tries reported seed counts in order and bounds metadata attempts', async () 
   expect(inspectTorrentFilesLive).toHaveBeenCalledTimes(6);
   const captures = vi.mocked(invoke).mock.calls.filter(([command, args]) => command === 'source_browser_control' && (args as { action: string }).action === 'capture');
   expect(captures.map(([, args]) => (args as { releaseId: string }).releaseId)).toEqual(['12', '11', '10', '9', '8', '7']);
+  expect(initiateTorrent).not.toHaveBeenCalled();
+});
+
+it('ranks and deduplicates the top five advertised releases across source pages without inspecting files', async () => {
+  const firstPage = [
+    { ...row, id: '1', seeders: 15 },
+    ...Array.from({ length: 49 }, (_, i) => ({ ...row, id: String(100 + i), title: 'Example.Film.2024.2160p.WEB', seeders: 500 })),
+  ];
+  const secondPage = [
+    ...[90, 10, 30, 70, 40, 50].map((seeders, i) => ({ ...row, id: String(i + 2), seeders })),
+    { ...row, id: '1', seeders: 900 },
+    { ...row, id: '8', imdbId: 'tt0000000', seeders: 1_000 },
+    { ...row, id: '9', seeders: null },
+  ];
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    const a = args as Record<string, string>;
+    if (command === 'source_browser_open') {
+      requestId = a.requestId;
+      queueMicrotask(() => emit({ payload: { requestId, kind: 'results', page: 1, releases: firstPage } }));
+    }
+    if (command === 'source_browser_control' && a.action === 'page') queueMicrotask(() => {
+      emit({ payload: { requestId, kind: 'results', page: 1, releases: firstPage } });
+      emit({ payload: { requestId, kind: 'results', page: 2, releases: secondPage } });
+    });
+    return undefined as never;
+  });
+  const releases = await searchTorrentReleases({ target, sourceUrl: 'https://source.example', signal: new AbortController().signal, progress: vi.fn() });
+  expect(releases.map(({ id, seeders }) => [id, seeders])).toEqual([
+    ['2', 90], ['5', 70], ['7', 50], ['6', 40], ['4', 30],
+  ]);
+  expect(inspectTorrentFilesLive).not.toHaveBeenCalled();
+  expect(initiateTorrent).not.toHaveBeenCalled();
+});
+
+it('finds the chosen release even when its seed ranking moves it to another page', async () => {
+  const chosen = { ...row, id: '3', seeders: 10 };
+  sourceRows = Array.from({ length: 50 }, (_, i) => ({ ...row, id: String(10 + i) }));
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === 'source_browser_control' && (args as { action: string }).action === 'page') {
+      queueMicrotask(() => emit({ payload: { requestId, kind: 'results', page: 2, releases: [row, chosen] } }));
+    }
+    return original(command, args);
+  });
+  await quickTorrent({ item, target, mode: 'download', release: chosen, sourceUrl: 'https://source.example', signal: new AbortController().signal, progress: vi.fn() });
+  expect(vi.mocked(invoke).mock.calls.filter(([command, args]) => command === 'source_browser_control'
+    && (args as { action: string }).action === 'capture')).toEqual([
+    ['source_browser_control', expect.objectContaining({ releaseId: chosen.id })],
+  ]);
+  expect(initiateTorrent).toHaveBeenCalledOnce();
+  expect(initiateTorrent).toHaveBeenCalledWith(expect.objectContaining({ match: item, mode: 'download', onlyFiles: [0] }));
+});
+
+it('declines a changed release without capturing a replacement', async () => {
+  await expect(quickTorrent({ item, target, mode: 'stream', release: { ...row, title: `${row.title}.Changed` },
+    sourceUrl: 'https://source.example', signal: new AbortController().signal, progress: vi.fn() })).rejects.toThrow(/release changed/);
+  expect(inspectTorrentFilesLive).not.toHaveBeenCalled();
   expect(initiateTorrent).not.toHaveBeenCalled();
 });
 

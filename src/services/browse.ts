@@ -7,7 +7,7 @@ import type { SearchResult } from './tmdb';
 import { episodeTarget, seriesPlayEpisode } from '../store/selectors';
 import { play } from './player';
 import { parseMediaInfo } from './mediainfo';
-import { check, type Release } from './browseSelection';
+import { advertisedQuality, check, type Release } from './browseSelection';
 import { formatBytes, initiateTorrent, inspectTorrentFilesLive, pickDestinationFolder, playTorrentByHash } from './torrents';
 
 export const canceled = () => new DOMException('Canceled', 'AbortError');
@@ -35,12 +35,14 @@ class SourceSession {
   private queue: SourceEvent[] = [];
   private waiter: ((e: SourceEvent) => void) | null = null;
   private closed = false;
+  private page = 1;
   constructor(readonly signal: AbortSignal, private onEvent?: (event: SourceEvent) => void) {}
   async open(sourceUrl: string, imdbId: string, manual: boolean) {
     abort(this.signal);
     this.signal.addEventListener('abort', this.close, { once: true });
     this.unlisten = await listen<SourceEvent>('source-browser', ({ payload }) => {
       if (payload.requestId !== this.id || this.closed || this.signal.aborted) return;
+      if (!manual && payload.kind === 'results' && (payload.page ?? 1) !== this.page) return;
       this.onEvent?.(payload);
       if (this.waiter) this.waiter(payload);
       else if (!manual || ['ready', 'error', 'closed'].includes(payload.kind)) this.queue.push(payload);
@@ -53,14 +55,15 @@ class SourceSession {
   }
   control(action: string, releaseId?: string, page?: number) {
     abort(this.signal);
+    if (action === 'page' && page != null) this.page = page;
     return invoke('source_browser_control', { requestId: this.id, action, releaseId: releaseId ?? null, page: page ?? null });
   }
-  async wait(kind: SourceEvent['kind'], timeout = 60_000): Promise<SourceEvent> {
+  async wait(kind: SourceEvent['kind'], timeout = 60_000, matches: (event: SourceEvent) => boolean = () => true): Promise<SourceEvent> {
     abort(this.signal);
     const consume = (e: SourceEvent) => {
       if (e.kind === 'error') throw new Error(e.message || 'The source browser could not complete this request.');
       if (e.kind === 'closed') throw canceled();
-      return e.kind === kind;
+      return e.kind === kind && matches(e);
     };
     while (this.queue.length) { const e = this.queue.shift()!; if (consume(e)) return e; }
     return new Promise((resolve, reject) => {
@@ -142,16 +145,20 @@ export async function browseSource(item: SearchResult, imdbId: string, sourceUrl
 
 export function candidateMatches(target: BrowseTarget, row: SourceRelease) {
   // These are only preliminary advertised-label checks. Exact file coverage is checked after metadata resolution.
-  const quality = target.quality === '4K' ? /\b(?:2160p|4k|uhd)\b/i : /\b1080p\b/i;
-  if (row.imdbId !== target.imdbId || !(row.seeders != null && row.seeders > 0) || !quality.test(row.title.replace(/_/g, '.'))) return false;
+  if (row.imdbId !== target.imdbId || row.seeders == null || !Number.isFinite(row.seeders)
+      || row.seeders <= 0 || advertisedQuality(row.title) !== target.quality) return false;
   if (target.kind === 'movie') return true;
-  const season = row.title.match(/\bS(\d{1,2})(?=[ ._-]?E\d|\b)|\bSeason[ ._-]*(\d{1,2})\b/i);
+  const name = row.title.replace(/_/g, '.');
+  if (/\bComplete[ .-]*(?:Series|Collection)\b|\bS\d{1,2}[ .-]*-[ .-]*S?\d{1,2}\b/i.test(name)) return false;
+  const season = name.match(/\bS(\d{1,2})(?=[ .-]?E\d|\b)|\bSeason[ .-]*(\d{1,2})\b/i);
   if (Number(season?.[1] ?? season?.[2]) !== target.season) return false;
   if (target.kind === 'episode') {
-    const ep = row.title.match(/\bS\d{1,2}[ ._-]?E(\d{1,3})(?!\d)/i);
-    return Number(ep?.[1]) === target.episode;
+    const ep = name.match(/\bS\d{1,2}[ .-]?E(\d{1,3})(?!\d)/i);
+    if (!ep || Number(ep[1]) !== target.episode) return false;
+    const suffix = name.slice(ep.index! + ep[0].length);
+    return !/^[ .-]*E\d|^[ .]*-[ .]*\d{1,3}\b|\bS\d{1,2}[ .-]?E\d/i.test(suffix);
   }
-  return !/\bS\d{1,2}[ ._-]?E\d{1,3}/i.test(row.title);
+  return !/\bS\d{1,2}[ .-]?E\d{1,3}/i.test(name);
 }
 
 
@@ -190,14 +197,23 @@ export async function useOwnedTitle(item: SearchResult, target: BrowseTarget, mo
   return true;
 }
 
-export interface QuickOptions {
-  item: SearchResult; target: BrowseTarget; mode: TorrentMode; sourceUrl: string;
+export interface ReleaseSearchOptions {
+  target: BrowseTarget; sourceUrl: string;
   signal: AbortSignal; progress: (message: string) => void;
   verification?: (requestId: string | null) => void;
 }
 
-/** Metadata verification is bounded and never starts a payload transfer after cancellation. */
-export async function quickTorrent(opts: QuickOptions) {
+export interface QuickOptions extends ReleaseSearchOptions {
+  item: SearchResult;
+  mode: TorrentMode;
+  release?: SourceRelease;
+}
+
+const SOURCE_PAGES = 3;
+const SOURCE_PAGE_SIZE = 50;
+const RELEASE_PICKER_LIMIT = 5;
+
+async function withSource<T>(opts: ReleaseSearchOptions, run: (session: SourceSession, signal: AbortSignal, valid: () => void) => Promise<T>) {
   cancelSourceBrowser();
   const controller = new AbortController(); activeController = controller;
   const cancel = () => controller.abort(); opts.signal.addEventListener('abort', cancel, { once: true });
@@ -213,38 +229,76 @@ export async function quickTorrent(opts: QuickOptions) {
     if (event.kind === 'challenge') { opts.verification?.(session.id); opts.progress('Complete the verification below to continue.'); }
     if (event.kind === 'results') { opts.verification?.(null); opts.progress('Finding releases for your selection…'); }
   });
-  try {
+  try { return await run(session, signal, valid); }
+  finally {
+    opts.verification?.(null); session.close(); opts.signal.removeEventListener('abort', cancel);
+    if (activeController === controller) activeController = null;
+  }
+}
+
+function requireCompleteSeason(target: BrowseTarget) {
+  if (target.kind === 'season' && !target.complete) throw new Error('This season’s completeness is uncertain. Choose an episode or browse torrents manually.');
+}
+
+async function sourcePage(session: SourceSession, page: number) {
+  if (page > 1) await session.control('page', undefined, page);
+  const result = await session.wait('results', 90_000, (event) => (event.page ?? 1) === page);
+  return result.releases ?? [];
+}
+
+/** Rank advertised matches only. The selected release's files are verified before a transfer starts. */
+export async function searchTorrentReleases(opts: ReleaseSearchOptions): Promise<SourceRelease[]> {
+  requireCompleteSeason(opts.target);
+  return withSource(opts, async (session, _signal, valid) => {
     valid();
-    if (await useOwnedTitle(opts.item, opts.target, opts.mode, signal)) return;
+    opts.progress('Searching your source…');
+    await session.open(opts.sourceUrl, opts.target.imdbId, false);
+    const releases = new Map<string, SourceRelease>();
+    for (let page = 1; page <= SOURCE_PAGES; page++) {
+      valid();
+      const rows = await sourcePage(session, page);
+      valid();
+      for (const row of rows) {
+        if (!releases.has(row.id) && candidateMatches(opts.target, row)) releases.set(row.id, row);
+      }
+      if (rows.length < SOURCE_PAGE_SIZE) break;
+    }
+    return [...releases.values()].sort((a, b) => (b.seeders ?? 0) - (a.seeders ?? 0)).slice(0, RELEASE_PICKER_LIMIT);
+  });
+}
+
+/** Metadata verification is bounded and never starts a payload transfer after cancellation. */
+export async function quickTorrent(opts: QuickOptions) {
+  return withSource(opts, async (session, signal, valid) => {
+    valid();
+    if (!opts.release && await useOwnedTitle(opts.item, opts.target, opts.mode, signal)) return;
     valid();
     const settings = useLibraryStore.getState().settings;
     const destination = pickDestinationFolder(opts.item.kind, settings);
     if (opts.mode === 'download' && !destination) throw new Error('Add a library folder in Settings before downloading.');
-    if (opts.target.kind === 'season' && !opts.target.complete) throw new Error('This season’s completeness is uncertain. Choose an episode or browse torrents manually.');
+    requireCompleteSeason(opts.target);
     opts.progress('Searching your source…');
     await session.open(opts.sourceUrl, opts.target.imdbId, false);
     let attempts = 0;
     let resolved = 0;
     const tried = new Set<string>();
     const hashes = new Set<string>();
-    for (let page = 1; page <= 3 && attempts < 6; page++) {
+    for (let page = 1; page <= SOURCE_PAGES && attempts < 6; page++) {
       valid();
-      if (page > 1) await session.control('page', undefined, page);
-      const event = await session.wait('results', 90_000);
-      const candidates = (event.releases ?? []).filter((r) => candidateMatches(opts.target, r)).sort((a, b) => (b.seeders ?? 0) - (a.seeders ?? 0));
-      if (!event.releases?.length) break;
+      const rows = await sourcePage(session, page);
+      const candidates = rows.filter((row) => candidateMatches(opts.target, row)
+        && (!opts.release || (opts.release.id === row.id && opts.release.title === row.title)))
+        .sort((a, b) => (b.seeders ?? 0) - (a.seeders ?? 0));
       for (const row of candidates) {
         valid();
         if (tried.has(row.id)) continue;
         if (++attempts > 6) break;
         tried.add(row.id);
-        opts.progress(`Checking release ${attempts} of 6: ${row.title}`);
+        opts.progress(opts.release ? `Verifying ${row.title}…` : `Checking release ${attempts} of 6: ${row.title}`);
         await session.control('capture', row.id);
-        let capture: SourceEvent;
-        try { capture = await session.wait('magnet', 12_000); }
-        catch (e) { valid(); throw e; }
+        const capture = await session.wait('magnet', 12_000, (event) => event.releaseId === row.id);
         valid();
-        if (!capture.magnet || capture.releaseId !== row.id) continue;
+        if (!capture.magnet) continue;
         let inspected: InspectTorrentRes;
         try { inspected = await abortable(inspectTorrentFilesLive(capture.magnet, 8000), signal); }
         catch { valid(); continue; }
@@ -284,14 +338,16 @@ export async function quickTorrent(opts: QuickOptions) {
           fallbackYear: opts.item.year, abortSignal: signal, playImmediately: opts.mode === 'stream' });
         return;
       }
-      if ((event.releases?.length ?? 0) < 50) break;
+      if ((opts.release && attempts > 0) || rows.length < SOURCE_PAGE_SIZE) break;
+    }
+    if (opts.release) {
+      if (!attempts) throw new Error('This release changed or is no longer on the source page. Search again to refresh the list.');
+      if (!resolved) throw new Error('The selected release’s file metadata was unavailable. Try another release.');
+      throw new Error('The selected release’s files did not match this title, quality, or episode selection. Try another release.');
     }
     const reason = !attempts ? 'The source had no seeded releases advertising this quality and selection.'
       : !resolved ? `Checked ${attempts} releases, but their file metadata was unavailable.`
       : `Checked ${attempts} releases; their files did not match this title, quality, or episode selection.`;
     throw new Error(`No verified release matched this quality and selection. ${reason} Browse torrents to choose another release.`);
-  } finally {
-    opts.verification?.(null); session.close(); opts.signal.removeEventListener('abort', cancel);
-    if (activeController === controller) activeController = null;
-  }
+  });
 }

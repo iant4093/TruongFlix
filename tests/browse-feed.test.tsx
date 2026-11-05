@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import Discover from '../src/components/browse/Discover';
 import { getCatalog } from '../src/services/tmdb';
+import { listSavedBrowseTitles } from '../src/services/db';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import type { Profile } from '../src/types/media';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -20,6 +21,7 @@ class Observer {
 const title = (id: number, name = `Title ${id}`) => ({ id, title: name, kind: 'movie' as const, year: 2024, overview: '', poster: null, backdrop: null, voteAverage: 0 });
 beforeEach(() => {
   vi.resetAllMocks(); Observer.all = [];
+  vi.mocked(listSavedBrowseTitles).mockResolvedValue([]);
   vi.stubGlobal('IntersectionObserver', Observer);
   useLibraryStore.setState(useLibraryStore.getInitialState(), true);
   useLibraryStore.setState((s) => ({ activeProfile: { id: 1, name: 'Adult', maturity: 'all' } as Profile,
@@ -94,6 +96,6 @@ it('keeps the last cached first page visible if refreshing it fails', async () =
   render(<Discover />);
   await screen.findByRole('alert');
   expect(screen.getByRole('button', { name: 'View Title 1' })).toBeTruthy();
-  expect(screen.getByText(/Showing saved titles/)).toBeTruthy();
+  expect(screen.getByText(/Showing cached titles/)).toBeTruthy();
   expect(getCatalog).toHaveBeenCalledTimes(2);
 });

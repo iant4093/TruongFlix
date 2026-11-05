@@ -456,8 +456,26 @@ function seasonCache(tmdbId: number) {
 }
 
 const renameBatches: { id: number; created_at: string; label: string; moves: string; roots: string; undone: number }[] = [];
+const savedBrowseTitles = new Map<number, import('../services/tmdb').SearchResult[]>();
 
 function handleProfileSql(q: string, values: unknown[]): unknown | undefined {
+  if (q.startsWith('SELECT tmdb_id AS id, kind, title') && q.includes('FROM browse_saved')) {
+    return savedBrowseTitles.get(values[0] as number) ?? [];
+  }
+  if (q.startsWith('INSERT INTO browse_saved')) {
+    const [profile, kind, id, title, year, overview, poster, backdrop, voteAverage, releaseDate] = values as
+      [number, 'movie' | 'tv', number, string, number | null, string, string | null, string | null, number, string | null];
+    const entries = savedBrowseTitles.get(profile) ?? [];
+    if (entries.some((item) => item.id === id && item.kind === kind)) return [0, 0];
+    savedBrowseTitles.set(profile, [{ kind, id, title, year, overview, poster, backdrop, voteAverage, releaseDate }, ...entries]);
+    return [1, 0];
+  }
+  if (q.startsWith('DELETE FROM browse_saved')) {
+    const [profile, kind, id] = values as [number, 'movie' | 'tv' | undefined, number | undefined];
+    if (kind) savedBrowseTitles.set(profile, (savedBrowseTitles.get(profile) ?? []).filter((item) => item.id !== id || item.kind !== kind));
+    else savedBrowseTitles.delete(profile);
+    return [1, 0];
+  }
   if (q.startsWith('SELECT COUNT(*) AS n FROM profiles')) return [{ n: profiles.length }];
   if (q.startsWith('SELECT * FROM profiles')) return profiles;
   if (q.startsWith('INSERT INTO profiles')) {

@@ -7,11 +7,15 @@ export type Release = {
   metadataReady: boolean; files: { index: number; path: string; video: boolean }[];
 };
 const norm = (s: string) => s.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '');
-const quality = (s: string) => {
+export const advertisedQuality = (s: string) => {
   const name = s.replace(/_/g, '.');
-  if (/\b(?:2160p|4k|uhd)\b/i.test(name)) return '4K';
-  if (/\b1080p\b/i.test(name)) return '1080p';
   if (/\b(?:1080i|720p|576p|480p|8k|4320p)\b/i.test(name)) return 'other';
+  const uhd = /\b2160p\b/i.test(name);
+  const hd = /\b1080p\b/i.test(name);
+  if (uhd && hd) return 'other';
+  if (uhd) return '4K';
+  if (hd) return '1080p';
+  if (/\b(?:4k|uhd)\b/i.test(name)) return '4K';
   return null;
 };
 const extra = /(?:^|[/. _-])(?:extras?|samples?|trailers?|featurettes?|interviews?|behind[ ._-]*the[ ._-]*scenes)(?:$|[/. _-])/i;
@@ -21,13 +25,13 @@ export function check(target: Target, release: Release) {
   if (release.imdbId !== target.imdbId) return reject('wrong-title-id');
   if (release.seeders == null || !Number.isFinite(release.seeders) || release.seeders <= 0) return reject('no-reported-seeders');
   if (!release.metadataReady) return reject('metadata-required');
-  const releaseQuality = quality(release.title);
+  const releaseQuality = advertisedQuality(release.title);
   if (releaseQuality !== target.quality) return reject('wrong-or-unknown-quality');
   if (release.files.length > 2000 || release.files.filter((f) => f.video).length > 500) return reject('too-many-files');
   const files = release.files.filter((f) => f.video && !extra.test(f.path));
   if (!files.length) return reject('no-main-video');
   const parsed = files.map((file) => ({ file, parsed: parseVideoFile(toRawFile(`${release.title}/${file.path}`, 0)) }));
-  if (parsed.some(({ file }) => quality(file.path) != null && quality(file.path) !== target.quality)) return reject('mixed-or-wrong-file-quality');
+  if (parsed.some(({ file }) => advertisedQuality(file.path) != null && advertisedQuality(file.path) !== target.quality)) return reject('mixed-or-wrong-file-quality');
   if (target.kind === 'movie') {
     if (parsed.length !== 1) return reject('ambiguous-movie-files');
     const p = parsed[0].parsed;

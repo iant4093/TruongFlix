@@ -5,21 +5,23 @@ import Discover from '../src/components/browse/Discover';
 import CatalogTitle from '../src/components/browse/CatalogTitle';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import * as tmdb from '../src/services/tmdb';
-import { browseSource, quickTorrent } from '../src/services/browse';
+import { listSavedBrowseTitles, setSavedBrowseTitle } from '../src/services/db';
+import { browseSource, quickTorrent, searchTorrentReleases } from '../src/services/browse';
 import SourceBrowser from '../src/components/browse/SourceBrowser';
 import type { CatalogDetail } from '../src/types/browse';
-import type { Profile } from '../src/types/media';
+import type { MediaItem, Profile } from '../src/types/media';
 import { cachedCriticScores } from '../src/services/omdb';
 vi.mock('../src/services/omdb', () => ({ cachedCriticScores: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../src/services/db');
 vi.mock('../src/services/tmdb', () => ({ setApiKey: vi.fn(), getCatalog: vi.fn(), getCatalogDetail: vi.fn(), getCatalogSeason: vi.fn() }));
-vi.mock('../src/services/browse', () => ({ quickTorrent: vi.fn(), browseSource: vi.fn(), cancelSourceBrowser: vi.fn(), validateSourceUrl: (s: string) => new URL(s).origin }));
+vi.mock('../src/services/browse', () => ({ quickTorrent: vi.fn(), searchTorrentReleases: vi.fn(), browseSource: vi.fn(), cancelSourceBrowser: vi.fn(), validateSourceUrl: (s: string) => new URL(s).origin }));
 const item = { id: 1, kind: 'tv' as const, title: 'Example', year: 2024, overview: 'A series.', poster: null, backdrop: null, voteAverage: 8 };
 const detail: CatalogDetail = { ...item, imdbId: 'tt1234567', certification: 'TV-14', genres: [], runtime: null,
   status: 'Ended', seasons: [{ number: 1, name: 'Season 1', count: 2, airDate: '2024-01-01' }], nextSeason: null, lastSeason: 1, lastEpisode: 2 };
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(listSavedBrowseTitles).mockResolvedValue([]);
   vi.mocked(invoke).mockResolvedValue(undefined);
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   useLibraryStore.setState(useLibraryStore.getInitialState(), true);
@@ -52,6 +54,51 @@ it('uses the explicit selected episode and quality for a quick action', async ()
   fireEvent.click(screen.getByRole('button', { name: /Quick stream/ }));
   fireEvent.click(screen.getByRole('menuitem', { name: 'Stream 4K' }));
   await waitFor(() => expect(quickTorrent).toHaveBeenCalledWith(expect.objectContaining({ mode: 'stream', target: expect.objectContaining({ kind: 'episode', season: 1, episode: 2, quality: '4K' }) })));
+});
+
+it('compares the selected quality and keeps the chosen release tied to its exact episode', async () => {
+  const release = { id: '17', imdbId: detail.imdbId, title: 'Example.S01E02.2160p.WEB', seeders: 320, size: '3 GB' };
+  vi.mocked(searchTorrentReleases).mockResolvedValue([release]);
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  const episode = await screen.findByRole('button', { name: 'Choose episode or entire season' });
+  fireEvent.click(episode);
+  fireEvent.click(screen.getByRole('option', { name: /Episode 2/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Compare releases' }));
+  fireEvent.click(screen.getByRole('button', { name: '4K' }));
+  const pick = await screen.findByRole('button', { name: `Download ${release.title}` });
+  expect(searchTorrentReleases).toHaveBeenCalledWith(expect.objectContaining({
+    target: expect.objectContaining({ kind: 'episode', season: 1, episode: 2, quality: '4K' }),
+  }));
+  expect(quickTorrent).not.toHaveBeenCalled();
+  expect(screen.getByText(/320 reported seeds · 3 GB/)).toBeTruthy();
+  fireEvent.click(pick);
+  await waitFor(() => expect(quickTorrent).toHaveBeenCalledWith(expect.objectContaining({
+    release, mode: 'download', target: expect.objectContaining({ kind: 'episode', episode: 2, quality: '4K' }),
+  })));
+  await waitFor(() => expect((episode as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(episode);
+  fireEvent.click(screen.getByRole('option', { name: /Episode 1/ }));
+  expect(screen.queryByRole('button', { name: `Download ${release.title}` })).toBeNull();
+});
+
+it('moves focus into the picker and restores it after canceling and closing', async () => {
+  vi.mocked(searchTorrentReleases).mockImplementation(({ signal }) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(new DOMException('Canceled', 'AbortError')), { once: true });
+  }));
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  await screen.findByRole('button', { name: 'Choose episode or entire season' });
+  const trigger = screen.getByRole('button', { name: 'Compare releases' });
+  trigger.focus();
+  fireEvent.click(trigger);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: '1080p' }));
+  const quality = screen.getByRole('button', { name: '4K' });
+  fireEvent.click(quality);
+  const cancel = screen.getByRole('button', { name: 'Cancel search' });
+  expect(document.activeElement).toBe(cancel);
+  fireEvent.click(cancel);
+  await waitFor(() => expect(document.activeElement).toBe(quality));
+  fireEvent.click(screen.getByRole('button', { name: 'Close release picker' }));
+  expect(document.activeElement).toBe(trigger);
 });
 
 it('lists every episode for Entire season while keeping the quick action scoped to the pack', async () => {
@@ -228,4 +275,75 @@ it('offers a retry and accessible exit when the embedded source fails to open', 
   expect(browseSource).toHaveBeenCalledTimes(2);
   fireEvent.click(screen.getByRole('button', { name: 'Close torrent browser' }));
   expect(back).toHaveBeenCalledOnce();
+});
+
+it('keeps saved Browse titles across visits and profiles without changing library My List', async () => {
+  const persisted = new Map<number, tmdb.SearchResult[]>();
+  vi.mocked(listSavedBrowseTitles).mockImplementation(async (profile) => persisted.get(profile) ?? []);
+  vi.mocked(setSavedBrowseTitle).mockImplementation(async (profile, title, save) => {
+    persisted.set(profile, save ? [title] : []);
+  });
+  vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+  const libraryItem = { ...item, id: 40, tmdbId: item.id, key: 'tv-40', myList: true } as MediaItem;
+  useLibraryStore.setState({ items: [libraryItem] });
+
+  const first = render(<Discover />);
+  fireEvent.click(screen.getByRole('button', { name: 'Saved in Browse' }));
+  await screen.findByText('Save a title from Browse to find it here.');
+  expect(screen.queryByRole('button', { name: 'View Example' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Discover' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'View Example' }));
+  const saveButton = screen.getByRole('button', { name: 'Save to Browse' });
+  fireEvent.click(saveButton);
+  await waitFor(() => expect(saveButton.getAttribute('aria-pressed')).toBe('true'));
+  expect(setSavedBrowseTitle).toHaveBeenCalledWith(1, expect.objectContaining({ id: item.id, kind: 'tv' }), true);
+  first.unmount();
+
+  useLibraryStore.setState((state) => ({ settings: { ...state.settings, tmdb_api_key: '' } }));
+  render(<Discover />);
+  fireEvent.click(screen.getByRole('button', { name: 'Saved in Browse' }));
+  await screen.findByRole('button', { name: 'View Example' });
+
+  const originalProfile = useLibraryStore.getState().activeProfile!;
+  act(() => useLibraryStore.setState({ activeProfile: { ...originalProfile, id: 2 } }));
+  fireEvent.click(screen.getByRole('button', { name: 'Saved in Browse' }));
+  await screen.findByText('Save a title from Browse to find it here.');
+  expect(screen.queryByRole('button', { name: 'View Example' })).toBeNull();
+
+  act(() => useLibraryStore.setState({ activeProfile: originalProfile }));
+  fireEvent.click(screen.getByRole('button', { name: 'Saved in Browse' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'View Example' }));
+  const removeButton = screen.getByRole('button', { name: 'Save to Browse' });
+  expect(removeButton.getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(removeButton);
+  await waitFor(() => expect(removeButton.getAttribute('aria-pressed')).toBe('false'));
+  expect(setSavedBrowseTitle).toHaveBeenLastCalledWith(1, expect.objectContaining({ id: item.id, kind: 'tv' }), false);
+  expect(useLibraryStore.getState().items[0].myList).toBe(true);
+  vi.mocked(window.scrollTo).mockRestore();
+});
+
+it('loads the saved list after a save that was pending when Browse closed', async () => {
+  let persisted: tmdb.SearchResult[] = [];
+  let completeSave!: () => void;
+  vi.mocked(listSavedBrowseTitles).mockImplementation(async () => persisted);
+  vi.mocked(setSavedBrowseTitle).mockImplementation((_profile, title) => new Promise((resolve) => {
+    completeSave = () => { persisted = [title]; resolve(); };
+  }));
+  const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+
+  try {
+    const first = render(<Discover />);
+    fireEvent.click(await screen.findByRole('button', { name: 'View Example' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save to Browse' }));
+    expect(setSavedBrowseTitle).toHaveBeenCalledOnce();
+    first.unmount();
+
+    render(<Discover />);
+    fireEvent.click(screen.getByRole('button', { name: 'Saved in Browse' }));
+    await act(async () => {});
+    await act(async () => completeSave());
+    expect(await screen.findByRole('button', { name: 'View Example' })).toBeTruthy();
+  } finally {
+    scrollTo.mockRestore();
+  }
 });
