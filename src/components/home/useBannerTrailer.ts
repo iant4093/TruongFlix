@@ -5,6 +5,7 @@ import { trailerInsets } from '../../services/trailerFrame';
 
 type Phase = 'waiting' | 'loading' | 'playing' | 'ended' | 'failed';
 const DELAY = 4000;
+const AUDIO_START_TIMEOUT = 5000;
 
 export function useBannerVisibility(blocked = false) {
   const overlay = useLibraryStore(
@@ -40,6 +41,7 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const audioStart = useRef<{ start: () => void; cancel: (resume?: boolean) => void } | null>(null);
   const allowedRef = useRef(false);
   allowedRef.current = enabled && playing && delayPassed;
   const visible = !!source && active && allowedRef.current;
@@ -71,6 +73,7 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
     let alive = true;
     let frame = 0;
     let videoRunning = false;
+    let audioStartTimer: number | null = null;
     let audioPending = false;
     let nextAudioAttempt = 0;
     let framed = false;
@@ -122,24 +125,66 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
       if (video.playbackRate !== 1) video.playbackRate = 1;
       setActive(false); audio?.pause();
     };
-    const ended = () => { hide(); setPhase('ended'); };
-    const failed = () => { hide(); video.pause(); setPhase('failed'); };
+    const resumeVideo = () => {
+      if (!alive || !allowedRef.current || video.ended) return;
+      void video.play().catch(() => {
+        if (alive && allowedRef.current && audioStartTimer == null) { hide(); setPhase('failed'); }
+      });
+    };
+    const cancelAudioStart = (resume = false) => {
+      if (audioStartTimer == null) return;
+      window.clearTimeout(audioStartTimer);
+      audioStartTimer = null;
+      if (resume) resumeVideo();
+    };
+    const startAudio = () => {
+      if (!audio || !allowedRef.current || video.ended) return;
+      audio.currentTime = video.currentTime;
+      if (video.paused) return;
+      // Keep the decoded picture visible at the point where we cued the audio.
+      // The play promise resolves only when the audible track starts advancing.
+      const finish = (failed: boolean) => {
+        if (audioStartTimer !== timer) return;
+        cancelAudioStart();
+        if (failed) {
+          audio.muted = true;
+          audio.pause();
+          setMuted(true);
+        }
+        resumeVideo();
+      };
+      const timer = window.setTimeout(() => finish(true), AUDIO_START_TIMEOUT);
+      audioStartTimer = timer;
+      videoRunning = false;
+      video.pause();
+      void audio.play().then(() => finish(false), () => finish(true));
+    };
+    audioStart.current = { start: startAudio, cancel: cancelAudioStart };
+
+    const interrupted = () => {
+      if (audioStartTimer == null || !allowedRef.current) hide();
+    };
+    const paused = () => { if (video.paused) interrupted(); };
+    const ended = () => { cancelAudioStart(); hide(); setPhase('ended'); };
+    const failed = () => { cancelAudioStart(); hide(); video.pause(); setPhase('failed'); };
     video.addEventListener('playing', started);
-    video.addEventListener('waiting', hide);
-    video.addEventListener('seeking', hide);
-    video.addEventListener('pause', hide);
+    video.addEventListener('waiting', interrupted);
+    video.addEventListener('seeking', interrupted);
+    video.addEventListener('pause', paused);
     video.addEventListener('ended', ended);
     video.addEventListener('error', failed);
     const timer = window.setInterval(sync, 250);
     return () => {
       alive = false;
+      cancelAudioStart();
+      audioStart.current = null;
       if (frame && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frame);
       window.clearInterval(timer);
       video.pause(); audio?.pause();
       video.removeEventListener('playing', started);
-      video.removeEventListener('waiting', hide);
-      video.removeEventListener('seeking', hide);
-      video.removeEventListener('pause', hide);
+      video.removeEventListener('waiting', interrupted);
+      video.removeEventListener('seeking', interrupted);
+      video.removeEventListener('pause', paused);
       video.removeEventListener('ended', ended);
       video.removeEventListener('error', failed);
     };
@@ -155,6 +200,7 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
     const audio = audioRef.current;
     if (!video || !source) return;
     if (!enabled || !playing || !delayPassed || phase === 'failed') {
+      audioStart.current?.cancel();
       video.pause(); audio?.pause(); setActive(false); return;
     }
     if (video.ended || phase === 'ended') return;
@@ -187,13 +233,13 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
     setMuted(next);
     if (audio) {
       audio.muted = next;
-      if (!next && allowedRef.current && !video.paused) {
-        audio.currentTime = video.currentTime;
+      if (!next) {
         // Start within the button's user gesture for WebKit's audio policy.
-        void audio.play().catch(() => setMuted(true));
+        audioStart.current?.start();
       } else {
         audio.pause();
         if (video.playbackRate !== 1) video.playbackRate = 1;
+        audioStart.current?.cancel(true);
       }
     } else video.muted = next;
   };

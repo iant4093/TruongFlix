@@ -84,6 +84,8 @@ it('unmutes in the user gesture and corrects drift without seeking or restarting
   expect(audio.muted).toBe(false);
   expect(audio.currentTime).toBe(12);
   expect(audio.paused).toBe(false);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.playing(video);
   video.currentTime = 12.5;
   await act(async () => { await vi.advanceTimersByTimeAsync(1250); });
   expect(audio.currentTime).toBe(12);
@@ -105,6 +107,8 @@ it('keeps the audio position through buffering and resumes only after video play
   const audio = screen.getByTestId<HTMLAudioElement>('audio');
   video.currentTime = 3;
   fireEvent.click(screen.getByRole('button', { name: 'Unmute' }));
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.playing(video);
   const ready = vi.spyOn(audio, 'readyState', 'get').mockReturnValue(2);
   video.currentTime = 3.6;
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
@@ -118,6 +122,38 @@ it('keeps the audio position through buffering and resumes only after video play
   await act(async () => { await vi.advanceTimersByTimeAsync(250); });
   expect(audio.currentTime).toBe(3);
   expect(audio.paused).toBe(false);
+});
+
+it('holds the displayed frame at the sound cue until a delayed unmute starts playing', async () => {
+  render(<Harness />);
+  const video = await start();
+  const audio = screen.getByTestId<HTMLAudioElement>('audio');
+  let startSound!: () => void;
+  vi.spyOn(audio, 'play').mockReturnValueOnce(new Promise((resolve) => { startSound = resolve; }));
+  video.currentTime = 9.5;
+  fireEvent.click(screen.getByRole('button', { name: 'Unmute' }));
+  fireEvent.pause(video);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+  expect(video.paused).toBe(true);
+  expect(screen.getByTestId('active').textContent).toBe('true');
+  expect(audio.currentTime).toBe(video.currentTime);
+  expect(vi.mocked(audio.play).mock.contexts.filter((media) => media === audio)).toHaveLength(1);
+  await act(async () => startSound());
+  expect(video.paused).toBe(false);
+  expect(video.currentTime).toBe(9.5);
+});
+
+it('returns to muted playback if the sound never starts', async () => {
+  render(<Harness />);
+  const video = await start();
+  const audio = screen.getByTestId<HTMLAudioElement>('audio');
+  vi.spyOn(audio, 'play').mockReturnValueOnce(new Promise(() => {}));
+  fireEvent.click(screen.getByRole('button', { name: 'Unmute' }));
+  expect(video.paused).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(video.paused).toBe(false);
+  expect(audio.muted).toBe(true);
+  expect(screen.getByRole('button', { name: 'Unmute' })).toBeTruthy();
 });
 it('replays an ended trailer and retries a failed or stalled source without an iframe fallback', async () => {
   render(<Harness />);
