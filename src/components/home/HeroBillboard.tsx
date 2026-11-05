@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Info, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
-import { useBannerTrailer } from './useBannerTrailer';
+import { Info, Play } from 'lucide-react';
+import { useBannerTrailer, useBannerVisibility } from './useBannerTrailer';
+import { TrailerControl, TrailerLayer } from './BannerTrailer';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { playTargetFor } from '../../store/selectors';
@@ -9,25 +10,6 @@ import { playItem } from '../../services/player';
 import TechBadges from '../common/TechBadges';
 import ImdbRating from '../common/ImdbRating';
 import CriticScores from '../common/CriticScores';
-
-/** Whether the banner trailer may play right now (nothing on top of it, window visible, scrolled to top). */
-function useTrailerAllowed() {
-  const enabled = useLibraryStore((s) => s.settings.trailers_autoplay);
-  const blocked = useLibraryStore(
-    (s) => !!s.detailKey || !!s.playerSession || s.settingsOpen || s.onboardingOpen || !!s.fixMatchKey || !!s.profileGate || !!s.actor || !!s.overlay,
-  );
-  const [visible, setVisible] = useState(() => !document.hidden && window.scrollY < window.innerHeight * 0.5);
-  useEffect(() => {
-    const update = () => setVisible(!document.hidden && window.scrollY < window.innerHeight * 0.5);
-    window.addEventListener('scroll', update, { passive: true });
-    document.addEventListener('visibilitychange', update);
-    return () => {
-      window.removeEventListener('scroll', update);
-      document.removeEventListener('visibilitychange', update);
-    };
-  }, []);
-  return { enabled, playing: enabled && !blocked && visible };
-}
 
 interface Props {
   item: MediaItem;
@@ -42,8 +24,9 @@ export default function HeroBillboard({ item }: Props) {
   const target = playTargetFor(item, episodesBySeries);
   const resume = !!target && target.startTime > 0;
 
-  const { enabled, playing } = useTrailerAllowed();
-  const { source, phase, active: trailerOn, muted, videoRef, audioRef, toggleMute, frameStyle } = useBannerTrailer(item, enabled, playing);
+  const enabled = useLibraryStore((s) => s.settings.trailers_autoplay);
+  const playing = useBannerVisibility();
+  const trailer = useBannerTrailer(item, enabled, playing);
 
   return (
     <section className="relative h-[85vh] min-h-[520px] w-full overflow-hidden">
@@ -61,32 +44,7 @@ export default function HeroBillboard({ item }: Props) {
         />
       )}
 
-      {source && (
-        <motion.div
-          className="pointer-events-none absolute inset-0 overflow-hidden"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: trailerOn ? 1 : 0 }}
-          transition={{ duration: trailerOn ? 0.6 : 0, ease: 'easeOut' }}
-        >
-          <video
-            key={source.videoUrl}
-            ref={videoRef}
-            crossOrigin="anonymous"
-            src={source.videoUrl}
-            aria-label={`${item.title} trailer`}
-            muted={source.audioUrl ? true : muted}
-            playsInline
-            preload="auto"
-            disablePictureInPicture
-            disableRemotePlayback
-            controlsList="nodownload nofullscreen noremoteplayback"
-            tabIndex={-1}
-            className="trailer-video absolute left-1/2 top-1/2 border-0 object-cover"
-            style={frameStyle}
-          />
-          {source.audioUrl && <audio ref={audioRef} src={source.audioUrl} preload="auto" className="hidden" />}
-        </motion.div>
-      )}
+      <TrailerLayer title={item.title} trailer={trailer} />
 
       {/* Left text-protection vignette */}
       <div
@@ -133,7 +91,7 @@ export default function HeroBillboard({ item }: Props) {
         </div>
 
         <AnimatePresence initial={false}>
-          {item.overview && !trailerOn && (
+          {item.overview && !trailer.active && (
             <motion.p
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
@@ -160,16 +118,7 @@ export default function HeroBillboard({ item }: Props) {
 
       {/* Right side: trailer sound / replay + maturity rating, as on Netflix */}
       <div className="absolute bottom-[32%] right-0 z-10 flex items-center gap-3">
-        {(phase === 'playing' || phase === 'ended' || phase === 'failed') && (
-          <button
-            onClick={toggleMute}
-            aria-label={phase === 'failed' ? 'Retry trailer' : phase === 'ended' ? 'Replay trailer' : muted ? 'Unmute trailer' : 'Mute trailer'}
-            title={`${phase === 'failed' ? 'Retry trailer' : phase === 'ended' ? 'Replay trailer' : muted ? 'Unmute trailer' : 'Mute trailer'}${source ? ` · ${source.height}p` : ''}`}
-            className="flex h-11 w-11 items-center justify-center rounded-full border border-white/60 bg-black/20 transition hover:bg-white/10"
-          >
-            {phase === 'ended' || phase === 'failed' ? <RotateCcw className="h-5 w-5" /> : muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
-          </button>
-        )}
+        <TrailerControl trailer={trailer} />
         {item.certification && (
           <div className="flex h-9 items-center border-l-[3px] border-[#dcdcdc] bg-[rgba(51,51,51,0.6)] pl-3 pr-[4vw] text-lg">
             {item.certification}

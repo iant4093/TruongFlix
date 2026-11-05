@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useBannerTrailer } from '../src/components/home/useBannerTrailer';
 import HeroBillboard from '../src/components/home/HeroBillboard';
+import DiscoverHero from '../src/components/browse/DiscoverHero';
 import { resolveTrailer, type TrailerSource } from '../src/services/trailers';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import { buildItems } from '../src/store/selectors';
@@ -149,4 +150,51 @@ it('sets the crop before the trailer appears and keeps it as the shots change', 
   fireEvent.playing(video);
   expect(video.style.width).toBe(width);
   expect(drawImage).toHaveBeenCalledOnce();
+});
+
+const featured = [
+  { id: 603, kind: 'movie' as const, title: 'Featured movie', year: 2024, overview: 'A movie.', poster: null, backdrop: '/movie.jpg', voteAverage: 8 },
+  { id: 17, kind: 'tv' as const, title: 'Featured show', year: 2025, overview: 'A show.', poster: null, backdrop: '/show.jpg', voteAverage: 8 },
+];
+
+it('plays Browse trailers from their catalog IDs and advances once playback finishes', async () => {
+  const onSelect = vi.fn();
+  const view = render(<DiscoverHero titles={featured} label="Trending" blocked={false} onSelect={onSelect} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+  expect(resolveTrailer).toHaveBeenCalledWith(expect.objectContaining({ kind: 'movie', tmdbId: 603, trailerKey: null }), false);
+  const video = screen.getByLabelText('Featured movie trailer') as HTMLVideoElement;
+  fireEvent.playing(video);
+  fireEvent.click(screen.getByRole('button', { name: 'Unmute trailer' }));
+  const audio = document.querySelector('audio')!;
+  expect(audio.paused).toBe(false);
+  await act(async () => { await vi.advanceTimersByTimeAsync(46_000); });
+  expect(screen.getByRole('heading', { name: 'Featured movie' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'View title' }));
+  expect(onSelect).toHaveBeenCalledWith(featured[0]);
+  view.rerender(<DiscoverHero titles={featured} label="Trending" blocked onSelect={onSelect} />);
+  expect(video.paused).toBe(true);
+  expect(audio.paused).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(46_000); });
+  expect(screen.getByRole('heading', { name: 'Featured movie' })).toBeTruthy();
+  view.rerender(<DiscoverHero titles={featured} label="Trending" blocked={false} onSelect={onSelect} />);
+  fireEvent.ended(video);
+  await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
+  expect(screen.queryByLabelText('Featured movie trailer')).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Featured show' })).toBeTruthy();
+  expect(resolveTrailer).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'tv', tmdbId: 17 }), false);
+  expect(screen.getByLabelText<HTMLVideoElement>('Featured show trailer').muted).toBe(true);
+});
+
+it('allows manual Browse navigation and pausing rotation with trailer autoplay disabled', async () => {
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, trailers_autoplay: false } }));
+  render(<DiscoverHero titles={featured} label="Trending" blocked={false} onSelect={vi.fn()} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
+  expect(screen.getByRole('heading', { name: 'Featured show' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Pause title rotation' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Next featured title' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(screen.getByRole('heading', { name: 'Featured movie' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Previous featured title' }));
+  expect(screen.getByRole('heading', { name: 'Featured show' })).toBeTruthy();
+  expect(resolveTrailer).not.toHaveBeenCalled();
 });

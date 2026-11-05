@@ -1,14 +1,35 @@
 import { useEffect, useRef, useState } from 'react';
-import type { MediaItem } from '../../types/media';
-import { resolveTrailer, type TrailerSource } from '../../services/trailers';
+import { resolveTrailer, type TrailerSource, type TrailerTitle } from '../../services/trailers';
+import { useLibraryStore } from '../../store/useLibraryStore';
 import { trailerInsets } from '../../services/trailerFrame';
 
 type Phase = 'waiting' | 'loading' | 'playing' | 'ended' | 'failed';
 const DELAY = 4000;
 
+export function useBannerVisibility(blocked = false) {
+  const overlay = useLibraryStore(
+    (s) => !!s.detailKey || !!s.playerSession || s.settingsOpen || s.onboardingOpen || !!s.fixMatchKey ||
+      !!s.profileGate || !!s.actor || !!s.overlay || !!s.addTorrentModal?.open,
+  );
+  const isVisible = () => !document.hidden && window.scrollY < window.innerHeight * 0.5;
+  const [visible, setVisible] = useState(isVisible);
+  useEffect(() => {
+    const update = () => setVisible(isVisible());
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, []);
+  return visible && !overlay && !blocked;
+}
+
 /** Background trailers never share the main player's sessions, history, audio devices or subtitles. */
-export function useBannerTrailer(item: MediaItem, enabled: boolean, playing: boolean) {
-  const identity = `${item.key}/${item.trailerKey}`;
+export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: boolean, playing: boolean) {
+  const identity = `${item.key}/${item.kind}/${item.tmdbId}/${item.trailerKey}`;
   const [resolved, setResolved] = useState<{ identity: string; source: TrailerSource } | null>(null);
   const source = enabled && resolved?.identity === identity ? resolved.source : null;
   const [phase, setPhase] = useState<Phase>('waiting');

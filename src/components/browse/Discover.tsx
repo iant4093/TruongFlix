@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Film, Loader2, RefreshCw, Search, Settings2, ShieldCheck } from 'lucide-react';
+import { Film, Loader2, RefreshCw, Search, Settings2, ShieldCheck } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import type { CatalogList, SearchResult } from '../../services/tmdb';
 import useCatalogFeed from '../../hooks/useCatalogFeed';
@@ -8,6 +8,7 @@ import Dropdown from '../common/Dropdown';
 import Artwork from '../common/Artwork';
 import Modal from '../live/LiveDialog';
 import CatalogTitle from './CatalogTitle';
+import DiscoverHero from './DiscoverHero';
 
 const lists: { value: CatalogList; label: string }[] = [
   { value: 'trending', label: 'Trending this week' }, { value: 'popular', label: 'Popular' },
@@ -43,20 +44,16 @@ export default function Discover() {
 
   if (!allowed) return <div className="px-[4%] pt-32"><h1 className="text-4xl font-bold">Browse</h1><p className="mt-5 text-nf-secondary">Switch to an unrestricted profile to browse titles and torrent sources.</p></div>;
   if (!settings.tmdb_api_key) return <div className="px-[4%] pt-32"><h1 className="text-4xl font-bold">Browse</h1><p className="my-5 text-nf-secondary">Connect TMDB in Settings to discover movies and TV shows.</p><button className="nf-btn-red" onClick={() => useLibraryStore.getState().setSettingsOpen(true, 'ratings')}>Connect TMDB</button></div>;
-  const hero = !query.trim() ? data.find((d) => d.backdrop) : null;
+  const featured = query.trim() ? [] : data.filter((item) => item.backdrop).slice(0, 5);
   return <div className="pb-20 pt-[68px]">
-    {hero && <section className="relative h-[48vh] min-h-[300px] max-h-[550px] overflow-hidden">
-      <Artwork key={hero.backdrop} src={hero.backdrop} alt="" eager className="absolute inset-0 h-full w-full object-cover object-top" />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/50 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-t from-nf-bg via-transparent to-transparent" />
-      <div className="absolute inset-x-[4%] bottom-12 max-w-2xl">
-        <p className="mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-white/65">{lists.find((l) => l.value === list)?.label}</p>
-        <h1 className="text-4xl font-bold md:text-6xl">{hero.title}</h1>
-        <p className="mt-4 line-clamp-2 max-w-xl text-base text-white/80">{hero.overview}</p>
-        <button className="nf-btn-play mt-5" onClick={() => setSelected(hero)}>View title <ArrowRight className="h-5 w-5" /></button>
-      </div>
-    </section>}
-    <section className={`px-[4%] ${hero ? '' : 'pt-10'}`}>
+    {featured.length > 0 && <DiscoverHero
+      key={`${profile.id}:${kind}:${list}`}
+      titles={featured}
+      label={lists.find((option) => option.value === list)!.label}
+      blocked={!!selected || sourceOpen}
+      onSelect={setSelected}
+    />}
+    <section className={`px-[4%] ${featured.length ? '' : 'pt-10'}`}>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <h2 className="text-3xl font-bold">Browse</h2>
         <button className="nf-btn-ghost text-sm" onClick={() => setSourceOpen(true)}><ShieldCheck className="h-4 w-4" />{settings.browse_source_url ? 'Source settings' : 'Add torrent source'}<Settings2 className="h-4 w-4" /></button>

@@ -9,9 +9,10 @@ export interface TrailerSource {
   height: number;
 }
 const pending = new Map<string, Promise<TrailerSource>>();
+export type TrailerTitle = Pick<MediaItem, 'kind' | 'tmdbId' | 'trailerKey'>;
 
 /** Native resolution is cached for 30 minutes; only loopback media URLs reach the page. */
-export function resolveTrailer(item: MediaItem, refresh = false): Promise<TrailerSource> {
+export function resolveTrailer(item: TrailerTitle, refresh = false): Promise<TrailerSource> {
   const key = `${item.kind}/${item.tmdbId}/${item.trailerKey}/${refresh}`;
   const existing = pending.get(key);
   if (existing) return existing;
