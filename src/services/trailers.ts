@@ -5,6 +5,8 @@ import { getTrailerCandidates } from './tmdb';
 export interface TrailerSource {
   videoUrl: string;
   audioUrl: string | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
   width: number;
   height: number;
 }
@@ -12,12 +14,12 @@ const pending = new Map<string, Promise<TrailerSource>>();
 export type TrailerTitle = Pick<MediaItem, 'kind' | 'tmdbId' | 'trailerKey'>;
 
 /** Native resolution is cached for 30 minutes; only loopback media URLs reach the page. */
-export function resolveTrailer(item: TrailerTitle, refresh = false): Promise<TrailerSource> {
-  const key = `${item.kind}/${item.tmdbId}/${item.trailerKey}/${refresh}`;
+export function resolveTrailer(item: TrailerTitle, refresh = false, progressive = false): Promise<TrailerSource> {
+  const key = `${item.kind}/${item.tmdbId}/${item.trailerKey}/${refresh}/${progressive}`;
   const existing = pending.get(key);
   if (existing) return existing;
   const resolve = async () => {
-    const load = (key: string) => invoke<TrailerSource>('trailer_resolve', { key, refresh });
+    const load = (key: string) => invoke<TrailerSource>('trailer_resolve', { key, refresh, progressive });
     try {
       if (item.trailerKey) return await load(item.trailerKey);
     } catch { /* Try another official trailer when the stored video was removed or restricted. */ }

@@ -1,5 +1,5 @@
 //! Resolves public trailer video/audio streams and relays only those URLs over loopback.
-//! The banner uses plain HTML media elements: no third-party player UI or caption modules.
+//! The banner plays both tracks on one HTML video timeline.
 
 use reqwest::Client;
 use serde::Serialize;
@@ -17,7 +17,9 @@ use tokio::{
 };
 
 const MAX_MEDIA: u64 = 256 * 1024 * 1024;
-const FORMAT: &str = "bv[ext=mp4][vcodec^=avc1][height<=1080][protocol=https]+ba[ext=m4a][protocol=https]/b[ext=mp4][height<=1080][protocol=https]";
+const FORMAT: &str = "bv[ext=mp4][vcodec^=avc1.][height<=1080][protocol=https]+ba[ext=m4a][acodec=mp4a.40.2][protocol=https]/b[ext=mp4][vcodec^=avc1.][acodec=mp4a.40.2][height<=1080][protocol=https]";
+const PROGRESSIVE_FORMAT: &str =
+    "b[ext=mp4][vcodec^=avc1.][acodec=mp4a.40.2][height<=1080][protocol=https]";
 static PORT: OnceCell<u16> = OnceCell::const_new();
 static CACHE: Mutex<Vec<Cached>> = Mutex::new(Vec::new());
 static RESOLVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -29,6 +31,8 @@ static REQUESTS: Semaphore = Semaphore::const_new(12);
 pub struct TrailerSource {
     video_url: String,
     audio_url: Option<String>,
+    video_codec: String,
+    audio_codec: Option<String>,
     width: u64,
     height: u64,
 }
@@ -41,6 +45,7 @@ struct Track {
 }
 struct Cached {
     key: String,
+    progressive: bool,
     token: String,
     source: TrailerSource,
     video: Track,
@@ -135,7 +140,22 @@ fn track(value: &Value, mime: &'static str) -> Result<Track, String> {
         referrer: header("Referer"),
     })
 }
-fn parse_source(data: &[u8]) -> Result<(Track, Option<Track>, u64, u64), String> {
+struct Resolved {
+    video: Track,
+    audio: Option<Track>,
+    video_codec: String,
+    audio_codec: Option<String>,
+    width: u64,
+    height: u64,
+}
+
+fn avc_codec(value: &Value) -> Option<&str> {
+    let codec = value.as_str()?;
+    let profile = codec.strip_prefix("avc1.")?;
+    (profile.len() == 6 && profile.bytes().all(|b| b.is_ascii_hexdigit())).then_some(codec)
+}
+
+fn parse_source(data: &[u8], progressive: bool) -> Result<(Resolved, Option<Resolved>), String> {
     if data.len() > 8 * 1024 * 1024 {
         return Err("Trailer metadata exceeded its size limit".into());
     }
@@ -147,18 +167,26 @@ fn parse_source(data: &[u8]) -> Result<(Track, Option<Track>, u64, u64), String>
     {
         return Err("This source is not a short trailer".into());
     }
-    let formats = info["requested_formats"].as_array();
-    let video = formats
-        .and_then(|f| {
-            f.iter()
-                .find(|v| v["vcodec"].as_str().is_some_and(|c| c.starts_with("avc1")))
-        })
-        .unwrap_or(&info);
-    if !video["vcodec"]
-        .as_str()
-        .is_some_and(|c| c.starts_with("avc1"))
-        || video["ext"] != "mp4"
-    {
+    match info["requested_formats"].as_array().map(Vec::as_slice) {
+        None => Ok((parse_selection(&info, None)?, None)),
+        Some([video, audio]) if !progressive => {
+            let selection = parse_selection(video, Some(audio))?;
+            let fallback = info["formats"].as_array().and_then(|formats| {
+                // yt-dlp lists formats from least to most preferred.
+                formats
+                    .iter()
+                    .rev()
+                    .find_map(|format| parse_selection(format, None).ok())
+            });
+            Ok((selection, fallback))
+        }
+        _ => Err("Unexpected trailer track layout".into()),
+    }
+}
+
+fn parse_selection(video: &Value, audio: Option<&Value>) -> Result<Resolved, String> {
+    let video_codec = avc_codec(&video["vcodec"]).ok_or("Unsupported trailer video codec")?;
+    if video["ext"] != "mp4" || video["protocol"] != "https" {
         return Err("No compatible HD trailer video was available".into());
     }
     let width = video["width"].as_u64().unwrap_or(0);
@@ -166,19 +194,29 @@ fn parse_source(data: &[u8]) -> Result<(Track, Option<Track>, u64, u64), String>
     if width == 0 || height == 0 || height > 1080 {
         return Err("Invalid trailer dimensions".into());
     }
-    let audio = formats
-        .and_then(|f| {
-            f.iter()
-                .find(|v| v["vcodec"] == "none" && v["ext"] == "m4a")
-        })
-        .map(|v| track(v, "audio/mp4"))
-        .transpose()?;
-    if audio.is_none() && video["acodec"].as_str().is_none_or(|c| c == "none") {
-        return Err("No trailer audio was available".into());
-    }
-    Ok((track(video, "video/mp4")?, audio, width, height))
+    let audio = match audio {
+        Some(audio)
+            if video["acodec"] == "none"
+                && audio["vcodec"] == "none"
+                && audio["acodec"] == "mp4a.40.2"
+                && audio["ext"] == "m4a"
+                && audio["protocol"] == "https" =>
+        {
+            Some(track(audio, "audio/mp4")?)
+        }
+        None if video["acodec"] == "mp4a.40.2" => None,
+        _ => return Err("No compatible trailer audio was available".into()),
+    };
+    Ok(Resolved {
+        video: track(video, "video/mp4")?,
+        audio_codec: audio.as_ref().map(|_| "mp4a.40.2".into()),
+        audio,
+        video_codec: video_codec.into(),
+        width,
+        height,
+    })
 }
-async fn extract(key: &str) -> Result<(Track, Option<Track>, u64, u64), String> {
+async fn extract(key: &str, progressive: bool) -> Result<(Resolved, Option<Resolved>), String> {
     let mut command = Command::new(helper("yt-dlp")?);
     command.kill_on_drop(true).args([
         "--ignore-config",
@@ -202,7 +240,11 @@ async fn extract(key: &str) -> Result<(Track, Option<Track>, u64, u64), String> 
         "--extractor-args",
         "youtube-ejs:jitless=true",
         "--format",
-        FORMAT,
+        if progressive {
+            PROGRESSIVE_FORMAT
+        } else {
+            FORMAT
+        },
         &format!("https://www.youtube.com/watch?v={key}"),
     ]);
     #[cfg(windows)]
@@ -214,24 +256,84 @@ async fn extract(key: &str) -> Result<(Track, Option<Track>, u64, u64), String> 
     if !output.status.success() {
         return Err("This trailer is unavailable from the video provider".into());
     }
-    parse_source(&output.stdout)
+    parse_source(&output.stdout, progressive)
 }
-fn cached(key: &str) -> Option<TrailerSource> {
+fn cached(key: &str, progressive: bool) -> Option<TrailerSource> {
     CACHE
         .lock()
         .unwrap()
         .iter()
         .rev()
-        .find(|c| c.key == key && c.expires > Instant::now())
+        .find(|c| c.key == key && c.progressive == progressive && c.expires > Instant::now())
         .map(|c| c.source.clone())
 }
+
+fn mp4_box(bytes: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
+    let size = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
+    Some((bytes.get(4..8)?, bytes.get(8..size)?, bytes.get(size..)?))
+}
+
+fn is_fragmented_mp4(bytes: &[u8]) -> bool {
+    let Some((b"ftyp", _, mut remaining)) = mp4_box(bytes) else {
+        return false;
+    };
+    while let Some((kind, mut payload, rest)) = mp4_box(remaining) {
+        if kind == b"moov" {
+            // MediaSource requires a movie extends box in the initialization segment.
+            while let Some((child, _, rest)) = mp4_box(payload) {
+                if child == b"mvex" {
+                    return true;
+                }
+                payload = rest;
+            }
+            return false;
+        }
+        remaining = rest;
+    }
+    false
+}
+
+async fn verify_track(track: &Track, fragmented: bool) -> Result<(), String> {
+    let (range, limit) = if fragmented {
+        ("bytes=0-4095", 4096)
+    } else {
+        ("bytes=0-31", 32)
+    };
+    let mut response = fetch_track(track, Some(range), false)
+        .await
+        .map_err(|_| "Trailer media could not be reached")?;
+    let mut prefix = Vec::with_capacity(limit);
+    while prefix.len() < limit {
+        let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| "Trailer media could not be read")?
+        else {
+            break;
+        };
+        prefix.extend(chunk.iter().take(limit - prefix.len()).copied());
+    }
+    if prefix.get(4..8) != Some(b"ftyp") {
+        return Err("Invalid trailer media".into());
+    }
+    if fragmented && !is_fragmented_mp4(&prefix) {
+        return Err("Trailer tracks are not compatible with MediaSource".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub async fn trailer_resolve(key: String, refresh: Option<bool>) -> Result<TrailerSource, String> {
+pub async fn trailer_resolve(
+    key: String,
+    refresh: Option<bool>,
+    progressive: Option<bool>,
+) -> Result<TrailerSource, String> {
     if !valid_key(&key) {
         return Err("Invalid trailer video ID".into());
     }
+    let progressive = progressive.unwrap_or(false);
     if !refresh.unwrap_or(false) {
-        if let Some(s) = cached(&key) {
+        if let Some(s) = cached(&key, progressive) {
             return Ok(s);
         }
     }
@@ -239,38 +341,32 @@ pub async fn trailer_resolve(key: String, refresh: Option<bool>) -> Result<Trail
         .await
         .map_err(|_| "Trailer resolver is busy")?;
     if !refresh.unwrap_or(false) {
-        if let Some(s) = cached(&key) {
+        if let Some(s) = cached(&key, progressive) {
             return Ok(s);
         }
     }
-    let (video, audio, width, height) = extract(&key).await?;
+    let (mut selection, fallback) = extract(&key, progressive).await?;
     // Metadata can resolve before a CDN endpoint responds reliably. Verify the actual media,
     // not just extraction success, before handing a fresh source to WebKit/WebView2.
-    let verify = |track: Track| async move {
-        let mut response = fetch_track(&track, Some("bytes=0-31"), false)
-            .await
-            .map_err(|_| "Trailer media could not be reached")?;
-        let mut prefix: Vec<u8> = Vec::with_capacity(32);
-        while prefix.len() < 32 {
-            let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|_| "Trailer media could not be read")?
-            else {
-                break;
-            };
-            prefix.extend(chunk.iter().take(32 - prefix.len()).copied());
+    if let Some(ref audio) = selection.audio {
+        if let Err(error) = tokio::try_join!(
+            verify_track(&selection.video, true),
+            verify_track(audio, true)
+        ) {
+            selection = fallback.ok_or(error)?;
+            verify_track(&selection.video, false).await?;
         }
-        if !prefix.windows(4).any(|w| w == b"ftyp") {
-            return Err("Invalid trailer media");
-        }
-        Ok::<(), &str>(())
-    };
-    if let Some(ref audio) = audio {
-        tokio::try_join!(verify(video.clone()), verify(audio.clone()))?;
     } else {
-        verify(video.clone()).await?;
+        verify_track(&selection.video, false).await?;
     }
+    let Resolved {
+        video,
+        audio,
+        video_codec,
+        audio_codec,
+        width,
+        height,
+    } = selection;
     let port = PORT.get_or_try_init(start_server).await?;
     let mut random = [0u8; 24];
     getrandom::getrandom(&mut random).map_err(|_| "Could not create trailer session")?;
@@ -279,6 +375,8 @@ pub async fn trailer_resolve(key: String, refresh: Option<bool>) -> Result<Trail
     let source = TrailerSource {
         video_url: format!("{base}/video"),
         audio_url: audio.as_ref().map(|_| format!("{base}/audio")),
+        video_codec,
+        audio_codec,
         width,
         height,
     };
@@ -289,6 +387,7 @@ pub async fn trailer_resolve(key: String, refresh: Option<bool>) -> Result<Trail
     }
     cache.push(Cached {
         key,
+        progressive,
         token,
         source: source.clone(),
         video,
@@ -503,25 +602,70 @@ mod tests {
     #[test]
     fn requires_compatible_short_video_with_audio() {
         let info = serde_json::json!({"duration":120,"requested_formats":[
-            {"url":"https://rr1.googlevideo.com/video","width":1920,"height":1080,"vcodec":"avc1.640028","acodec":"none","ext":"mp4"},
-            {"url":"https://rr1.googlevideo.com/audio","vcodec":"none","acodec":"mp4a.40.2","ext":"m4a"}
+            {"url":"https://rr1.googlevideo.com/video","width":1920,"height":1080,"vcodec":"avc1.640028","acodec":"none","ext":"mp4","protocol":"https"},
+            {"url":"https://rr1.googlevideo.com/audio","vcodec":"none","acodec":"mp4a.40.2","ext":"m4a","protocol":"https"}
+        ], "formats":[
+            {"url":"https://rr1.googlevideo.com/progressive","width":640,"height":360,"vcodec":"avc1.42001E","acodec":"mp4a.40.2","ext":"mp4","protocol":"https"},
+            {"url":"https://rr1.googlevideo.com/video","width":1920,"height":1080,"vcodec":"avc1.640028","acodec":"none","ext":"mp4","protocol":"https"}
         ]});
-        let (_, audio, w, h) = parse_source(info.to_string().as_bytes()).unwrap();
-        assert!(audio.is_some());
-        assert_eq!((w, h), (1920, 1080));
+        let (source, fallback) = parse_source(info.to_string().as_bytes(), false).unwrap();
+        assert!(source.audio.is_some());
+        assert_eq!(source.video_codec, "avc1.640028");
+        assert_eq!(source.audio_codec.as_deref(), Some("mp4a.40.2"));
+        assert_eq!((source.width, source.height), (1920, 1080));
+        let fallback = fallback.unwrap();
+        assert_eq!(fallback.height, 360);
+        assert_eq!(
+            fallback.video.url,
+            "https://rr1.googlevideo.com/progressive"
+        );
+        assert!(fallback.audio.is_none());
+        assert!(parse_source(info.to_string().as_bytes(), true).is_err());
         let mut bad = info.clone();
         bad["duration"] = serde_json::json!(7200);
-        assert!(parse_source(bad.to_string().as_bytes()).is_err());
+        assert!(parse_source(bad.to_string().as_bytes(), false).is_err());
         let mut bad = info.clone();
         bad["requested_formats"][0]["url"] = serde_json::json!("https://localhost/secret");
-        assert!(parse_source(bad.to_string().as_bytes()).is_err());
+        assert!(parse_source(bad.to_string().as_bytes(), false).is_err());
         let mut bad = info.clone();
         bad["requested_formats"].as_array_mut().unwrap().pop();
-        assert!(parse_source(bad.to_string().as_bytes()).is_err());
+        assert!(parse_source(bad.to_string().as_bytes(), false).is_err());
+        let mut bad = info.clone();
+        bad["requested_formats"][0]["vcodec"] = serde_json::json!("avc1.640028;injected");
+        assert!(parse_source(bad.to_string().as_bytes(), false).is_err());
+        let mut bad = info;
+        bad["requested_formats"][1]["acodec"] = serde_json::json!("opus");
+        assert!(parse_source(bad.to_string().as_bytes(), false).is_err());
+    }
+    #[test]
+    fn permits_only_combined_avc_and_aac_as_progressive_fallback() {
+        let mut info = serde_json::json!({
+            "duration":120,"url":"https://rr1.googlevideo.com/video","width":640,"height":360,
+            "vcodec":"avc1.42001E","acodec":"mp4a.40.2","ext":"mp4","protocol":"https"
+        });
+        for progressive in [false, true] {
+            let (source, _) = parse_source(info.to_string().as_bytes(), progressive).unwrap();
+            assert!(source.audio.is_none());
+            assert!(source.audio_codec.is_none());
+            assert_eq!(source.video_codec, "avc1.42001E");
+        }
+        info["acodec"] = serde_json::json!("none");
+        assert!(parse_source(info.to_string().as_bytes(), true).is_err());
+    }
+    #[test]
+    fn verifies_the_mp4_initialization_segment_supports_fragmentation() {
+        let fragmented = b"\0\0\0\x08ftyp\0\0\0\x08free\0\0\0\x18moov\0\0\0\x08mvhd\0\0\0\x08mvex";
+        assert!(is_fragmented_mp4(fragmented));
+        assert!(!is_fragmented_mp4(&fragmented[..fragmented.len() - 1]));
+        assert!(!is_fragmented_mp4(
+            b"\0\0\0\x08ftyp\0\0\0\x10moov\0\0\0\x08mvhd"
+        ));
     }
     #[tokio::test]
     async fn relay_server_requires_an_active_token() {
-        assert!(trailer_resolve("../settings".into(), None).await.is_err());
+        assert!(trailer_resolve("../settings".into(), None, None)
+            .await
+            .is_err());
         let port = start_server().await.unwrap();
         let client = Client::new();
         for path in [
@@ -565,11 +709,14 @@ mod tests {
         let token = "ffffffffffffffffffffffffffffffffffffffffffffffff";
         CACHE.lock().unwrap().push(Cached {
             key: "fixture".into(),
+            progressive: false,
             token: token.into(),
             expires: Instant::now() + Duration::from_secs(30),
             source: TrailerSource {
                 video_url: String::new(),
                 audio_url: None,
+                video_codec: "avc1.640028".into(),
+                audio_codec: None,
                 width: 1920,
                 height: 1080,
             },
@@ -581,6 +728,8 @@ mod tests {
             },
             audio: None,
         });
+        assert!(cached("fixture", false).is_some());
+        assert!(cached("fixture", true).is_none());
         let port = start_server().await.unwrap();
         let url = format!("http://127.0.0.1:{port}/media/{token}/video");
         let response = Client::new()

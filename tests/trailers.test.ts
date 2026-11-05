@@ -21,7 +21,17 @@ it('reuses concurrent resolution and requests a fresh source only for an explici
   expect(invoke).toHaveBeenCalledTimes(1);
   expect(getTrailerCandidates).not.toHaveBeenCalled();
   await resolveTrailer(item, true);
-  expect(invoke).toHaveBeenLastCalledWith('trailer_resolve', { key: item.trailerKey, refresh: true });
+  expect(invoke).toHaveBeenLastCalledWith('trailer_resolve', { key: item.trailerKey, refresh: true, progressive: false });
+});
+
+it('resolves a combined source independently of an in-flight adaptive request', async () => {
+  const combined = { ...source, audioUrl: null, height: 360 };
+  vi.mocked(invoke).mockResolvedValueOnce(source).mockResolvedValueOnce(combined);
+  const adaptive = resolveTrailer(item);
+  const fallback = resolveTrailer(item, false, true);
+  expect(await adaptive).toBe(source);
+  expect(await fallback).toBe(combined);
+  expect(invoke).toHaveBeenLastCalledWith('trailer_resolve', { key: item.trailerKey, refresh: false, progressive: true });
 });
 
 it('tries another trailer when a stored video was removed or restricted', async () => {
@@ -29,7 +39,7 @@ it('tries another trailer when a stored video was removed or restricted', async 
   vi.mocked(getTrailerCandidates).mockResolvedValue(['abcdefghijk', '12345678901']);
   expect(await resolveTrailer(item)).toEqual(source);
   expect(getTrailerCandidates).toHaveBeenCalledWith('movie', 603);
-  expect(invoke).toHaveBeenLastCalledWith('trailer_resolve', { key: '12345678901', refresh: false });
+  expect(invoke).toHaveBeenLastCalledWith('trailer_resolve', { key: '12345678901', refresh: false, progressive: false });
 });
 
 it('bounds alternative lookup and allows a later retry after all sources fail', async () => {

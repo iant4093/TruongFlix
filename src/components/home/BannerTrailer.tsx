@@ -33,7 +33,7 @@ export function BillboardMedia({ title, backdrop, trailer }: { title: string; ba
 }
 
 function TrailerLayer({ title, trailer }: { title: string; trailer: Trailer }) {
-  const { source, active, muted, videoRef, audioRef, frameStyle } = trailer;
+  const { source, active, muted, videoRef, frameStyle } = trailer;
   if (!source) return null;
   return (
     <motion.div
@@ -46,9 +46,8 @@ function TrailerLayer({ title, trailer }: { title: string; trailer: Trailer }) {
         key={source.videoUrl}
         ref={videoRef}
         crossOrigin="anonymous"
-        src={source.videoUrl}
         aria-label={`${title} trailer`}
-        muted={source.audioUrl ? true : muted}
+        muted={muted}
         playsInline
         preload="auto"
         disablePictureInPicture
@@ -58,7 +57,6 @@ function TrailerLayer({ title, trailer }: { title: string; trailer: Trailer }) {
         className="trailer-video absolute left-1/2 top-1/2 border-0 object-cover"
         style={frameStyle}
       />
-      {source.audioUrl && <audio ref={audioRef} src={source.audioUrl} preload="auto" className="hidden" />}
     </motion.div>
   );
 }

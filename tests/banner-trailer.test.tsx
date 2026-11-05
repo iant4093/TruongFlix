@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useBannerTrailer } from '../src/components/home/useBannerTrailer';
 import HeroBillboard from '../src/components/home/HeroBillboard';
 import DiscoverHero from '../src/components/browse/DiscoverHero';
+import { attachTrailerMedia } from '../src/services/trailerMedia';
 import { resolveTrailer, type TrailerSource } from '../src/services/trailers';
 import { getCatalogDetail } from '../src/services/tmdb';
 import { cachedTitleRating } from '../src/services/imdb';
@@ -13,18 +14,25 @@ import { buildItems } from '../src/store/selectors';
 import type { MediaItem } from '../src/types/media';
 import { movie } from './fixtures';
 
+vi.mock('../src/services/trailerMedia', () => ({ attachTrailerMedia: vi.fn() }));
 vi.mock('../src/services/trailers', () => ({ resolveTrailer: vi.fn() }));
 vi.mock('../src/services/player', () => ({ playItem: vi.fn() }));
 vi.mock('../src/services/tmdb', async (original) => ({ ...await original<typeof import('../src/services/tmdb')>(), getCatalogDetail: vi.fn() }));
 vi.mock('../src/services/imdb', async (original) => ({ ...await original<typeof import('../src/services/imdb')>(), cachedTitleRating: vi.fn() }));
 vi.mock('../src/services/omdb', async (original) => ({ ...await original<typeof import('../src/services/omdb')>(), cachedCriticScores: vi.fn() }));
 const item = { ...buildItems([movie], [], new Map())[0], tmdbId: 603, trailerKey: 'abcdefghijk' };
-const source: TrailerSource = { videoUrl: 'http://127.0.0.1:1234/video', audioUrl: 'http://127.0.0.1:1234/audio', width: 1920, height: 1080 };
+const source: TrailerSource = {
+  videoUrl: 'http://127.0.0.1:1234/video', audioUrl: 'http://127.0.0.1:1234/audio',
+  videoCodec: 'avc1.640028', audioCodec: 'mp4a.40.2', width: 1920, height: 1080,
+};
+const progressive: TrailerSource = { ...source, videoUrl: 'http://127.0.0.1:1234/combined', audioUrl: null, height: 360 };
+const dispose = vi.fn();
+const mediaUrl = 'blob:https://truongflix.test/trailer';
 let paused: WeakMap<HTMLMediaElement, boolean>;
 function Harness({ playing = true, enabled = true, title = item }: { playing?: boolean; enabled?: boolean; title?: MediaItem }) {
   const t = useBannerTrailer(title, enabled, playing);
   return <>
-    {t.source && <><video data-testid="video" ref={t.videoRef} src={t.source.videoUrl} /><audio data-testid="audio" ref={t.audioRef} src={t.source.audioUrl ?? ''} /></>}
+    {t.source && <video key={t.source.videoUrl} data-testid="video" ref={t.videoRef} muted={t.muted} />}
     <output data-testid="active">{String(t.active)}</output><output data-testid="phase">{t.phase}</output>
     <button onClick={t.toggleMute}>{t.phase === 'failed' ? 'Retry' : t.phase === 'ended' ? 'Replay' : t.muted ? 'Unmute' : 'Mute'}</button>
   </>;
@@ -32,11 +40,13 @@ function Harness({ playing = true, enabled = true, title = item }: { playing?: b
 beforeEach(() => {
   vi.useFakeTimers(); vi.resetAllMocks();
   paused = new WeakMap();
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) { paused.set(this, false); return Promise.resolve(); });
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(function (this: HTMLMediaElement) { paused.set(this, true); });
   vi.spyOn(HTMLMediaElement.prototype, 'paused', 'get').mockImplementation(function (this: HTMLMediaElement) { return paused.get(this) ?? true; });
   vi.spyOn(HTMLMediaElement.prototype, 'readyState', 'get').mockReturnValue(4);
-  vi.mocked(resolveTrailer).mockResolvedValue(source);
+  vi.mocked(attachTrailerMedia).mockReturnValue({ url: mediaUrl, dispose });
+  vi.mocked(resolveTrailer).mockImplementation(async (_, _refresh, fallback) => fallback ? progressive : source);
   useLibraryStore.setState(useLibraryStore.getInitialState(), true);
 });
 afterEach(() => { cleanup(); vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -62,100 +72,77 @@ it('prefetches HD media but waits for both the banner delay and a decoded frame 
   fireEvent.waiting(video);
   expect(screen.getByTestId('active').textContent).toBe('false');
 });
-it('pauses and covers both tracks under a modal or full player, then resumes', async () => {
+it('pauses and covers the video under a modal or full player, then resumes', async () => {
   const view = render(<Harness />);
   const video = await start();
   expect(screen.getByTestId('active').textContent).toBe('true');
   view.rerender(<Harness playing={false} />);
   expect(video.paused).toBe(true);
-  expect((screen.getByTestId('audio') as HTMLAudioElement).paused).toBe(true);
   expect(screen.getByTestId('active').textContent).toBe('false');
   view.rerender(<Harness />);
   await act(async () => { await Promise.resolve(); });
   fireEvent.playing(video);
   expect(screen.getByTestId('active').textContent).toBe('true');
 });
-it('unmutes in the user gesture and corrects drift without seeking or restarting the sound', async () => {
+it('unmutes the shared HD player without pausing, seeking or changing speed', async () => {
   render(<Harness />);
   const video = await start();
-  const audio = screen.getByTestId('audio') as HTMLAudioElement;
+  expect(attachTrailerMedia).toHaveBeenCalledWith(video, expect.objectContaining({
+    videoUrl: source.videoUrl, audioUrl: source.audioUrl, videoCodec: source.videoCodec, audioCodec: source.audioCodec,
+  }), expect.any(Function));
+  expect(video.getAttribute('src')).toBe(mediaUrl);
   video.currentTime = 12;
   fireEvent.click(screen.getByRole('button', { name: 'Unmute' }));
-  expect(audio.muted).toBe(false);
-  expect(audio.currentTime).toBe(12);
-  expect(audio.paused).toBe(false);
-  await act(async () => { await Promise.resolve(); });
-  fireEvent.playing(video);
-  video.currentTime = 12.5;
-  await act(async () => { await vi.advanceTimersByTimeAsync(1250); });
-  expect(audio.currentTime).toBe(12);
-  expect(audio.paused).toBe(false);
-  expect(video.playbackRate).toBeLessThan(1);
-  audio.currentTime = 13.03;
-  video.currentTime = 13;
-  await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+  expect(video.muted).toBe(false);
+  expect(video.paused).toBe(false);
+  expect(video.currentTime).toBe(12);
   expect(video.playbackRate).toBe(1);
-  expect(vi.mocked(audio.play).mock.contexts.filter((media) => media === audio)).toHaveLength(1);
+  expect(video.play).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole('button', { name: 'Mute' }));
-  expect(audio.muted).toBe(true);
-  expect(audio.paused).toBe(true);
+  expect(video.muted).toBe(true);
+  expect(video.paused).toBe(false);
 });
 
-it('keeps the audio position through buffering and resumes only after video playback resumes', async () => {
+it('falls back to a combined file when the webview cannot attach the HD source', async () => {
+  vi.mocked(attachTrailerMedia).mockImplementationOnce(() => { throw new Error('Unsupported'); });
   render(<Harness />);
   const video = await start();
-  const audio = screen.getByTestId<HTMLAudioElement>('audio');
-  video.currentTime = 3;
-  fireEvent.click(screen.getByRole('button', { name: 'Unmute' }));
-  await act(async () => { await Promise.resolve(); });
-  fireEvent.playing(video);
-  const ready = vi.spyOn(audio, 'readyState', 'get').mockReturnValue(2);
-  video.currentTime = 3.6;
-  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  expect(audio.currentTime).toBe(3);
-  expect(video.playbackRate).toBe(1);
-  ready.mockReturnValue(4);
+  expect(resolveTrailer).toHaveBeenLastCalledWith(item, false, true);
+  expect(video.getAttribute('src')).toBe(progressive.videoUrl);
+  expect(screen.getByTestId('phase').textContent).toBe('playing');
+});
+
+it('disposes the HD source when buffering stalls and ignores its late events', async () => {
+  render(<Harness />);
+  const video = await start();
   fireEvent.waiting(video);
-  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  expect(audio.paused).toBe(true);
-  fireEvent.playing(video);
-  await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-  expect(audio.currentTime).toBe(3);
-  expect(audio.paused).toBe(false);
+  await act(async () => { await vi.advanceTimersByTimeAsync(25_001); });
+  expect(dispose).toHaveBeenCalled();
+  expect(video.paused).toBe(true);
+  expect(resolveTrailer).toHaveBeenLastCalledWith(item, false, true);
+  const fallback = screen.getByTestId<HTMLVideoElement>('video');
+  expect(fallback).not.toBe(video);
+  fireEvent.error(video);
+  fireEvent.playing(fallback);
+  expect(screen.getByTestId('phase').textContent).toBe('playing');
 });
 
-it('holds the displayed frame at the sound cue until a delayed unmute starts playing', async () => {
+it('restarts adaptive playback on the same element after the old buffer ends', async () => {
   render(<Harness />);
   const video = await start();
-  const audio = screen.getByTestId<HTMLAudioElement>('audio');
-  let startSound!: () => void;
-  vi.spyOn(audio, 'play').mockReturnValueOnce(new Promise((resolve) => { startSound = resolve; }));
-  video.currentTime = 9.5;
   fireEvent.click(screen.getByRole('button', { name: 'Unmute' }));
-  fireEvent.pause(video);
-  await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
-  expect(video.paused).toBe(true);
-  expect(screen.getByTestId('active').textContent).toBe('true');
-  expect(audio.currentTime).toBe(video.currentTime);
-  expect(vi.mocked(audio.play).mock.contexts.filter((media) => media === audio)).toHaveLength(1);
-  await act(async () => startSound());
-  expect(video.paused).toBe(false);
-  expect(video.currentTime).toBe(9.5);
+  fireEvent.ended(video);
+  vi.mocked(attachTrailerMedia).mockReturnValueOnce({ url: `${mediaUrl}-replay`, dispose: vi.fn() });
+  fireEvent.click(screen.getByRole('button', { name: 'Replay' }));
+  expect(dispose).toHaveBeenCalledOnce();
+  expect(screen.getByTestId('video')).toBe(video);
+  expect(video.getAttribute('src')).toBe(`${mediaUrl}-replay`);
+  expect(video.muted).toBe(false);
+  expect(video.play).toHaveBeenCalledTimes(2);
 });
 
-it('returns to muted playback if the sound never starts', async () => {
-  render(<Harness />);
-  const video = await start();
-  const audio = screen.getByTestId<HTMLAudioElement>('audio');
-  vi.spyOn(audio, 'play').mockReturnValueOnce(new Promise(() => {}));
-  fireEvent.click(screen.getByRole('button', { name: 'Unmute' }));
-  expect(video.paused).toBe(true);
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  expect(video.paused).toBe(false);
-  expect(audio.muted).toBe(true);
-  expect(screen.getByRole('button', { name: 'Unmute' })).toBeTruthy();
-});
 it('replays an ended trailer and retries a failed or stalled source without an iframe fallback', async () => {
+  vi.mocked(resolveTrailer).mockResolvedValue(progressive);
   render(<Harness />);
   const video = await start();
   fireEvent.ended(video);
@@ -179,7 +166,8 @@ it('ignores late resolution for a previous title and honours autoplay being disa
   const next = { ...item, key: 'movie-2', trailerKey: '12345678901' };
   view.rerender(<Harness title={next} />);
   await act(async () => { await Promise.resolve(); resolveOld({ ...source, videoUrl: 'http://127.0.0.1:1234/old' }); });
-  expect(screen.getByTestId('video').getAttribute('src')).toBe(source.videoUrl);
+  expect(screen.getByTestId('video').getAttribute('src')).toBe(mediaUrl);
+  expect(attachTrailerMedia).toHaveBeenCalledTimes(1);
   view.rerender(<Harness title={next} enabled={false} />);
   expect(screen.queryByTestId('video')).toBeNull();
 });
@@ -198,6 +186,7 @@ it('renders a real video without third-party controls or caption tracks in the b
   const video = screen.getByLabelText('Sintel trailer') as HTMLVideoElement;
   expect(video.controls).toBe(false);
   expect(video.querySelector('track')).toBeNull();
+  expect(document.querySelector('audio')).toBeNull();
   expect(document.querySelector('iframe')).toBeNull();
 });
 
@@ -236,15 +225,14 @@ it('plays Browse trailers from their catalog IDs and advances once playback fini
   const video = screen.getByLabelText('Featured movie trailer') as HTMLVideoElement;
   fireEvent.playing(video);
   fireEvent.click(screen.getByRole('button', { name: 'Unmute trailer' }));
-  const audio = document.querySelector('audio')!;
-  expect(audio.paused).toBe(false);
+  expect(video.muted).toBe(false);
+  expect(video.paused).toBe(false);
   await act(async () => { await vi.advanceTimersByTimeAsync(46_000); });
   expect(screen.getByRole('heading', { name: 'Featured movie' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'More Info' }));
   expect(onSelect).toHaveBeenCalledWith(featured[0]);
   view.rerender(<DiscoverHero titles={featured} blocked onSelect={onSelect} />);
   expect(video.paused).toBe(true);
-  expect(audio.paused).toBe(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(46_000); });
   expect(screen.getByRole('heading', { name: 'Featured movie' })).toBeTruthy();
   view.rerender(<DiscoverHero titles={featured} blocked={false} onSelect={onSelect} />);
