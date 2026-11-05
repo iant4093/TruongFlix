@@ -70,6 +70,7 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
     if (!video || !source) return;
     let alive = true;
     let frame = 0;
+    let videoRunning = false;
     let audioPending = false;
     let nextAudioAttempt = 0;
     let framed = false;
@@ -86,15 +87,26 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
       } catch { /* Keep the natural frame when pixel access is unavailable. */ }
     };
     const sync = () => {
-      if (!audio || audio.muted || !allowedRef.current || video.paused || video.readyState < 3 || video.seeking) return;
-      if (audio.readyState && !audio.seeking && Math.abs(audio.currentTime - video.currentTime) > 0.3) audio.currentTime = video.currentTime;
-      if (audio.paused && !audioPending && Date.now() >= nextAudioAttempt) {
-        audioPending = true;
-        void audio.play().catch(() => { nextAudioAttempt = Date.now() + 2000; }).finally(() => { audioPending = false; });
+      if (!audio || !videoRunning || audio.muted || audio.ended || !allowedRef.current || video.paused || video.readyState < 3 || video.seeking) return;
+      if (audio.paused) {
+        if (!audioPending && Date.now() >= nextAudioAttempt) {
+          audioPending = true;
+          void audio.play().catch(() => { nextAudioAttempt = Date.now() + 2000; }).finally(() => { audioPending = false; });
+        }
+        return;
+      }
+      if (audio.seeking || audio.readyState < 3) return;
+      // Leave the audible track alone during playback. Seeking it discards decoded
+      // audio and can start another buffer, which makes drift and dropouts repeat.
+      const drift = audio.currentTime - video.currentTime;
+      const rate = Math.abs(drift) < 0.08 ? 1 : 1 + Math.max(-0.12, Math.min(0.12, drift * 0.3));
+      if (Math.abs(video.playbackRate - rate) >= 0.01 || (rate === 1 && video.playbackRate !== 1)) {
+        video.playbackRate = rate;
       }
     };
     const reveal = () => {
       if (!alive || !allowedRef.current || video.paused || video.ended || video.readyState < 2) return;
+      videoRunning = true;
       // Set the framing before showing the first frame and keep it for the whole trailer.
       frameTrailer();
       setActive(true); setPhase('playing'); sync();
@@ -103,7 +115,13 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
       if (typeof video.requestVideoFrameCallback === 'function') frame = video.requestVideoFrameCallback(reveal);
       else reveal();
     };
-    const hide = () => { setActive(false); audio?.pause(); };
+    const hide = () => {
+      videoRunning = false;
+      if (frame && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frame);
+      frame = 0;
+      if (video.playbackRate !== 1) video.playbackRate = 1;
+      setActive(false); audio?.pause();
+    };
     const ended = () => { hide(); setPhase('ended'); };
     const failed = () => { hide(); video.pause(); setPhase('failed'); };
     video.addEventListener('playing', started);
@@ -112,7 +130,6 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
     video.addEventListener('pause', hide);
     video.addEventListener('ended', ended);
     video.addEventListener('error', failed);
-    audio?.addEventListener('canplay', sync);
     const timer = window.setInterval(sync, 250);
     return () => {
       alive = false;
@@ -125,16 +142,18 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
       video.removeEventListener('pause', hide);
       video.removeEventListener('ended', ended);
       video.removeEventListener('error', failed);
-      audio?.removeEventListener('canplay', sync);
     };
   }, [source]);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.muted = !!source?.audioUrl || muted;
+    if (audioRef.current) audioRef.current.muted = muted;
+  }, [source, muted]);
 
   useEffect(() => {
     const video = videoRef.current;
     const audio = audioRef.current;
     if (!video || !source) return;
-    video.muted = source.audioUrl ? true : muted;
-    if (audio) audio.muted = muted;
     if (!enabled || !playing || !delayPassed || phase === 'failed') {
       video.pause(); audio?.pause(); setActive(false); return;
     }
@@ -142,7 +161,7 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
     let cancelled = false;
     void video.play().catch(() => { if (!cancelled) { setActive(false); setPhase('failed'); } });
     return () => { cancelled = true; };
-  }, [enabled, playing, delayPassed, source, muted]);
+  }, [enabled, playing, delayPassed, source]);
 
   useEffect(() => {
     if (!source || !playing || !delayPassed || active || phase === 'ended' || phase === 'failed') return;
@@ -172,7 +191,10 @@ export function useBannerTrailer(item: TrailerTitle & { key: string }, enabled: 
         audio.currentTime = video.currentTime;
         // Start within the button's user gesture for WebKit's audio policy.
         void audio.play().catch(() => setMuted(true));
-      } else audio.pause();
+      } else {
+        audio.pause();
+        if (video.playbackRate !== 1) video.playbackRate = 1;
+      }
     } else video.muted = next;
   };
   const frameStyle = { width: `${100 / (1 - crop.x * 2)}%`, height: `${100 / (1 - crop.y * 2)}%`, transform: 'translate(-50%, -50%)' };

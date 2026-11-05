@@ -75,7 +75,7 @@ it('pauses and covers both tracks under a modal or full player, then resumes', a
   fireEvent.playing(video);
   expect(screen.getByTestId('active').textContent).toBe('true');
 });
-it('unmutes in the user gesture and keeps separate HD video and audio in sync', async () => {
+it('unmutes in the user gesture and corrects drift without seeking or restarting the sound', async () => {
   render(<Harness />);
   const video = await start();
   const audio = screen.getByTestId('audio') as HTMLAudioElement;
@@ -84,12 +84,40 @@ it('unmutes in the user gesture and keeps separate HD video and audio in sync', 
   expect(audio.muted).toBe(false);
   expect(audio.currentTime).toBe(12);
   expect(audio.paused).toBe(false);
-  video.currentTime = 18;
+  video.currentTime = 12.5;
+  await act(async () => { await vi.advanceTimersByTimeAsync(1250); });
+  expect(audio.currentTime).toBe(12);
+  expect(audio.paused).toBe(false);
+  expect(video.playbackRate).toBeLessThan(1);
+  audio.currentTime = 13.03;
+  video.currentTime = 13;
   await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-  expect(audio.currentTime).toBe(18);
+  expect(video.playbackRate).toBe(1);
+  expect(vi.mocked(audio.play).mock.contexts.filter((media) => media === audio)).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: 'Mute' }));
   expect(audio.muted).toBe(true);
   expect(audio.paused).toBe(true);
+});
+
+it('keeps the audio position through buffering and resumes only after video playback resumes', async () => {
+  render(<Harness />);
+  const video = await start();
+  const audio = screen.getByTestId<HTMLAudioElement>('audio');
+  video.currentTime = 3;
+  fireEvent.click(screen.getByRole('button', { name: 'Unmute' }));
+  const ready = vi.spyOn(audio, 'readyState', 'get').mockReturnValue(2);
+  video.currentTime = 3.6;
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(audio.currentTime).toBe(3);
+  expect(video.playbackRate).toBe(1);
+  ready.mockReturnValue(4);
+  fireEvent.waiting(video);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(audio.paused).toBe(true);
+  fireEvent.playing(video);
+  await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+  expect(audio.currentTime).toBe(3);
+  expect(audio.paused).toBe(false);
 });
 it('replays an ended trailer and retries a failed or stalled source without an iframe fallback', async () => {
   render(<Harness />);
