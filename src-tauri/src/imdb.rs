@@ -16,6 +16,7 @@ const EPISODES_FILE: &str = "title.episode.tsv.gz";
 /// Ratings change daily; the episode → show mapping only matters for newly aired episodes.
 const RATINGS_MAX_AGE: Duration = Duration::from_secs(20 * 3600);
 const EPISODES_MAX_AGE: Duration = Duration::from_secs(6 * 24 * 3600);
+static DATASET_DOWNLOAD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Serialize)]
 struct Progress {
@@ -35,6 +36,7 @@ async fn download(app: &AppHandle, name: &str, label: &str, dest: &Path) -> Resu
     let client = reqwest::Client::builder()
         .user_agent(concat!("TruongFlix v", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
     let mut res = client
@@ -66,8 +68,13 @@ async fn ensure_dataset(app: &AppHandle, name: &str, label: &str, max_age: Durat
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("imdb");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(name);
-    let fresh = age(&path).is_some_and(|a| a < max_age);
-    if fresh && !force {
+    let fresh = || age(&path).is_some_and(|a| a < max_age);
+    if !force && fresh() {
+        return Ok(path);
+    }
+    // Browse and library sync can refresh the same dataset concurrently.
+    let _guard = DATASET_DOWNLOAD.lock().await;
+    if !force && fresh() {
         return Ok(path);
     }
     match download(app, name, label, &path).await {

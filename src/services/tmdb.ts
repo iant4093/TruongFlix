@@ -615,7 +615,26 @@ export async function getCatalog(kind: 'movie' | 'tv', list: CatalogList, page =
   };
 }
 
-export async function getCatalogDetail(item: SearchResult): Promise<CatalogDetail> {
+const catalogDetails = new Map<string, { detail: CatalogDetail; fetchedAt: number }>();
+const pendingCatalogDetails = new Map<string, Promise<CatalogDetail>>();
+
+export function getCatalogDetail(item: SearchResult): Promise<CatalogDetail> {
+  const key = JSON.stringify([apiKey, item.kind, item.id]);
+  const saved = catalogDetails.get(key);
+  if (saved && Date.now() - saved.fetchedAt < 15 * 60_000) return Promise.resolve(saved.detail);
+  const pending = pendingCatalogDetails.get(key);
+  if (pending) return pending;
+
+  const result = loadCatalogDetail(item).then((detail) => {
+    catalogDetails.set(key, { detail, fetchedAt: Date.now() });
+    if (catalogDetails.size > 60) catalogDetails.delete(catalogDetails.keys().next().value!);
+    return detail;
+  }).finally(() => pendingCatalogDetails.delete(key));
+  pendingCatalogDetails.set(key, result);
+  return result;
+}
+
+async function loadCatalogDetail(item: SearchResult): Promise<CatalogDetail> {
   if (item.kind === 'movie') {
     const d = await request<TmdbMovie>(`/movie/${item.id}`, { append_to_response: 'credits,images,release_dates', include_image_language: 'en,null' });
     return { ...item, title: d.title, year: yearOf(d.release_date), overview: d.overview ?? '',

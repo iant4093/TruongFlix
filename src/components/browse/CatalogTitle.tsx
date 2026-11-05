@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { invoke } from '@tauri-apps/api/core';
 import { ChevronDown, Download, Search, Loader2, Play, Star, UserRound } from 'lucide-react';
 import { getCatalogDetail, getCatalogSeason, type SearchResult } from '../../services/tmdb';
 import { cancelSourceBrowser, quickTorrent } from '../../services/browse';
@@ -16,19 +15,16 @@ import CriticScores from '../common/CriticScores';
 import ImdbRating from '../common/ImdbRating';
 import MaturityRating from '../common/MaturityRating';
 import { formatRuntime } from '../../store/selectors';
-import { cachedCriticScores, type CriticScores as Scores } from '../../services/omdb';
+import useCatalogRatings from '../../hooks/useCatalogRatings';
 
 export default function CatalogTitle({ item, onClose, onSource, suspended = false }: { item: SearchResult; onClose: () => void; onSource: () => void; suspended?: boolean }) {
   const sourceUrl = useLibraryStore((s) => s.settings.browse_source_url);
-  const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
   const library = useLibraryStore((s) => s.items);
-  const omdbKey = useLibraryStore((s) => s.settings.omdb_api_key);
   const owned = library.find((i) => i.kind === item.kind && i.tmdbId === item.id);
-  const [critics, setCritics] = useState<Scores | null>(null);
   const [detail, setDetail] = useState<CatalogDetail | null>(null);
+  const { imdbRating, imdbVotes, rtScore, metacritic } = useCatalogRatings(detail?.imdbId, owned);
   const [error, setError] = useState('');
   const [detailError, setDetailError] = useState('');
-  const [rating, setRating] = useState<{ rating: number; votes: number } | null>(null);
   const [season, setSeason] = useState(1);
   const [seasonData, setSeasonData] = useState<CatalogSeason | null>(null);
   const [seasonError, setSeasonError] = useState('');
@@ -56,23 +52,6 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
     }).catch((e) => { if (alive) setDetailError(String(e)); });
     return () => { alive = false; };
   }, [item.id, item.kind, retry]);
-  useEffect(() => {
-    if (!imdbEnabled || !detail?.imdbId || owned?.imdbRating != null) return;
-    let alive = true;
-    const imdbId = detail.imdbId;
-    void invoke<{ ratings: Record<string, { rating: number; votes: number }> }>('imdb_lookup', { titleIds: [imdbId], showIds: [], force: false })
-      .then((r) => { if (alive) setRating(r.ratings[imdbId] ?? null); }).catch(() => {});
-    return () => { alive = false; };
-  }, [imdbEnabled, detail?.imdbId, owned?.imdbRating]);
-  useEffect(() => {
-    let alive = true; setCritics(null);
-    if (owned?.rtScore != null || owned?.metacritic != null) {
-      setCritics({ rt: owned.rtScore, metacritic: owned.metacritic }); return;
-    }
-    if (!omdbKey || !detail?.imdbId) return;
-    void cachedCriticScores(omdbKey, detail.imdbId).then((scores) => { if (alive) setCritics(scores); }).catch(() => {});
-    return () => { alive = false; };
-  }, [omdbKey, detail?.imdbId, owned?.rtScore, owned?.metacritic]);
   useEffect(() => {
     if (!detail || detail.kind !== 'tv') return;
     let alive = true; setSeasonData(null); setSeasonError('');
@@ -144,7 +123,6 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   };
   const people = detail?.cast?.filter((person) => !person.job) ?? [];
   const crew = detail?.cast?.filter((person) => person.job) ?? [];
-  const imdbRating = imdbEnabled ? owned?.imdbRating ?? rating?.rating : null;
   const tmdbRating = detail?.voteAverage ?? item.voteAverage;
   const selectedEpisode = typeof episode === 'number' ? seasonData?.episodes.find((e) => e.episode_number === episode) : null;
   let language = detail?.language ?? '';
@@ -192,9 +170,9 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
       <div className="grid gap-6 md:grid-cols-[minmax(0,1.85fr)_minmax(0,1fr)] md:gap-8">
         <div className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[15px] text-nf-secondary">
-            <ImdbRating rating={imdbRating} votes={owned?.imdbVotes ?? rating?.votes} imdbId={detail?.imdbId} showVotes size="md" />
+            <ImdbRating rating={imdbRating} votes={imdbVotes} imdbId={detail?.imdbId} showVotes size="md" />
             {imdbRating == null && tmdbRating > 0 && <span className="inline-flex items-center gap-1.5"><Star className="h-3.5 w-3.5 fill-current text-amber-300" />{tmdbRating.toFixed(1)}<span className="text-xs text-nf-muted">TMDB</span></span>}
-            <CriticScores rt={critics?.rt ?? null} metacritic={critics?.metacritic ?? null} size="md" />
+            <CriticScores rt={rtScore} metacritic={metacritic} size="md" />
             <span>{detail?.year ?? item.year}</span>
             <MaturityRating rating={detail?.certification ?? null} size="md" />
             {!!detail?.runtime && <span>{formatRuntime(detail.runtime)}{item.kind === 'tv' ? ' / episode' : ''}</span>}

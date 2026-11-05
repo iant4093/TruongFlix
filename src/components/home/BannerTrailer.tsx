@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type Ref } from 'react';
 import { motion } from 'framer-motion';
 import { RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import type { useBannerTrailer } from './useBannerTrailer';
@@ -63,7 +63,24 @@ function TrailerLayer({ title, trailer }: { title: string; trailer: Trailer }) {
   );
 }
 
-export function TrailerControl({ trailer }: { trailer: Trailer }) {
+export function BillboardControls({ trailer, certification, controlsRef }: {
+  trailer: Trailer;
+  certification: string | null;
+  controlsRef?: Ref<HTMLDivElement>;
+}) {
+  return (
+    <div ref={controlsRef} className="nf-billboard-controls">
+      <TrailerControl trailer={trailer} />
+      {certification && (
+        <div className="flex h-9 items-center border-l-[3px] border-[#dcdcdc] bg-[rgba(51,51,51,0.6)] pl-3 pr-[4vw] text-lg">
+          {certification}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TrailerControl({ trailer }: { trailer: Trailer }) {
   const { phase, source, muted, toggleMute } = trailer;
   if (phase !== 'playing' && phase !== 'ended' && phase !== 'failed') return null;
   const label = phase === 'failed' ? 'Retry trailer' : phase === 'ended' ? 'Replay trailer' : muted ? 'Unmute trailer' : 'Mute trailer';

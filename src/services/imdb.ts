@@ -23,6 +23,27 @@ export function formatVotes(votes: number | null | undefined): string {
 }
 
 const SYNC_INTERVAL_MS = 20 * 3600 * 1000;
+type TitleRating = Lookup['ratings'][string] | null;
+const titleRatings = new Map<string, { rating: TitleRating; fetchedAt: number }>();
+const pendingTitleRatings = new Map<string, Promise<TitleRating>>();
+
+/** Browse and title details share the lookup and reuse results when a featured title comes back. */
+export function cachedTitleRating(imdbId: string): Promise<TitleRating> {
+  const key = `${imdbId}:${useLibraryStore.getState().settings.imdb_last_sync}`;
+  const saved = titleRatings.get(key);
+  if (saved && Date.now() - saved.fetchedAt < SYNC_INTERVAL_MS) return Promise.resolve(saved.rating);
+  const pending = pendingTitleRatings.get(key);
+  if (pending) return pending;
+
+  const result = invoke<Lookup>('imdb_lookup', { titleIds: [imdbId], showIds: [], force: false }).then(({ ratings }) => {
+    const rating = ratings[imdbId] ?? null;
+    titleRatings.set(key, { rating, fetchedAt: Date.now() });
+    if (titleRatings.size > 200) titleRatings.delete(titleRatings.keys().next().value!);
+    return rating;
+  }).finally(() => pendingTitleRatings.delete(key));
+  pendingTitleRatings.set(key, result);
+  return result;
+}
 
 /** True when ratings are stale or some titles were never looked up. */
 export function imdbSyncDue(): boolean {

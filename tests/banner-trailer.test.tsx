@@ -4,6 +4,10 @@ import { useBannerTrailer } from '../src/components/home/useBannerTrailer';
 import HeroBillboard from '../src/components/home/HeroBillboard';
 import DiscoverHero from '../src/components/browse/DiscoverHero';
 import { resolveTrailer, type TrailerSource } from '../src/services/trailers';
+import { getCatalogDetail } from '../src/services/tmdb';
+import { cachedTitleRating } from '../src/services/imdb';
+import { cachedCriticScores } from '../src/services/omdb';
+import { playItem } from '../src/services/player';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import { buildItems } from '../src/store/selectors';
 import type { MediaItem } from '../src/types/media';
@@ -11,6 +15,9 @@ import { movie } from './fixtures';
 
 vi.mock('../src/services/trailers', () => ({ resolveTrailer: vi.fn() }));
 vi.mock('../src/services/player', () => ({ playItem: vi.fn() }));
+vi.mock('../src/services/tmdb', async (original) => ({ ...await original<typeof import('../src/services/tmdb')>(), getCatalogDetail: vi.fn() }));
+vi.mock('../src/services/imdb', async (original) => ({ ...await original<typeof import('../src/services/imdb')>(), cachedTitleRating: vi.fn() }));
+vi.mock('../src/services/omdb', async (original) => ({ ...await original<typeof import('../src/services/omdb')>(), cachedCriticScores: vi.fn() }));
 const item = { ...buildItems([movie], [], new Map())[0], tmdbId: 603, trailerKey: 'abcdefghijk' };
 const source: TrailerSource = { videoUrl: 'http://127.0.0.1:1234/video', audioUrl: 'http://127.0.0.1:1234/audio', width: 1920, height: 1080 };
 let paused: WeakMap<HTMLMediaElement, boolean>;
@@ -159,7 +166,7 @@ const featured = [
 
 it('plays Browse trailers from their catalog IDs and advances once playback finishes', async () => {
   const onSelect = vi.fn();
-  const view = render(<DiscoverHero titles={featured} label="Trending" blocked={false} onSelect={onSelect} />);
+  const view = render(<DiscoverHero titles={featured} blocked={false} onSelect={onSelect} />);
   await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
   expect(resolveTrailer).toHaveBeenCalledWith(expect.objectContaining({ kind: 'movie', tmdbId: 603, trailerKey: null }), false);
   const video = screen.getByLabelText('Featured movie trailer') as HTMLVideoElement;
@@ -169,14 +176,14 @@ it('plays Browse trailers from their catalog IDs and advances once playback fini
   expect(audio.paused).toBe(false);
   await act(async () => { await vi.advanceTimersByTimeAsync(46_000); });
   expect(screen.getByRole('heading', { name: 'Featured movie' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'View title' }));
+  fireEvent.click(screen.getByRole('button', { name: 'More Info' }));
   expect(onSelect).toHaveBeenCalledWith(featured[0]);
-  view.rerender(<DiscoverHero titles={featured} label="Trending" blocked onSelect={onSelect} />);
+  view.rerender(<DiscoverHero titles={featured} blocked onSelect={onSelect} />);
   expect(video.paused).toBe(true);
   expect(audio.paused).toBe(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(46_000); });
   expect(screen.getByRole('heading', { name: 'Featured movie' })).toBeTruthy();
-  view.rerender(<DiscoverHero titles={featured} label="Trending" blocked={false} onSelect={onSelect} />);
+  view.rerender(<DiscoverHero titles={featured} blocked={false} onSelect={onSelect} />);
   fireEvent.ended(video);
   await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
   expect(screen.queryByLabelText('Featured movie trailer')).toBeNull();
@@ -187,7 +194,7 @@ it('plays Browse trailers from their catalog IDs and advances once playback fini
 
 it('allows manual Browse navigation and pausing rotation with trailer autoplay disabled', async () => {
   useLibraryStore.setState((s) => ({ settings: { ...s.settings, trailers_autoplay: false } }));
-  render(<DiscoverHero titles={featured} label="Trending" blocked={false} onSelect={vi.fn()} />);
+  render(<DiscoverHero titles={featured} blocked={false} onSelect={vi.fn()} />);
   await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
   expect(screen.getByRole('heading', { name: 'Featured show' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Pause title rotation' }));
@@ -197,4 +204,36 @@ it('allows manual Browse navigation and pausing rotation with trailer autoplay d
   fireEvent.click(screen.getByRole('button', { name: 'Previous featured title' }));
   expect(screen.getByRole('heading', { name: 'Featured show' })).toBeTruthy();
   expect(resolveTrailer).not.toHaveBeenCalled();
+});
+
+it('shows the catalog logo, ratings and maturity badge for the featured title and clears them when it changes', async () => {
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, tmdb_api_key: 'fixture', omdb_api_key: 'fixture', trailers_autoplay: false } }));
+  vi.mocked(getCatalogDetail).mockResolvedValueOnce({
+    ...featured[0], logo: '/title.png', imdbId: 'tt0133093', certification: 'R',
+    seasons: [], genres: [], runtime: 100, status: 'Released', nextSeason: null, lastSeason: null, lastEpisode: null,
+  }).mockImplementation(() => new Promise(() => {}));
+  vi.mocked(cachedTitleRating).mockResolvedValue({ rating: 8.7, votes: 200 });
+  vi.mocked(cachedCriticScores).mockResolvedValue({ rt: 92, metacritic: 80 });
+  render(<DiscoverHero titles={featured} blocked={false} onSelect={vi.fn()} />);
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.getByRole('img', { name: 'Featured movie' }).getAttribute('src')).toBe('/title.png');
+  expect(screen.getByText('8.7')).toBeTruthy();
+  expect(screen.getByText('92%')).toBeTruthy();
+  expect(screen.getByText('80')).toBeTruthy();
+  expect(screen.getByText('R')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Play', exact: true })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Next featured title' }));
+  expect(screen.queryByText('8.7')).toBeNull();
+  expect(screen.queryByRole('img', { name: 'Featured movie' })).toBeNull();
+});
+
+it('uses the Library metadata and playback action when the featured title is owned', () => {
+  const owned = { ...item, logo: '/saved.png', imdbRating: 9.2 };
+  useLibraryStore.setState({ items: [owned] });
+  render(<DiscoverHero titles={featured} blocked={false} onSelect={vi.fn()} />);
+  expect(screen.getByRole('img', { name: owned.title }).getAttribute('src')).toBe('/saved.png');
+  expect(screen.getByText('9.2')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+  expect(playItem).toHaveBeenCalledWith(owned);
+  expect(getCatalogDetail).not.toHaveBeenCalled();
 });

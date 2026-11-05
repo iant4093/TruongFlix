@@ -49,7 +49,6 @@ export default function Discover() {
     {featured.length > 0 && <DiscoverHero
       key={`${profile.id}:${kind}:${list}`}
       titles={featured}
-      label={lists.find((option) => option.value === list)!.label}
       blocked={!!selected || sourceOpen}
       onSelect={setSelected}
     />}
