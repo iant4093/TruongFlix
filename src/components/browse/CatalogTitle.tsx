@@ -124,7 +124,7 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   const people = detail?.cast?.filter((person) => !person.job) ?? [];
   const crew = detail?.cast?.filter((person) => person.job) ?? [];
   const tmdbRating = detail?.voteAverage ?? item.voteAverage;
-  const selectedEpisode = typeof episode === 'number' ? seasonData?.episodes.find((e) => e.episode_number === episode) : null;
+  const visibleEpisodes = seasonData?.episodes.filter((entry) => episode === 'season' || entry.episode_number === episode) ?? [];
   let language = detail?.language ?? '';
   try { if (language) language = new Intl.DisplayNames(['en'], { type: 'language' }).of(language) || language; } catch { /* Keep the supplied language if it is not a standard code. */ }
   const date = (raw: string | null | undefined) => {
@@ -200,12 +200,24 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
         {!seasonData && !seasonError && <p role="status" className="mt-4 text-sm text-white/50">Loading episodes…</p>}
         {seasonError && <p role="alert" className="mt-4 text-sm text-red-300">{seasonError}<button className="ml-3 underline" onClick={() => setRetry((v) => v + 1)}>Retry</button></p>}
         {scope.kind === 'season' && !scope.complete && <p className="mt-4 text-sm leading-relaxed text-white/55">A complete season could not be confirmed. Choose an episode for a quick action, or select a pack manually with Browse torrents.</p>}
-        {selectedEpisode && <div className="mt-5 flex items-start gap-5">
-          {selectedEpisode.still_path && <Artwork key={selectedEpisode.still_path} src={selectedEpisode.still_path} alt="" className="hidden aspect-video w-44 shrink-0 rounded-md md:block" />}
-          <div><h3 className="font-semibold">{selectedEpisode.episode_number}. {selectedEpisode.title}</h3><p className="mt-1 text-xs text-white/40">{[date(selectedEpisode.air_date), selectedEpisode.runtime ? `${selectedEpisode.runtime} min` : ''].filter(Boolean).join(' · ')}</p>
-            {selectedEpisode.overview && <p className="mt-3 text-sm leading-relaxed text-white/65">{selectedEpisode.overview}</p>}</div>
-        </div>}
         {episode === 'season' && seasonData && <p className="mt-4 text-sm text-white/60">Season {season} · {seasonData.episodes.length} episodes{seasonData.complete ? ' · Complete season confirmed' : ''}</p>}
+        {visibleEpisodes.length > 0 && (
+          <ul role="list" aria-label={`Season ${season} episodes`} className="mt-5 divide-y divide-white/10">
+            {visibleEpisodes.map((entry) => {
+              const details = [date(entry.air_date), entry.runtime ? `${entry.runtime} min` : ''].filter(Boolean).join(' · ');
+              return (
+                <li key={entry.episode_number} className="flex items-start gap-5 py-4 first:pt-0 last:pb-0">
+                  {entry.still_path && <Artwork key={entry.still_path} src={entry.still_path} alt="" className="hidden aspect-video w-44 shrink-0 rounded-md md:block" />}
+                  <div className="min-w-0">
+                    <h3 className="break-words font-semibold">{entry.episode_number}. {entry.title}</h3>
+                    {details && <p className="mt-1 text-xs text-white/40">{details}</p>}
+                    {entry.overview && <p className="mt-3 break-words text-sm leading-relaxed text-white/65">{entry.overview}</p>}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </section>}
       {!!people.length && <section aria-label="Cast" className="mt-9"><h2 className="mb-5 text-lg font-semibold">Cast</h2><div className="grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-5">
         {people.map((person) => <div key={person.id ?? person.name} className="min-w-0">{person.profile_path ? <Artwork src={person.profile_path} alt={person.name} className="aspect-[3/4] w-full rounded-lg" /> : <div className="flex aspect-[3/4] items-center justify-center rounded-lg bg-white/5"><UserRound className="h-12 w-12 text-white/20" /></div>}<p className="mt-2 truncate text-sm font-medium">{person.name}</p>{person.character && <p className="mt-1 truncate text-xs text-white/40">{person.character}</p>}</div>)}

@@ -53,6 +53,22 @@ it('uses the explicit selected episode and quality for a quick action', async ()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Stream 4K' }));
   await waitFor(() => expect(quickTorrent).toHaveBeenCalledWith(expect.objectContaining({ mode: 'stream', target: expect.objectContaining({ kind: 'episode', season: 1, episode: 2, quality: '4K' }) })));
 });
+
+it('lists every episode for Entire season while keeping the quick action scoped to the pack', async () => {
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  const picker = await screen.findByRole('button', { name: 'Choose episode or entire season' });
+  const episodes = within(screen.getByRole('list', { name: 'Season 1 episodes' }));
+  expect(episodes.getAllByRole('heading').map((heading) => heading.textContent)).toEqual(['1. Episode 1']);
+  fireEvent.click(picker);
+  fireEvent.click(screen.getByRole('option', { name: /Entire season/ }));
+  expect(episodes.getAllByRole('heading').map((heading) => heading.textContent)).toEqual(['1. Episode 1', '2. Episode 2']);
+  fireEvent.click(screen.getByRole('button', { name: /Quick stream/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Download 1080p' }));
+  expect(quickTorrent).toHaveBeenCalledWith(expect.objectContaining({
+    mode: 'download',
+    target: expect.objectContaining({ kind: 'season', season: 1, expected: [1, 2], complete: true, quality: '1080p' }),
+  }));
+});
 it('disables automatic season actions when completeness is uncertain', async () => {
   vi.mocked(tmdb.getCatalogSeason).mockResolvedValue({ complete: false, episodes: [] });
   render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
