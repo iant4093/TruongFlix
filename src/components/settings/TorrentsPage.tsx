@@ -122,6 +122,7 @@ export default function TorrentsPage() {
     }
     return { dl, ul, boundPort };
   }, [torrents]);
+  const hasActiveTransfers = torrents.some((t) => t.inSession);
 
   const filtered = useMemo(() => {
     return torrents.filter((t) => {
@@ -215,17 +216,17 @@ export default function TorrentsPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {(totals.dl > 0 || totals.ul > 0) && (
+            {hasActiveTransfers && (
               <div className="mr-1 flex items-center gap-2.5 rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs tabular-nums">
-                <span className="flex items-center gap-1 text-sky-300">
-                  <ArrowDown className="h-3 w-3" /> {formatSpeed(totals.dl)}
+                <span className="flex w-24 items-center gap-1 whitespace-nowrap text-sky-300">
+                  <ArrowDown className="h-3 w-3 shrink-0" /> {formatSpeed(totals.dl)}
                 </span>
-                <span className="flex items-center gap-1 text-emerald-300">
-                  <ArrowUp className="h-3 w-3" /> {formatSpeed(totals.ul)}
+                <span className="flex w-24 items-center gap-1 whitespace-nowrap text-emerald-300">
+                  <ArrowUp className="h-3 w-3 shrink-0" /> {formatSpeed(totals.ul)}
                 </span>
               </div>
             )}
-            {torrents.some((t) => t.inSession) && (
+            {hasActiveTransfers && (
               <>
                 <button type="button" onClick={() => void pauseAllTorrents()} className={BTN} title="Pause all active torrents">
                   <Pause className="h-3.5 w-3.5" /> Pause All
@@ -317,27 +318,27 @@ export default function TorrentsPage() {
                 </div>
 
                 {/* Live speed / peers / ETA / ratio */}
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-nf-muted">
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 tabular-nums">
-                    <span>
+                <div className="space-y-2 text-xs text-nf-muted">
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(7.5rem,1fr))] items-center gap-x-3 gap-y-1 tabular-nums">
+                    <span className="whitespace-nowrap">
                       {formatBytes(t.progressBytes)} / {t.totalBytes > 0 ? formatBytes(t.totalBytes) : '—'}
                     </span>
                     {!t.finished && t.inSession && !t.paused && (
                       <>
-                        <span className="text-sky-300">↓ {formatSpeed(t.downloadSpeedBps)}</span>
-                        <span>ETA {formatEta(t.etaSecs)}</span>
+                        <span className="whitespace-nowrap text-sky-300">↓ {formatSpeed(t.downloadSpeedBps)}</span>
+                        <span className="truncate" title={`ETA ${formatEta(t.etaSecs)}`}>ETA {formatEta(t.etaSecs)}</span>
                       </>
                     )}
                     {t.inSession && !t.paused && (
                       <>
-                        <span className="text-emerald-300">↑ {formatSpeed(t.uploadSpeedBps)}</span>
-                        <span>
+                        <span className="whitespace-nowrap text-emerald-300">↑ {formatSpeed(t.uploadSpeedBps)}</span>
+                        <span className="truncate">
                           Peers {t.peersLive}
                           {t.peersSeen > 0 ? ` (${t.peersSeen})` : ''}
                         </span>
                       </>
                     )}
-                    <span>Ratio {t.ratio.toFixed(2)}</span>
+                    <span className="truncate">Ratio {t.ratio.toFixed(2)}</span>
                   </div>
 
                   {!t.seedingStopped && (
