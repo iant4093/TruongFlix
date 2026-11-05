@@ -195,30 +195,44 @@ export default function Navbar() {
   );
 }
 
-/** One-click torrent action; transfer management lives in Settings › Torrents. */
+/** Add a torrent or jump straight to the transfer list while downloading. */
 function TorrentMenu() {
   const torrents = useLibraryStore((s) => s.torrents);
   const openAddTorrent = useLibraryStore((s) => s.openAddTorrent);
+  const openSettings = useLibraryStore((s) => s.setSettingsOpen);
   const activeDownloads = torrents.filter((t) => !t.finished && t.inSession && !t.paused && t.state !== 'error');
   const totalSpeed = activeDownloads.reduce((sum, t) => sum + (t.downloadSpeedBps || 0), 0);
+  const downloading = activeDownloads.length > 0;
 
   return (
-    <button
-      onClick={() => guardAdult(() => openAddTorrent())}
-      title="Add Magnet or .torrent"
-      aria-label="Add Magnet or .torrent"
-      className="flex items-center gap-1.5 text-sm text-[#e5e5e5] transition-colors hover:text-white"
-    >
-      <Magnet className={`h-5 w-5 ${activeDownloads.length > 0 ? 'text-sky-400' : ''}`} />
-      {activeDownloads.length > 0 && (
-        <span className="rounded-full bg-sky-500/20 px-1.5 py-[1px] text-[10px] font-bold tabular-nums text-sky-300">
-          {activeDownloads.length}
-        </span>
+    <div className="flex items-center gap-1.5 whitespace-nowrap text-sm text-[#e5e5e5]">
+      <button
+        type="button"
+        onClick={() => guardAdult(() => openAddTorrent())}
+        title="Add Magnet or .torrent"
+        aria-label="Add Magnet or .torrent"
+        className="flex items-center gap-1.5 transition-colors hover:text-white"
+      >
+        <Magnet className={`h-5 w-5 ${downloading ? 'text-sky-400' : ''}`} />
+        {!downloading && <span className="hidden xl:inline">Torrents</span>}
+      </button>
+      {downloading && (
+        <button
+          type="button"
+          onClick={() => guardAdult(() => openSettings(true, 'torrents'))}
+          title="View torrent transfers"
+          aria-label="View torrent transfers"
+          className="flex items-center gap-1.5 tabular-nums transition-colors hover:text-white"
+        >
+          <span className="rounded-full bg-sky-500/20 px-1.5 py-[1px] text-[10px] font-bold text-sky-300">
+            {activeDownloads.length}
+          </span>
+          <span className="hidden xl:inline">
+            {totalSpeed > 0 ? `↓ ${formatSpeed(totalSpeed)}` : 'Transfers'}
+          </span>
+        </button>
       )}
-      <span className="hidden tabular-nums xl:inline">
-        {totalSpeed > 0 ? `↓ ${formatSpeed(totalSpeed)}` : 'Torrents'}
-      </span>
-    </button>
+    </div>
   );
 }
 
