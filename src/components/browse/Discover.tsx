@@ -45,7 +45,7 @@ export default function Discover() {
   if (!allowed) return <div className="px-[4%] pt-32"><h1 className="text-4xl font-bold">Browse</h1><p className="mt-5 text-nf-secondary">Switch to an unrestricted profile to browse titles and torrent sources.</p></div>;
   if (!settings.tmdb_api_key) return <div className="px-[4%] pt-32"><h1 className="text-4xl font-bold">Browse</h1><p className="my-5 text-nf-secondary">Connect TMDB in Settings to discover movies and TV shows.</p><button className="nf-btn-red" onClick={() => useLibraryStore.getState().setSettingsOpen(true, 'ratings')}>Connect TMDB</button></div>;
   const featured = query.trim() ? [] : data.filter((item) => item.backdrop).slice(0, 5);
-  return <div className="pb-20 pt-[68px]">
+  return <div className="pb-20">
     {featured.length > 0 && <DiscoverHero
       key={`${profile.id}:${kind}:${list}`}
       titles={featured}
@@ -53,7 +53,7 @@ export default function Discover() {
       blocked={!!selected || sourceOpen}
       onSelect={setSelected}
     />}
-    <section className={`px-[4%] ${featured.length ? '' : 'pt-10'}`}>
+    <section className={`relative z-10 flow-root px-[4%] ${featured.length ? '-mt-32' : 'pt-[108px]'}`}>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <h2 className="text-3xl font-bold">Browse</h2>
         <button className="nf-btn-ghost text-sm" onClick={() => setSourceOpen(true)}><ShieldCheck className="h-4 w-4" />{settings.browse_source_url ? 'Source settings' : 'Add torrent source'}<Settings2 className="h-4 w-4" /></button>

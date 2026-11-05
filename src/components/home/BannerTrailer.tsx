@@ -1,10 +1,38 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import type { useBannerTrailer } from './useBannerTrailer';
 
 type Trailer = ReturnType<typeof useBannerTrailer>;
 
-export function TrailerLayer({ title, trailer }: { title: string; trailer: Trailer }) {
+export function BillboardMedia({ title, backdrop, trailer }: { title: string; backdrop: string | null; trailer: Trailer }) {
+  const [loadedBackdrop, setLoadedBackdrop] = useState<string | null>(null);
+  const loaded = backdrop === loadedBackdrop;
+  return (
+    <>
+      {backdrop && (
+        <motion.img
+          key={backdrop}
+          src={backdrop}
+          alt=""
+          draggable={false}
+          onLoad={() => setLoadedBackdrop(backdrop)}
+          initial={{ opacity: 0, scale: 1.04 }}
+          animate={{ opacity: loaded ? 1 : 0, scale: loaded ? 1 : 1.04 }}
+          transition={{ duration: 1.1, ease: 'easeOut' }}
+          className="absolute inset-0 h-full w-full object-cover object-top"
+        />
+      )}
+      <TrailerLayer title={title} trailer={trailer} />
+      <div className="pointer-events-none absolute inset-0"
+        style={{ background: 'linear-gradient(77deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 85%)' }} />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[45%]"
+        style={{ background: 'linear-gradient(180deg, rgba(20,20,20,0) 0%, rgba(20,20,20,0.6) 60%, #141414 100%)' }} />
+    </>
+  );
+}
+
+function TrailerLayer({ title, trailer }: { title: string; trailer: Trailer }) {
   const { source, active, muted, videoRef, audioRef, frameStyle } = trailer;
   if (!source) return null;
   return (

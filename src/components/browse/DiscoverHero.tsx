@@ -3,8 +3,7 @@ import { useReducedMotion } from 'framer-motion';
 import { ArrowRight, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
 import type { SearchResult } from '../../services/tmdb';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import Artwork from '../common/Artwork';
-import { TrailerControl, TrailerLayer } from '../home/BannerTrailer';
+import { BillboardMedia, TrailerControl } from '../home/BannerTrailer';
 import { useBannerTrailer, useBannerVisibility } from '../home/useBannerTrailer';
 
 const ARTWORK_DURATION = 12_000;
@@ -27,11 +26,11 @@ export default function DiscoverHero({ titles, label, blocked, onSelect }: {
   const move = useCallback((step: number) => setIndex((i) => (i + step + count) % count), [count]);
 
   return (
-    <section aria-label="Featured titles" className="relative flex min-h-[clamp(300px,48vh,550px)] items-end overflow-hidden px-[4%] pb-10 pt-8">
+    <section aria-label="Featured titles" className="nf-billboard">
       <FeaturedSlide key={`${item.kind}:${item.id}`} item={item} label={label} blocked={blocked}
         multiple={count > 1} rotating={rotating} move={move} onSelect={onSelect} />
       {count > 1 && (
-        <div className="absolute bottom-10 right-[4%] flex items-center gap-2" role="group" aria-label="Featured title controls">
+        <div className="nf-billboard-controls bottom-[calc(32%+3.5rem)] right-[4%] gap-2" role="group" aria-label="Featured title controls">
           <button className={navButton} aria-label={rotating ? 'Pause title rotation' : 'Resume title rotation'} onClick={() => setRotation(!rotating)}>
             {rotating ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
           </button>
@@ -72,17 +71,16 @@ function FeaturedSlide({ item, label, blocked, multiple, rotating, move, onSelec
 
   return (
     <>
-      <Artwork src={item.backdrop} alt="" eager className="absolute inset-0 h-full w-full object-top" />
-      <TrailerLayer title={item.title} trailer={trailer} />
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/85 via-black/30 to-transparent" />
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-nf-bg via-transparent to-transparent" />
-      <div ref={titleActions} className={`relative min-w-0 max-w-2xl ${multiple ? 'mr-48' : 'mr-14'}`}>
-        <p className="mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-white/65">{label}</p>
-        <h1 className="line-clamp-2 text-4xl font-bold leading-tight md:text-[clamp(2.25rem,4vw,3.75rem)]">{item.title}</h1>
-        {!trailer.active && item.overview && <p className="mt-4 line-clamp-2 max-w-xl text-base text-white/80">{item.overview}</p>}
-        <button className="nf-btn-play mt-5" onClick={() => onSelect(item)}>View title <ArrowRight className="h-5 w-5" /></button>
+      <BillboardMedia title={item.title} backdrop={item.backdrop} trailer={trailer} />
+      <div ref={titleActions} className="nf-billboard-copy">
+        <p className="text-shadow text-sm font-semibold uppercase tracking-[0.2em] text-white/75">{label}</p>
+        <h1 className="nf-billboard-title line-clamp-2 break-words">{item.title}</h1>
+        {!trailer.active && item.overview && <p className="nf-billboard-overview">{item.overview}</p>}
+        <div className="mt-1">
+          <button className="nf-btn-play text-lg" onClick={() => onSelect(item)}>View title <ArrowRight className="h-6 w-6" /></button>
+        </div>
       </div>
-      <div ref={trailerActions} className={`absolute right-[4%] ${multiple ? 'bottom-24' : 'bottom-10'}`}>
+      <div ref={trailerActions} className="nf-billboard-controls right-[4%]">
         <TrailerControl trailer={trailer} />
       </div>
     </>

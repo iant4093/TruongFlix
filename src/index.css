@@ -112,6 +112,21 @@ html.player-mode #app-shell {
     @apply font-semibold text-[#e5e5e5];
     font-size: clamp(0.95rem, 1.4vw, 1.5rem);
   }
+  .nf-billboard {
+    @apply relative h-[85vh] min-h-[520px] w-full overflow-hidden;
+  }
+  .nf-billboard-copy {
+    @apply absolute bottom-[28%] left-[4%] z-10 flex max-w-[40%] flex-col gap-4;
+  }
+  .nf-billboard-title {
+    @apply text-shadow text-[clamp(2.2rem,4.6vw,4.5rem)] font-black uppercase leading-[0.95] tracking-tight;
+  }
+  .nf-billboard-overview {
+    @apply text-shadow line-clamp-3 text-lg leading-snug text-white drop-shadow-lg;
+  }
+  .nf-billboard-controls {
+    @apply absolute bottom-[32%] right-0 z-10 flex items-center gap-3;
+  }
   .nf-btn-play {
     @apply inline-flex items-center justify-center gap-2 rounded bg-white px-7 py-2.5 font-semibold text-black transition-colors hover:bg-white/80;
   }
