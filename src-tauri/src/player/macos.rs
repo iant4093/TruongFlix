@@ -86,23 +86,46 @@ struct RenderState {
     pf: usize,  // its CGLPixelFormatObj
 }
 
-static RENDER: Mutex<RenderState> = Mutex::new(RenderState { mpv: 0, ctx: 0, cgl: 0, pf: 0 });
-/// The live layer (retained). The render thread holds this lock while drawing, so detach can't
-/// free the layer mid-frame.
-static LAYER: Mutex<usize> = Mutex::new(0);
-/// The hosting NSView (retained), touched on the main thread only.
-static VIEW: AtomicUsize = AtomicUsize::new(0);
-/// Set by mpv's update callback; the render thread waits on it.
-static REDRAW: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-
-unsafe extern "C" fn on_mpv_update(_ctx: *mut c_void) {
-    probe::UPDATES.fetch_add(1, Ordering::Relaxed);
-    request_redraw();
+struct Surface {
+    render: Mutex<RenderState>,
+    // The render thread holds this lock while drawing, so detach cannot free the layer mid-frame.
+    layer: Mutex<usize>,
+    // Retained NSView, touched only by the main thread.
+    view: AtomicUsize,
 }
 
-fn request_redraw() {
+impl Surface {
+    const fn new() -> Self {
+        Self {
+            render: Mutex::new(RenderState { mpv: 0, ctx: 0, cgl: 0, pf: 0 }),
+            layer: Mutex::new(0),
+            view: AtomicUsize::new(0),
+        }
+    }
+}
+
+static PRIMARY: Surface = Surface::new();
+static SECONDARY: Surface = Surface::new();
+
+unsafe fn surface_for_layer(layer: *mut AnyObject) -> &'static Surface {
+    if (*layer).class().name() == c"TruongFlixSecondaryVideoLayer" {
+        &SECONDARY
+    } else {
+        &PRIMARY
+    }
+}
+
+/// Set by mpv's update callback; the render thread waits on it.
+static REDRAW: (Mutex<u8>, Condvar) = (Mutex::new(0), Condvar::new());
+
+unsafe extern "C" fn on_mpv_update(ctx: *mut c_void) {
+    probe::UPDATES.fetch_add(1, Ordering::Relaxed);
+    request_redraw(ctx as usize as u8);
+}
+
+fn request_redraw(pane: u8) {
     let (flag, cv) = &REDRAW;
-    *flag.lock().unwrap() = true;
+    *flag.lock().unwrap() |= pane;
     cv.notify_one();
 }
 
@@ -116,22 +139,25 @@ fn ensure_render_thread() {
     std::thread::Builder::new()
         .name("mpv-render".into())
         .spawn(|| loop {
-            {
+            let redraw = {
                 let (flag, cv) = &REDRAW;
                 let mut pending = flag.lock().unwrap();
-                while !*pending {
+                while *pending == 0 {
                     pending = cv.wait(pending).unwrap();
                 }
-                *pending = false;
-            }
+                std::mem::take(&mut *pending)
+            };
             objc2::rc::autoreleasepool(|_| {
-                let layer = LAYER.lock().unwrap();
-                if *layer != 0 {
-                    unsafe {
-                        let _: () = msg_send![*layer as *mut AnyObject, display];
-                        let _: () = msg_send![class!(CATransaction), flush];
+                for (bit, surface) in [(1, &PRIMARY), (2, &SECONDARY)] {
+                    if redraw & bit == 0 { continue; }
+                    let layer = surface.layer.lock().unwrap();
+                    if *layer != 0 {
+                        unsafe {
+                            let _: () = msg_send![*layer as *mut AnyObject, display];
+                        }
                     }
                 }
+                unsafe { let _: () = msg_send![class!(CATransaction), flush]; }
             });
         })
         .expect("spawn render thread");
@@ -152,7 +178,7 @@ pub mod probe {
     pub static COLORS: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
 
     pub fn summary() -> String {
-        let window = super::VIEW.load(Ordering::Acquire) as *mut objc2::runtime::AnyObject;
+        let window = super::PRIMARY.view.load(Ordering::Acquire) as *mut objc2::runtime::AnyObject;
         let occlusion: usize = if window.is_null() {
             0
         } else {
@@ -227,22 +253,22 @@ unsafe fn choose_pixel_format(gl: &Gl) -> *mut c_void {
 }
 
 // The layer renders with *our* context, so the mpv render context can be created up front.
-unsafe extern "C-unwind" fn copy_pixel_format(_this: *mut AnyObject, _sel: Sel, _mask: u32) -> *mut c_void {
+unsafe extern "C-unwind" fn copy_pixel_format(this: *mut AnyObject, _sel: Sel, _mask: u32) -> *mut c_void {
     let Ok(gl) = gl() else { return std::ptr::null_mut() };
-    let pf = RENDER.lock().unwrap().pf as *mut c_void;
+    let pf = surface_for_layer(this).render.lock().unwrap().pf as *mut c_void;
     if pf.is_null() { choose_pixel_format(gl) } else { (gl.cgl_retain_pixel_format)(pf) }
 }
 
-unsafe extern "C-unwind" fn copy_context(_this: *mut AnyObject, _sel: Sel, _pf: *mut c_void) -> *mut c_void {
+unsafe extern "C-unwind" fn copy_context(this: *mut AnyObject, _sel: Sel, _pf: *mut c_void) -> *mut c_void {
     let Ok(gl) = gl() else { return std::ptr::null_mut() };
-    let cgl = RENDER.lock().unwrap().cgl as *mut c_void;
+    let cgl = surface_for_layer(this).render.lock().unwrap().cgl as *mut c_void;
     if cgl.is_null() { std::ptr::null_mut() } else { (gl.cgl_retain_context)(cgl) }
 }
 
-unsafe extern "C-unwind" fn draw(_this: *mut AnyObject, _sel: Sel, _cgl: *mut c_void, _pf: *mut c_void, _t: f64, _ts: *const c_void) {
+unsafe extern "C-unwind" fn draw(this: *mut AnyObject, _sel: Sel, _cgl: *mut c_void, _pf: *mut c_void, _t: f64, _ts: *const c_void) {
     probe::DRAWS.fetch_add(1, Ordering::Relaxed);
     let (Ok(gl), Ok(api)) = (gl(), mpv::api()) else { return };
-    let st = RENDER.lock().unwrap();
+    let st = surface_for_layer(this).render.lock().unwrap();
 
     let mut viewport = [0 as c_int; 4];
     (gl.get_integerv)(GL_VIEWPORT, viewport.as_mut_ptr());
@@ -267,13 +293,14 @@ unsafe extern "C-unwind" fn draw(_this: *mut AnyObject, _sel: Sel, _cgl: *mut c_
     (gl.flush)();
 }
 
-fn layer_class() -> Result<&'static AnyClass, String> {
-    static CLASS: OnceLock<usize> = OnceLock::new();
-    let ptr = *CLASS.get_or_init(|| unsafe {
+fn layer_class(secondary: bool) -> Result<&'static AnyClass, String> {
+    static CLASSES: [OnceLock<usize>; 2] = [OnceLock::new(), OnceLock::new()];
+    let name = if secondary { c"TruongFlixSecondaryVideoLayer" } else { c"TruongFlixVideoLayer" };
+    let ptr = *CLASSES[usize::from(secondary)].get_or_init(|| unsafe {
         let Some(superclass) = AnyClass::get(c"CAOpenGLLayer") else { return 0 };
-        let cls = ffi::objc_allocateClassPair(superclass, c"TruongFlixVideoLayer".as_ptr(), 0);
+        let cls = ffi::objc_allocateClassPair(superclass, name.as_ptr(), 0);
         if cls.is_null() {
-            return AnyClass::get(c"TruongFlixVideoLayer").map(|c| c as *const AnyClass as usize).unwrap_or(0);
+            return AnyClass::get(name).map(|c| c as *const AnyClass as usize).unwrap_or(0);
         }
         // Registered through the raw runtime so CGL/CVTimeStamp pointer types need no Encode impls.
         let add = |name: Sel, imp: Imp, types: &CStr| {
@@ -340,7 +367,21 @@ fn view_class() -> Result<&'static AnyClass, String> {
 /// Switches between the full-window surface (below the page) and the mini-player (a small
 /// rectangle floating above the page). `rect` is in CSS pixels from the top-left. Main thread only.
 pub fn set_layout(mini: Option<(f64, f64, f64, f64)>, viewport: Option<(f64, f64)>) {
-    let view = VIEW.load(Ordering::Acquire) as *mut AnyObject;
+    layout_surface(&PRIMARY, mini, viewport, true);
+}
+
+pub fn set_multiview(primary: super::MiniRect, secondary: super::MiniRect) {
+    layout_surface(&PRIMARY, Some(primary.coords()), primary.viewport(), false);
+    layout_surface(&SECONDARY, Some(secondary.coords()), secondary.viewport(), false);
+}
+
+fn layout_surface(
+    surface: &Surface,
+    rect: Option<(f64, f64, f64, f64)>,
+    viewport: Option<(f64, f64)>,
+    above: bool,
+) {
+    let view = surface.view.load(Ordering::Acquire) as *mut AnyObject;
     if view.is_null() {
         return;
     }
@@ -352,7 +393,7 @@ pub fn set_layout(mini: Option<(f64, f64, f64, f64)>, viewport: Option<(f64, f64
         let bounds: NSRect = msg_send![content, bounds];
         let webview = find_webview(content);
         let _: () = msg_send![view, removeFromSuperview];
-        match mini {
+        match rect {
             Some((x, y, w, h)) => {
                 // CSS coordinates start at the webview, which can be inset below the title bar.
                 // Convert through NSView instead of treating the content view as the same origin.
@@ -371,8 +412,8 @@ pub fn set_layout(mini: Option<(f64, f64, f64, f64)>, viewport: Option<(f64, f64
                 let frame: NSRect = msg_send![content, convertRect: local, fromView: origin];
                 let _: () = msg_send![view, setAutoresizingMask: 0usize];
                 let _: () = msg_send![view, setFrame: frame];
-                // NSWindowAbove = 1
-                let _: () = msg_send![content, addSubview: view, positioned: 1isize, relativeTo: webview];
+                let order = if above { 1isize } else { -1isize };
+                let _: () = msg_send![content, addSubview: view, positioned: order, relativeTo: webview];
             }
             None => {
                 let _: () = msg_send![view, setFrame: bounds];
@@ -381,7 +422,7 @@ pub fn set_layout(mini: Option<(f64, f64, f64, f64)>, viewport: Option<(f64, f64
             }
         }
     }
-    request_redraw();
+    request_redraw(if std::ptr::eq(surface, &PRIMARY) { 1 } else { 2 });
 }
 
 // --- Attach / detach (main thread only) --------------------------------------------------------
@@ -404,9 +445,29 @@ fn find_webview(content: *mut AnyObject) -> *mut AnyObject {
 /// Draws once synchronously so the render context exists before any file is loaded (otherwise
 /// mpv's video init would fail).
 pub fn attach(ns_window: *mut c_void, handle: *mut mpv::Handle) -> Result<(), String> {
-    detach();
-    let cls = layer_class()?;
+    attach_surface(ns_window, handle, false, None)
+}
+
+pub fn attach_secondary(ns_window: *mut c_void, handle: *mut mpv::Handle) -> Result<(), String> {
+    attach_surface(ns_window, handle, true, Some(NSRect::default()))
+}
+
+fn attach_surface(
+    ns_window: *mut c_void,
+    handle: *mut mpv::Handle,
+    secondary: bool,
+    initial_frame: Option<NSRect>,
+) -> Result<(), String> {
+    let surface = if secondary { &SECONDARY } else { &PRIMARY };
+    detach(surface);
+    let cls = layer_class(secondary)?;
+    let view_class = view_class()?;
     let (gl, api) = (gl()?, mpv::api()?);
+    let window = ns_window as *mut AnyObject;
+    let content: *mut AnyObject = unsafe { msg_send![window, contentView] };
+    if content.is_null() {
+        return Err("Window has no content view".into());
+    }
 
     // Our own GL context + the mpv render context, created before the layer ever draws.
     unsafe {
@@ -434,16 +495,11 @@ pub fn attach(ns_window: *mut c_void, handle: *mut mpv::Handle) -> Result<(), St
             (gl.cgl_release_pixel_format)(pf);
             return Err(format!("Couldn’t create the video renderer: {}", api.err(rc)));
         }
-        *RENDER.lock().unwrap() = RenderState { mpv: handle as usize, ctx: ctx as usize, cgl: cgl as usize, pf: pf as usize };
+        *surface.render.lock().unwrap() = RenderState { mpv: handle as usize, ctx: ctx as usize, cgl: cgl as usize, pf: pf as usize };
     }
 
     unsafe {
-        let window = ns_window as *mut AnyObject;
-        let content: *mut AnyObject = msg_send![window, contentView];
-        if content.is_null() {
-            return Err("Window has no content view".into());
-        }
-        let bounds: NSRect = msg_send![content, bounds];
+        let bounds: NSRect = initial_frame.unwrap_or_else(|| msg_send![content, bounds]);
         let scale: f64 = msg_send![window, backingScaleFactor];
 
         let layer: Retained<AnyObject> = msg_send![cls, new];
@@ -451,12 +507,13 @@ pub fn attach(ns_window: *mut c_void, handle: *mut mpv::Handle) -> Result<(), St
         let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: true];
         let _: () = msg_send![&*layer, setContentsScale: scale];
 
-        let view: Allocated<AnyObject> = msg_send![view_class()?, alloc];
+        let view: Allocated<AnyObject> = msg_send![view_class, alloc];
         let view: Retained<AnyObject> = msg_send![view, initWithFrame: bounds];
         let _: () = msg_send![&*view, setLayer: &*layer];
         let _: () = msg_send![&*view, setWantsLayer: true];
         // NSViewWidthSizable | NSViewHeightSizable
-        let _: () = msg_send![&*view, setAutoresizingMask: 18usize];
+        let mask = if secondary { 0usize } else { 18usize };
+        let _: () = msg_send![&*view, setAutoresizingMask: mask];
 
         let webview = find_webview(content);
         if !webview.is_null() {
@@ -485,11 +542,12 @@ pub fn attach(ns_window: *mut c_void, handle: *mut mpv::Handle) -> Result<(), St
 
         let _: () = msg_send![&*layer, setNeedsDisplay];
         // Keep our own references; released in detach() after the render context is gone.
-        *LAYER.lock().unwrap() = Retained::into_raw(layer) as usize;
-        VIEW.store(Retained::into_raw(view) as usize, Ordering::Release);
+        *surface.layer.lock().unwrap() = Retained::into_raw(layer) as usize;
+        surface.view.store(Retained::into_raw(view) as usize, Ordering::Release);
         ensure_render_thread();
-        let ctx = RENDER.lock().unwrap().ctx as *mut mpv::RenderContext;
-        (api.render_context_set_update_callback)(ctx, Some(on_mpv_update), std::ptr::null_mut());
+        let ctx = surface.render.lock().unwrap().ctx as *mut mpv::RenderContext;
+        let redraw = if secondary { 2 } else { 1 };
+        (api.render_context_set_update_callback)(ctx, Some(on_mpv_update), redraw as *mut c_void);
     }
     Ok(())
 }
@@ -540,19 +598,21 @@ pub fn pump(seconds: f64) -> String {
 
 /// Detaches only if the surface still belongs to `handle` (a newer session may have replaced it).
 pub fn detach_for(handle: usize) {
-    if RENDER.lock().unwrap().mpv == handle {
-        detach();
+    for surface in [&PRIMARY, &SECONDARY] {
+        if surface.render.lock().unwrap().mpv == handle {
+            detach(surface);
+        }
     }
 }
 
 /// Frees the render context (with its GL context current) and removes the view. Main thread only.
 /// Must happen before the mpv core is destroyed.
-fn detach() {
+fn detach(surface: &Surface) {
     let Ok(api) = mpv::api() else { return };
     // Taking the lock waits for any in-flight frame on the render thread to finish.
-    let layer = std::mem::take(&mut *LAYER.lock().unwrap()) as *mut AnyObject;
+    let layer = std::mem::take(&mut *surface.layer.lock().unwrap()) as *mut AnyObject;
     {
-        let mut st = RENDER.lock().unwrap();
+        let mut st = surface.render.lock().unwrap();
         if let Ok(gl) = gl() {
             unsafe {
                 if st.ctx != 0 {
@@ -570,7 +630,7 @@ fn detach() {
         }
         *st = RenderState::default();
     }
-    let view = VIEW.swap(0, Ordering::AcqRel) as *mut AnyObject;
+    let view = surface.view.swap(0, Ordering::AcqRel) as *mut AnyObject;
     unsafe {
         if !view.is_null() {
             let _: () = msg_send![view, removeFromSuperview];

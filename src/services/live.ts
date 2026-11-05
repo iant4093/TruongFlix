@@ -2,7 +2,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 import { readLiveData, writeLiveData } from './db';
 import { useLibraryStore } from '../store/useLibraryStore';
-import type { ChannelHealth, LiveChannel, LivePlaylist, LivePreferences, SportsEvent } from '../types/live';
+import type { ChannelHealth, LiveChannel, LiveMultiviewState, LivePlaylist, LivePreferences, SportsEvent } from '../types/live';
 
 export const LEAGUES = [
   ['football/nfl', 'NFL'],
@@ -37,6 +37,7 @@ interface LiveState {
   checked: number;
   total: number;
   playbackError: string;
+  multiviewState: LiveMultiviewState | null;
   set: (patch: Partial<LiveState>) => void;
 }
 export const useLiveStore = create<LiveState>((set) => ({
@@ -48,6 +49,7 @@ export const useLiveStore = create<LiveState>((set) => ({
   checked: 0,
   total: 0,
   playbackError: '',
+  multiviewState: null,
   set,
 }));
 
@@ -179,6 +181,23 @@ export interface ChannelMatch {
   playlist: LivePlaylist;
   channel: LiveChannel;
   key: string;
+}
+
+export interface LiveFeed {
+  match: ChannelMatch;
+  event?: SportsEvent;
+}
+
+export function sameLiveFeed(a: ChannelMatch, b: ChannelMatch) {
+  const first = a.channel.transport;
+  const second = b.channel.transport;
+  return first.url === second.url && first.referrer === second.referrer && first.userAgent === second.userAgent;
+}
+
+export function findLiveChannel(playlistId: string, id: string): ChannelMatch | undefined {
+  const playlist = useLiveStore.getState().playlists.find((p) => p.id === playlistId);
+  const channel = playlist?.channels.find((c) => c.id === id);
+  if (playlist && channel) return { playlist, channel, key: channelKey(playlistId, id) };
 }
 export const eventMappingKey = (event: SportsEvent) =>
   event.broadcasts.length ? event.broadcasts.map(broadcasterKey).sort().join('|') : `event:${event.id}`;

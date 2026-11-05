@@ -25,6 +25,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 /// The video popup and the main window it is attached to (as integers so they're `Send`).
 static VIDEO: AtomicIsize = AtomicIsize::new(0);
+static SECONDARY: AtomicIsize = AtomicIsize::new(0);
+static MULTIVIEW: Mutex<Option<(super::MiniRect, super::MiniRect)>> = Mutex::new(None);
 static MAIN: AtomicIsize = AtomicIsize::new(0);
 /// Mini-player rectangle in CSS pixels relative to the main window's client area.
 static MINI: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
@@ -82,27 +84,10 @@ pub fn attach(main_hwnd: isize) -> Result<isize, String> {
     release();
     destroy();
     *MINI.lock().unwrap() = None;
+    *MULTIVIEW.lock().unwrap() = None;
     unsafe {
         let main = main_hwnd as HWND;
-        let r = client_rect_on_screen(main);
-        let title = wide("TruongFlix Video");
-        let video = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            class_name().as_ptr(),
-            title.as_ptr(),
-            WS_POPUP | WS_CLIPCHILDREN,
-            r.left,
-            r.top,
-            (r.right - r.left).max(1),
-            (r.bottom - r.top).max(1),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            GetModuleHandleW(std::ptr::null()),
-            std::ptr::null(),
-        );
-        if video.is_null() {
-            return Err("Couldn’t create the video window".into());
-        }
+        let video = create_popup(client_rect_on_screen(main))?;
         VIDEO.store(video as isize, Ordering::Release);
         MAIN.store(main_hwnd, Ordering::Release);
         // Owned windows normally lose their taskbar button; keep TruongFlix in the taskbar.
@@ -113,6 +98,67 @@ pub fn attach(main_hwnd: isize) -> Result<isize, String> {
         sync();
         Ok(video as isize)
     }
+}
+
+unsafe fn create_popup(rect: RECT) -> Result<HWND, String> {
+    let title = wide("TruongFlix Video");
+    let video = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        class_name().as_ptr(),
+        title.as_ptr(),
+        WS_POPUP | WS_CLIPCHILDREN,
+        rect.left,
+        rect.top,
+        (rect.right - rect.left).max(1),
+        (rect.bottom - rect.top).max(1),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        GetModuleHandleW(std::ptr::null()),
+        std::ptr::null(),
+    );
+    if video.is_null() {
+        Err("Couldn’t create the video window".into())
+    } else {
+        Ok(video)
+    }
+}
+
+pub fn attach_secondary() -> Result<isize, String> {
+    unsafe {
+        let main = MAIN.load(Ordering::Acquire) as HWND;
+        if main.is_null() {
+            return Err("No active video window".into());
+        }
+        let client = client_rect_on_screen(main);
+        let pane = create_popup(RECT { right: client.left + 1, bottom: client.top + 1, ..client })?;
+        SECONDARY.store(pane as isize, Ordering::Release);
+        apply_ownership(false);
+        Ok(pane as isize)
+    }
+}
+
+/// Hides a retired pane and removes it from the main window's ownership chain.
+pub fn release_secondary() {
+    let secondary = SECONDARY.swap(0, Ordering::AcqRel) as HWND;
+    if !secondary.is_null() {
+        unsafe {
+            apply_ownership(false);
+            ShowWindow(secondary, SW_HIDE);
+        }
+    }
+}
+
+pub fn destroy_secondary(pane: isize) {
+    if pane != 0 {
+        unsafe { DestroyWindow(pane as HWND); }
+    }
+}
+
+pub fn set_multiview(primary: super::MiniRect, secondary: super::MiniRect) {
+    *MULTIVIEW.lock().unwrap() = Some((primary, secondary));
+    *MINI.lock().unwrap() = None;
+    unsafe { apply_ownership(false); }
+    sync();
 }
 
 /// Full-window: the popup owns the main window (UI above video).
@@ -126,7 +172,8 @@ unsafe fn apply_ownership(mini: bool) {
         SetWindowLongPtrW(main, GWLP_HWNDPARENT, 0);
         SetWindowLongPtrW(video, GWLP_HWNDPARENT, main as isize);
     } else {
-        SetWindowLongPtrW(video, GWLP_HWNDPARENT, 0);
+        // The main window stays above both video popups.
+        SetWindowLongPtrW(video, GWLP_HWNDPARENT, SECONDARY.load(Ordering::Acquire));
         SetWindowLongPtrW(main, GWLP_HWNDPARENT, video as isize);
     }
 }
@@ -134,6 +181,7 @@ unsafe fn apply_ownership(mini: bool) {
 /// Switches between full-window and mini-player (`rect` in CSS pixels). Main thread only.
 pub fn set_layout(mini: Option<(f64, f64, f64, f64)>) {
     *MINI.lock().unwrap() = mini;
+    *MULTIVIEW.lock().unwrap() = None;
     unsafe { apply_ownership(mini.is_some()) };
     sync();
 }
@@ -145,11 +193,22 @@ pub fn sync() {
         return;
     }
     unsafe {
+        let secondary = SECONDARY.load(Ordering::Acquire) as HWND;
         if IsIconic(main) != 0 {
             ShowWindow(video, SW_HIDE);
+            if !secondary.is_null() {
+                ShowWindow(secondary, SW_HIDE);
+            }
             return;
         }
         let client = client_rect_on_screen(main);
+        if let Some((left, right)) = *MULTIVIEW.lock().unwrap() {
+            position_pane(video, main, main, client, left);
+            if !secondary.is_null() {
+                position_pane(secondary, video, main, client, right);
+            }
+            return;
+        }
         let mini = *MINI.lock().unwrap();
         let (x, y, w, h, insert_after) = match mini {
             Some((mx, my, mw, mh)) => {
@@ -167,6 +226,23 @@ pub fn sync() {
         };
         SetWindowPos(video, insert_after, x, y, w.max(1), h.max(1), SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
+}
+
+unsafe fn position_pane(pane: HWND, after: HWND, main: HWND, client: RECT, rect: super::MiniRect) {
+    let dpi = GetDpiForWindow(main).max(96) as f64 / 96.0;
+    let (sx, sy) = rect.viewport().map(|(vw, vh)| (
+        (client.right - client.left) as f64 / vw,
+        (client.bottom - client.top) as f64 / vh,
+    )).unwrap_or((dpi, dpi));
+    let (x, y, w, h) = rect.coords();
+    SetWindowPos(
+        pane, after,
+        client.left + (x * sx).round() as i32,
+        client.top + (y * sy).round() as i32,
+        (w * sx).round().max(1.0) as i32,
+        (h * sy).round().max(1.0) as i32,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
 }
 
 /// Detaches the UI from the video popup and hides it (playback is stopping). Main thread only.

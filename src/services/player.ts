@@ -17,8 +17,8 @@ import type {
   SubtitleStyle,
 } from '../types/media';
 import { getSelectedSubtitlePath, logLiveViewing, logWatchTime, recordProgress } from './db';
-import { useLiveStore, verifiedChannel, type ChannelMatch } from './live';
-import type { LivePlayerSession, SportsEvent } from '../types/live';
+import { findLiveChannel, sameLiveFeed, useLiveStore, verifiedChannel, type ChannelMatch, type LiveFeed } from './live';
+import type { LiveMultiviewState, LivePlayerSession, SportsEvent } from '../types/live';
 import { parseMediaInfo } from './mediainfo';
 import { ensureReachable } from './nas';
 import { blockedMessage, formatLeft, limitStatus } from './limits';
@@ -472,8 +472,25 @@ async function flushLiveTime() {
   if (profile != null && seconds > 0) await logLiveViewing(profile, seconds).catch(() => {});
 }
 
+function countLiveTime(playing: boolean) {
+  const profile = useLibraryStore.getState().activeProfile?.id;
+  const now = Date.now();
+  if (playing && profile != null) {
+    if (liveTick?.profile === profile) liveSeconds += Math.min(1, (now - liveTick.wall) / 1000);
+    liveTick = { profile, wall: now };
+  } else if (liveTick) liveTick.wall = now;
+  if (now - lastSave > 5000) {
+    lastSave = now;
+    void flushLiveTime();
+  }
+}
+
+function playingLive(state: BuiltinPlayerState | LiveMultiviewState | null) {
+  return !!state?.loaded && !state.paused && !state.buffering && !('eof' in state ? state.eof : state.failed);
+}
+
 /** Live sessions share the native renderer without library resume points or episode policy. */
-export async function playLive(match: ChannelMatch, event?: SportsEvent, channels?: ChannelMatch[]) {
+export async function playLive(match: ChannelMatch, event?: SportsEvent, channels?: ChannelMatch[], second?: LiveFeed) {
   const store = useLibraryStore.getState();
   const limit = await limitStatus(store.activeProfile, liveSeconds + pendingSeconds);
   if (limit.blocked) return store.toast(blockedMessage(store.activeProfile!, limit.blocked), 'error');
@@ -487,15 +504,23 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   await saveBuiltinProgress();
   await flushWatchTime();
   await flushLiveTime();
+  if (store.activeProfile?.id !== useLibraryStore.getState().activeProfile?.id) return;
   tick = null;
   liveTick = null;
   noteUserActivity();
   if (store.sleepTimer?.mode === 'episode') setSleepTimer(null);
   const generation = ++openGeneration;
-  useLiveStore.setState({ playbackError: '' });
+  useLiveStore.setState({ playbackError: '', multiviewState: null });
   const loadId = crypto.randomUUID();
   const session: LivePlayerSession = {
     event,
+    ...(second && { multiview: {
+      playlistId: second.match.playlist.id,
+      id: second.match.channel.id,
+      title: second.match.channel.name,
+      subtitle: second.event?.name ?? second.match.playlist.name,
+      event: second.event,
+    } }),
     channels: channels?.map((m) => ({ playlistId: m.playlist.id, id: m.channel.id })),
     loadId,
     target: { type: 'live', id: match.channel.id, playlistId: match.playlist.id, label: match.channel.name },
@@ -508,6 +533,7 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
     nextLabel: null,
   };
   store.setPlayerSession(session);
+  if (second) store.setPlayerMini(false);
   store.setPlayerState(null);
   store.setPlayerTracks([]);
   store.setPlayerChapters([]);
@@ -532,7 +558,7 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
     if (generation !== openGeneration) return;
     startOutputWatch();
     void syncOutput(true);
-    await invoke('player_layout', { rect: store.playerMini ? miniRect() : null });
+    if (!second) await invoke('player_layout', { rect: useLibraryStore.getState().playerMini ? miniRect() : null });
   } catch {
     if (generation === openGeneration) {
       useLiveStore.setState({ playbackError: 'This channel could not start.' });
@@ -541,9 +567,46 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   }
 }
 
+export async function playLiveMultiview(first: LiveFeed, second: LiveFeed) {
+  const left = findLiveChannel(first.match.playlist.id, first.match.channel.id);
+  const right = findLiveChannel(second.match.playlist.id, second.match.channel.id);
+  if (!left || !right || sameLiveFeed(left, right)) {
+    return useLibraryStore.getState().toast('Choose two different available channels for multiview.', 'info');
+  }
+  await playLive(left, first.event, undefined, { match: right, event: second.event });
+}
+
+export function watchLivePane(session: LivePlayerSession, second: boolean) {
+  const pane = second ? session.multiview : session.target;
+  const match = pane && findLiveChannel(pane.playlistId, pane.id);
+  if (!match) return useLibraryStore.getState().toast('This channel is no longer in your playlists.', 'info');
+  return playLive(match, second ? session.multiview?.event : session.event);
+}
+
+export async function retryLiveMultiview(session: LivePlayerSession) {
+  const first = findLiveChannel(session.target.playlistId, session.target.id);
+  const second = session.multiview && findLiveChannel(session.multiview.playlistId, session.multiview.id);
+  if (first && second) await playLive(first, session.event, undefined, { match: second, event: session.multiview?.event });
+  else useLibraryStore.getState().toast('A channel is no longer in your playlists.', 'info');
+}
+
+type PaneRect = ReturnType<typeof miniRect>;
+export type MultiviewLayout = { left: PaneRect; right: PaneRect };
+
+export async function openLiveMultiviewPane(session: LivePlayerSession, paneId: string, layout: MultiviewLayout) {
+  const target = session.multiview;
+  const match = target && findLiveChannel(target.playlistId, target.id);
+  if (!match) throw new Error('This channel is no longer in your playlists.');
+  await openQueue;
+  if (useLibraryStore.getState().playerSession?.loadId !== session.loadId) return;
+  useLiveStore.setState({ multiviewState: null });
+  await invoke('player_multiview_open', { loadId: session.loadId, paneId, source: match.channel.transport, ...layout });
+}
+
 export async function retuneLive(direction = 0) {
   const session = useLibraryStore.getState().playerSession;
   if (session?.target.type !== 'live') return;
+  if ('multiview' in session && session.multiview) return;
   const target = session.target;
   const sources = useLiveStore.getState().playlists;
   const playlist = sources.find((p) => p.id === target.playlistId);
@@ -625,6 +688,7 @@ function finishSession(reload = true) {
   store.setPlayerSession(null);
   store.setPlayerState(null);
   store.setPlayerTracks([]);
+  useLiveStore.setState({ multiviewState: null });
   if (enteredFullscreen) {
     enteredFullscreen = false;
     void getCurrentWindow().setFullscreen(false);
@@ -672,7 +736,10 @@ export function stopForSleep() {
 
 async function pauseForPrompt(prompt: 'still-watching' | 'sleep-ended' | 'limit' | 'bedtime') {
   const store = useLibraryStore.getState();
-  if (store.playerState && !store.playerState.paused && !store.playerState.eof) await playerSet('pause', 'yes').catch(() => {});
+  if ((store.playerState && !store.playerState.paused && !store.playerState.eof) ||
+      (store.playerSession && 'multiview' in store.playerSession && store.playerSession.multiview)) {
+    await playerSet('pause', 'yes').catch(() => {});
+  }
   store.setPlayerPrompt(prompt);
 }
 
@@ -687,7 +754,7 @@ export function dismissPrompt() {
     const next = pendingNext;
     pendingNext = null;
     void playBuiltin(next);
-  } else if (store.playerState?.eof) {
+  } else if (store.playerState?.eof && !(store.playerSession && 'multiview' in store.playerSession && store.playerSession.multiview)) {
     void closeBuiltin();
   } else {
     void playerSet('pause', 'no');
@@ -872,17 +939,13 @@ export async function initPlayerEvents() {
       if (payload.load_id && payload.load_id !== store.playerSession.loadId) return;
       store.setPlayerState(payload);
       if (store.playerSession.target.type === 'live') {
-        const profile = store.activeProfile?.id;
-        const now = Date.now();
-        if (payload.loaded && !payload.paused && !payload.buffering && !payload.eof && profile != null) {
+        if (playingLive(payload)) {
           if (payload.time > 1 && useLiveStore.getState().playbackError) useLiveStore.setState({ playbackError: '' });
-          if (liveTick?.profile === profile) liveSeconds += Math.min(1, (now - liveTick.wall) / 1000);
-          liveTick = { profile, wall: now };
           const target = store.playerSession.target;
           const health = useLiveStore.getState().playlists.find((p) => p.id === target.playlistId)?.health[target.id];
           if (payload.time > 1 && health?.state !== 'verified') verifiedChannel(target.playlistId, target.id);
-        } else if (liveTick) liveTick.wall = now;
-        if (Date.now() - lastSave > 5000) { lastSave = Date.now(); void flushLiveTime(); }
+        }
+        countLiveTime(playingLive(payload) || playingLive(useLiveStore.getState().multiviewState));
         return;
       }
       if (payload.loaded && !payload.paused) countWatchTime(store.playerSession.target.type, store.playerSession.target.id, payload.time, payload.speed);
@@ -891,6 +954,13 @@ export async function initPlayerEvents() {
         lastSave = Date.now();
         void saveBuiltinProgress();
         void flushWatchTime();
+      }
+    }),
+    listen<LiveMultiviewState>('player-multiview-state', ({ payload }) => {
+      const { playerSession: session, playerState } = useLibraryStore.getState();
+      if (session?.loadId === payload.loadId && 'multiview' in session && session.multiview) {
+        useLiveStore.setState({ multiviewState: payload });
+        countLiveTime(playingLive(playerState) || playingLive(payload));
       }
     }),
     listen<string>('player-tracks', ({ payload }) => {
@@ -925,7 +995,8 @@ export async function initPlayerEvents() {
       const store = useLibraryStore.getState();
       if (!store.settings.pause_on_lock) return;
       const why = payload.reason === 'lock' ? 'the screen locked' : payload.reason === 'sleep' ? 'the computer went to sleep' : 'the display went to sleep';
-      if (store.playerSession && store.playerState && !store.playerState.paused) {
+      if (store.playerSession && ((store.playerState && !store.playerState.paused) ||
+          ('multiview' in store.playerSession && store.playerSession.multiview))) {
         void playerSet('pause', 'yes');
         store.toast(`Paused because ${why}`, 'info');
       } else if (store.playback.active) {

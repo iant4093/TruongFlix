@@ -4,6 +4,7 @@
 //! `mpv_render_*`; every other libmpv call happens on async-runtime or event-loop threads.
 
 pub(crate) mod mpv;
+pub(crate) mod multiview;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
@@ -31,6 +32,7 @@ struct Session {
     pending_subtitle: Option<String>,
     load_id: String,
     expected_path: String,
+    live: bool,
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -389,6 +391,7 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
         }
     }
 
+    multiview::primary_exited(&app, handle_addr);
     // macOS: the render context must be gone before the core is destroyed.
     #[cfg(target_os = "macos")]
     let _ = on_main(&app, move || macos::detach_for(handle_addr));
@@ -442,6 +445,7 @@ pub async fn player_open(
     let _lifecycle = LIFECYCLE.lock().unwrap();
 
     let existing = SESSION.lock().unwrap().as_ref().filter(|s| !s.closing).map(|s| s.handle);
+    multiview::stop(&app, existing);
     let h = match existing {
         Some(addr) => {
             let h = addr as *mut mpv::Handle;
@@ -449,6 +453,7 @@ pub async fn player_open(
                 s.pending_subtitle = subtitle.clone();
                 s.load_id = load_id.clone().unwrap_or_default();
                 s.expected_path = file_path.clone();
+                s.live = live_source.is_some();
             }
             h
         }
@@ -474,7 +479,7 @@ pub async fn player_open(
                 }
             };
             let addr = h as usize;
-            *SESSION.lock().unwrap() = Some(Session { handle: addr, closing: false, pending_subtitle: subtitle.clone(), load_id: load_id.unwrap_or_default(), expected_path: file_path.clone() });
+            *SESSION.lock().unwrap() = Some(Session { handle: addr, closing: false, pending_subtitle: subtitle.clone(), load_id: load_id.unwrap_or_default(), expected_path: file_path.clone(), live: live_source.is_some() });
 
             #[cfg(target_os = "macos")]
             {
@@ -598,6 +603,17 @@ pub struct MiniRect {
     viewport_height: Option<f64>,
 }
 
+impl MiniRect {
+    fn coords(self) -> (f64, f64, f64, f64) {
+        (self.x, self.y, self.w, self.h)
+    }
+
+    fn viewport(self) -> Option<(f64, f64)> {
+        self.viewport_width.zip(self.viewport_height)
+            .filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0)
+    }
+}
+
 /// Full-window video (`rect` = null) or a mini-player at `rect` (CSS pixels, top-left origin).
 #[tauri::command]
 pub async fn player_layout(app: AppHandle, rect: Option<MiniRect>) -> Result<(), String> {
@@ -618,17 +634,27 @@ pub async fn player_layout(app: AppHandle, rect: Option<MiniRect>) -> Result<(),
 #[tauri::command]
 pub async fn player_command(args: Vec<String>) -> Result<(), String> {
     let api = mpv::api()?;
+    let _lifecycle = LIFECYCLE.lock().unwrap();
     let h = current_handle()?;
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    api.command(h, &refs)
+    api.command(h, &refs)?;
+    if refs.as_slice() == ["cycle", "pause"] {
+        if let Some(pause) = api.get_property(h, "pause") {
+            multiview::mirror(api, "pause", &pause);
+        }
+    }
+    Ok(())
 }
 
 /// Sets an mpv property, e.g. `volume` = `"80"` or `sid` = `"2"`.
 #[tauri::command]
 pub async fn player_set(name: String, value: String) -> Result<(), String> {
     let api = mpv::api()?;
+    let _lifecycle = LIFECYCLE.lock().unwrap();
     let h = current_handle()?;
-    api.set_property(h, &name, &value)
+    api.set_property(h, &name, &value)?;
+    multiview::mirror(api, &name, &value);
+    Ok(())
 }
 
 /// Stops playback and tears the core down (the event loop emits `player-closed` when done).
@@ -646,6 +672,7 @@ pub async fn player_close(app: AppHandle) -> Result<(), String> {
             _ => return Ok(()),
         }
     };
+    multiview::stop(&app, None);
     #[cfg(target_os = "macos")]
     on_main(&app, move || macos::detach_for(addr))?;
     // Windows: give the UI back immediately; the window itself is destroyed after mpv quits.

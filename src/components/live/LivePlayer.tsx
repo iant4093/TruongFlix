@@ -34,12 +34,20 @@ import {
 import { useLiveStore } from '../../services/live';
 import { languageName } from '../../services/subtitles';
 import Dropdown from '../common/Dropdown';
+import LiveMultiview from './LiveMultiview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const control =
   'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15 disabled:opacity-30';
 
 export default function LivePlayer({ session }: { session: LivePlayerSession }) {
+  if (session.multiview) {
+    return <LiveMultiview key={session.loadId} session={{ ...session, multiview: session.multiview }} />;
+  }
+  return <SingleLivePlayer session={session} />;
+}
+
+function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
   const state = useLibraryStore((s) => s.playerState);
   const mini = useLibraryStore((s) => s.playerMini);
   const tracks = useLibraryStore((s) => s.playerTracks);

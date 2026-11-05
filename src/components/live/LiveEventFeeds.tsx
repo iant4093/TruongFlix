@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Check, Play } from 'lucide-react';
+import { Check, PanelsTopLeft, Play } from 'lucide-react';
 import type { LivePlaylist, SportsEvent } from '../../types/live';
-import { channelKey, eventMatches, eventMappingKey, setLivePreferences, useLiveStore } from '../../services/live';
+import { channelKey, eventMatches, eventMappingKey, setLivePreferences, useLiveStore, type ChannelMatch } from '../../services/live';
 import { playLive } from '../../services/player';
 import Modal from './LiveDialog';
 import { LiveArtwork } from './LiveArtwork';
@@ -12,10 +12,12 @@ export default function EventFeeds({
   event,
   playlists,
   onClose,
+  onMultiview,
 }: {
   event: SportsEvent;
   playlists: LivePlaylist[];
   onClose: () => void;
+  onMultiview?: (match: ChannelMatch, event: SportsEvent) => void;
 }) {
   const preferences = useLiveStore((s) => s.preferences);
   const key = eventMappingKey(event);
@@ -100,6 +102,11 @@ export default function EventFeeds({
           </div>
           <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
             {event.status === 'upcoming' && <span className="text-xs text-nf-muted">Event starts later</span>}
+            {onMultiview && (
+              <button className={button} disabled={!chosen || busy} onClick={() => chosen && onMultiview(chosen, event)}>
+                <PanelsTopLeft className="h-4 w-4" /> Add to multiview
+              </button>
+            )}
             <button
               className="nf-btn-red"
               disabled={!chosen || busy}

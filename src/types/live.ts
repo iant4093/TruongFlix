@@ -52,6 +52,13 @@ export interface SportsEvent {
 
 export interface LivePlayerSession {
   event?: SportsEvent;
+  multiview?: {
+    playlistId: string;
+    id: string;
+    title: string;
+    subtitle: string;
+    event?: SportsEvent;
+  };
   channels?: { playlistId: string; id: string }[];
   loadId?: string;
   target: { type: 'live'; id: string; playlistId: string; label: string };
@@ -62,4 +69,13 @@ export interface LivePlayerSession {
   logo: null;
   next: null;
   nextLabel: null;
+}
+
+export interface LiveMultiviewState {
+  loadId: string;
+  paneId: string;
+  loaded: boolean;
+  paused: boolean;
+  buffering: boolean;
+  failed: boolean;
 }

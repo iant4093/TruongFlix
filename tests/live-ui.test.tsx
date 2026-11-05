@@ -4,14 +4,14 @@ import { invoke } from '@tauri-apps/api/core';
 import LiveTV from '../src/components/live/LiveTV';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import { useLiveStore } from '../src/services/live';
-import { playLive } from '../src/services/player';
+import { playLive, playLiveMultiview } from '../src/services/player';
 import * as db from '../src/services/db';
 import type { LivePlaylist } from '../src/types/live';
 import type { Profile } from '../src/types/media';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), convertFileSrc: (s: string) => s }));
 vi.mock('../src/services/db', () => ({ readLiveData: vi.fn(), writeLiveData: vi.fn() }));
-vi.mock('../src/services/player', () => ({ playLive: vi.fn() }));
+vi.mock('../src/services/player', () => ({ playLive: vi.fn(), playLiveMultiview: vi.fn() }));
 
 let playlist: LivePlaylist;
 const scoreboard = (state = 'in', score = '14', otherScore = '0', detail = '6:13 - 3rd') => ({
@@ -133,6 +133,28 @@ it('finds an event by team and saves an explicit mapping to a custom channel', a
     expect.objectContaining({ name: '49ers at Rams' }),
     expect.any(Array),
   );
+});
+
+it('combines a game feed with a playlist channel without overwriting the sports mapping', async () => {
+  playlist.channels.push({
+    ...playlist.channels[0],
+    id: 'fox',
+    tvgId: 'Fox.us',
+    name: 'Fox',
+    transport: { ...playlist.channels[0].transport, url: 'https://example.org/fox.m3u8' },
+  });
+  render(<LiveTV />);
+  fireEvent.click(await screen.findByRole('button', { name: /49ers at Rams Fox/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add to multiview' }));
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Watch multiview' }).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Channels', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add Provider Seven to multiview' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Watch multiview' }));
+  await waitFor(() => expect(playLiveMultiview).toHaveBeenCalledWith(
+    expect.objectContaining({ match: expect.objectContaining({ key: 'one/fox' }), event: expect.objectContaining({ name: '49ers at Rams' }) }),
+    expect.objectContaining({ match: expect.objectContaining({ key: 'one/custom' }) }),
+  ));
+  expect(useLiveStore.getState().preferences.matches).toEqual({});
 });
 
 it('imports pasted source text through the native importer', async () => {

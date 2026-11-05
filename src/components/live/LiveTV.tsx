@@ -4,17 +4,19 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  PanelsTopLeft,
   Plus,
   Radio,
   RefreshCw,
   Search,
   Settings2,
   Star,
+  X,
 } from 'lucide-react';
 import Dropdown from '../common/Dropdown';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { guardAdult } from '../../services/profilelock';
-import { playLive } from '../../services/player';
+import { playLive, playLiveMultiview } from '../../services/player';
 import {
   cancelChecks,
   channelKey,
@@ -23,9 +25,11 @@ import {
   initLive,
   LEAGUES,
   localDate,
+  sameLiveFeed,
   setLivePreferences,
   sportsSchedule,
   useLiveStore,
+  type LiveFeed,
 } from '../../services/live';
 import type { SportsEvent } from '../../types/live';
 import { LiveArtwork } from './LiveArtwork';
@@ -63,8 +67,13 @@ export default function LiveTV() {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<SportsEvent | null>(null);
   const [clock, setClock] = useState(0);
+  const [multiview, setMultiview] = useState(false);
+  const [feeds, setFeeds] = useState<LiveFeed[]>([]);
+  const [openingMultiview, setOpeningMultiview] = useState(false);
 
   useEffect(() => {
+    setMultiview(false);
+    setFeeds([]);
     if (profile) void initLive(profile.id).catch(() => toast('Could not load Live TV sources', 'error'));
   }, [profile?.id]);
   useEffect(() => {
@@ -227,6 +236,18 @@ export default function LiveTV() {
       return next;
     });
   const openEvent = (event: SportsEvent) => setSelectedEvent(event);
+  const addFeed = (feed: LiveFeed) => {
+    if (feeds.some((f) => sameLiveFeed(f.match, feed.match))) {
+      toast('That channel is already selected for multiview.', 'info');
+      return;
+    }
+    if (feeds.length >= 2) {
+      toast('Remove a channel before adding another one.', 'info');
+      return;
+    }
+    setFeeds((current) => [...current, feed].slice(0, 2));
+    setMultiview(true);
+  };
 
   if (profile?.maturity !== 'all')
     return (
@@ -261,8 +282,42 @@ export default function LiveTV() {
           <button className={button} onClick={() => guardAdult(() => setSourcesOpen(true))}>
             <Settings2 className="h-4 w-4" /> Sources
           </button>
+          <button className={button} aria-pressed={multiview} onClick={() => setMultiview(!multiview)}>
+            <PanelsTopLeft className="h-4 w-4" /> Multiview
+          </button>
         </div>
       </div>
+      {multiview && (
+        <section aria-label="Multiview selection" className="mb-6 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-[#202020] p-4">
+          <div className="mr-auto">
+            <h2 className="font-semibold">Watch two channels</h2>
+            <p className="text-sm text-nf-secondary">Add channels from Sports or Channels. Choose which one to hear during playback.</p>
+          </div>
+          {feeds.map(({ match, event }) => (
+            <button
+              key={match.key}
+              className={button}
+              aria-label={`Remove ${match.channel.name} from multiview`}
+              onClick={() => setFeeds((current) => current.filter((f) => f.match.key !== match.key))}
+            >
+              <span className="max-w-48 truncate">{event?.name ?? match.channel.name}</span>
+              <X className="h-4 w-4 shrink-0" />
+            </button>
+          ))}
+          <button
+            className="nf-btn-red"
+            disabled={feeds.length !== 2 || openingMultiview}
+            onClick={async () => {
+              if (feeds.length !== 2 || openingMultiview) return;
+              setOpeningMultiview(true);
+              try { await playLiveMultiview(feeds[0], feeds[1]); }
+              finally { setOpeningMultiview(false); }
+            }}
+          >
+            <PanelsTopLeft className="h-4 w-4" /> Watch multiview
+          </button>
+        </section>
+      )}
       <div className="mb-7 flex flex-wrap items-center gap-3 border-b border-white/10 pb-5">
         <div className="mr-3 flex rounded bg-white/5 p-1">
           {(['sports', 'channels'] as const).map((value) => (
@@ -442,8 +497,9 @@ export default function LiveTV() {
                 >
                   <button
                     className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                    onClick={() => void playLive(match, undefined, channels)}
-                    aria-label={`Play ${match.channel.name}`}
+                    onClick={() => multiview ? addFeed({ match }) : void playLive(match, undefined, channels)}
+                    aria-label={multiview ? `Add ${match.channel.name} to multiview` : `Play ${match.channel.name}`}
+                    aria-pressed={multiview ? feeds.some((f) => f.match.key === match.key) : undefined}
                   >
                     <LiveArtwork url={match.channel.logo} className="h-12 w-16 rounded bg-black/25 p-1" />
                     <span className="min-w-0">
@@ -505,6 +561,7 @@ export default function LiveTV() {
           event={events.find((event) => event.id === selectedEvent.id) ?? selectedEvent}
           playlists={playlists}
           onClose={() => setSelectedEvent(null)}
+          onMultiview={(match, event) => { addFeed({ match, event }); setSelectedEvent(null); }}
         />
       )}
     </section>
