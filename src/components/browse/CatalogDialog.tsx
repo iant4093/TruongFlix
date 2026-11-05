@@ -11,7 +11,7 @@ export default function CatalogDialog({ title, onClose, active, children }: {
     const previous = document.activeElement as HTMLElement | null;
     const old = document.documentElement.style.overflow;
     document.documentElement.style.overflow = 'hidden';
-    ref.current?.focus();
+    ref.current?.focus({ preventScroll: true });
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close.current();
       if (e.key !== 'Tab') return;
@@ -27,9 +27,9 @@ export default function CatalogDialog({ title, onClose, active, children }: {
     className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain bg-black/80 px-4 pb-10 pt-8 backdrop-blur-sm"
     onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
     <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title}
-      className="nf-dialog-enter relative mx-auto w-full max-w-5xl rounded-xl bg-nf-surface shadow-2xl outline-none">
-      <div data-catalog-close className="pointer-events-none sticky top-0 z-20 flex h-0 justify-end pr-4 pt-4">
-        <button aria-label="Close dialog" onClick={onClose} className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-[#181818]/90 hover:bg-[#333] focus-visible:ring-2 focus-visible:ring-white"><X className="h-5 w-5" /></button>
+      className="nf-dialog-enter relative mx-auto w-full max-w-4xl rounded-xl bg-nf-surface shadow-2xl outline-none">
+      <div data-catalog-close className="pointer-events-none sticky top-0 z-20 flex h-0 items-start justify-end">
+        <button aria-label="Close dialog" onClick={onClose} className="pointer-events-auto mr-4 mt-4 flex h-9 w-9 items-center justify-center rounded-full bg-nf-surface text-white hover:bg-[#2a2a2a] focus-visible:ring-2 focus-visible:ring-white"><X className="h-5 w-5" /></button>
       </div>
       {children}
     </div>

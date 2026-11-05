@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import Discover from '../src/components/browse/Discover';
 import CatalogTitle from '../src/components/browse/CatalogTitle';
@@ -119,12 +119,24 @@ it('shows fuller title information in a wide library-style dialog', async () => 
     totalEpisodes: 2, networks: ['A Network'], cast: [{ id: 5, name: 'An Actor', character: 'Lead' }, { id: 6, name: 'A Creator', job: 'Creator' }] });
   render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
   await screen.findByText('A larger story.');
-  expect(screen.getByText('An Actor')).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: 'Cast' })).getByText('An Actor')).toBeTruthy();
   expect(screen.getByText('Lead')).toBeTruthy();
   expect(screen.getByText('A Creator')).toBeTruthy();
   expect(screen.getByText('A Network')).toBeTruthy();
   expect(screen.getByText('English')).toBeTruthy();
-  expect(screen.getByRole('dialog').className).toContain('max-w-5xl');
+  expect(screen.getByRole('dialog').className).toContain('max-w-4xl');
+});
+
+it('uses the library IMDb badge with votes and falls back to TMDB when IMDb is disabled', async () => {
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, imdb_enabled: true } }));
+  vi.mocked(invoke).mockResolvedValue({ ratings: { [detail.imdbId]: { rating: 9.1, votes: 162_000 } } });
+  render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+  const badge = await screen.findByRole('button', { name: /IMDb.*9\.1.*162K/ });
+  expect(badge.textContent).toBe('IMDb9.1(162K)');
+  expect(screen.queryByText('TMDB')).toBeNull();
+  act(() => useLibraryStore.setState((s) => ({ settings: { ...s.settings, imdb_enabled: false } })));
+  expect(screen.queryByRole('button', { name: /IMDb/ })).toBeNull();
+  expect(screen.getByText('TMDB')).toBeTruthy();
 });
 
 it('shows Rotten Tomatoes and Metacritic using the configured OMDb key', async () => {
