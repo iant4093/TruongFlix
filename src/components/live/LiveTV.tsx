@@ -499,9 +499,6 @@ export default function LiveTV() {
           )}
         </>
       )}
-      <p className="mt-8 text-xs text-nf-muted">
-        Scores and schedules from ESPN. Live games refresh every 30 seconds. Regional feeds and stream availability can vary.
-      </p>
       {sourcesOpen && <Sources onClose={() => setSourcesOpen(false)} />}
       {selectedEvent && (
         <EventFeeds
