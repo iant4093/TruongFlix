@@ -54,6 +54,15 @@ export default function App() {
 
   useEffect(() => {
     init()
+      .then(async () => {
+        try {
+          if (await invoke<boolean>('backup_restore_result')) {
+            useLibraryStore.getState().toast('TruongFlix backup restored', 'success');
+          }
+        } catch (error) {
+          useLibraryStore.getState().toast(`Backup restore failed: ${String(error)}`, 'error');
+        }
+      })
       .then(() => autoPurgeTrash().catch((e) => console.warn('[trash] auto-purge failed', e)))
       .then(async () => {
         void initTorrentService().catch((e) => console.warn('[torrents]', e));

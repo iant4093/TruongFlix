@@ -1,4 +1,5 @@
 mod audio;
+mod backup;
 mod cast;
 mod files;
 mod imdb;
@@ -77,6 +78,10 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             torrent::handle_cli_args(app, &argv);
         }))
+        .plugin(tauri::plugin::Builder::<tauri::Wry>::new("backup-startup").setup(|app, _| {
+            backup::restore_at_startup(app);
+            Ok(())
+        }).build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
@@ -84,6 +89,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(source_browser::SourceState::default())
+        .manage(backup::BackupState::default())
         .manage(vlc::VlcState::default())
         .manage(subtitles::SubtitleState::default())
         .setup(|app| {
@@ -100,6 +106,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
+            backup::backup_export,
+            backup::backup_inspect,
+            backup::backup_stage_restore,
+            backup::backup_restore_result,
+            backup::backup_recovery_path,
             source_browser::source_browser_open,
             source_browser::source_browser_control,
             source_browser::pane::source_browser_place,

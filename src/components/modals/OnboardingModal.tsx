@@ -11,6 +11,7 @@ import {
   type SubtitleSettingsValue,
 } from '../common/SetupControls';
 import { Wordmark } from '../layout/Navbar';
+import BackupSettings from '../settings/BackupSettings';
 
 const STEPS = ['welcome', 'tmdb', 'vlc', 'subtitles', 'folders'] as const;
 type Step = (typeof STEPS)[number];
@@ -33,6 +34,7 @@ export default function OnboardingModal() {
     password: settings.opensubtitles_password,
   });
   const [saving, setSaving] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
 
   const idx = STEPS.indexOf(step);
   const next = () => setStep(STEPS[Math.min(idx + 1, STEPS.length - 1)]);
@@ -68,7 +70,7 @@ export default function OnboardingModal() {
 
       <motion.div
         layout
-        className="relative w-full max-w-[560px] rounded-lg border border-white/5 bg-black/75 px-12 py-11 shadow-2xl backdrop-blur"
+        className={`relative w-full max-w-[560px] rounded-lg border border-white/5 bg-black/75 px-12 py-11 shadow-2xl backdrop-blur ${restoreOpen ? 'max-h-[calc(100vh-3rem)] overflow-y-auto' : ''}`}
       >
         <AnimatePresence mode="wait">
           <motion.div
@@ -78,7 +80,14 @@ export default function OnboardingModal() {
             exit={{ opacity: 0, x: -24 }}
             transition={{ duration: 0.22 }}
           >
-            {step === 'welcome' && (
+            {step === 'welcome' && (restoreOpen ? (
+              <div className="space-y-5">
+                <button type="button" onClick={() => setRestoreOpen(false)} className="flex items-center gap-1 text-sm text-nf-secondary hover:text-white">
+                  <ChevronLeft className="h-4 w-4" /> Back to setup
+                </button>
+                <BackupSettings restoreOnly />
+              </div>
+            ) : (
               <div className="space-y-5 text-center">
                 <h1 className="text-[2.6rem] font-black leading-tight">Your movies. Your shows. One screen.</h1>
                 <p className="text-lg text-nf-secondary">
@@ -88,8 +97,11 @@ export default function OnboardingModal() {
                 <button onClick={next} className="nf-btn-red mt-2 w-full py-3.5 text-xl">
                   Get Started <ChevronRight className="h-6 w-6" />
                 </button>
+                <button type="button" onClick={() => setRestoreOpen(true)} className="text-sm text-nf-secondary underline hover:text-white">
+                  Restore a backup
+                </button>
               </div>
-            )}
+            ))}
 
             {step === 'tmdb' && (
               <div className="space-y-5">

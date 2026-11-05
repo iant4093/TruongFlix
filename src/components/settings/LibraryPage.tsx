@@ -9,6 +9,7 @@ import { connectShare, refreshShares } from '../../services/nas';
 import { FolderList } from '../common/SetupControls';
 import { Block, BTN, BTN_DANGER, BTN_PRIMARY, Group, INPUT, Page, Row, StatusText, ToggleRow } from './ui';
 import { closeSettingsAnd } from './nav';
+import BackupSettings from './BackupSettings';
 
 export default function LibraryPage() {
   const settings = useLibraryStore((s) => s.settings);
@@ -93,6 +94,8 @@ export default function LibraryPage() {
           </button>
         </Row>
       </Group>
+
+      <BackupSettings />
 
       <Group title="Danger zone">
         <Row label="Clear library" description="Removes every title and all watch progress from TruongFlix. Your files stay on disk.">

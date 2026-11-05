@@ -1138,6 +1138,10 @@ export function installMocks() {
     (cmd, args) => {
       const a = (args ?? {}) as Record<string, unknown>;
       switch (cmd) {
+        case 'backup_restore_result':
+          return false;
+        case 'backup_recovery_path':
+          return null;
         case 'plugin:sql|load':
           return a.db;
         case 'plugin:sql|execute':
