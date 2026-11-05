@@ -12,7 +12,7 @@ use tauri::Listener;
 
 const REQUEST: &str = "native-source-smoke";
 const MAGNET: &str = "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=Fixture";
-const MAIN_FIXTURE: &str = "<!doctype html><meta charset='utf-8'><body style='background:#141414;color:white;font:24px system-ui;padding:60px'>Running native source browser checks…<script>let frame=0;function tick(){document.title='frame:'+ ++frame;requestAnimationFrame(tick)}requestAnimationFrame(tick);</script></body>";
+const MAIN_FIXTURE: &str = "<!doctype html><meta charset='utf-8'><style>html{background:#332641}</style><body style='color:white;font:24px system-ui;padding:60px'>Running native source browser checks…<script>let frame=0;function tick(){document.title='frame:'+ ++frame;requestAnimationFrame(tick)}requestAnimationFrame(tick);</script></body>";
 const DETAIL_FIXTURE: &str = "<!doctype html><meta charset='utf-8'><title>Manual release</title><body style='background:#092238;color:white'><h1>Manual release page</h1><a id='manual-link' href='magnet:?xt=urn:btih:0000000000000000000000000000000000000000&amp;dn=Fixture'>Select test magnet</a></body>";
 const FIXTURE: &str = r##"<!doctype html><html><head><meta charset="utf-8"><title>Security verification</title><style>body{background:#092238;color:white;font:18px system-ui;margin:0;padding:20px}.verifying .qa-ad,.verifying table,#manual-link{display:none}#fixture-verify{padding:60px 20px;text-align:center}button{background:#e50914;border:0;color:white;padding:14px 22px;font-size:18px;border-radius:6px}</style></head><body class="verifying"><div id="fixture-verify"><h1>Verification panel</h1><p>Local fixture — not a CAPTCHA</p><button id="verify-test-page">Continue test</button></div>
 <div class="qa-ad">This test advertisement must be hidden</div>
@@ -58,7 +58,18 @@ async fn wait_for_path(browser: &WebviewWindow, loaded: &Mutex<String>, path: &s
     Err(format!("Manual source navigation did not reach {path}; loaded={}; current={:?}", *loaded.lock().unwrap(), browser.url()))
 }
 
-async fn check_manual_browser(app: tauri::AppHandle, main: WebviewWindow, loaded: Arc<Mutex<String>>) -> Result<(), String> {
+fn mark_visible_pane(main: &WebviewWindow, output: &std::path::Path, rect: pane::PaneRect) -> Result<(), String> {
+    let position = main.inner_position().map_err(|e| e.to_string())?;
+    let scale = main.scale_factor().map_err(|e| e.to_string())?;
+    let panel = serde_json::json!({
+        "mainLeft": position.x, "mainTop": position.y, "scale": scale,
+        "left": f64::from(position.x) + rect.x * scale, "top": f64::from(position.y) + rect.y * scale,
+        "width": rect.width * scale, "height": rect.height * scale,
+    });
+    fs::write(output, panel.to_string()).map_err(|e| e.to_string())
+}
+
+async fn check_manual_browser(app: tauri::AppHandle, main: WebviewWindow, loaded: Arc<Mutex<String>>, output: &std::path::Path) -> Result<(), String> {
     // Quick results cleared the challenge flag. Manual placement must work without a challenge.
     let origin = {
         let state = app.state::<SourceState>(); let mut guard = state.0.lock().unwrap();
@@ -66,9 +77,10 @@ async fn check_manual_browser(app: tauri::AppHandle, main: WebviewWindow, loaded
         if session.challenge_shown { return Err("Challenge did not clear".into()); }
         session.manual = true; session.origin.clone()
     };
-    pane::source_browser_place(app.clone(), main.clone(), REQUEST.into(), Some(pane::PaneRect {
+    let rect = pane::PaneRect {
         x: 0.0, y: 64.0, width: 800.0, height: 478.0, viewport_width: 800.0, viewport_height: 550.0,
-    })).await?;
+    };
+    pane::source_browser_place(app.clone(), main.clone(), REQUEST.into(), Some(rect)).await?;
     let browser = app.get_webview_window(LABEL).ok_or("Source view closed")?;
     if browser.is_visible().unwrap_or(true) || app.get_webview_window("main").is_none() {
         return Err("Manual browsing exposed a separate window".into());
@@ -85,6 +97,10 @@ async fn check_manual_browser(app: tauri::AppHandle, main: WebviewWindow, loaded
     loaded.lock().unwrap().clear();
     source_browser_control(app.clone(), main.clone(), REQUEST.into(), "reload".into(), None, None)?;
     wait_for_path(&browser, &loaded, "/detail").await?;
+    if cfg!(target_os = "windows") && std::env::var_os("CI").is_some() {
+        mark_visible_pane(&main, &output.with_extension("manual-ready"), rect)?;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
     browser.eval("(()=>{const select=()=>document.getElementById('manual-link')?.click();if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',select,{once:true});else select()})()").map_err(|e| e.to_string())
 }
 
@@ -94,6 +110,7 @@ pub fn run() {
         .unwrap_or_else(|| std::env::temp_dir().join("truongflix-source-smoke-result.json"));
     let _ = fs::remove_file(&output);
     let _ = fs::remove_file(output.with_extension("panel-ready"));
+    let _ = fs::remove_file(output.with_extension("manual-ready"));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let requests = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -184,7 +201,11 @@ pub fn run() {
         let frame_events = frames.clone();
         let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(format!("{origin}/main").parse().unwrap()))
             .on_document_title_changed(move |_, title| { if let Some(frame) = title.strip_prefix("frame:").and_then(|n| n.parse().ok()) { frame_events.store(frame, Ordering::SeqCst); } })
-            .title("Source browser integration checks").inner_size(800.0, 550.0).build()?;
+            .title("Source browser integration checks").inner_size(800.0, 550.0);
+        // Match the main Windows window, whose transparent compositor also hosts the built-in player.
+        #[cfg(target_os = "windows")]
+        let main = main.transparent(true);
+        let main = main.build()?;
         #[cfg(target_os = "macos")]
         crate::window::configure_main(&main)?;
         *app.state::<SourceState>().0.lock().unwrap() = Some(Session { request_id: REQUEST.into(), origin: origin.clone(), imdb_id: "tt1234567".into(), pending: None, manual: false,
@@ -202,18 +223,15 @@ pub fn run() {
                 let app = event_app.clone(); let main = event_main.clone(); let output = event_output.clone(); let done = event_done.clone();
                 tauri::async_runtime::spawn(async move {
                     let rect = pane::PaneRect { x:40.0, y:110.0, width:700.0, height:350.0, viewport_width:800.0, viewport_height:550.0 };
-                    if let Err(error) = pane::source_browser_place(app.clone(), main, REQUEST.into(), Some(rect)).await {
+                    if let Err(error) = pane::source_browser_place(app.clone(), main.clone(), REQUEST.into(), Some(rect)).await {
                         done.store(true, Ordering::SeqCst); report(&app, &output, false, &error); return;
                     }
                     let Some(browser) = app.get_webview_window(LABEL) else { return; };
                     if browser.is_visible().unwrap_or(true) || app.get_webview_window("main").is_none() {
                         done.store(true, Ordering::SeqCst); report(&app, &output, false, "Quick search exposed a browser window or changed the library window"); return;
                     }
-                    if let Some(main) = app.get_webview_window("main") {
-                        if let (Ok(position), Ok(scale)) = (main.inner_position(), main.scale_factor()) {
-                            let panel = serde_json::json!({"left":f64::from(position.x)+40.0*scale,"top":f64::from(position.y)+110.0*scale,"width":700.0*scale,"height":350.0*scale});
-                            let _ = fs::write(output.with_extension("panel-ready"), panel.to_string());
-                        }
+                    if let Err(error) = mark_visible_pane(&main, &output.with_extension("panel-ready"), rect) {
+                        done.store(true, Ordering::SeqCst); report(&app, &output, false, &error); return;
                     }
                     if std::env::var_os("CI").is_some() {
                         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -228,7 +246,7 @@ pub fn run() {
                 phase.store(2, Ordering::SeqCst);
                 let app = event_app.clone(); let main = event_main.clone(); let output = event_output.clone(); let done = event_done.clone(); let loaded = loaded.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(error) = check_manual_browser(app.clone(), main, loaded).await {
+                    if let Err(error) = check_manual_browser(app.clone(), main, loaded, &output).await {
                         done.store(true, Ordering::SeqCst); report(&app, &output, false, &error);
                     }
                 });

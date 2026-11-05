@@ -2,6 +2,13 @@ use super::*;
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{take_pwstr, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler};
 use windows_webview::core::{w, PWSTR};
+use windows_sys::Win32::{
+    Foundation::{HWND, POINT},
+    Graphics::Gdi::MapWindowPoints,
+    UI::WindowsAndMessaging::{
+        GetParent, SetParent, SetWindowPos, ShowWindow, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+    },
+};
 
 pub fn install(
     browser: &WebviewWindow,
@@ -72,20 +79,29 @@ pub struct PaneParent {
     width: i32,
     height: i32,
 }
+fn container(controller: &ICoreWebView2Controller) -> Result<HWND, String> {
+    let mut hwnd = windows_webview::Win32::Foundation::HWND::default();
+    unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|e| e.to_string())?;
+    Ok(hwnd.0)
+}
+
 pub fn pane_parent(parent: &tauri::webview::PlatformWebview) -> Result<PaneParent, String> {
-    use windows_webview::Win32::Foundation::{HWND, RECT};
+    use windows_webview::Win32::Foundation::RECT;
     unsafe {
         let controller = parent.controller();
-        let mut window = HWND::default();
+        let container = container(&controller)?;
+        let window = GetParent(container);
+        if window.is_null() {
+            return Err("The library window is closed".into());
+        }
         let mut bounds = RECT::default();
-        controller
-            .ParentWindow(&mut window)
-            .map_err(|e| e.to_string())?;
         controller.Bounds(&mut bounds).map_err(|e| e.to_string())?;
+        let mut origin = POINT { x: bounds.left, y: bounds.top };
+        MapWindowPoints(container, window, &mut origin, 1);
         Ok(PaneParent {
-            window: window.0 as usize,
-            left: bounds.left,
-            top: bounds.top,
+            window: window as usize,
+            left: origin.x,
+            top: origin.y,
             width: bounds.right - bounds.left,
             height: bounds.bottom - bounds.top,
         })
@@ -96,24 +112,39 @@ pub fn place_pane(
     parent: PaneParent,
     rect: super::pane::PaneRect,
 ) -> Result<(), String> {
-    use windows_webview::Win32::Foundation::{HWND, RECT};
+    use windows_webview::Win32::Foundation::RECT;
     unsafe {
         let controller = view.controller();
+        let container = container(&controller)?;
+        let window = parent.window as HWND;
+        // Keep each WebView2 controller in its own Wry container. Sharing the
+        // main controller's container can replace its transparent composition.
+        if GetParent(container) != window {
+            ShowWindow(container, SW_HIDE);
+            if SetParent(container, window).is_null() {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+        }
         let sx = f64::from(parent.width) / rect.viewport_width;
         let sy = f64::from(parent.height) / rect.viewport_height;
         let left = parent.left + (rect.x * sx).round() as i32;
         let top = parent.top + (rect.y * sy).round() as i32;
-        controller
-            .SetParentWindow(HWND(parent.window as *mut _))
-            .map_err(|e| e.to_string())?;
+        let width = (rect.width * sx).round() as i32;
+        let height = (rect.height * sy).round() as i32;
         controller
             .SetBounds(RECT {
-                left,
-                top,
-                right: left + (rect.width * sx).round() as i32,
-                bottom: top + (rect.height * sy).round() as i32,
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
             })
             .map_err(|e| e.to_string())?;
+        if SetWindowPos(
+            container, std::ptr::null_mut(), left, top, width, height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        ) == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
         controller
             .NotifyParentWindowPositionChanged()
             .map_err(|e| e.to_string())?;
@@ -121,10 +152,18 @@ pub fn place_pane(
     }
     Ok(())
 }
-pub fn hide_pane(view: &tauri::webview::PlatformWebview, _detach: bool) -> Result<(), String> {
+pub fn hide_pane(view: &tauri::webview::PlatformWebview, host: Option<usize>) -> Result<(), String> {
     unsafe {
-        view.controller()
-            .SetIsVisible(false)
-            .map_err(|e| e.to_string())
+        let controller = view.controller();
+        let container = container(&controller)?;
+        ShowWindow(container, SW_HIDE);
+        let hidden = controller.SetIsVisible(false);
+        // Wry destroys the container with its original window.
+        if let Some(host) = host.map(|host| host as HWND) {
+            if GetParent(container) != host && SetParent(container, host).is_null() {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+        }
+        hidden.map_err(|e| e.to_string())
     }
 }

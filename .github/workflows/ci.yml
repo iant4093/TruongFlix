@@ -99,30 +99,33 @@ jobs:
           $env:TRUONGFLIX_SOURCE_SMOKE_REPORT = Join-Path $env:RUNNER_TEMP 'source-browser-smoke.json'
           $probe = Start-Process 'src-tauri/target/debug/examples/source_browser_smoke.exe' -PassThru `
             -RedirectStandardError smoke/source-browser-stderr.log -RedirectStandardOutput smoke/source-browser-stdout.log
-          $panelCaptured = $false
-          $panelReady = [IO.Path]::ChangeExtension($env:TRUONGFLIX_SOURCE_SMOKE_REPORT, 'panel-ready')
-          $panelDeadline = [DateTime]::UtcNow.AddSeconds(25)
-          while (-not (Test-Path $panelReady) -and -not $probe.HasExited -and [DateTime]::UtcNow -lt $panelDeadline) {
-            Start-Sleep -Milliseconds 100
-            $probe.Refresh()
-          }
-          if (Test-Path $panelReady) {
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          foreach ($mode in 'panel', 'manual') {
+            $panelReady = [IO.Path]::ChangeExtension($env:TRUONGFLIX_SOURCE_SMOKE_REPORT, "$mode-ready")
+            $panelDeadline = [DateTime]::UtcNow.AddSeconds(25)
+            while (-not (Test-Path $panelReady) -and -not $probe.HasExited -and [DateTime]::UtcNow -lt $panelDeadline) {
+              Start-Sleep -Milliseconds 100
+              $probe.Refresh()
+            }
+            if (-not (Test-Path $panelReady)) { throw "Source browser did not reach the $mode visual check" }
             Start-Sleep -Milliseconds 400
-            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
             $panel = Get-Content $panelReady -Raw | ConvertFrom-Json
             $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
             $capture = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
             $graphics = [System.Drawing.Graphics]::FromImage($capture)
             $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-            $capture.Save('smoke/source-browser-panel.png')
+            $capture.Save("smoke/source-browser-$mode.png")
             $panelMatches = 0
             foreach ($fraction in 0.15, 0.5, 0.85) {
               $pixel = $capture.GetPixel([int]($panel.left + $panel.width * $fraction), [int]($panel.top + $panel.height - 25))
               if ([Math]::Abs([int]$pixel.R - 9) -le 12 -and [Math]::Abs([int]$pixel.G - 34) -le 12 -and [Math]::Abs([int]$pixel.B - 56) -le 12) { $panelMatches++ }
             }
+            $main = $capture.GetPixel([int]($panel.mainLeft + 12 * $panel.scale), [int]($panel.mainTop + 24 * $panel.scale))
             $graphics.Dispose(); $capture.Dispose()
-            if ($panelMatches -lt 2) { throw "Inline source verification did not render in the main window" }
-            $panelCaptured = $true
+            if ($panelMatches -lt 2) { throw "The $mode source view did not render in the main window" }
+            if ([Math]::Abs([int]$main.R - 51) -gt 8 -or [Math]::Abs([int]$main.G - 38) -gt 8 -or [Math]::Abs([int]$main.B - 65) -gt 8) {
+              throw "The main window content disappeared while the $mode source view was visible"
+            }
           }
           if (-not $probe.WaitForExit(60000)) {
             Stop-Process -Id $probe.Id -Force
@@ -132,7 +135,6 @@ jobs:
           Copy-Item $env:TRUONGFLIX_SOURCE_SMOKE_REPORT smoke/source-browser-report.json
           $report = Get-Content $env:TRUONGFLIX_SOURCE_SMOKE_REPORT -Raw | ConvertFrom-Json
           if (-not $report.passed) { throw $report.message }
-          if (-not $panelCaptured) { throw "Inline verification did not produce a visual check" }
           $probe.Refresh()
           if ($probe.ExitCode -ne 0) { throw "Source browser smoke exited with code $($probe.ExitCode)" }
           Write-Output $report.message

@@ -52,6 +52,9 @@ use super::windows as platform;
 pub async fn hide(browser: &WebviewWindow, detach: bool) -> Result<(), String> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
+        #[cfg(target_os = "windows")]
+        let detach = detach.then(|| browser.hwnd().map(|hwnd| hwnd.0 as usize))
+            .transpose().map_err(|e| e.to_string())?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         browser
             .with_webview(move |view| {
@@ -117,7 +120,11 @@ pub async fn source_browser_place(
                         let result = if current {
                             platform::place_pane(&view, parent, rect)
                         } else {
-                            platform::hide_pane(&view, false)
+                            #[cfg(target_os = "macos")]
+                            let detach = false;
+                            #[cfg(target_os = "windows")]
+                            let detach = None;
+                            platform::hide_pane(&view, detach)
                         };
                         let _ = tx.send(result);
                     });
