@@ -325,7 +325,7 @@ export async function installGame(gameId: number, chosen?: InstallChoices, inspe
   try {
     const info = inspected ?? (await inspectInstaller(game.installerDir));
     const choices = chosen ?? (await automaticChoices(info, game));
-    if (!choices.installDir) throw new Error('Choose a folder for installed games in Settings › Games.');
+    if (!choices.installDir) throw new Error('Choose a folder for installed games in Games › Games settings.');
     const options = buildOptions(info, choices.language, missingOptionalFor(game));
     const job = buildInstallJob(info, options, choices, { folders: await folders() });
     await patchGame(gameId, { status: 'installing', choices, installDir: choices.installDir, error: null });

@@ -80,7 +80,7 @@ export default function BackupSettings({ restoreOnly = false }: { restoreOnly?: 
   return (
     <Group
       title="Backup & restore"
-      description="Backups include profiles, watch history, library matches, Browse saves, Live TV playlists and settings. Keep the file private because it contains API keys and profile PINs."
+      description="Backups include profiles, watch history, library matches, Browse saves, Live TV playlists and settings. API keys, passwords and the browser access code are left out; keep the file private because it still contains profile PINs and playlist addresses."
     >
       {!restoreOnly && <Row label="Create a backup" description="Media files, torrent transfers and file operation history stay on this device.">
         <button type="button" className={BTN} disabled={busy} onClick={() => void exportBackup()}>

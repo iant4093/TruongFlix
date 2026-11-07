@@ -83,7 +83,7 @@ export async function autoCheckForUpdates() {
   if (last && Date.now() - last < 24 * 3600 * 1000) return;
   try {
     const u = await checkForUpdate();
-    if (u) toast(`TruongFlix ${u.version} is available — install it from Settings › About & Updates`, 'info');
+    if (u) toast(`TruongFlix ${u.version} is available — install it from Settings › About`, 'info');
   } catch (e) {
     console.warn('[updates] check failed', e);
   }
