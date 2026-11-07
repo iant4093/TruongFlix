@@ -22,6 +22,18 @@ let again = false;
 
 const status = (message: string) => useLibraryStore.getState().setAnalysis({ running: true, message });
 
+/** Set whenever a step writes to the DB; reloads are skipped while nothing has changed. */
+let changed = false;
+const touched = <T,>(value: T): T => {
+  changed = true;
+  return value;
+};
+async function reloadIfChanged() {
+  if (!changed) return;
+  changed = false;
+  await useLibraryStore.getState().reload();
+}
+
 /**
  * Background library analysis, run after scans and at launch:
  *  1. read real stream info (badges, chapters, Dolby Vision) for new/changed files
@@ -50,7 +62,7 @@ export async function startBackgroundAnalysis() {
   } finally {
     running = false;
     useLibraryStore.getState().setAnalysis({ running: false, message: '' });
-    await useLibraryStore.getState().reload();
+    await reloadIfChanged();
   }
 }
 
@@ -81,7 +93,7 @@ async function probeFiles() {
       const { table, row } = chunk[k];
       if (!info) continue; // missing (offline drive): try again later
       if (info.error) {
-        await db.markProbeFailed(table, row.id, row.file_mtime, info.error, info.size ?? null);
+        touched(await db.markProbeFailed(table, row.id, row.file_mtime, info.error, info.size ?? null));
         continue;
       }
       const existing = parseSegments(row.segments);
@@ -89,11 +101,11 @@ async function probeFiles() {
       const manual = existing.filter((s) => s.source === 'manual');
       const fromChapters = segmentsFromChapters(info).filter((c) => !manual.some((m) => m.kind === c.kind));
       const audio = existing.filter((s) => s.source === 'audio' && ![...manual, ...fromChapters].some((c) => c.kind === s.kind));
-      await db.saveMediaInfo(table, row.id, row.file_mtime, info, techFromInfo(info, row), [...manual, ...fromChapters, ...audio]);
+      touched(await db.saveMediaInfo(table, row.id, row.file_mtime, info, techFromInfo(info, row), [...manual, ...fromChapters, ...audio]));
     }
-    if ((i / PROBE_CHUNK) % 5 === 4) await useLibraryStore.getState().reload();
+    if ((i / PROBE_CHUNK) % 5 === 4) await reloadIfChanged();
   }
-  await useLibraryStore.getState().reload();
+  await reloadIfChanged();
 }
 
 async function fetchExtras() {
@@ -108,7 +120,7 @@ async function fetchExtras() {
   for (const id of movieIds) {
     status(`Fetching ratings & trailers · ${++done} of ${total}`);
     try {
-      await db.saveMovieExtras(id, await tmdb.getMovieExtras(id));
+      touched(await db.saveMovieExtras(id, await tmdb.getMovieExtras(id)));
     } catch (e) {
       if (e instanceof tmdb.TmdbError && (e.network || e.status === 401)) return;
     }
@@ -116,12 +128,12 @@ async function fetchExtras() {
   for (const s of shows) {
     status(`Fetching ratings & trailers · ${++done} of ${total}`);
     try {
-      await db.saveSeriesExtras(s.id, await tmdb.getSeriesExtras(s.tmdb_id));
+      touched(await db.saveSeriesExtras(s.id, await tmdb.getSeriesExtras(s.tmdb_id)));
     } catch (e) {
       if (e instanceof tmdb.TmdbError && (e.network || e.status === 401)) return;
     }
   }
-  await useLibraryStore.getState().reload();
+  await reloadIfChanged();
 }
 
 async function fetchCollections() {
@@ -134,12 +146,12 @@ async function fetchCollections() {
   for (const [i, id] of ids.entries()) {
     status(`Fetching collections · ${i + 1} of ${ids.length}`);
     try {
-      await db.saveCollection(await tmdb.getCollection(id));
+      touched(await db.saveCollection(await tmdb.getCollection(id)));
     } catch {
       /* try again next run */
     }
   }
-  if (ids.length) await useLibraryStore.getState().reload();
+  await reloadIfChanged();
 }
 
 export interface CriticRefresh {
@@ -162,7 +174,7 @@ async function fetchCriticRatings(force = false): Promise<CriticRefresh> {
     status(`Fetching Rotten Tomatoes & Metacritic · ${i + 1} of ${list.length}`);
     try {
       const s = await fetchCriticScores(settings.omdb_api_key, imdbId);
-      await db.saveOmdbRatings(table, imdbId, s.rt, s.metacritic);
+      touched(await db.saveOmdbRatings(table, imdbId, s.rt, s.metacritic));
       result.checked++;
       if (s.rt != null || s.metacritic != null) result.found++;
     } catch (e) {
@@ -171,9 +183,9 @@ async function fetchCriticRatings(force = false): Promise<CriticRefresh> {
         break;
       }
     }
-    if (i % 25 === 24) await useLibraryStore.getState().reload();
+    if (i % 25 === 24) await reloadIfChanged();
   }
-  if (list.length) await useLibraryStore.getState().reload();
+  await reloadIfChanged();
   return result;
 }
 
@@ -210,7 +222,7 @@ async function detectIntros() {
         }
         const group = [...include].sort((a, b) => a - b).map((j) => list[j]);
         if (group.length < 2) {
-          await db.markIntroChecked(pending.map((e) => e.id));
+          touched(await db.markIntroChecked(pending.map((e) => e.id)));
           continue;
         }
         currentStep = `Detecting intros · ${show.title} S${season}`;
@@ -228,15 +240,15 @@ async function detectIntros() {
           const existing = parseSegments(e.segments);
           const isPending = pending.includes(e);
           if (existing.some((s) => s.kind === 'intro' && s.source === 'manual')) {
-            if (isPending) await db.markIntroChecked([e.id]); // never replace an intro set by hand
+            if (isPending) touched(await db.markIntroChecked([e.id])); // never replace an intro set by hand
           } else if (seg && (isPending || !existing.some((s) => s.kind === 'intro'))) {
             const intro: Segment = { kind: 'intro', start: seg[0], end: seg[1], source: 'audio' };
-            await db.saveSegments(e.id, [...existing.filter((s) => s.kind !== 'intro'), intro]);
+            touched(await db.saveSegments(e.id, [...existing.filter((s) => s.kind !== 'intro'), intro]));
           } else if (isPending) {
-            await db.markIntroChecked([e.id]);
+            touched(await db.markIntroChecked([e.id]));
           }
         }
-        await useLibraryStore.getState().reload();
+        await reloadIfChanged();
       }
     }
   } finally {

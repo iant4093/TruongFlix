@@ -1,3 +1,4 @@
+import { formatDuration } from '../lib/format';
 import type {
   CastMember,
   ContinueEntry,
@@ -22,6 +23,9 @@ const parseJson = <T,>(s: string | null, fallback: T): T => {
     return fallback;
   }
 };
+
+/** Libraries scanned earlier stored full-size `original` backdrops; w1280 is plenty for any screen here. */
+const backdropUrl = (url: string | null) => (url ? url.replace('/t/p/original/', '/t/p/w1280/') : url);
 
 const RES_RANK: Record<string, number> = { '4K': 3, HD: 2, '720p': 1 };
 const resRank = (r: string | null) => (r ? (RES_RANK[r] ?? 0) : 0);
@@ -63,7 +67,7 @@ function movieToItem(m: MovieRow, all: MovieRow[] = [m]): MediaItem {
     genres: parseJson<string[]>(m.genres, []),
     cast: parseJson<CastMember[]>(m.cast_crew, []),
     poster: m.poster_path,
-    backdrop: m.backdrop_path,
+    backdrop: backdropUrl(m.backdrop_path),
     logo: m.logo_path,
     runtime: m.runtime,
     seasonCount: 0,
@@ -112,7 +116,7 @@ function seriesToItem(s: SeriesRow, eps: EpisodeRow[]): MediaItem {
     genres: parseJson<string[]>(s.genres, []),
     cast: parseJson<CastMember[]>(s.cast_crew, []),
     poster: s.poster_path,
-    backdrop: s.backdrop_path,
+    backdrop: backdropUrl(s.backdrop_path),
     logo: s.logo_path,
     runtime: null,
     seasonCount: seasons.size,
@@ -146,18 +150,30 @@ function seriesToItem(s: SeriesRow, eps: EpisodeRow[]): MediaItem {
   };
 }
 
+// The card shows the version being watched, otherwise the highest quality.
+const cardScore = (r: MovieRow) => (r.last_watched_at ? 1000 : 0) + qualityScore(r);
+
+/** One movie card from every file sharing its TMDB id (or a single unmatched file). */
+export function buildMovieItem(rows: MovieRow[]): MediaItem {
+  return movieToItem(rows.reduce((a, b) => (cardScore(b) > cardScore(a) ? b : a)), rows);
+}
+
+export const buildSeriesItem = seriesToItem;
+
 /** Builds unified items. Duplicate movie files sharing a TMDB id collapse into one card. */
 export function buildItems(movies: MovieRow[], series: SeriesRow[], episodesBySeries: Map<number, EpisodeRow[]>): MediaItem[] {
   const groups = new Map<number, MovieRow[]>();
   const singles: MovieRow[] = [];
   for (const m of movies) {
     if (m.tmdb_id == null) singles.push(m);
-    else groups.set(m.tmdb_id, [...(groups.get(m.tmdb_id) ?? []), m]);
+    else {
+      const list = groups.get(m.tmdb_id);
+      if (list) list.push(m);
+      else groups.set(m.tmdb_id, [m]);
+    }
   }
-  // The card shows the version being watched, otherwise the highest quality.
-  const score = (r: MovieRow) => (r.last_watched_at ? 1000 : 0) + qualityScore(r);
   const items = [
-    ...[...groups.values()].map((rows) => movieToItem(rows.reduce((a, b) => (score(b) > score(a) ? b : a)), rows)),
+    ...[...groups.values()].map((rows) => buildMovieItem(rows)),
     ...singles.map((m) => movieToItem(m)),
   ];
   for (const s of series) items.push(seriesToItem(s, episodesBySeries.get(s.id) ?? []));
@@ -257,10 +273,7 @@ export function continueWatching(items: MediaItem[], episodesBySeries: Map<numbe
 }
 
 export function formatRuntime(minutes: number | null | undefined): string {
-  if (!minutes) return '';
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return h ? `${h}h ${m}m` : `${m}m`;
+  return minutes ? formatDuration(minutes * 60) : '';
 }
 
 export function formatRemaining(seconds: number): string {
@@ -268,15 +281,6 @@ export function formatRemaining(seconds: number): string {
   if (m <= 0) return '';
   if (m < 60) return `${m}m left`;
   return `${Math.floor(m / 60)}h ${m % 60}m left`;
-}
-
-export function formatTimestamp(seconds: number): string {
-  const s = Math.floor(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
 }
 
 /** Normalises TMDB TV genres ("Sci-Fi & Fantasy") onto movie-style row names. */

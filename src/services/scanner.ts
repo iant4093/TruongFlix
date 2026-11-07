@@ -6,13 +6,14 @@ import type { EpisodeMetadata, FileInfo, MatchHint, MovieMetadata, SeriesMetadat
 import { organizeLooseFiles } from './files';
 import { startBackgroundAnalysis } from './enrich';
 import { reconnectOfflineShares, refreshShares } from './nas';
+import { createReloadThrottle } from './libraryReload';
 import { imdbSyncDue, syncImdbRatings } from './imdb';
 import { guessSeasonEpisode, parseVideoFile, toRawFile } from './parser';
 import * as tmdb from './tmdb';
 import type { SearchResult } from './tmdb';
 
 const CONCURRENCY = 4;
-const RELOAD_EVERY = 8;
+const RELOAD_INTERVAL_MS = 2000;
 
 // ---------------------------------------------------------------------------
 // Per-scan caches: 50 episodes of one show hit the series endpoint once.
@@ -223,6 +224,7 @@ export async function runScan(opts: ScanOptions = {}) {
     let done = 0;
     let failures = 0;
     let networkFailures = 0;
+    const reloads = createReloadThrottle(RELOAD_INTERVAL_MS, reload);
     await pool(todo, CONCURRENCY, async (file) => {
       if (networkFailures >= 6) return; // TMDB unreachable — leave the rest for next scan.
       try {
@@ -235,11 +237,13 @@ export async function runScan(opts: ScanOptions = {}) {
       } finally {
         done++;
         useLibraryStore.getState().setScan({ current: done, message: file.filename });
-        if (done % RELOAD_EVERY === 0) await reload();
+        reloads.request();
       }
     });
 
-    await reload();
+    // Titles appear while matching (throttled), then one final reload — skipped when nothing changed.
+    if (todo.length || removed || organized) await reloads.flush();
+    else reloads.cancel();
 
     // IMDb ratings: refreshed daily, or right away when new titles arrived. Failures never fail the scan.
     let ratingsNote = '';

@@ -358,6 +358,16 @@ async function select<T>(sql: string, params: unknown[] = []): Promise<T> {
 
 const json = (v: unknown) => (v == null ? null : JSON.stringify(v));
 
+/** `$1, $2, …` for IN lists / batched statements. */
+const placeholders = (n: number, from = 1) => Array.from({ length: n }, (_, i) => `$${i + from}`).join(', ');
+
+/** Splits ids into batches well under SQLite's bound-parameter limit. */
+function chunks<T>(list: T[], size = 400): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
@@ -470,7 +480,6 @@ let activeProfile = 1;
 export function setActiveProfile(id: number) {
   activeProfile = id;
 }
-export const getActiveProfile = () => activeProfile;
 
 export async function listProfiles() {
   return select<Profile[]>('SELECT * FROM profiles ORDER BY id');
@@ -586,13 +595,22 @@ function withState<T extends object>(row: T & StateCols, media_duration?: number
   } as unknown as T;
 }
 
+// Durations parsed from media_info JSON, carried between library loads so reloads skip re-parsing.
+let durationCache = new Map<string, number | null>();
+let nextDurationCache = new Map<string, number | null>();
+
 const mediaDuration = (json: string | null) => {
   if (!json) return null;
-  try {
-    return Math.round((JSON.parse(json) as MediaInfo).duration) || null;
-  } catch {
-    return null;
+  let value = durationCache.get(json);
+  if (value === undefined) {
+    try {
+      value = Math.round((JSON.parse(json) as MediaInfo).duration) || null;
+    } catch {
+      value = null;
+    }
   }
+  nextDurationCache.set(json, value);
+  return value;
 };
 
 export async function loadLibrary(p = activeProfile) {
@@ -614,11 +632,14 @@ export async function loadLibrary(p = activeProfile) {
       [p],
     ),
   ]);
-  return {
+  nextDurationCache = new Map();
+  const result = {
     movies: movies.map((m) => withState<MovieRow>(m, mediaDuration(m.media_info))),
     series: series.map((s) => withState<SeriesRow>(s)),
     episodes: episodes.map((e) => withState<EpisodeRow>(e, mediaDuration(e.media_info))),
   };
+  durationCache = nextDurationCache;
+  return result;
 }
 
 export interface IndexedFile {
@@ -1012,20 +1033,6 @@ export async function setWatched(type: 'movie' | 'episode', id: number, watched:
   }
 }
 
-/** Removes an item from "Continue Watching" without touching its watched flag. */
-export async function clearResume(kind: 'movie' | 'tv', id: number) {
-  if (kind === 'movie') {
-    await upsertState('movie', id, { progress_seconds: 0, last_watched_at: null });
-  } else {
-    await upsertState('tv', id, { last_watched_at: null });
-    await exec(
-      `UPDATE profile_state SET progress_seconds = 0 WHERE profile_id = $1 AND media_type = 'episode'
-       AND media_id IN (SELECT id FROM episodes WHERE series_id = $2)`,
-      [activeProfile, id],
-    );
-  }
-}
-
 /** Adds naturally-watched seconds to today's Viewing Activity / Wrapped log. */
 export async function logWatchTime(
   type: 'movie' | 'episode',
@@ -1100,7 +1107,7 @@ export async function saveSegments(id: number, segments: Segment[]) {
 }
 
 export async function markIntroChecked(ids: number[]) {
-  for (const id of ids) await exec('UPDATE episodes SET intro_checked = 1 WHERE id = $1', [id]);
+  for (const part of chunks(ids)) await exec(`UPDATE episodes SET intro_checked = 1 WHERE id IN (${placeholders(part.length)})`, part);
 }
 
 export async function saveMovieExtras(tmdbId: number, x: MovieExtras) {
@@ -1298,8 +1305,8 @@ interface ProfileStateRow {
 }
 
 export async function removeLibraryRows(movieIds: number[], episodeIds: number[]) {
-  for (const id of movieIds) await exec('DELETE FROM movies WHERE id = $1', [id]);
-  for (const id of episodeIds) await exec('DELETE FROM episodes WHERE id = $1', [id]);
+  for (const ids of chunks(movieIds)) await exec(`DELETE FROM movies WHERE id IN (${placeholders(ids.length)})`, ids);
+  for (const ids of chunks(episodeIds)) await exec(`DELETE FROM episodes WHERE id IN (${placeholders(ids.length)})`, ids);
   await pruneEmptySeries();
   await pruneOrphanSubtitles();
   await pruneOrphanState();

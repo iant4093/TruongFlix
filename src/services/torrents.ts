@@ -25,6 +25,7 @@ import { startBackgroundAnalysis } from './enrich';
 import { cleanTitle, extractTech, guessSeasonEpisode, parseVideoFile, toRawFile } from './parser';
 import { play } from './player';
 import * as tmdb from './tmdb';
+import { basename } from '../lib/path';
 import type { SearchResult } from './tmdb';
 
 const SEASON_PACK_RE = /\bS(\d{1,2})\b(?![ ._-]?E\d)|\bSeason[ ._-]*(\d{1,2})\b|\bComplete[ ._-]*(?:Series|Season|Collection)\b/i;
@@ -137,7 +138,7 @@ export function pickDestinationFolder(kind: MediaKind, settings = useLibraryStor
   for (const dir of dirs) {
     const movieCount = movies.filter((m) => isUnder(m.file_path, dir)).length;
     const epCount = episodes.filter((e) => isUnder(e.file_path, dir)).length;
-    const base = dir.split(/[\\/]/).filter(Boolean).pop() ?? dir;
+    const base = basename(dir);
 
     let score = 0;
     if (kind === 'movie') {
@@ -641,7 +642,7 @@ export async function keepStreamPermanently(infoHash: string, explicitRoot?: str
       await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' }).catch(() => {});
     }
     const moves: FileMove[] = item.filePaths.map((from) => {
-      const leaf = from.split(/[\\/]/).pop() ?? 'video.mkv';
+      const leaf = basename(from) || 'video.mkv';
       return { from, to: joinPath(targetDir, leaf) };
     });
     if (moves.length) {
@@ -758,19 +759,57 @@ export async function registerOsHandler(): Promise<OsHandlerStatus> {
 // Selectors & Formatting Helpers for Library Posters and Detail Screens
 // ---------------------------------------------------------------------------
 
+interface TorrentIndex {
+  size: number;
+  movieId: Map<number, number>;
+  filePath: Map<string, number>;
+  movieTmdb: Map<number, number>;
+  seriesId: Map<number, number>;
+  tvTmdb: Map<number, number>;
+}
+
+const torrentIndexes = new WeakMap<TorrentItem[], TorrentIndex>();
+
+/** O(1)-lookup index over a torrents array (built once per array identity). */
+function torrentIndex(torrents: TorrentItem[]): TorrentIndex {
+  let idx = torrentIndexes.get(torrents);
+  if (idx && idx.size === torrents.length) return idx;
+  idx = { size: torrents.length, movieId: new Map(), filePath: new Map(), movieTmdb: new Map(), seriesId: new Map(), tvTmdb: new Map() };
+  const put = <K,>(m: Map<K, number>, k: K, i: number) => {
+    if (!m.has(k)) m.set(k, i);
+  };
+  torrents.forEach((t, i) => {
+    if (t.movieId != null) put(idx!.movieId, t.movieId, i);
+    for (const p of t.filePaths) put(idx!.filePath, p, i);
+    if (t.tmdbId != null && t.mediaKind === 'movie') put(idx!.movieTmdb, t.tmdbId, i);
+    if (t.seriesId != null) put(idx!.seriesId, t.seriesId, i);
+    if (t.tmdbId != null && t.mediaKind === 'tv') put(idx!.tvTmdb, t.tmdbId, i);
+  });
+  torrentIndexes.set(torrents, idx);
+  return idx;
+}
+
+/**
+ * The first torrent (in list order) attached to an item by movie/series id, file path or TMDB id.
+ * Uses a per-array index, so every card can look itself up in O(1) after each poll.
+ */
 export function torrentForItem(item: MediaItem, torrents: TorrentItem[]): TorrentItem | null {
   if (!torrents.length) return null;
-  for (const t of torrents) {
-    if (item.kind === 'movie') {
-      if (t.movieId != null && (t.movieId === item.id || item.versions.some((v) => v.id === t.movieId))) return t;
-      if (item.filePath && t.filePaths.includes(item.filePath)) return t;
-      if (item.tmdbId != null && t.mediaKind === 'movie' && t.tmdbId === item.tmdbId) return t;
-    } else {
-      if (t.seriesId != null && t.seriesId === item.id) return t;
-      if (item.tmdbId != null && t.mediaKind === 'tv' && t.tmdbId === item.tmdbId) return t;
-    }
+  const idx = torrentIndex(torrents);
+  let best = Infinity;
+  const consider = (i: number | undefined) => {
+    if (i != null && i < best) best = i;
+  };
+  if (item.kind === 'movie') {
+    consider(idx.movieId.get(item.id));
+    for (const v of item.versions) consider(idx.movieId.get(v.id));
+    if (item.filePath) consider(idx.filePath.get(item.filePath));
+    if (item.tmdbId != null) consider(idx.movieTmdb.get(item.tmdbId));
+  } else {
+    consider(idx.seriesId.get(item.id));
+    if (item.tmdbId != null) consider(idx.tvTmdb.get(item.tmdbId));
   }
-  return null;
+  return best === Infinity ? null : torrents[best];
 }
 
 export function torrentForEpisode(ep: EpisodeRow, torrents: TorrentItem[]): TorrentItem | null {
@@ -821,23 +860,6 @@ export function episodeFileProgress(ep: EpisodeRow, torrent: TorrentItem | null)
   if (f.size > 0 && f.downloaded_bytes >= f.size) return null;
   const pct = f.size > 0 ? Math.min(100, (f.downloaded_bytes / f.size) * 100) : torrent.progressPct;
   return { downloading: true, pct };
-}
-
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = bytes;
-  let u = 0;
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024;
-    u++;
-  }
-  return `${v >= 100 || u === 0 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)} ${units[u]}`;
-}
-
-export function formatSpeed(bps: number): string {
-  if (!bps || bps <= 0) return '0 KB/s';
-  return `${formatBytes(bps)}/s`;
 }
 
 export function formatEta(secs: number | null): string {
@@ -901,16 +923,66 @@ export function formatExpiryRemaining(expiresAt: string | null, compact = true):
 
 let pollInFlight: Promise<TorrentItem[]> | null = null;
 let pollTimer: number | null = null;
-let reaperTimer: number | null = null;
 const unlisteners: UnlistenFn[] = [];
 
-async function reconcileMagnetFilesIfNeeded(rec: TorrentRecord, live: TorrentStatus): Promise<string[]> {
-  let storedPaths: string[] = [];
+// Parsed `file_paths` JSON, keyed by the raw string so unchanged records skip re-parsing every poll.
+let parsedPathsCache = new Map<string, string[]>();
+
+function parseFilePaths(raw: string): string[] {
+  const hit = parsedPathsCache.get(raw);
+  if (hit) return hit;
+  let paths: string[] = [];
   try {
-    storedPaths = JSON.parse(rec.file_paths) as string[];
+    paths = JSON.parse(raw) as string[];
   } catch {
-    storedPaths = [];
+    paths = [];
   }
+  parsedPathsCache.set(raw, paths);
+  return paths;
+}
+
+const sameStrings = (a: string[], b: string[]) => a === b || (a.length === b.length && a.every((v, i) => v === b[i]));
+
+function sameFiles(a: TorrentItem['files'], b: TorrentItem['files']): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] as unknown as Record<string, unknown>;
+    const y = b[i] as unknown as Record<string, unknown>;
+    if (x === y) continue;
+    for (const k in x) if (x[k] !== y[k]) return false;
+    for (const k in y) if (!(k in x)) return false;
+  }
+  return true;
+}
+
+/** Field-wise equality for poll results; arrays are compared by content. */
+function sameTorrent(a: TorrentItem, b: TorrentItem): boolean {
+  for (const k in a) {
+    const key = k as keyof TorrentItem;
+    if (key === 'filePaths') {
+      if (!sameStrings(a.filePaths, b.filePaths)) return false;
+    } else if (key === 'files') {
+      if (!sameFiles(a.files, b.files)) return false;
+    } else if (a[key] !== b[key]) return false;
+  }
+  return Object.keys(a).length === Object.keys(b).length;
+}
+
+/** Reuses unchanged records' identities; returns `prev` itself when nothing changed. */
+export function reconcileTorrentList(prev: TorrentItem[], next: TorrentItem[]): TorrentItem[] {
+  const byHash = new Map(prev.map((t) => [t.infoHash, t]));
+  let changed = prev.length !== next.length;
+  const out = next.map((t, i) => {
+    const old = byHash.get(t.infoHash);
+    const kept = old && (old === t || sameTorrent(old, t)) ? old : t;
+    if (kept !== prev[i]) changed = true;
+    return kept;
+  });
+  return changed ? out : prev;
+}
+
+async function reconcileMagnetFilesIfNeeded(rec: TorrentRecord, live: TorrentStatus, storedPaths: string[]): Promise<string[]> {
   let liveVideoFiles = live.files.filter((f) => f.included && f.is_video);
   if (!liveVideoFiles.length) return storedPaths;
   // Movie torrents may contain extras. Ingestion represents the largest video as the movie;
@@ -972,10 +1044,17 @@ export function pollTorrents(): Promise<TorrentItem[]> {
     for (const l of liveList) liveMap.set(l.info_hash.toLowerCase(), l);
 
     const { settings } = useLibraryStore.getState();
-    const merged: TorrentItem[] = [];
+    let merged: TorrentItem[] = [];
     let needsLibraryReload = false;
     let triggerProbe = false;
     const justCompleted: string[] = [];
+    const prevCache = parsedPathsCache;
+    parsedPathsCache = new Map();
+    const parse = (raw: string) => {
+      const hit = prevCache.get(raw);
+      if (hit) parsedPathsCache.set(raw, hit);
+      return hit ?? parseFilePaths(raw);
+    };
 
     for (const rec of records) {
       const hash = rec.info_hash.toLowerCase();
@@ -985,16 +1064,11 @@ export function pollTorrents(): Promise<TorrentItem[]> {
         continue;
       }
       const live = liveMap.get(hash);
-      let filePaths: string[] = [];
-      try {
-        filePaths = JSON.parse(rec.file_paths) as string[];
-      } catch {
-        filePaths = [];
-      }
+      let filePaths: string[] = parse(rec.file_paths);
 
       const isGame = rec.purpose === 'game';
       if (live && live.files.length > 0 && !isGame) {
-        filePaths = await reconcileMagnetFilesIfNeeded(rec, live);
+        filePaths = await reconcileMagnetFilesIfNeeded(rec, live, filePaths);
       }
 
       let completedAt = rec.completed_at;
@@ -1027,7 +1101,7 @@ export function pollTorrents(): Promise<TorrentItem[]> {
           await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' });
           const moves: FileMove[] = filePaths.map((from) => ({
             from,
-            to: joinPath(savePath, from.split(/[\\/]/).pop() ?? 'video.mkv'),
+            to: joinPath(savePath, basename(from) || 'video.mkv'),
           }));
           await invoke('apply_moves', { moves });
           await db.updateFilePaths(moves);
@@ -1126,7 +1200,10 @@ export function pollTorrents(): Promise<TorrentItem[]> {
       }
     }
 
-    useLibraryStore.getState().setTorrents(merged);
+    const current = useLibraryStore.getState().torrents;
+    const next = reconcileTorrentList(current, merged);
+    if (next !== current) useLibraryStore.getState().setTorrents(next);
+    merged = next;
     if (needsLibraryReload) await useLibraryStore.getState().reload();
     if (triggerProbe) void startBackgroundAnalysis();
     for (const hash of justCompleted) {
@@ -1143,7 +1220,9 @@ function scheduleAdaptivePoll() {
   const hasActive = useLibraryStore
     .getState()
     .torrents.some((t) => t.inSession && (t.state === 'resolving' || t.state === 'initializing' || t.state === 'downloading' || t.state === 'seeding'));
-  const interval = hasActive ? 1500 : 6000;
+  // Nobody is watching progress bars while the window is hidden; completion still lands within 6 s.
+  const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  const interval = hasActive && !hidden ? 1500 : 6000;
   pollTimer = window.setTimeout(async () => {
     try {
       await pollTorrents();
@@ -1222,7 +1301,7 @@ export async function initTorrentService() {
     scheduleAdaptivePoll();
   }
 
-  reaperTimer = window.setInterval(() => {
+  window.setInterval(() => {
     void reapExpiredStreams();
   }, 30_000);
 
@@ -1266,13 +1345,4 @@ export async function initTorrentService() {
   } catch {
     /* ignore */
   }
-}
-
-export function disposeTorrentService() {
-  if (pollTimer != null) window.clearTimeout(pollTimer);
-  if (reaperTimer != null) window.clearInterval(reaperTimer);
-  pollTimer = null;
-  reaperTimer = null;
-  while (unlisteners.length) unlisteners.pop()?.();
-  initialized = false;
 }

@@ -2,29 +2,17 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useLibraryStore } from './store/useLibraryStore';
 import Navbar, { Wordmark } from './components/layout/Navbar';
-import Discover from './components/browse/Discover';
-import LiveTV from './components/live/LiveTV';
-import SettingsDialog from './components/settings/SettingsDialog';
 import { BrowseView, MyListView, SearchView } from './components/home/Browse';
 import HoverPreview from './components/home/HoverPreview';
-import DetailModal from './components/modals/DetailModal';
-import FixMatchModal from './components/modals/FixMatchModal';
-import OnboardingModal from './components/modals/OnboardingModal';
 import Toasts from './components/common/Toasts';
 import ConfirmDialog from './components/common/ConfirmDialog';
-import PlayerScreen from './components/player/PlayerScreen';
 import MiniPlayer from './components/player/MiniPlayer';
 import ProfileGate from './components/profiles/ProfileGate';
 import PinPrompt from './components/profiles/PinPrompt';
 import LaunchIntro from './components/layout/LaunchIntro';
-import ActorModal from './components/modals/ActorModal';
-import WrappedModal from './components/modals/WrappedModal';
-import HistoryModal from './components/modals/HistoryModal';
-import RenameModal from './components/modals/RenameModal';
-import HealthModal from './components/modals/HealthModal';
-import AddTorrentModal from './components/torrents/AddTorrentModal';
 import GamesUnavailable from './components/games/GamesUnavailable';
 import { autoPurgeTrash } from './services/files';
+import { basename } from './lib/path';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { engineStatus, initPlayerEvents, playBuiltin, syncAudioFilters, syncMiniLayout, syncSubtitleStyle } from './services/player';
@@ -40,6 +28,41 @@ import { reconnectOfflineShares, refreshShares } from './services/nas';
 
 // Windows-only; other builds compile this to null and drop the Games code.
 const GamesView = __GAMES__ ? lazy(() => import('./games/components/GamesView')) : null;
+
+// Screens and dialogs that aren't on the first paint load in their own chunks.
+const loaders = {
+  discover: () => import('./components/browse/Discover'),
+  live: () => import('./components/live/LiveTV'),
+  settings: () => import('./components/settings/SettingsDialog'),
+  detail: () => import('./components/modals/DetailModal'),
+  fixMatch: () => import('./components/modals/FixMatchModal'),
+  onboarding: () => import('./components/modals/OnboardingModal'),
+  player: () => import('./components/player/PlayerScreen'),
+  actor: () => import('./components/modals/ActorModal'),
+  wrapped: () => import('./components/modals/WrappedModal'),
+  history: () => import('./components/modals/HistoryModal'),
+  rename: () => import('./components/modals/RenameModal'),
+  health: () => import('./components/modals/HealthModal'),
+  addTorrent: () => import('./components/torrents/AddTorrentModal'),
+};
+const Discover = lazy(loaders.discover);
+const LiveTV = lazy(loaders.live);
+const SettingsDialog = lazy(loaders.settings);
+const DetailModal = lazy(loaders.detail);
+const FixMatchModal = lazy(loaders.fixMatch);
+const OnboardingModal = lazy(loaders.onboarding);
+const PlayerScreen = lazy(loaders.player);
+const ActorModal = lazy(loaders.actor);
+const WrappedModal = lazy(loaders.wrapped);
+const HistoryModal = lazy(loaders.history);
+const RenameModal = lazy(loaders.rename);
+const HealthModal = lazy(loaders.health);
+const AddTorrentModal = lazy(loaders.addTorrent);
+
+/** Warms every lazy chunk once the app is idle, so the first open never waits on the network/disk. */
+function prefetchLazyChunks() {
+  for (const load of Object.values(loaders)) void load().catch(() => {});
+}
 
 export default function App() {
   const ready = useLibraryStore((s) => s.ready);
@@ -84,7 +107,7 @@ export default function App() {
         // TRUONGFLIX_AUTOPLAY=<file> (CI smoke test): start playing right away.
         const path = await invoke<string | null>('startup_autoplay').catch(() => null);
         if (!path) return;
-        const label = (path.split(/[\\/]/).pop() ?? path).replace(/\.[^.]+$/, '');
+        const label = basename(path).replace(/\.[^.]+$/, '');
         setTimeout(() => void playBuiltin({ type: 'movie', id: -1, filePath: path, startTime: 0, label }), 1500);
       })
       .catch((e) => setFatal(String(e)));
@@ -121,6 +144,12 @@ export default function App() {
     window.addEventListener('resize', syncMiniLayout);
     return () => window.removeEventListener('resize', syncMiniLayout);
   }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const id = window.setTimeout(prefetchLazyChunks, 1500);
+    return () => window.clearTimeout(id);
+  }, [ready]);
 
   // Restart folder watching when the folders or the setting change.
   const dirsKey = useLibraryStore((s) => `${s.settings.watch_folders}|${s.settings.tmdb_api_key ? 1 : 0}|${s.settings.media_directories.join('|')}`);
@@ -210,11 +239,11 @@ export default function App() {
         <Navbar />
         <main>
           {view === 'browse' ? (
-            <Discover />
+            <Suspense fallback={null}><Discover /></Suspense>
           ) : view === 'games' ? (
             GamesView ? <Suspense fallback={null}><GamesView /></Suspense> : <GamesUnavailable />
           ) : view === 'live' ? (
-            <LiveTV />
+            <Suspense fallback={null}><LiveTV /></Suspense>
           ) : search.trim() ? (
             <SearchView query={search} />
           ) : view === 'mylist' ? (
@@ -225,23 +254,26 @@ export default function App() {
         </main>
 
         <HoverPreview />
-        <AnimatePresence>{detailKey && <DetailModal key="detail" />}</AnimatePresence>
-        <AnimatePresence>{fixMatchKey && <FixMatchModal key={fixMatchKey} />}</AnimatePresence>
-        <AnimatePresence>{settingsOpen && <SettingsDialog key="settings" />}</AnimatePresence>
-        <AnimatePresence>{addTorrentOpen && <AddTorrentModal key="add-torrent" />}</AnimatePresence>
-        <AnimatePresence>{onboardingOpen && <OnboardingModal key="onboarding" />}</AnimatePresence>
-        <ActorModal />
-        <AnimatePresence>
-          {pageOverlay === 'wrapped' && <WrappedModal key="wrapped" />}
-          {pageOverlay === 'history' && <HistoryModal key="history" />}
-          {pageOverlay === 'rename' && <RenameModal key="rename" />}
-          {pageOverlay === 'health' && <HealthModal key="health" />}
-        </AnimatePresence>
+        {/* Each dialog gets its own boundary so loading one never blanks the others. */}
+        <Suspense fallback={null}><AnimatePresence>{detailKey && <DetailModal key="detail" />}</AnimatePresence></Suspense>
+        <Suspense fallback={null}><AnimatePresence>{fixMatchKey && <FixMatchModal key={fixMatchKey} />}</AnimatePresence></Suspense>
+        <Suspense fallback={null}><AnimatePresence>{settingsOpen && <SettingsDialog key="settings" />}</AnimatePresence></Suspense>
+        <Suspense fallback={null}><AnimatePresence>{addTorrentOpen && <AddTorrentModal key="add-torrent" />}</AnimatePresence></Suspense>
+        <Suspense fallback={null}><AnimatePresence>{onboardingOpen && <OnboardingModal key="onboarding" />}</AnimatePresence></Suspense>
+        <Suspense fallback={null}><ActorModal /></Suspense>
+        <Suspense fallback={null}>
+          <AnimatePresence>
+            {pageOverlay === 'wrapped' && <WrappedModal key="wrapped" />}
+            {pageOverlay === 'history' && <HistoryModal key="history" />}
+            {pageOverlay === 'rename' && <RenameModal key="rename" />}
+            {pageOverlay === 'health' && <HealthModal key="health" />}
+          </AnimatePresence>
+        </Suspense>
       </div>
       <MiniPlayer />
       <CastBar />
       <CastPicker />
-      <PlayerScreen />
+      <Suspense fallback={null}><PlayerScreen /></Suspense>
       <ProfileGate />
       <PinPrompt />
       <Toasts />

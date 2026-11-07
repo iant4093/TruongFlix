@@ -23,7 +23,7 @@ import type {
   TorrentItem,
 } from '../types/media';
 import type { SearchResult } from '../services/tmdb';
-import { allowedForMaturity, buildItems, groupEpisodes } from './selectors';
+import { allowedForMaturity, buildItems, buildMovieItem, buildSeriesItem, groupEpisodes } from './selectors';
 
 export type View = 'home' | 'tv' | 'movies' | 'mylist' | 'live' | 'browse' | 'games';
 
@@ -158,7 +158,8 @@ interface LibraryState {
   openAddTorrent: (initialSource?: string, catalogMatch?: SearchResult) => void;
   openAddTorrentFromSettings: () => void;
   closeAddTorrent: () => void;
-  patchProgress: (type: PlayableType, id: number, time: number, length: number) => void;
+  /** Patches one movie/episode (and its card) in memory; `watched` overrides the completion ratio. */
+  patchProgress: (type: PlayableType, id: number, time: number, duration: number, watched?: boolean) => void;
   toggleMyList: (item: MediaItem) => Promise<void>;
   loadProfiles: () => Promise<void>;
   switchProfile: (id: number) => Promise<void>;
@@ -181,6 +182,7 @@ interface LibraryState {
 const EMPTY_SCAN: ScanState = { running: false, phase: 'idle', current: 0, total: 0, message: '', added: 0, removed: 0 };
 
 let toastId = 0;
+let initRun: Promise<void> | null = null;
 
 export const useLibraryStore = create<LibraryState>((set, get) => ({
   ready: false,
@@ -303,7 +305,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     req?.resolve(ok);
   },
 
-  init: async () => {
+  // StrictMode runs the startup effect twice in development; a late second run would reopen the profile gate.
+  init: () => (initRun ??= (async () => {
     const settings = await db.getSettings();
     setApiKey(settings.tmdb_api_key);
     set({ settings });
@@ -319,7 +322,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       // A PIN-protected profile never opens without its PIN.
       profileGate: !onboarding && ((settings.ask_profile && profiles.length > 1) || !!active?.pin) ? 'select' : null,
     });
-  },
+  })()),
 
   reload: async () => {
     const [{ movies, series, episodes }, collections] = await Promise.all([db.loadLibrary(), db.listCollections()]);
@@ -431,10 +434,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   closeAddTorrent: () => set({ addTorrentModal: null }),
 
   /** Live in-memory progress update while VLC is playing (DB is written by the player service). */
-  patchProgress: (type, id, time, length) => {
-    const { movies, episodes, series, episodesBySeries } = get();
+  patchProgress: (type, id, time, length, watched) => {
+    const { movies, episodes, series, episodesBySeries, items, allItems } = get();
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    const completed = length > 0 && time / length >= db.COMPLETED_RATIO;
+    const completed = watched ?? (length > 0 && time / length >= db.COMPLETED_RATIO);
     const counts = time > db.CONTINUE_MIN_SECONDS || completed;
     if (!counts) return;
     const patch = <T extends { progress_seconds: number; duration_seconds: number; watched: number; last_watched_at: string | null }>(r: T): T => ({
@@ -444,18 +447,44 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       watched: completed ? 1 : 0,
       last_watched_at: now,
     });
-    const maturity = get().activeProfile?.maturity ?? 'all';
-    const filtered = (all: MediaItem[]) => ({ allItems: all, items: all.filter((i) => allowedForMaturity(i, maturity)) });
+    // Swap only the affected card, keeping every other item's identity (and list position).
+    const replace = (list: MediaItem[], matches: (i: MediaItem) => boolean, next: MediaItem) => {
+      const at = list.findIndex(matches);
+      if (at < 0) return list;
+      const out = list.slice();
+      out[at] = next;
+      return out;
+    };
     if (type === 'movie') {
-      const next = movies.map((m) => (m.id === id ? patch(m) : m));
-      set({ movies: next, ...filtered(buildItems(next, series, episodesBySeries)) });
+      const at = movies.findIndex((m) => m.id === id);
+      if (at < 0) return;
+      const row = patch(movies[at]);
+      const next = movies.slice();
+      next[at] = row;
+      const group = row.tmdb_id == null ? [row] : next.filter((m) => m.tmdb_id === row.tmdb_id);
+      const groupIds = new Set(group.map((m) => m.id));
+      const item = buildMovieItem(group);
+      const matches = (i: MediaItem) => i.kind === 'movie' && groupIds.has(i.id);
+      set({ movies: next, allItems: replace(allItems, matches, item), items: replace(items, matches, item) });
     } else {
-      const ep = episodes.find((e) => e.id === id);
-      if (!ep) return;
-      const nextEps = episodes.map((e) => (e.id === id ? patch(e) : e));
-      const nextSeries = series.map((s) => (s.id === ep.series_id ? { ...s, last_watched_at: now } : s));
-      const grouped = groupEpisodes(nextEps);
-      set({ episodes: nextEps, series: nextSeries, episodesBySeries: grouped, ...filtered(buildItems(movies, nextSeries, grouped)) });
+      const at = episodes.findIndex((e) => e.id === id);
+      if (at < 0) return;
+      const row = patch(episodes[at]);
+      const nextEps = episodes.slice();
+      nextEps[at] = row;
+      const sAt = series.findIndex((s) => s.id === row.series_id);
+      const nextSeries = series.slice();
+      if (sAt >= 0) nextSeries[sAt] = { ...series[sAt], last_watched_at: now };
+      const grouped = new Map(episodesBySeries);
+      const list = (grouped.get(row.series_id) ?? []).map((e) => (e.id === id ? row : e));
+      grouped.set(row.series_id, list);
+      if (sAt < 0) {
+        set({ episodes: nextEps, series: nextSeries, episodesBySeries: grouped });
+        return;
+      }
+      const item = buildSeriesItem(nextSeries[sAt], list);
+      const matches = (i: MediaItem) => i.kind === 'tv' && i.id === row.series_id;
+      set({ episodes: nextEps, series: nextSeries, episodesBySeries: grouped, allItems: replace(allItems, matches, item), items: replace(items, matches, item) });
     }
   },
 
@@ -472,5 +501,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));
+
+/** Updates one item's progress in memory without reloading the library (the caller persists it). */
+export function patchProgress(type: PlayableType, id: number, time: number, duration: number, watched?: boolean) {
+  useLibraryStore.getState().patchProgress(type, id, time, duration, watched);
+}
 
 export const selectItem = (key: string | null) => (s: LibraryState) => (key ? (s.items.find((i) => i.key === key) ?? null) : null);

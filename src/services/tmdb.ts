@@ -314,7 +314,7 @@ export async function getMovieDetails(tmdbId: number): Promise<MovieMetadata> {
     genres: (d.genres ?? []).map((g) => g.name),
     cast_crew: castFrom(d.credits),
     poster_path: img(d.poster_path, 'w500'),
-    backdrop_path: img(d.backdrop_path, 'original'),
+    backdrop_path: img(d.backdrop_path, 'w1280'),
     logo_path: pickLogo(d.images?.logos),
     imdb_id: d.imdb_id || '',
     extras: movieExtras(d),
@@ -409,7 +409,7 @@ export async function getCollection(id: number): Promise<TmdbCollection> {
       overview: p.overview ?? '',
     }))
     .sort((a, b) => (a.release_date ?? '9999').localeCompare(b.release_date ?? '9999'));
-  return { id: d.id, name: d.name, overview: d.overview || null, poster_path: img(d.poster_path, 'w500'), backdrop_path: img(d.backdrop_path, 'original'), parts };
+  return { id: d.id, name: d.name, overview: d.overview || null, poster_path: img(d.poster_path, 'w500'), backdrop_path: img(d.backdrop_path, 'w1280'), parts };
 }
 
 export interface PersonInfo {
@@ -506,7 +506,7 @@ export async function getSeriesDetails(tmdbId: number): Promise<SeriesMetadata> 
     genres: (d.genres ?? []).map((g) => g.name),
     cast_crew: castFrom(d.credits, d.created_by),
     poster_path: img(d.poster_path, 'w500'),
-    backdrop_path: img(d.backdrop_path, 'original'),
+    backdrop_path: img(d.backdrop_path, 'w1280'),
     logo_path: pickLogo(d.images?.logos),
     number_of_seasons: d.number_of_seasons ?? 1,
     imdb_id: d.external_ids?.imdb_id || '',
@@ -525,16 +525,6 @@ function toEpisodeMeta(e: TmdbEpisode): EpisodeMetadata {
     air_date: e.air_date || null,
     runtime: e.runtime || null,
   };
-}
-
-/** Single-episode lookup: GET /tv/{id}/season/{s}/episode/{e}. */
-export async function getEpisodeDetails(tvId: number, season: number, episode: number): Promise<EpisodeMetadata | null> {
-  try {
-    return toEpisodeMeta(await request<TmdbEpisode>(`/tv/${tvId}/season/${season}/episode/${episode}`));
-  } catch (e) {
-    if (e instanceof TmdbError && e.status === 404) return null;
-    throw e;
-  }
 }
 
 /**
