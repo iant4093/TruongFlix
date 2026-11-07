@@ -5,7 +5,7 @@ import type { useBannerTrailer } from './useBannerTrailer';
 
 type Trailer = ReturnType<typeof useBannerTrailer>;
 
-export function BillboardMedia({ title, backdrop, trailer }: { title: string; backdrop: string | null; trailer: Trailer }) {
+export function BillboardMedia({ title, backdrop, trailer }: { title: string; backdrop: string | null; trailer?: Trailer }) {
   const [loadedBackdrop, setLoadedBackdrop] = useState<string | null>(null);
   const loaded = backdrop === loadedBackdrop;
   return (
@@ -23,7 +23,7 @@ export function BillboardMedia({ title, backdrop, trailer }: { title: string; ba
           className="absolute inset-0 h-full w-full object-cover object-top"
         />
       )}
-      <TrailerLayer title={title} trailer={trailer} />
+      {trailer && <TrailerLayer title={title} trailer={trailer} />}
       <div className="pointer-events-none absolute inset-0"
         style={{ background: 'linear-gradient(77deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 85%)' }} />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[45%]"

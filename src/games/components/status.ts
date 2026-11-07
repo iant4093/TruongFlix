@@ -13,6 +13,8 @@ const PHASES: Record<JobState['phase'], string> = {
   finishing: 'Finishing up',
 };
 
+export const isInstalled = (game: LibraryGame) => game.status === 'installed' || game.status === 'verify_failed';
+
 /** Overall progress 0–100 for the current step, or null when it isn't measurable. */
 export function gameProgress(game: LibraryGame, job: JobState | undefined, torrent: TorrentItem | undefined): number | null {
   if (job) return job.percent;

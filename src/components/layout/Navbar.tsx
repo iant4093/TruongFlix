@@ -125,6 +125,8 @@ export default function Navbar() {
 
         {view === 'browse' ? (
           <button aria-label="Search Browse" className="p-1.5" onClick={() => document.querySelector<HTMLInputElement>('input[aria-label="Search titles to browse"]')?.focus()}><Search className="h-5 w-5" /></button>
+        ) : view === 'games' ? (
+          <button aria-label="Search games" className="p-1.5" onClick={() => document.querySelector<HTMLInputElement>('input[aria-label="Search games"]')?.focus()}><Search className="h-5 w-5" /></button>
         ) : view === 'live' ? (
           <button
             aria-label="Search live TV"

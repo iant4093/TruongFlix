@@ -1,6 +1,6 @@
 /** Dev-only stand-ins for the Windows Games commands (browser preview). */
 import { emit } from '@tauri-apps/api/event';
-import { gameArt, gamePosts, popularPage } from './mockGames';
+import { gameArt, gamePosts, popularPage, TITLES } from './mockGames';
 
 const installer = {
   setupExe: 'D:\\Downloads\\Game Installers\\Demo\\setup.exe',
@@ -59,8 +59,9 @@ export function handleGamesCommand(cmd: string, a: Record<string, unknown>): unk
     }
     case 'games_cache_image': {
       const url = String(a.url);
-      const index = Number(url.match(/(\d+)(?:-\d+)?\.jpg/)?.[1] ?? 0);
-      return url.includes('shots.example') ? gameArt('', index + 3, 1280, 720) : gameArt('', index, 600, 800);
+      const [, game, shot] = url.match(/(\d+)(?:-(\d+))?\.jpg/) ?? [];
+      const index = Number(game ?? 0);
+      return url.includes('shots.example') ? gameArt('', index * 5 + Number(shot ?? 0), 1280, 720) : gameArt(TITLES[index]?.[0] ?? '', index, 600, 900);
     }
     case 'games_inspect_installer':
       return wait(600).then(() => installer);

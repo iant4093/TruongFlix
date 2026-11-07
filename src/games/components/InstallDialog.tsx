@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, FolderOpen, Loader2 } from 'lucide-react';
-import Modal from '../../components/live/LiveDialog';
+import { AlertTriangle, Check, FolderOpen, Gamepad2, Loader2 } from 'lucide-react';
 import { Switch } from '../../components/settings/ui';
 import { formatBytes } from '../../services/torrents';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -19,7 +18,8 @@ import {
 import { folderName, inspectInstaller, installGame, joinPath, missingOptionalFor, useGamesStore } from '../jobs';
 import { updateGame } from '../library';
 import type { InstallChoices, InstallerInfo, LibraryGame, TaskOption } from '../types';
-import { CHECKBOX, pickFolder, Section, useDiskFree } from './dialogParts';
+import { CARD, CARD_ROWS, CHECKBOX, GameDialog, pickFolder, Section, SELECT, useDiskFree } from './dialogParts';
+import GameCover from './GameCover';
 
 const lower = (s: string) => s.toLowerCase();
 
@@ -200,91 +200,103 @@ export default function InstallDialog({ game, onClose }: { game: LibraryGame; on
   }, []);
   const afterInstall = options && choices ? visibleAfterInstall(options, choices) : [];
   const selectedComps = new Set(choices?.components.map(lower) ?? []);
+  const checkRow = 'flex cursor-pointer items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-white/5';
 
   return (
-    <Modal title={`Install ${game.title}`} onClose={onClose} wide>
+    <GameDialog
+      title={`Install ${game.title}`}
+      subtitle={game.subtitle || 'Choose how this game is installed'}
+      art={<GameCover url={game.cover} title={game.title} className="aspect-[2/3] w-10 shrink-0 rounded" />}
+      onClose={onClose}
+      wide
+      footer={<>
+        <button type="button" className="nf-btn-ghost h-10 px-4 text-sm" onClick={onClose}>
+          Cancel
+        </button>
+        <button type="button" className="nf-btn-red h-10 px-5 text-sm disabled:opacity-40" disabled={!canInstall} onClick={() => void install()}>
+          <Gamepad2 className="h-4 w-4" />
+          Install
+        </button>
+      </>}
+    >
       {!loaded && !loadError && (
-        <p role="status" className="flex items-center gap-2 text-sm text-white/70">
+        <p role="status" className={`${CARD} flex items-center gap-2.5 px-4 py-3.5 text-sm text-nf-secondary`}>
           <Loader2 className="h-4 w-4 animate-spin text-nf-red" /> Reading the installer…
         </p>
       )}
       {loadError && (
-        <p role="alert" className="text-sm text-red-300">
+        <p role="alert" className="flex items-start gap-2.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
           {loadError}
         </p>
       )}
 
       {info && options && choices && (
         <div className="space-y-6">
-          {info.languages.length > 1 && (
-            <Section title="Installer language" id="install-language">
-              <select
-                aria-labelledby="install-language"
-                value={language ?? ''}
-                onChange={(e) => changeLanguage(e.target.value)}
-                className="h-9 w-full rounded border border-white/15 bg-black/40 px-3 text-sm text-white outline-none focus:border-white/40"
-              >
-                {info.languages.map((l) => (
-                  <option key={l.name} value={l.name} className="bg-[#181818]">
-                    {l.display || l.name}
-                  </option>
-                ))}
-              </select>
-            </Section>
-          )}
-
           <Section title="Install folder" id="install-folder">
-            <div className="flex gap-2">
-              <input
-                aria-labelledby="install-folder"
-                value={choices.installDir}
-                onChange={(e) => update({ installDir: e.target.value })}
-                spellCheck={false}
-                className="h-9 min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-3 font-mono text-xs text-white outline-none focus:border-white/40"
-              />
-              <button type="button" className="nf-btn-ghost h-9 shrink-0 px-3 py-0 text-sm" onClick={() => void browse()}>
-                <FolderOpen className="h-4 w-4" /> Browse
-              </button>
+            <div className={`${CARD} space-y-2 px-4 py-3`}>
+              <div className="flex gap-2">
+                <input
+                  aria-labelledby="install-folder"
+                  value={choices.installDir}
+                  onChange={(e) => update({ installDir: e.target.value })}
+                  spellCheck={false}
+                  className="nf-input h-10 min-w-0 flex-1 px-3 py-0 font-mono text-xs"
+                />
+                <button type="button" className="nf-btn-ghost h-10 shrink-0 px-3.5 py-0 text-sm" onClick={() => void browse()}>
+                  <FolderOpen className="h-4 w-4" /> Browse
+                </button>
+              </div>
+              {!choices.installDir.trim() ? (
+                <p className="text-xs text-nf-red">Choose a folder to install to.</p>
+              ) : (
+                <p className={`text-xs ${notEnoughSpace ? 'text-nf-red' : 'text-nf-muted'}`}>
+                  Needs {formatBytes(needed)}
+                  {free != null && ` · ${formatBytes(free)} free on this drive`}
+                  {notEnoughSpace && ' — not enough space.'}
+                </p>
+              )}
             </div>
-            {!choices.installDir.trim() ? (
-              <p className="text-xs text-nf-red">Choose a folder to install to.</p>
-            ) : (
-              <p className={`text-xs ${notEnoughSpace ? 'text-nf-red' : 'text-white/50'}`}>
-                Needs {formatBytes(needed)}
-                {free != null && ` · ${formatBytes(free)} free on this drive`}
-                {notEnoughSpace && ' — not enough space.'}
-              </p>
-            )}
           </Section>
 
-          {options.types.length > 1 && (
-            <Section title="Setup type" id="install-type">
-              <select
-                aria-labelledby="install-type"
-                value={typeName}
-                onChange={(e) => changeType(e.target.value)}
-                className="h-9 w-full rounded border border-white/15 bg-black/40 px-3 text-sm text-white outline-none focus:border-white/40"
-              >
-                {options.types.map((t) => (
-                  <option key={t.name} value={t.name} className="bg-[#181818]">
-                    {t.label || t.name}
-                  </option>
-                ))}
-              </select>
-            </Section>
+          {(info.languages.length > 1 || options.types.length > 1) && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {info.languages.length > 1 && (
+                <Section title="Installer language" id="install-language">
+                  <select aria-labelledby="install-language" value={language ?? ''} onChange={(e) => changeLanguage(e.target.value)} className={SELECT}>
+                    {info.languages.map((l) => (
+                      <option key={l.name} value={l.name} className="bg-[#181818]">
+                        {l.display || l.name}
+                      </option>
+                    ))}
+                  </select>
+                </Section>
+              )}
+              {options.types.length > 1 && (
+                <Section title="Setup type" id="install-type">
+                  <select aria-labelledby="install-type" value={typeName} onChange={(e) => changeType(e.target.value)} className={SELECT}>
+                    {options.types.map((t) => (
+                      <option key={t.name} value={t.name} className="bg-[#181818]">
+                        {t.label || t.name}
+                      </option>
+                    ))}
+                  </select>
+                </Section>
+              )}
+            </div>
           )}
 
           {options.components.length > 0 && (
             <Section title="Components" id="install-components">
-              <ul className="divide-y divide-white/[0.06] rounded border border-white/15">
+              <ul className={CARD_ROWS}>
                 {options.components.map((c) => {
                   const checked = selectedComps.has(lower(c.name));
                   const disabled = c.fixed || c.unavailable;
                   return (
                     <li key={c.name}>
                       <label
-                        className={`flex items-center gap-3 py-2 pr-3 text-sm ${disabled ? 'cursor-default text-white/50' : 'cursor-pointer hover:bg-white/5'}`}
-                        style={{ paddingLeft: `${12 + c.level * 20}px` }}
+                        className={`flex items-center gap-3 py-2.5 pr-4 text-sm ${disabled ? 'cursor-default text-white/50' : 'cursor-pointer transition-colors hover:bg-white/5'}`}
+                        style={{ paddingLeft: `${16 + c.level * 20}px` }}
                       >
                         <input
                           type="checkbox"
@@ -295,8 +307,8 @@ export default function InstallDialog({ game, onClose }: { game: LibraryGame; on
                         />
                         <span className="min-w-0 flex-1">{c.label}</span>
                         {c.redist && <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/70">System component</span>}
-                        {c.unavailable && <span className="shrink-0 text-xs text-white/50">Not downloaded</span>}
-                        {c.size > 0 && <span className="shrink-0 tabular-nums text-xs text-white/50">{formatBytes(c.size)}</span>}
+                        {c.unavailable && <span className="shrink-0 text-xs text-nf-muted">Not downloaded</span>}
+                        {c.size > 0 && <span className="shrink-0 tabular-nums text-xs text-nf-muted">{formatBytes(c.size)}</span>}
                       </label>
                     </li>
                   );
@@ -307,10 +319,10 @@ export default function InstallDialog({ game, onClose }: { game: LibraryGame; on
 
           {tasks.length > 0 && (
             <Section title="Additional tasks" id="install-tasks">
-              <div className="space-y-3">
+              <div className={`${CARD} space-y-3 px-4 py-3`}>
                 {taskGroups.map((g, i) => (
                   <div key={`${g.group ?? ''}-${i}`} role="group" aria-label={g.group ?? 'Tasks'}>
-                    {g.group && <div className="mb-1 text-sm text-white/70">{g.group}</div>}
+                    {g.group && <div className="mb-1 text-sm font-semibold">{g.group}</div>}
                     {g.items.map((t) => (
                       <label key={t.name} className="flex cursor-pointer items-center gap-3 py-1 text-sm" style={{ paddingLeft: `${t.level * 20}px` }}>
                         <input
@@ -329,61 +341,62 @@ export default function InstallDialog({ game, onClose }: { game: LibraryGame; on
           )}
 
           <Section title="Shortcuts" id="install-shortcuts">
-            <label className="flex cursor-pointer items-center gap-3 py-1 text-sm">
-              <input type="checkbox" className={CHECKBOX} checked={choices.startMenu} onChange={(e) => update({ startMenu: e.target.checked })} />
-              Create a Start Menu folder
-            </label>
-            <label className="flex cursor-pointer items-center gap-3 py-1 text-sm">
-              <input type="checkbox" className={CHECKBOX} checked={choices.desktopShortcut} onChange={(e) => update({ desktopShortcut: e.target.checked })} />
-              Create a desktop shortcut
-            </label>
+            <div className={CARD_ROWS}>
+              <label className={checkRow}>
+                <input type="checkbox" className={CHECKBOX} checked={choices.startMenu} onChange={(e) => update({ startMenu: e.target.checked })} />
+                Create a Start Menu folder
+              </label>
+              <label className={checkRow}>
+                <input type="checkbox" className={CHECKBOX} checked={choices.desktopShortcut} onChange={(e) => update({ desktopShortcut: e.target.checked })} />
+                Create a desktop shortcut
+              </label>
+            </div>
           </Section>
 
           {options.limitRamLabel && (
             <Section title="Installer settings" id="install-settings">
-              <label className="flex cursor-pointer items-start gap-3 py-1 text-sm">
-                <input type="checkbox" className={`${CHECKBOX} mt-0.5`} checked={!!choices.limitRam} onChange={(e) => update({ limitRam: e.target.checked })} />
-                <span>
-                  {options.limitRamLabel}
-                  <span className="block text-xs text-white/50">Recommended on PCs with 8 GB of RAM or less.</span>
-                </span>
-              </label>
+              <div className={CARD_ROWS}>
+                <label className={`${checkRow} items-start`}>
+                  <input type="checkbox" className={`${CHECKBOX} mt-0.5`} checked={!!choices.limitRam} onChange={(e) => update({ limitRam: e.target.checked })} />
+                  <span>
+                    {options.limitRamLabel}
+                    <span className="mt-0.5 block text-xs text-nf-muted">Recommended on PCs with 8 GB of RAM or less.</span>
+                  </span>
+                </label>
+              </div>
             </Section>
           )}
 
           <Section title="After installing" id="install-after">
-            {afterInstall.map((a) => (
-              <label key={a.id} className="flex cursor-pointer items-center gap-3 py-1 text-sm">
-                <input
-                  type="checkbox"
-                  className={CHECKBOX}
-                  checked={choices.afterInstall.includes(a.id)}
-                  onChange={(e) => update({ afterInstall: toggleList(choices.afterInstall, a.id, e.target.checked) })}
-                />
-                {a.label}
-              </label>
-            ))}
-            <p className="flex items-center gap-3 py-1 text-sm text-white/70">
-              <Check className="h-4 w-4 shrink-0 text-nf-green" aria-hidden="true" />
-              Verify installed files (always runs)
-            </p>
+            <div className={CARD_ROWS}>
+              {afterInstall.map((a) => (
+                <label key={a.id} className={checkRow}>
+                  <input
+                    type="checkbox"
+                    className={CHECKBOX}
+                    checked={choices.afterInstall.includes(a.id)}
+                    onChange={(e) => update({ afterInstall: toggleList(choices.afterInstall, a.id, e.target.checked) })}
+                  />
+                  {a.label}
+                </label>
+              ))}
+              <p className="flex items-center gap-3 px-4 py-2.5 text-sm text-nf-secondary">
+                <Check className="h-4 w-4 shrink-0 text-nf-green" aria-hidden="true" />
+                Verify installed files (always runs)
+              </p>
+            </div>
           </Section>
 
-          <div className="flex items-center gap-4 rounded border border-white/15 px-3 py-3">
-            <span className="flex-1 text-sm">Delete the installer after installing</span>
+          <div className={`${CARD} flex items-center gap-4 px-4 py-3.5`}>
+            <div className="flex-1">
+              <div className="text-sm font-semibold">Delete the installer after installing</div>
+              <div className="mt-0.5 text-xs leading-relaxed text-nf-muted">Seeding stops when the installer is deleted.</div>
+            </div>
             <Switch checked={deleteInstaller} onChange={setDeleteInstaller} label="Delete the installer after installing" />
           </div>
         </div>
       )}
-
-      <div className="mt-7 flex justify-end gap-3">
-        <button type="button" className="nf-btn-ghost" onClick={onClose}>
-          Cancel
-        </button>
-        <button type="button" className="nf-btn-red disabled:opacity-40" disabled={!canInstall} onClick={() => void install()}>
-          Install
-        </button>
-      </div>
-    </Modal>
+    </GameDialog>
   );
 }
+

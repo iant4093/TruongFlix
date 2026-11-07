@@ -1,6 +1,6 @@
 /** Dev-only demo data for the Windows Games section (browser preview). Never in production builds. */
 
-const TITLES = [
+export const TITLES = [
   ['Starfall Odyssey', 'v2.1.4 + 3 DLCs'], ['Iron Harbor', 'Deluxe Edition – v1.08'], ['Lumen Drift', 'v0.9.7 (Early Access)'],
   ['Hollow Crown', 'Complete Edition'], ['Neon Courier', 'v3.0.2 + Soundtrack'], ['Frostbound Tactics', 'v1.4.0'],
   ['A Game About Chopping Trees', 'v1.0.3'], ['Sunken Archive', 'v1.12 + Bonus Content'], ['Velocity Rift', 'v5.2'],
@@ -9,11 +9,36 @@ const TITLES = [
 
 const slugOf = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-export function gameArt(title: string, i: number, w: number, h: number) {
+const escapeXml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+/** A stylised landscape (sky, sun, two mountain ranges) so demo art reads like key art. */
+function scene(i: number, w: number, h: number, horizon: number) {
   const hue = (i * 47) % 360;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">`
-    + `<stop offset="0" stop-color="hsl(${hue},65%,42%)"/><stop offset="1" stop-color="hsl(${(hue + 60) % 360},70%,14%)"/></linearGradient></defs>`
-    + `<rect width="100%" height="100%" fill="url(#g)"/><text x="50%" y="${h > w ? '82%' : '55%'}" text-anchor="middle" font-family="Segoe UI,Arial" font-weight="700" font-size="${Math.round(w / 11)}" fill="white">${title}</text></svg>`;
+  const ridge = (seed: number, base: number, amp: number) => {
+    const pts = [`0,${h}`];
+    for (let x = 0; x <= 10; x++) pts.push(`${(w * x) / 10},${Math.round(base - amp * Math.abs(Math.sin(seed + x * 1.7 + i)))}`);
+    pts.push(`${w},${h}`);
+    return pts.join(' ');
+  };
+  return `<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${(hue + 220) % 360},55%,12%)"/>`
+    + `<stop offset="0.65" stop-color="hsl(${hue},70%,45%)"/><stop offset="1" stop-color="hsl(${(hue + 30) % 360},85%,70%)"/></linearGradient>`
+    + `<radialGradient id="sun"><stop offset="0" stop-color="hsl(${(hue + 40) % 360},100%,85%)"/><stop offset="1" stop-color="hsl(${(hue + 40) % 360},100%,70%)" stop-opacity="0"/></radialGradient></defs>`
+    + `<rect width="100%" height="100%" fill="url(#sky)"/>`
+    + `<circle cx="${w * (0.3 + ((i * 13) % 40) / 100)}" cy="${horizon * 0.82}" r="${Math.min(w, h) * 0.32}" fill="url(#sun)"/>`
+    + `<polygon points="${ridge(1, horizon, h * 0.18)}" fill="hsl(${(hue + 200) % 360},35%,20%)" opacity="0.85"/>`
+    + `<polygon points="${ridge(4, horizon + h * 0.12, h * 0.14)}" fill="hsl(${(hue + 210) % 360},40%,8%)"/>`;
+}
+
+export function gameArt(title: string, i: number, w: number, h: number) {
+  const portrait = h > w;
+  const size = Math.round(w / (title.length > 14 ? 9 : 7));
+  const words = escapeXml(title.toUpperCase()).split(' ');
+  const lines = portrait && words.length > 1 ? [words.slice(0, Math.ceil(words.length / 2)).join(' '), words.slice(Math.ceil(words.length / 2)).join(' ')] : [words.join(' ')];
+  const text = title
+    ? lines.map((line, n) => `<text x="50%" y="${h * 0.8 + n * size * 1.05}" text-anchor="middle" font-family="Arial Black,Segoe UI,Arial" font-weight="900" font-size="${size}" letter-spacing="-1" fill="white" stroke="rgba(0,0,0,0.35)" stroke-width="2" paint-order="stroke">${line}</text>`).join('')
+      + `<rect x="${w * 0.42}" y="${h * 0.06}" width="${w * 0.16}" height="3" fill="white" opacity="0.7"/>`
+    : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${scene(i, w, h, portrait ? h * 0.62 : h * 0.68)}${text}</svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 

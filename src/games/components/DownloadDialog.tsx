@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Download, FolderOpen, Loader2, RotateCw } from 'lucide-react';
-import Modal from '../../components/live/LiveDialog';
+import { AlertTriangle, Download, HardDrive, Loader2, RotateCw } from 'lucide-react';
 import { Switch } from '../../components/settings/ui';
 import { formatBytes, inspectTorrentFilesLive } from '../../services/torrents';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { classifyFiles, type GameFile, type OptionalGroup } from '../files';
 import { downloadGame, updateGameSettings, useGamesStore } from '../jobs';
 import type { GameDetail } from '../types';
-import { CHECKBOX, pickFolder, Section, useDiskFree } from './dialogParts';
+import { CARD, CARD_ROWS, CHECKBOX, FolderChoice, GameDialog, pickFolder, Section, useDiskFree } from './dialogParts';
+import GameCover from './GameCover';
 
 const LANGUAGE_WORDS: Record<string, string[]> = {
   en: ['english'], de: ['german'], fr: ['french'], es: ['spanish', 'latam', 'castilian', 'mexican'], it: ['italian'],
@@ -147,13 +147,13 @@ export default function DownloadDialog({ detail, onClose, onStarted }: { detail:
   const groupList = (items: OptionalGroup[], label: string, id: string) =>
     items.length > 0 && (
       <Section title={label} id={id}>
-        <ul className="divide-y divide-white/[0.08] rounded border border-white/15">
+        <ul className={CARD_ROWS}>
           {items.map((g) => (
             <li key={g.key}>
-              <label className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm hover:bg-white/5">
+              <label className="flex cursor-pointer items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-white/5">
                 <input type="checkbox" className={CHECKBOX} checked={selected.has(g.key)} onChange={(e) => toggleGroup(g.key, e.target.checked)} />
                 <span className="min-w-0 flex-1 truncate">{g.label}</span>
-                <span className="shrink-0 tabular-nums text-xs text-white/50">{formatBytes(g.size)}</span>
+                <span className="shrink-0 tabular-nums text-xs text-nf-muted">{formatBytes(g.size)}</span>
               </label>
             </li>
           ))}
@@ -161,17 +161,33 @@ export default function DownloadDialog({ detail, onClose, onStarted }: { detail:
       </Section>
     );
 
+  const close = working ? () => {} : onClose;
+
   return (
-    <Modal title={`Download ${detail.title}`} onClose={working ? () => {} : onClose}>
+    <GameDialog
+      title={`Download ${detail.title}`}
+      subtitle={[detail.subtitle, detail.repackSize && `${detail.repackSize} download`].filter(Boolean).join(' · ')}
+      art={<GameCover url={detail.cover} title={detail.title} className="aspect-[2/3] w-10 shrink-0 rounded" />}
+      onClose={close}
+      footer={<>
+        <button type="button" className="nf-btn-ghost h-10 px-4 text-sm" disabled={working} onClick={onClose}>
+          Cancel
+        </button>
+        <button type="button" className="nf-btn-red h-10 px-5 text-sm disabled:opacity-40" disabled={!canDownload} onClick={() => void start()}>
+          {working ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+          {listError ? 'Download everything' : 'Download'}
+        </button>
+      </>}
+    >
       <fieldset disabled={working} className="min-w-0 space-y-6">
         {loadingList ? (
-          <p role="status" className="flex items-center gap-2 text-sm text-white/70">
+          <p role="status" className={`${CARD} flex items-center gap-2.5 px-4 py-3.5 text-sm text-nf-secondary`}>
             <Loader2 className="h-4 w-4 animate-spin text-nf-red" /> Getting the file list…
           </p>
         ) : listError ? (
-          <div role="alert" className="flex flex-wrap items-center gap-3 rounded border border-white/15 bg-white/[0.03] px-3 py-2.5 text-sm">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-[#e87c03]" />
-            <span className="min-w-0 flex-1 text-white/70">
+          <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-300" />
+            <span className="min-w-0 flex-1 text-amber-100">
               Couldn't get the file list ({listError}). You can still download everything.
             </span>
             <button type="button" className="nf-btn-ghost h-8 px-3 py-0 text-xs" onClick={() => setAttempt((n) => n + 1)}>
@@ -181,71 +197,60 @@ export default function DownloadDialog({ detail, onClose, onStarted }: { detail:
         ) : (
           groups && (
             <div className="space-y-5">
-              <div className="flex items-center justify-between rounded border border-white/15 px-3 py-2.5 text-sm">
-                <span>Game files (required)</span>
-                <span className="tabular-nums text-white/60">{formatBytes(requiredSize)}</span>
+              <div className={`${CARD} flex items-center justify-between gap-3 px-4 py-3 text-sm`}>
+                <span className="flex items-center gap-2.5 font-semibold"><HardDrive className="h-4 w-4 text-nf-secondary" />Game files <span className="font-normal text-nf-muted">(required)</span></span>
+                <span className="tabular-nums text-nf-secondary">{formatBytes(requiredSize)}</span>
               </div>
               {groupList(languages, 'Languages', 'download-languages')}
               {groupList(extras, 'Extras', 'download-extras')}
-              <p className="text-sm">
-                Total download: <strong className="tabular-nums" data-testid="download-total">{formatBytes(totalSize ?? 0)}</strong>
+              <p className="flex items-baseline justify-between px-1 text-sm text-nf-secondary">
+                <span>Total download</span>
+                <strong className="text-base tabular-nums text-white" data-testid="download-total">{formatBytes(totalSize ?? 0)}</strong>
               </p>
             </div>
           )
         )}
 
         <Section title="Save installer to" id="download-folder">
-          <div className="flex items-center gap-2">
-            <div className="min-w-0 flex-1 truncate rounded border border-white/15 bg-black/40 px-3 py-2 font-mono text-xs" title={downloadDir}>
-              {downloadDir || <span className="font-sans text-white/40">No folder chosen</span>}
-            </div>
-            <button type="button" className="nf-btn-ghost h-9 shrink-0 px-3 py-0 text-sm" onClick={() => void changeDownloadDir()} aria-label={`${folderButtonLabel(downloadDir)} installer folder`}>
-              <FolderOpen className="h-4 w-4" /> {folderButtonLabel(downloadDir)}
-            </button>
+          <div className={`${CARD} space-y-1.5 px-4 py-3`}>
+            <FolderChoice path={downloadDir} empty="No folder chosen" buttonLabel={`${folderButtonLabel(downloadDir)} installer folder`} onChange={() => void changeDownloadDir()} />
+            {!downloadDir && <p className="text-xs text-nf-muted">Choose a folder to save the installer.</p>}
+            {free != null && (
+              <p className={`text-xs ${notEnoughSpace ? 'text-nf-red' : 'text-nf-muted'}`}>
+                {formatBytes(free)} free on this drive
+                {notEnoughSpace && ' — not enough space for this download.'}
+              </p>
+            )}
           </div>
-          {!downloadDir && <p className="text-xs text-white/50">Choose a folder to save the installer.</p>}
-          {free != null && (
-            <p className={`text-xs ${notEnoughSpace ? 'text-nf-red' : 'text-white/50'}`}>
-              {formatBytes(free)} free on this drive
-              {notEnoughSpace && ' — not enough space for this download.'}
-            </p>
-          )}
         </Section>
 
         <Section title="Options" id="download-options">
-          <div className="divide-y divide-white/[0.08] rounded border border-white/15">
-            <div className="space-y-3 px-3 py-3">
+          <div className={CARD_ROWS}>
+            <div className="space-y-3 px-4 py-3.5">
               <div className="flex items-center gap-4">
-                <span className="flex-1 text-sm">Install automatically when the download finishes</span>
+                <span className="flex-1 text-sm font-semibold">Install automatically when the download finishes</span>
                 <Switch checked={autoInstall} onChange={setAutoInstall} label="Install automatically when the download finishes" />
               </div>
               {autoInstall && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="shrink-0 text-xs text-white/60">Install to</span>
-                    <div className="min-w-0 flex-1 truncate rounded border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs" title={installDir} data-testid="install-folder">
-                      {installDir || <span className="font-sans text-white/40">No folder chosen</span>}
-                    </div>
-                    <button type="button" className="nf-btn-ghost h-8 shrink-0 px-3 py-0 text-xs" onClick={() => void changeInstallDir()} aria-label={`${folderButtonLabel(installDir)} install folder`}>
-                      <FolderOpen className="h-3.5 w-3.5" /> {folderButtonLabel(installDir)}
-                    </button>
-                  </div>
+                <div className="space-y-2 rounded-md border border-white/10 bg-black/25 px-3 py-2.5">
+                  <FolderChoice path={installDir} empty="No folder chosen" testId="install-folder"
+                    buttonLabel={`${folderButtonLabel(installDir)} install folder`} onChange={() => void changeInstallDir()} />
                   {!installDir && <p className="text-xs text-nf-red">Choose a folder for installed games.</p>}
-                  <p className="text-xs text-white/50">Uses your default install options. Turn this off to choose every option before installing.</p>
+                  <p className="text-xs leading-relaxed text-nf-muted">Uses your default install options. Turn this off to choose every option before installing.</p>
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-4 px-3 py-3">
+            <div className="flex items-center gap-4 px-4 py-3.5">
               <div className="flex-1">
-                <div className="text-sm">Delete the installer after installing</div>
-                <div className="text-xs text-white/50">Seeding stops when the installer is deleted.</div>
+                <div className="text-sm font-semibold">Delete the installer after installing</div>
+                <div className="mt-0.5 text-xs leading-relaxed text-nf-muted">Seeding stops when the installer is deleted.</div>
               </div>
               <Switch checked={deleteInstaller} onChange={setDeleteInstaller} label="Delete the installer after installing" />
             </div>
-            <div className="flex items-center gap-4 px-3 py-3">
+            <div className="flex items-center gap-4 px-4 py-3.5">
               <div className="flex-1">
-                <div className="text-sm">Stop seeding when the download finishes</div>
-                {limits && <div className="text-xs text-white/50">Otherwise seeding stops at {limits} (your torrent settings).</div>}
+                <div className="text-sm font-semibold">Stop seeding when the download finishes</div>
+                {limits && <div className="mt-0.5 text-xs leading-relaxed text-nf-muted">Otherwise seeding stops at {limits} (your torrent settings).</div>}
               </div>
               <Switch checked={stopSeeding} onChange={setStopSeeding} label="Stop seeding when the download finishes" />
             </div>
@@ -257,17 +262,8 @@ export default function DownloadDialog({ detail, onClose, onStarted }: { detail:
             {error}
           </p>
         )}
-
-        <div className="flex justify-end gap-3">
-          <button type="button" className="nf-btn-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="button" className="nf-btn-red disabled:opacity-40" disabled={!canDownload} onClick={() => void start()}>
-            {working ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            {listError ? 'Download everything' : 'Download'}
-          </button>
-        </div>
       </fieldset>
-    </Modal>
+    </GameDialog>
   );
 }
+
