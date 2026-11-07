@@ -1321,6 +1321,17 @@ export function installMocks() {
           return 'h264_videotoolbox';
         case 'stream_release':
           return null;
+        case 'remote_sessions':
+          return [
+            { id: 'a1', device: 'iPhone · Safari', ip: '192.168.1.42', signedInMs: Date.now() - 3 * 864e5, lastSeenMs: Date.now() - 5 * 60_000 },
+            { id: 'b2', device: 'iPad · Safari', ip: '100.101.102.7', signedInMs: Date.now() - 9 * 864e5, lastSeenMs: Date.now() - 2 * 864e5 },
+          ];
+        case 'remote_session_revoke':
+          return null;
+        case 'tailscale_status':
+          return { installed: true, state: 'Running', ipv4: '100.101.102.103', dnsName: 'truongflix-pc.tail1234.ts.net', httpsEnabled: true, serving: false, portInUse: false, funnel: false };
+        case 'tailscale_serve':
+          return { status: { installed: true, state: 'Running', ipv4: '100.101.102.103', dnsName: 'truongflix-pc.tail1234.ts.net', httpsEnabled: true, serving: !!a.enable, portInUse: false, funnel: false }, approvalUrl: null };
         case 'remote_access_set':
           return { port: Number(a.port) || 8732, addresses: ['192.168.1.20'], web_enabled: !!a.enabled, encoder: 'h264_videotoolbox' };
         case 'server_info':

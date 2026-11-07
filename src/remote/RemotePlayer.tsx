@@ -242,7 +242,7 @@ export default function RemotePlayer({
       watched.current.total = 0;
       const cur = offset + (video.current?.currentTime ?? time);
       const res = await api<{ blocked: string | null }>('/progress', {
-        body: { ...base, type: target.type, id: target.id, time: cur, duration, watched: seconds },
+        body: { ...base, type: target.type, id: target.id, time: cur, duration, watched: seconds, token: streamToken.current },
       }).catch(() => null);
       if (res?.blocked && !final) {
         video.current?.pause();

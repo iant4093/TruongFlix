@@ -9,23 +9,32 @@
 //!   which answers with the same library/progress code it uses itself.
 //!
 //! Stream URLs carry random 128-bit tokens; the browser app needs the access code shown in Settings.
+//! Only home-network and Tailscale addresses may connect (see `remote_guard`).
 
 use crate::media::Core;
 use crate::player::mpv;
+use crate::remote_guard::{self, LoginCheck, LoginGuard};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, UdpSocket};
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const IDLE_STREAM: Duration = Duration::from_secs(15 * 60);
 const API_TIMEOUT: Duration = Duration::from_secs(20);
+/// Whole request (headers and body) must arrive within this time.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+const MAX_CONNECTIONS: usize = 96;
+/// Browser sign-ins end after this long unused, and after `SESSION_MAX` regardless.
+const SESSION_IDLE: Duration = Duration::from_secs(14 * 24 * 3600);
+const SESSION_MAX: Duration = Duration::from_secs(60 * 24 * 3600);
+const MAX_SESSIONS: usize = 32;
 const PROBE_TTL: Duration = Duration::from_secs(120);
 const LOOKAHEAD_SEGS: u32 = 6;
 
@@ -165,16 +174,73 @@ struct Stream {
     touched: Instant,
 }
 
+/// A browser signed in with the access code.
+struct WebSession {
+    /// Public id (shown in Settings, used to sign the device out); the token itself stays secret.
+    id: String,
+    device: String,
+    ip: IpAddr,
+    created: SystemTime,
+    last_used: SystemTime,
+}
+
+impl WebSession {
+    fn expired(&self, now: SystemTime) -> bool {
+        now.duration_since(self.last_used).unwrap_or_default() > SESSION_IDLE
+            || now.duration_since(self.created).unwrap_or_default() > SESSION_MAX
+    }
+}
+
 #[derive(Default)]
 struct Inner {
-    /// Port of the newest listener (older ones keep serving, e.g. a cast in progress).
     port: u16,
+    listener: Option<tauri::async_runtime::JoinHandle<()>>,
     streams: HashMap<String, Stream>,
     web_enabled: bool,
     access_code: String,
-    web_tokens: HashSet<String>,
+    /// Signed-in browsers by secret token.
+    web_sessions: HashMap<String, WebSession>,
+    login: LoginGuard,
     pending: HashMap<u64, tokio::sync::oneshot::Sender<(u16, String)>>,
     next_request: u64,
+}
+
+impl Inner {
+    /// The session for `token` (refreshing its last use), or None if unknown or expired.
+    fn session_for(&mut self, token: &str, ip: IpAddr, ended: &mut Vec<String>) -> Option<(String, String)> {
+        if token.is_empty() {
+            return None;
+        }
+        let now = SystemTime::now();
+        let session = self.web_sessions.get_mut(token)?;
+        if session.expired(now) {
+            ended.push(session.id.clone());
+            self.web_sessions.remove(token);
+            return None;
+        }
+        session.last_used = now;
+        session.ip = ip;
+        Some((session.id.clone(), session.device.clone()))
+    }
+
+    fn end_sessions(&mut self, keep: impl Fn(&WebSession) -> bool) -> Vec<String> {
+        let mut ended = Vec::new();
+        self.web_sessions.retain(|_, s| {
+            let k = keep(s);
+            if !k {
+                ended.push(s.id.clone());
+            }
+            k
+        });
+        ended
+    }
+}
+
+/// Tells the desktop app to stop browser playback that belonged to ended sign-ins.
+fn announce_ended(app: &AppHandle, ended: Vec<String>) {
+    for id in ended {
+        let _ = app.emit("remote-session-ended", id);
+    }
 }
 
 struct Shared {
@@ -282,15 +348,36 @@ async fn ensure_server(port: u16) -> Result<u16, String> {
         Err(e) => return Err(e.to_string()),
     };
     let bound = listener.local_addr().map_err(|e| e.to_string())?.port();
-    s.inner.lock().unwrap().port = bound;
-    tauri::async_runtime::spawn(async move {
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
+    let task = tauri::async_runtime::spawn(async move {
         loop {
-            let Ok((conn, _)) = listener.accept().await else { continue };
+            let (conn, peer) = match listener.accept().await {
+                Ok(c) => c,
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+            // Home network and Tailscale only, even if a router forwards the port.
+            if !remote_guard::peer_allowed(peer.ip()) {
+                continue;
+            }
+            let Ok(slot) = slots.clone().try_acquire_owned() else { continue };
             tauri::async_runtime::spawn(async move {
-                let _ = handle(conn).await;
+                let _ = handle(conn, peer).await;
+                drop(slot);
             });
         }
     });
+    let old = {
+        let mut inner = s.inner.lock().unwrap();
+        inner.port = bound;
+        inner.listener.replace(task)
+    };
+    // A changed port closes the old one (connections already open finish normally).
+    if let Some(old) = old {
+        old.abort();
+    }
     Ok(bound)
 }
 
@@ -308,22 +395,37 @@ struct Request {
     body: Vec<u8>,
 }
 
-fn percent_decode(s: &str) -> String {
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Decodes `%XX` escapes (and `+` as a space in query strings) on bytes, so malformed input can't
+/// split a multi-byte character.
+fn percent_decode_with(s: &str, plus_is_space: bool) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b);
+            if let (Some(h), Some(l)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
+                out.push(h << 4 | l);
                 i += 3;
                 continue;
             }
         }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        out.push(if plus_is_space && bytes[i] == b'+' { b' ' } else { bytes[i] });
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn percent_decode(s: &str) -> String {
+    percent_decode_with(s, true)
 }
 
 async fn read_request(conn: &mut TcpStream) -> Option<Request> {
@@ -369,10 +471,22 @@ async fn read_request(conn: &mut TcpStream) -> Option<Request> {
         }
         body.extend_from_slice(&chunk[..n]);
     }
-    Some(Request { method, path: percent_decode(path), query, raw_query: qs.to_string(), headers, body })
+    Some(Request { method, path: percent_decode_with(path, false), query, raw_query: qs.to_string(), headers, body })
 }
 
-const CORS: &str = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Range, Content-Type, X-TF-Token\r\nAccess-Control-Expose-Headers: Content-Length, Content-Range\r\n";
+/// Media only: TVs and Chromecast receivers fetch streams from another origin.
+const CORS: &str = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Range\r\nAccess-Control-Expose-Headers: Content-Length, Content-Range\r\n";
+const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n";
+const APP_CSP: &str = "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://image.tmdb.org; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n";
+
+tokio::task_local! {
+    /// Set while answering a `/stream/…` request, whose responses carry CORS headers.
+    static MEDIA_RESPONSE: bool;
+}
+
+fn cors() -> &'static str {
+    if MEDIA_RESPONSE.try_with(|m| *m).unwrap_or(false) { CORS } else { "" }
+}
 
 async fn respond(conn: &mut TcpStream, status: u16, content_type: &str, extra: &str, body: &[u8], head_only: bool) -> std::io::Result<()> {
     let reason = match status {
@@ -383,13 +497,17 @@ async fn respond(conn: &mut TcpStream, status: u16, content_type: &str, extra: &
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         416 => "Range Not Satisfiable",
+        421 => "Misdirected Request",
+        429 => "Too Many Requests",
         503 => "Service Unavailable",
         _ => "Error",
     };
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{CORS}{extra}Connection: close\r\n\r\n",
-        body.len()
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{}{SECURITY_HEADERS}{extra}Connection: close\r\n\r\n",
+        body.len(),
+        cors(),
     );
     conn.write_all(header.as_bytes()).await?;
     if !head_only {
@@ -402,61 +520,147 @@ async fn respond_json(conn: &mut TcpStream, status: u16, body: &str) -> std::io:
     respond(conn, status, "application/json; charset=utf-8", "Cache-Control: no-store\r\n", body.as_bytes(), false).await
 }
 
-async fn handle(mut conn: TcpStream) -> std::io::Result<()> {
-    let Some(req) = read_request(&mut conn).await else { return Ok(()) };
-    if req.method == "OPTIONS" {
-        return respond(&mut conn, 204, "text/plain", "Access-Control-Allow-Methods: GET, HEAD, POST, OPTIONS\r\n", b"", false).await;
+#[derive(Clone, Serialize)]
+struct SecurityEvent {
+    kind: &'static str,
+    device: String,
+    ip: String,
+}
+
+fn security_event(app: &AppHandle, kind: &'static str, device: &str, ip: IpAddr) {
+    let _ = app.emit("remote-security", SecurityEvent { kind, device: device.to_string(), ip: ip.to_string() });
+}
+
+fn minutes(d: Duration) -> u64 {
+    d.as_secs().div_ceil(60).max(1)
+}
+
+async fn login(conn: &mut TcpStream, req: &Request, ip: IpAddr) -> std::io::Result<()> {
+    let s = shared().map_err(std::io::Error::other)?;
+    let code = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["code"].as_str().map(str::to_owned)).unwrap_or_default();
+    let device = remote_guard::describe_device(req.headers.get("user-agent").map(String::as_str).unwrap_or_default());
+    let now = Instant::now();
+    enum Outcome {
+        Token(String),
+        Wrong(usize, bool),
+        Locked(Duration),
+        Paused,
+    }
+    let (outcome, evicted) = {
+        let mut inner = s.inner.lock().unwrap();
+        match inner.login.check(ip, now) {
+            LoginCheck::Paused => (Outcome::Paused, Vec::new()),
+            LoginCheck::Locked(d) => (Outcome::Locked(d), Vec::new()),
+            LoginCheck::Allowed => {
+                if !code.trim().is_empty() && remote_guard::constant_time_eq(code.trim(), &inner.access_code) {
+                    inner.login.succeeded(ip);
+                    let mut evicted = Vec::new();
+                    if inner.web_sessions.len() >= MAX_SESSIONS {
+                        if let Some(oldest) = inner.web_sessions.iter().min_by_key(|(_, w)| w.last_used).map(|(t, _)| t.clone()) {
+                            if let Some(w) = inner.web_sessions.remove(&oldest) {
+                                evicted.push(w.id);
+                            }
+                        }
+                    }
+                    let token = random_token();
+                    let now = SystemTime::now();
+                    let id = random_token()[..12].to_string();
+                    inner.web_sessions.insert(token.clone(), WebSession { id, device: device.clone(), ip, created: now, last_used: now });
+                    (Outcome::Token(token), evicted)
+                } else {
+                    let left = inner.login.failed(ip, now);
+                    (Outcome::Wrong(left, inner.login.paused()), Vec::new())
+                }
+            }
+        }
+    };
+    announce_ended(&s.app, evicted);
+    match outcome {
+        Outcome::Token(token) => {
+            security_event(&s.app, "signin", &device, ip);
+            respond_json(conn, 200, &serde_json::json!({ "token": token }).to_string()).await
+        }
+        Outcome::Wrong(left, paused) => {
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            if paused {
+                security_event(&s.app, "paused", &device, ip);
+            } else if left == 0 {
+                security_event(&s.app, "locked", &device, ip);
+            }
+            let message = if paused {
+                "Sign-in is paused after too many wrong codes. Make a new code in TruongFlix › Settings › Devices.".to_string()
+            } else if left == 0 {
+                format!("Too many wrong codes. Try again in {} minutes.", minutes(remote_guard::DEVICE_LOCKOUT))
+            } else {
+                format!("Wrong code. {left} {} left.", if left == 1 { "try" } else { "tries" })
+            };
+            respond_json(conn, 401, &serde_json::json!({ "error": message }).to_string()).await
+        }
+        Outcome::Locked(d) => {
+            respond_json(conn, 429, &serde_json::json!({ "error": format!("Too many wrong codes. Try again in {} minutes.", minutes(d)) }).to_string()).await
+        }
+        Outcome::Paused => respond_json(
+            conn,
+            403,
+            r#"{"error":"Sign-in is paused after too many wrong codes. Make a new code in TruongFlix › Settings › Devices."}"#,
+        )
+        .await,
+    }
+}
+
+async fn handle(mut conn: TcpStream, peer: SocketAddr) -> std::io::Result<()> {
+    let Ok(Some(req)) = tokio::time::timeout(REQUEST_DEADLINE, read_request(&mut conn)).await else { return Ok(()) };
+    let host = req.headers.get("host").map(String::as_str);
+    if !remote_guard::host_allowed(host) {
+        return respond(&mut conn, 421, "text/plain", "", b"Not found", false).await;
     }
     if let Some(rest) = req.path.strip_prefix("/stream/") {
-        return serve_stream(&mut conn, &req, rest).await;
+        if req.method == "OPTIONS" {
+            return MEDIA_RESPONSE
+                .scope(true, respond(&mut conn, 204, "text/plain", "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n", b"", false))
+                .await;
+        }
+        return MEDIA_RESPONSE.scope(true, serve_stream(&mut conn, &req, rest)).await;
     }
-    let (web_enabled, authed) = {
-        let s = match shared() {
-            Ok(s) => s,
-            Err(_) => return respond(&mut conn, 503, "text/plain", "", b"Starting", false).await,
-        };
-        let inner = s.inner.lock().unwrap();
-        let token = req.headers.get("x-tf-token").cloned().unwrap_or_default();
-        (inner.web_enabled, inner.web_tokens.contains(&token))
+    if !matches!(req.method.as_str(), "GET" | "HEAD" | "POST") {
+        return respond(&mut conn, 405, "text/plain", "", b"Not allowed", false).await;
+    }
+    let s = match shared() {
+        Ok(s) => s,
+        Err(_) => return respond(&mut conn, 503, "text/plain", "", b"Starting", false).await,
     };
-    if !web_enabled {
+    if !s.inner.lock().unwrap().web_enabled {
         return respond(&mut conn, 403, "text/html; charset=utf-8", "", OFF_PAGE.as_bytes(), false).await;
     }
-    if req.path == "/api/login" && req.method == "POST" {
-        let code = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["code"].as_str().map(str::to_owned)).unwrap_or_default();
-        let s = shared().map_err(std::io::Error::other)?;
-        let token = {
-            let mut inner = s.inner.lock().unwrap();
-            if code.trim().is_empty() || code.trim() != inner.access_code {
-                None
-            } else {
-                let t = random_token();
-                inner.web_tokens.insert(t.clone());
-                Some(t)
-            }
-        };
-        return match token {
-            Some(t) => respond_json(&mut conn, 200, &serde_json::json!({ "token": t }).to_string()).await,
-            None => {
-                tokio::time::sleep(Duration::from_millis(800)).await; // slow down guessing
-                respond_json(&mut conn, 401, r#"{"error":"Wrong code"}"#).await
-            }
-        };
+    if !req.path.starts_with("/api/") {
+        return serve_app_asset(&mut conn, &req).await;
     }
-    if req.path.starts_with("/api/") {
-        if !authed {
-            return respond_json(&mut conn, 401, r#"{"error":"Sign in with the access code"}"#).await;
+    let origin = req.headers.get("origin").map(String::as_str);
+    let forwarded = req.headers.get("x-forwarded-host").map(String::as_str);
+    if !remote_guard::origin_allowed(origin, host, forwarded, peer.ip().is_loopback()) {
+        return respond_json(&mut conn, 403, r#"{"error":"Open TruongFlix from its own address"}"#).await;
+    }
+    if req.path == "/api/login" {
+        if req.method != "POST" {
+            return respond_json(&mut conn, 405, r#"{"error":"Not allowed"}"#).await;
         }
-        let (status, body) = forward_api(&req).await;
-        return respond_json(&mut conn, status, &body).await;
+        return login(&mut conn, &req, peer.ip()).await;
     }
-    serve_app_asset(&mut conn, &req).await
+    let token = req.headers.get("x-tf-token").cloned().unwrap_or_default();
+    let mut ended = Vec::new();
+    let session = s.inner.lock().unwrap().session_for(&token, peer.ip(), &mut ended);
+    announce_ended(&s.app, ended);
+    let Some((session_id, device)) = session else {
+        return respond_json(&mut conn, 401, r#"{"error":"Sign in with the access code"}"#).await;
+    };
+    let (status, body) = forward_api(&req, &session_id, &device).await;
+    respond_json(&mut conn, status, &body).await
 }
 
 const OFF_PAGE: &str = "<!doctype html><meta name=viewport content='width=device-width'><body style='background:#141414;color:#eee;font-family:system-ui;display:grid;place-items:center;height:90vh;text-align:center'><div><h1 style='color:#e50914'>TruongFlix</h1><p>Browser access is turned off.<br>Turn it on in TruongFlix › Settings › Devices.</p></div>";
 
 /// Hands an `/api/…` request to the desktop app's frontend and waits for its answer.
-async fn forward_api(req: &Request) -> (u16, String) {
+async fn forward_api(req: &Request, session: &str, device: &str) -> (u16, String) {
     let Ok(s) = shared() else { return (503, r#"{"error":"Starting"}"#.into()) };
     let (tx, rx) = tokio::sync::oneshot::channel();
     let id = {
@@ -472,6 +676,9 @@ async fn forward_api(req: &Request) -> (u16, String) {
         "path": req.path.trim_start_matches("/api"),
         "query": req.query,
         "body": serde_json::from_slice::<Value>(&req.body).unwrap_or(Value::Null),
+        // Which signed-in browser asked, so playback can only be controlled by its owner.
+        "session": session,
+        "device": device,
     });
     if s.app.emit("remote-api", payload).is_err() {
         s.inner.lock().unwrap().pending.remove(&id);
@@ -496,11 +703,31 @@ pub fn remote_api_reply(id: u64, status: u16, body: String) {
     }
 }
 
+/// Files the browser app may load: its page, the bundled `assets/`, and icons at the root.
+fn app_asset_path(request_path: &str) -> Option<String> {
+    let path = request_path.trim_start_matches('/');
+    if path.is_empty() || !path.contains('.') {
+        return Some("remote.html".into());
+    }
+    if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") || path.contains('\\') {
+        return None;
+    }
+    let root_icon = !path.contains('/')
+        && [".png", ".svg", ".ico", ".webmanifest"].iter().any(|ext| path.to_ascii_lowercase().ends_with(ext));
+    (path == "remote.html" || path.starts_with("assets/") || root_icon).then(|| path.to_string())
+}
+
 async fn serve_app_asset(conn: &mut TcpStream, req: &Request) -> std::io::Result<()> {
+    if req.method == "POST" {
+        return respond(conn, 405, "text/plain", "", b"Not allowed", false).await;
+    }
     let head_only = req.method == "HEAD";
     // Development: the frontend (and Vite's module graph) is served by the dev server.
     #[cfg(debug_assertions)]
     {
+        if req.path.starts_with("/@fs") || req.path.contains("..") {
+            return respond(conn, 404, "text/plain", "", b"Not found", false).await;
+        }
         let path = if req.path == "/" { "/remote.html" } else { req.path.as_str() };
         let query = if req.raw_query.is_empty() { String::new() } else { format!("?{}", req.raw_query) };
         if let Ok(res) = reqwest::get(format!("http://localhost:1420{path}{query}")).await {
@@ -512,10 +739,18 @@ async fn serve_app_asset(conn: &mut TcpStream, req: &Request) -> std::io::Result
         }
     }
     let s = shared().map_err(std::io::Error::other)?;
-    let path = if req.path == "/" || !req.path.contains('.') { "remote.html".to_string() } else { req.path.trim_start_matches('/').to_string() };
+    let Some(path) = app_asset_path(&req.path) else {
+        return respond(conn, 404, "text/plain", "", b"Not found", false).await;
+    };
     if let Some(asset) = s.app.asset_resolver().get(path.clone()) {
-        let cache = if path.starts_with("assets/") { "Cache-Control: public, max-age=31536000, immutable\r\n" } else { "Cache-Control: no-cache\r\n" };
-        return respond(conn, 200, &asset.mime_type, cache, &asset.bytes, head_only).await;
+        let extra = if path.starts_with("assets/") {
+            "Cache-Control: public, max-age=31536000, immutable\r\n".to_string()
+        } else if path == "remote.html" {
+            format!("Cache-Control: no-cache\r\n{APP_CSP}")
+        } else {
+            "Cache-Control: no-cache\r\n".to_string()
+        };
+        return respond(conn, 200, &asset.mime_type, &extra, &asset.bytes, head_only).await;
     }
     respond(conn, 404, "text/plain", "", b"Not found", false).await
 }
@@ -1393,6 +1628,8 @@ pub struct ServerInfo {
     addresses: Vec<String>,
     web_enabled: bool,
     encoder: Option<String>,
+    /// Sign-in paused after too many wrong codes (until a new code is made).
+    login_paused: bool,
 }
 
 /// Turns the browser app on/off (with its access code and port).
@@ -1400,26 +1637,81 @@ pub struct ServerInfo {
 pub async fn remote_access_set(enabled: bool, code: String, port: u16) -> Result<ServerInfo, String> {
     let s = shared()?;
     let bound = if enabled { ensure_server(port).await? } else { s.inner.lock().unwrap().port };
-    let mut inner = s.inner.lock().unwrap();
-    if inner.access_code != code || !enabled {
-        inner.web_tokens.clear(); // a new code signs everyone out
-    }
-    inner.web_enabled = enabled;
-    inner.access_code = code;
+    let (ended, paused) = {
+        let mut inner = s.inner.lock().unwrap();
+        let mut ended = Vec::new();
+        if inner.access_code != code || !enabled {
+            // A new code (or turning access off) signs everyone out and clears wrong-code lockouts.
+            ended = inner.end_sessions(|_| false);
+            inner.login.reset();
+        }
+        inner.web_enabled = enabled;
+        inner.access_code = code;
+        (ended, inner.login.paused())
+    };
+    announce_ended(&s.app, ended);
     let encoder = ENCODER.lock().unwrap().map(str::to_owned);
-    Ok(ServerInfo { port: bound, addresses: lan_addresses(), web_enabled: enabled, encoder })
+    Ok(ServerInfo { port: bound, addresses: lan_addresses(), web_enabled: enabled, encoder, login_paused: paused })
 }
 
 #[tauri::command]
 pub fn server_info() -> ServerInfo {
-    let (port, web) = shared()
+    let (port, web, paused) = shared()
         .map(|s| {
             let i = s.inner.lock().unwrap();
-            (i.port, i.web_enabled)
+            (i.port, i.web_enabled, i.login.paused())
         })
-        .unwrap_or((0, false));
+        .unwrap_or((0, false, false));
     let encoder = ENCODER.lock().unwrap().map(str::to_owned);
-    ServerInfo { port, addresses: lan_addresses(), web_enabled: web, encoder }
+    ServerInfo { port, addresses: lan_addresses(), web_enabled: web, encoder, login_paused: paused }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSessionInfo {
+    id: String,
+    device: String,
+    ip: String,
+    signed_in_ms: u64,
+    last_seen_ms: u64,
+}
+
+fn epoch_ms(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Browsers signed in with the access code, most recently used first.
+#[tauri::command]
+pub fn remote_sessions() -> Vec<RemoteSessionInfo> {
+    let Ok(s) = shared() else { return Vec::new() };
+    let now = SystemTime::now();
+    let (mut list, ended) = {
+        let mut inner = s.inner.lock().unwrap();
+        let ended = inner.end_sessions(|w| !w.expired(now));
+        let list: Vec<_> = inner
+            .web_sessions
+            .values()
+            .map(|w| RemoteSessionInfo {
+                id: w.id.clone(),
+                device: w.device.clone(),
+                ip: w.ip.to_string(),
+                signed_in_ms: epoch_ms(w.created),
+                last_seen_ms: epoch_ms(w.last_used),
+            })
+            .collect();
+        (list, ended)
+    };
+    announce_ended(&s.app, ended);
+    list.sort_by(|a, b| b.last_seen_ms.cmp(&a.last_seen_ms));
+    list
+}
+
+/// Signs one browser out (or every browser when `id` is None).
+#[tauri::command]
+pub fn remote_session_revoke(id: Option<String>) {
+    let Ok(s) = shared() else { return };
+    let ended = s.inner.lock().unwrap().end_sessions(|w| id.as_ref().is_some_and(|i| &w.id != i));
+    announce_ended(&s.app, ended);
 }
 
 #[cfg(test)]
@@ -1509,6 +1801,29 @@ mod tests {
             assert_eq!(body, &std::fs::read(&video).unwrap()[100..200]);
         });
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn malformed_escapes_never_panic() {
+        // Used to slice through a multi-byte character and abort the app.
+        assert_eq!(percent_decode_with("/%€", false), "/%€");
+        assert_eq!(percent_decode_with("/%E2%82", false), "/\u{FFFD}");
+        assert_eq!(percent_decode("%4"), "%4");
+        assert_eq!(percent_decode("%41"), "A");
+        assert_eq!(percent_decode_with("/a+b", false), "/a+b");
+        assert_eq!(percent_decode("%zz%"), "%zz%");
+    }
+
+    #[test]
+    fn only_the_browser_app_is_served() {
+        assert_eq!(app_asset_path("/").as_deref(), Some("remote.html"));
+        assert_eq!(app_asset_path("/library").as_deref(), Some("remote.html"));
+        assert_eq!(app_asset_path("/assets/remote-abc.js").as_deref(), Some("assets/remote-abc.js"));
+        assert_eq!(app_asset_path("/favicon.png").as_deref(), Some("favicon.png"));
+        assert_eq!(app_asset_path("/index.html"), None);
+        assert_eq!(app_asset_path("/assets/../index.html"), None);
+        assert_eq!(app_asset_path("/assets//x.js"), None);
+        assert_eq!(app_asset_path("/src/main.tsx"), None);
     }
 
     #[test]

@@ -11,12 +11,14 @@ mod nas;
 mod nowplaying;
 mod player;
 mod power;
+mod remote_guard;
 mod scanner;
 mod source_blocker;
 mod source_browser;
 mod stream;
 mod subsync;
 mod subtitles;
+mod tailscale;
 mod torrent;
 mod trailer;
 mod vlc;
@@ -140,6 +142,10 @@ pub fn run() {
             stream::remote_access_set,
             stream::server_info,
             stream::remote_api_reply,
+            stream::remote_sessions,
+            stream::remote_session_revoke,
+            tailscale::tailscale_status,
+            tailscale::tailscale_serve,
             audio::audio_devices,
             audio::default_audio_device,
             nas::share_info,
