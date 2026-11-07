@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useLibraryStore } from '../store/useLibraryStore';
-import type { EpisodeRow, MediaItem, MovieRow, Profile } from '../types/media';
+import type { EpisodeRow, MediaItem, MovieRow, PlayTarget, Profile } from '../types/media';
 import type {
   RemoteAudioTrack,
   RemoteEpisode,
@@ -15,10 +15,12 @@ import type {
   RemoteTitle,
 } from '../remote/types';
 import * as db from './db';
-import { allowedForMaturity, buildItems, continueWatching, epLabel, formatRemaining, genreBuckets, groupEpisodes, playTargetFor } from '../store/selectors';
+import { allowedForMaturity, buildItems, continueWatching, epLabel, episodeTarget, formatRemaining, genreBuckets, groupEpisodes, playTargetFor } from '../store/selectors';
 import { blockedMessage, limitStatus } from './limits';
+import { verifyPin } from './pin';
 import { parseMediaInfo, parseSegments } from './mediainfo';
 import { subtitleOptions } from './player';
+import { ApiError, command as remoteCommand, nowPlaying, rateLimit, startOnPc, type Caller } from './remotecontrol';
 import { durationOf, planStream, probeStream, registerStream, releaseStream, streamUrl } from './streaming';
 import { languageName } from './subtitles';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
@@ -27,21 +29,6 @@ import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
  * Answers the browser app's `/api/…` requests (forwarded by the Rust media server) with the same
  * library, profile and progress logic the desktop app uses.
  */
-
-class ApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-/** The signed-in browser a request came from (identified by the media server). */
-interface Caller {
-  session: string;
-  device: string;
-}
 
 const UNLOCK_TTL = 12 * 3600_000;
 const PIN_TRIES = 5;
@@ -361,12 +348,15 @@ async function unlock(body: Record<string, unknown>) {
     const minutes = Math.max(1, Math.ceil((PIN_LOCKOUT - (now - failures[0])) / 60_000));
     throw new ApiError(429, `Too many wrong PINs. Try again in ${minutes} minutes.`);
   }
-  if (profile.pin && profile.pin !== String(body.pin ?? '')) {
+  if (profile.pin) {
+    // Counted before the (slow, async) check so parallel guesses can't slip past the lockout.
     failures.push(now);
     pinFailures.set(profile.id, failures);
-    await new Promise((r) => setTimeout(r, 600));
-    const left = PIN_TRIES - failures.length;
-    throw new ApiError(403, left > 0 ? `Wrong PIN. ${left} ${left === 1 ? 'try' : 'tries'} left.` : 'Too many wrong PINs. Try again in 15 minutes.');
+    if (!(await verifyPin(profile.pin, String(body.pin ?? '')))) {
+      await new Promise((r) => setTimeout(r, 600));
+      const left = PIN_TRIES - failures.length;
+      throw new ApiError(403, left > 0 ? `Wrong PIN. ${left} ${left === 1 ? 'try' : 'tries'} left.` : 'Too many wrong PINs. Try again in 15 minutes.');
+    }
   }
   pinFailures.delete(profile.id);
   const keys = unlocked.get(profile.id) ?? new Map<string, { pin: string; expires: number }>();
@@ -375,6 +365,25 @@ async function unlock(body: Record<string, unknown>) {
   keys.set(k, { pin: profile.pin, expires: now + UNLOCK_TTL });
   unlocked.set(profile.id, keys);
   return { key: k };
+}
+
+/** "Play on PC": the same rating, limit and download checks as browser playback, then the desktop player. */
+async function playOnPc(caller: Caller, profile: Profile, type: 'movie' | 'episode', id: number) {
+  rateLimit(caller, 'play', 6, 60_000);
+  const st = await limitStatus(profile);
+  if (st.blocked) throw new ApiError(403, blockedMessage(profile, st.blocked));
+  const { movies, episodes, items } = await libraryFor(profile);
+  const row: MovieRow | EpisodeRow | undefined = type === 'movie' ? movies.find((m) => m.id === id) : episodes.find((e) => e.id === id);
+  if (!row || !allowedTitle(items, episodes, type, id)) throw new ApiError(404, 'Not found');
+  if (downloadBlockingPlayback(row.file_path, useLibraryStore.getState().torrents)) throw new ApiError(409, stillDownloadingMessage(row.title));
+  let target: PlayTarget;
+  if (type === 'episode') {
+    const e = row as EpisodeRow;
+    target = episodeTarget(e, items.find((i) => i.kind === 'tv' && i.id === e.series_id) ?? { title: e.title });
+  } else {
+    target = { type, id, filePath: row.file_path, startTime: row.watched ? 0 : row.progress_seconds, label: row.title };
+  }
+  return startOnPc(caller, profile, target);
 }
 
 export async function route(caller: Caller, method: string, path: string, query: Record<string, string>, body: Record<string, unknown>): Promise<unknown> {
@@ -419,6 +428,12 @@ export async function route(caller: Caller, method: string, path: string, query:
     if (ownedStream(body.token, caller)) stopStream(String(body.token));
     return { ok: true };
   }
+  if (method === 'GET' && path === '/remote/state') {
+    rateLimit(caller, 'state', 40, 10_000);
+    return nowPlaying(caller, p());
+  }
+  if (method === 'POST' && path === '/remote/command') return remoteCommand(caller, p(), body.action as never, body.value);
+  if (method === 'POST' && path === '/remote/play') return playOnPc(caller, p(), body.type === 'episode' ? 'episode' : 'movie', Number(body.id));
   throw new ApiError(404, 'Unknown endpoint');
 }
 
@@ -434,11 +449,11 @@ export async function initRemoteApi() {
   if (started) return;
   started = true;
   setInterval(() => sweepIdleStreams(), 30_000);
-  await listen<{ id: number; method: string; path: string; query: Record<string, string>; body: Record<string, unknown> | null; session: string; device: string }>('remote-api', async ({ payload }) => {
+  await listen<{ id: number; method: string; path: string; query: Record<string, string>; body: Record<string, unknown> | null; session: string; device: string; pc?: string }>('remote-api', async ({ payload }) => {
     let status = 200;
     let body: unknown;
     try {
-      const caller: Caller = { session: payload.session, device: payload.device };
+      const caller: Caller = { session: payload.session, device: payload.device, pc: payload.pc };
       body = await route(caller, payload.method, payload.path, payload.query ?? {}, payload.body ?? {});
     } catch (e) {
       status = e instanceof ApiError ? e.status : 500;

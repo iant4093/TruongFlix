@@ -4,6 +4,16 @@ const TOKEN = 'tf-remote-token';
 
 export class AuthError extends Error {}
 
+/** A refused request, with its HTTP status (e.g. 403 "Playing on another profile"). */
+export class ApiStatusError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export const getToken = () => localStorage.getItem(TOKEN) ?? '';
 export const setToken = (t: string) => (t ? localStorage.setItem(TOKEN, t) : localStorage.removeItem(TOKEN));
 
@@ -18,7 +28,7 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     setToken('');
     throw new AuthError(data.error ?? 'Sign in again');
   }
-  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+  if (!res.ok) throw new ApiStatusError(res.status, data.error ?? `Request failed (${res.status})`);
   return data as T;
 }
 

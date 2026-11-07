@@ -98,6 +98,40 @@ export interface RemoteSubStyle {
   background: 'none' | 'shadow' | 'translucent' | 'solid';
 }
 
+/** What the desktop app is playing, for the browser app's "Playing on …" remote. */
+export interface RemoteNowPlaying {
+  active: boolean;
+  /** The computer's name. */
+  pc: string;
+  source?: 'player' | 'live' | 'cast';
+  /** The TV's name while casting. */
+  castDevice?: string | null;
+  type?: 'movie' | 'episode' | 'live';
+  id?: number | string;
+  itemKey?: string | null;
+  title?: string;
+  subtitle?: string | null;
+  art?: string | null;
+  poster?: string | null;
+  logo?: string | null;
+  time?: number;
+  duration?: number;
+  paused?: boolean;
+  buffering?: boolean;
+  /** 0–100, or null when the device doesn't report it. */
+  volume?: number | null;
+  muted?: boolean;
+  fullscreen?: boolean;
+  audioTracks?: RemoteAudioTrack[];
+  subTracks?: RemoteSubTrack[];
+  next?: string | null;
+  /** "Are you still watching?" and similar prompts showing on the PC. */
+  prompt?: string | null;
+  can?: { seek: boolean; skip: boolean; volume: boolean; tracks: boolean; next: boolean; fullscreen: boolean };
+}
+
+export type RemoteCommandAction = 'play' | 'pause' | 'toggle' | 'seek' | 'skip' | 'volume' | 'mute' | 'audio' | 'subtitle' | 'next' | 'stop' | 'fullscreen';
+
 export interface RemoteStream {
   token: string;
   /** Relative URL on the TruongFlix server. */

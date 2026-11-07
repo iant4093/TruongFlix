@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Lock, Play, Search, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, Lock, Monitor, Play, Search, Sparkles, X } from 'lucide-react';
 import CriticScores from '../components/common/CriticScores';
 import ProfileAvatar from '../components/common/ProfileAvatar';
 import ProgressBar from '../components/common/ProgressBar';
 import type { RemoteItem, RemoteLibrary, RemotePlayable, RemoteProfile, RemoteTitle } from './types';
 import { api, AuthError, getToken, login, qs } from './api';
 import RemotePlayer from './RemotePlayer';
+import { NowPlayingBar, RemoteSheet, useNowPlaying, type NowPlaying } from './RemoteControl';
 import { errorMessage } from '../lib/errors';
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
@@ -181,6 +182,16 @@ function Browse({
   const [lib, setLib] = useState<RemoteLibrary | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState<string | null>(null);
+  const now = useNowPlaying(who, true, onAuthError);
+  const [remoteOpen, setRemoteOpen] = useState(false);
+  const closeRemote = useCallback(() => setRemoteOpen(false), []);
+  const remote = (
+    <>
+      {!remoteOpen && <NowPlayingBar now={now} onOpen={() => setRemoteOpen(true)} />}
+      {remoteOpen && <RemoteSheet now={now} onClose={closeRemote} />}
+    </>
+  );
+  const pad = now.np ? 'pb-28' : 'pb-16';
   useEffect(() => {
     api<RemoteLibrary>(`/library${qs({ profile: who.id, key: who.key })}`)
       .then(setLib)
@@ -195,10 +206,16 @@ function Browse({
     return q && lib ? lib.all.filter((i) => i.title.toLowerCase().includes(q)) : [];
   }, [query, lib]);
 
-  if (screen.name === 'title') return <TitlePage who={who} itemKey={screen.key} back={back} play={play} />;
+  if (screen.name === 'title')
+    return (
+      <>
+        <TitlePage who={who} itemKey={screen.key} back={back} play={play} now={now} pad={pad} openRemote={() => setRemoteOpen(true)} />
+        {remote}
+      </>
+    );
 
   return (
-    <div className="min-h-[100dvh] pb-16">
+    <div className={`min-h-[100dvh] ${pad}`}>
       <header className="sticky top-0 z-30 flex items-center gap-3 bg-gradient-to-b from-black/90 to-transparent px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))]">
         <Wordmark className="text-3xl" />
         <div className="flex-1" />
@@ -258,13 +275,45 @@ function Browse({
           ))}
         </>
       )}
+      {remote}
     </div>
   );
 }
 
-function TitlePage({ who, itemKey, back, play }: { who: Who; itemKey: string; back: () => void; play: (t: RemotePlayable) => void }) {
+function TitlePage({
+  who,
+  itemKey,
+  back,
+  play,
+  now,
+  pad,
+  openRemote,
+}: {
+  who: Who;
+  itemKey: string;
+  back: () => void;
+  play: (t: RemotePlayable) => void;
+  now: NowPlaying;
+  pad: string;
+  openRemote: () => void;
+}) {
   const [data, setData] = useState<RemoteTitle | null>(null);
   const [season, setSeason] = useState<number | null>(null);
+  const [pcBusy, setPcBusy] = useState(false);
+  const [pcError, setPcError] = useState('');
+  const playOnPc = async (t: RemotePlayable) => {
+    setPcBusy(true);
+    setPcError('');
+    try {
+      await api('/remote/play', { body: { profile: who.id, key: who.key, type: t.type, id: t.id } });
+      now.refresh();
+      openRemote();
+    } catch (e) {
+      setPcError(errorMessage(e));
+    } finally {
+      setPcBusy(false);
+    }
+  };
   useEffect(() => {
     api<RemoteTitle>(`/title${qs({ profile: who.id, key: who.key, item: itemKey })}`).then((d) => {
       setData(d);
@@ -277,7 +326,7 @@ function TitlePage({ who, itemKey, back, play }: { who: Who; itemKey: string; ba
   const seasons = [...new Set(data.episodes.map((e) => e.season))];
   const list = data.episodes.filter((e) => e.season === season);
   return (
-    <div className="min-h-[100dvh] pb-16">
+    <div className={`min-h-[100dvh] ${pad}`}>
       <div className="relative aspect-video max-h-[60vh] w-full overflow-hidden">
         {item.backdrop && <img src={item.backdrop} alt="" className="h-full w-full object-cover" />}
         <div className="absolute inset-0 bg-gradient-to-t from-nf-bg to-transparent" />
@@ -301,12 +350,19 @@ function TitlePage({ who, itemKey, back, play }: { who: Who; itemKey: string; ba
           )}
         </div>
         {data.play && (
-          <button onClick={() => play(data.play!)} className="nf-btn-play w-full justify-center py-3 text-lg sm:w-auto sm:px-10">
-            <Play className="h-6 w-6 fill-black" strokeWidth={0} />
-            {data.play.resume > 0 ? 'Resume' : 'Play'}
-            {item.kind === 'tv' && <span className="text-base font-medium text-black/60">{data.play.label.match(/S\d+:E\d+/)?.[0]}</span>}
-          </button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button onClick={() => play(data.play!)} className="nf-btn-play w-full justify-center py-3 text-lg sm:w-auto sm:px-10">
+              <Play className="h-6 w-6 fill-black" strokeWidth={0} />
+              {data.play.resume > 0 ? 'Resume' : 'Play'}
+              {item.kind === 'tv' && <span className="text-base font-medium text-black/60">{data.play.label.match(/S\d+:E\d+/)?.[0]}</span>}
+            </button>
+            <button onClick={() => void playOnPc(data.play!)} disabled={pcBusy} className="nf-btn-info w-full justify-center py-3 text-lg disabled:opacity-60 sm:w-auto sm:px-8">
+              <Monitor className="h-6 w-6" />
+              {pcBusy ? 'Starting…' : `Play on ${now.pc ?? 'PC'}`}
+            </button>
+          </div>
         )}
+        {pcError && <p className="text-sm text-nf-red">{pcError}</p>}
         <p className="leading-relaxed">{item.overview}</p>
         {data.cast.length > 0 && <p className="text-sm text-nf-secondary">Cast: {data.cast.join(', ')}</p>}
         {seasons.length > 0 && (
@@ -325,7 +381,8 @@ function TitlePage({ who, itemKey, back, play }: { who: Who; itemKey: string; ba
             </div>
             <div className="divide-y divide-white/10">
               {list.map((e) => (
-                <button key={e.id} onClick={() => play({ type: 'episode', id: e.id, label: `S${e.season}:E${e.episode} · ${e.title}`, resume: -1 })} className="flex w-full gap-3 py-3 text-left">
+                <div key={e.id} className="flex items-center">
+                <button onClick={() => play({ type: 'episode', id: e.id, label: `S${e.season}:E${e.episode} · ${e.title}`, resume: -1 })} className="flex min-w-0 flex-1 gap-3 py-3 text-left">
                   <div className="relative aspect-video w-32 shrink-0 overflow-hidden rounded bg-white/10">
                     {e.still && <img src={e.still} alt="" loading="lazy" className="h-full w-full object-cover" />}
                     {e.progress > 0 && (
@@ -340,6 +397,16 @@ function TitlePage({ who, itemKey, back, play }: { who: Who; itemKey: string; ba
                     {e.overview && <p className="mt-1 line-clamp-2 text-sm text-nf-secondary">{e.overview}</p>}
                   </div>
                 </button>
+                <button
+                  onClick={() => void playOnPc({ type: 'episode', id: e.id, label: `S${e.season}:E${e.episode} · ${e.title}`, resume: -1 })}
+                  disabled={pcBusy}
+                  aria-label={`Play episode ${e.episode} on ${now.pc ?? 'PC'}`}
+                  title={`Play on ${now.pc ?? 'PC'}`}
+                  className="ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-nf-secondary active:bg-white/10 disabled:opacity-40"
+                >
+                  <Monitor className="h-5 w-5" />
+                </button>
+                </div>
               ))}
             </div>
           </section>

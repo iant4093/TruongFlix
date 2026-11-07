@@ -715,6 +715,7 @@ async fn forward_api(req: &Request, session: &str, device: &str) -> (u16, String
         // Which signed-in browser asked, so playback can only be controlled by its owner.
         "session": session,
         "device": device,
+        "pc": pc_name(),
     });
     if s.app.emit("remote-api", payload).is_err() {
         s.inner.lock().unwrap().pending.remove(&id);
@@ -727,6 +728,29 @@ async fn forward_api(req: &Request, session: &str, device: &str) -> (u16, String
             (504, r#"{"error":"TruongFlix didn't answer"}"#.into())
         }
     }
+}
+
+/// This computer's name, shown in the browser app's "Playing on …" remote.
+fn pc_name() -> &'static str {
+    static NAME: OnceLock<String> = OnceLock::new();
+    NAME.get_or_init(|| {
+        let clean = |n: String| Some(n.trim().to_string()).filter(|n| !n.is_empty());
+        #[cfg(target_os = "macos")]
+        if let Some(n) = std::process::Command::new("scutil")
+            .args(["--get", "ComputerName"])
+            .output()
+            .ok()
+            .and_then(|o| clean(String::from_utf8_lossy(&o.stdout).into_owned()))
+        {
+            return n;
+        }
+        std::env::var("COMPUTERNAME")
+            .ok()
+            .and_then(clean)
+            .or_else(|| std::env::var("HOSTNAME").ok().and_then(clean))
+            .or_else(|| std::fs::read_to_string("/etc/hostname").ok().and_then(clean))
+            .unwrap_or_else(|| "your computer".into())
+    })
 }
 
 /// The frontend's answer to a forwarded request.
