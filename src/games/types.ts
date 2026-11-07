@@ -149,9 +149,9 @@ export interface InstallChoices {
   afterInstall: string[];
 }
 
-/** Payload for the Rust `games_install` command (mirrors `helper::InstallJob`). */
+/** Payload for the Rust `games_install` command (mirrors `InstallRequest`). The installer itself
+ * comes from the game's library record; Rust checks every choice against it. */
 export interface InstallJobPayload {
-  setupExe: string;
   installDir: string;
   language: string | null;
   components: string[] | null;
@@ -159,7 +159,8 @@ export interface InstallJobPayload {
   noIcons: boolean;
   limitRam: boolean | null;
   removeShortcuts: string[];
-  postActions: { label: string; filename: string; parameters: string; workingDir: string | null }[];
+  /** Indices into the installer's run entries. */
+  postActions: number[];
 }
 
 // ---------------------------------------------------------------------------

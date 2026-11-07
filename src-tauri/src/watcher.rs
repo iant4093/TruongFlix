@@ -24,9 +24,14 @@ fn relevant(path: &Path) -> bool {
     path.extension().is_none() || crate::scanner::has_video_extension(path)
 }
 
-/// (Re)starts watching `paths`. An empty list stops watching.
+/// (Re)starts watching `paths`. An empty list stops watching. Runs off the async runtime: setting
+/// up recursive watches (or touching an offline share) can take a while.
 #[tauri::command]
-pub fn watch_folders(app: AppHandle, paths: Vec<String>) -> Result<usize, String> {
+pub async fn watch_folders(app: AppHandle, paths: Vec<String>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || watch_blocking(app, paths)).await.map_err(|e| e.to_string())?
+}
+
+fn watch_blocking(app: AppHandle, paths: Vec<String>) -> Result<usize, String> {
     let mut slot = WATCHER.lock().unwrap();
     *slot = None; // drop the old watcher first
     if paths.is_empty() {

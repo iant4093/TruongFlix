@@ -1,7 +1,10 @@
 //! Portable SQLite snapshots. Restore runs before the application's connection pool opens.
 use libsqlite3_sys::{
-    sqlite3_backup_finish, sqlite3_backup_init, sqlite3_backup_step, SQLITE_DONE, SQLITE_OK,
+    sqlite3, sqlite3_api_routines, sqlite3_auto_extension, sqlite3_backup_finish, sqlite3_backup_init,
+    sqlite3_backup_step, sqlite3_set_authorizer, SQLITE_ATTACH, SQLITE_DENY, SQLITE_DETACH, SQLITE_DONE,
+    SQLITE_FUNCTION, SQLITE_OK,
 };
+use std::ffi::{c_char, c_int, c_void, CStr};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection, Row, SqliteConnection};
@@ -37,6 +40,21 @@ const PORTABLE_TABLES: &[&str] = &[
     "live_data",
     "live_viewing",
 ];
+
+/// Account keys, passwords and the browser access code never leave this computer in a backup;
+/// restoring keeps the ones already set here.
+const SECRET_SETTINGS: &[&str] = &[
+    "tmdb_api_key",
+    "omdb_api_key",
+    "opensubtitles_api_key",
+    "opensubtitles_username",
+    "opensubtitles_password",
+    "remote_code",
+];
+
+fn secret_list() -> String {
+    SECRET_SETTINGS.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ")
+}
 
 #[derive(Default)]
 pub struct BackupState {
@@ -86,19 +104,82 @@ fn app_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
+unsafe extern "C" fn sql_guard(
+    _: *mut c_void,
+    action: c_int,
+    _: *const c_char,
+    arg2: *const c_char,
+    _: *const c_char,
+    _: *const c_char,
+) -> c_int {
+    match action {
+        SQLITE_ATTACH | SQLITE_DETACH => SQLITE_DENY,
+        SQLITE_FUNCTION if !arg2.is_null() && CStr::from_ptr(arg2).to_bytes().eq_ignore_ascii_case(b"load_extension") => SQLITE_DENY,
+        _ => SQLITE_OK,
+    }
+}
+
+unsafe extern "C" fn guard_connection(db: *mut sqlite3, _: *mut *mut c_char, _: *const sqlite3_api_routines) -> c_int {
+    sqlite3_set_authorizer(db, Some(sql_guard), std::ptr::null_mut());
+    SQLITE_OK
+}
+
+/// Every SQLite connection opened in this process (including the SQL plugin's pool, which the
+/// web view can send arbitrary statements to) refuses ATTACH/DETACH — and with them `VACUUM INTO`
+/// — and `load_extension()`, so SQL from the UI can't read or write other files. Backups, which
+/// need ATTACH, lift the guard on their own connections.
+pub fn install_sql_guard() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        sqlite3_auto_extension(Some(guard_connection));
+    });
+}
+
 async fn connect(
     path: &Path,
     read_only: bool,
     immutable: bool,
 ) -> Result<SqliteConnection, sqlx::Error> {
-    SqliteConnectOptions::new()
+    let mut db = SqliteConnectOptions::new()
         .filename(path)
         .read_only(read_only)
         .immutable(immutable)
         .busy_timeout(Duration::from_secs(5))
         .pragma("trusted_schema", "OFF")
         .connect()
-        .await
+        .await?;
+    {
+        let mut handle = db.lock_handle().await?;
+        unsafe { sqlite3_set_authorizer(handle.as_raw_handle().as_ptr(), None, std::ptr::null_mut()) };
+    }
+    Ok(db)
+}
+
+/// Folders the library manages according to the app's database: media folders, torrent save
+/// folders and roots of earlier renames. File operations from the UI must stay inside these.
+pub(crate) async fn library_folders(app: &AppHandle) -> Vec<PathBuf> {
+    let Ok(dir) = app_dir(app) else { return Vec::new() };
+    let Ok(mut db) = connect(&dir.join(DB), true, false).await else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    let settings: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM settings WHERE key IN ('media_directories', 'torrent_movies_dir', 'torrent_tv_dir')",
+    )
+    .fetch_all(&mut db)
+    .await
+    .unwrap_or_default();
+    for (key, value) in settings {
+        if key == "media_directories" {
+            out.extend(serde_json::from_str::<Vec<String>>(&value).unwrap_or_default());
+        } else {
+            out.push(value);
+        }
+    }
+    out.extend(sqlx::query_scalar::<_, String>("SELECT save_path FROM torrents").fetch_all(&mut db).await.unwrap_or_default());
+    for roots in sqlx::query_scalar::<_, String>("SELECT roots FROM rename_batches").fetch_all(&mut db).await.unwrap_or_default() {
+        out.extend(serde_json::from_str::<Vec<String>>(&roots).unwrap_or_default());
+    }
+    let _ = db.close().await;
+    out.into_iter().filter(|p| !p.trim().is_empty() && Path::new(p).is_absolute()).map(PathBuf::from).collect()
 }
 
 async fn copy_database(
@@ -160,11 +241,13 @@ async fn snapshot(source: &Path, destination: &Path) -> Result<(), String> {
         .execute(&mut output)
         .await
         .map_err(|error| error.to_string())?;
+    let drop_secrets = format!("DELETE FROM settings WHERE key IN ({})", secret_list());
     for statement in [
         "PRAGMA secure_delete = ON",
         "DELETE FROM trash",
         "DELETE FROM rename_batches",
         "DELETE FROM torrents",
+        &drop_secrets,
     ] {
         sqlx::query(statement)
             .execute(&mut output)
@@ -521,8 +604,11 @@ async fn apply_restore(dir: &Path, pending: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     let mut tx = dest.begin().await.map_err(|error| error.to_string())?;
+    let secrets = secret_list();
     for table in PORTABLE_TABLES.iter().rev() {
-        sqlx::query(&format!("DELETE FROM main.{table}"))
+        // Secrets set on this computer stay; older backups may still fill in missing ones.
+        let keep = if *table == "settings" { format!(" WHERE key NOT IN ({secrets})") } else { String::new() };
+        sqlx::query(&format!("DELETE FROM main.{table}{keep}"))
             .execute(&mut *tx)
             .await
             .map_err(|error| error.to_string())?;
@@ -534,8 +620,9 @@ async fn apply_restore(dir: &Path, pending: &Path) -> Result<(), String> {
             .map(|name| format!("\"{}\"", name.replace('"', "\"\"")))
             .collect::<Vec<_>>()
             .join(", ");
+        let insert = if *table == "settings" { "INSERT OR IGNORE" } else { "INSERT" };
         sqlx::query(&format!(
-            "INSERT INTO main.{table} ({columns}) SELECT {columns} FROM incoming.{table}"
+            "{insert} INTO main.{table} ({columns}) SELECT {columns} FROM incoming.{table}"
         ))
         .execute(&mut *tx)
         .await
@@ -683,6 +770,62 @@ mod tests {
                 .unwrap(),
             "New profile"
         );
+    }
+
+    #[tokio::test]
+    async fn ui_connections_cannot_reach_other_files() {
+        install_sql_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("app.db");
+        let other = dir.path().join("other.db");
+        let mut db = SqliteConnectOptions::new().filename(&file).create_if_missing(true).connect().await.unwrap();
+        sqlx::raw_sql("CREATE TABLE t(x); INSERT INTO t VALUES (1);").execute(&mut db).await.unwrap();
+        let other_uri = other.to_string_lossy().replace('\'', "''");
+        for sql in [
+            format!("ATTACH DATABASE '{other_uri}' AS x"),
+            format!("VACUUM INTO '{other_uri}'"),
+            "DETACH DATABASE main".to_string(),
+            "SELECT load_extension('evil')".to_string(),
+        ] {
+            assert!(sqlx::raw_sql(&sql).execute(&mut db).await.is_err(), "{sql}");
+        }
+        assert!(!other.exists());
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT x FROM t").fetch_one(&mut db).await.unwrap(), 1);
+        // Backups lift the guard on their own connections.
+        fs::File::create(&other).unwrap();
+        let mut trusted = connect(&file, false, false).await.unwrap();
+        sqlx::raw_sql(&format!("ATTACH DATABASE '{other_uri}' AS x; DETACH DATABASE x;")).execute(&mut trusted).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn backups_leave_secrets_out_and_restores_keep_local_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let mut db = fixture(path).await;
+        sqlx::raw_sql("INSERT INTO settings VALUES ('tmdb_api_key', 'old-key'), ('remote_code', '123456'), ('subtitle_language', 'fr');")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        let file = path.join("saved.truongflix-backup");
+        snapshot(&path.join(DB), &file).await.unwrap();
+        let mut saved = connect(&file, true, true).await.unwrap();
+        let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM settings ORDER BY key").fetch_all(&mut saved).await.unwrap();
+        assert_eq!(keys, ["media_directories", "subtitle_language"]);
+        saved.close().await.unwrap();
+
+        sqlx::raw_sql("UPDATE settings SET value = 'new-key' WHERE key = 'tmdb_api_key'; UPDATE settings SET value = 'de' WHERE key = 'subtitle_language';")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        stage(path, &file, Vec::new()).await.unwrap();
+        apply_restore(path, &path.join(PENDING)).await.unwrap();
+        let mut restored = connect(&path.join(DB), true, false).await.unwrap();
+        let settings: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings ORDER BY key").fetch_all(&mut restored).await.unwrap();
+        let get = |k: &str| settings.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("tmdb_api_key"), Some("new-key"));
+        assert_eq!(get("remote_code"), Some("123456"));
+        assert_eq!(get("subtitle_language"), Some("fr"));
     }
 
     #[tokio::test]

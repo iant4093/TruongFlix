@@ -738,6 +738,10 @@ function handleLibrarySql(q: string, values: unknown[]): unknown | undefined {
     return tables[m[1]].filter((r) => ids.includes(r.id));
   }
   if (q.startsWith('SELECT * FROM tv_series WHERE id = $1')) return series.filter((s) => s.id === values[0]);
+  if (q.startsWith('SELECT certification FROM movies WHERE id = $1'))
+    return movies.filter((r) => r.id === values[0]).map((r) => ({ certification: r.certification ?? null }));
+  if (q.startsWith('SELECT s.certification FROM episodes e JOIN tv_series s'))
+    return episodes.filter((e) => e.id === values[0]).flatMap((e) => series.filter((s) => s.id === e.series_id)).map((s) => ({ certification: s.certification ?? null }));
   if ((m = q.match(/^SELECT id FROM (movies|episodes) WHERE file_path = \$1/)))
     return (tables[m[1]] as unknown as { id: number; file_path: string }[]).filter((r) => r.file_path === values[0]).map((r) => ({ id: r.id }));
   if (q.startsWith('SELECT id FROM tv_series WHERE tmdb_id = $1'))

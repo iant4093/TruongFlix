@@ -303,6 +303,10 @@ pub async fn extract_frames(
     width: u32,
     lane: String,
 ) -> Result<Vec<Option<String>>, String> {
+    // The lane names a temporary folder, so it must be a plain name.
+    if !valid_lane(&lane) {
+        return Err("Invalid frame lane".into());
+    }
     let generation = bump_lane(&lane);
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("frames").join(sanitize(&key));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -346,6 +350,10 @@ pub async fn extract_frames(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn valid_lane(lane: &str) -> bool {
+    (1..=32).contains(&lane.len()) && lane.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn sanitize(key: &str) -> String {
@@ -635,6 +643,16 @@ mod tests {
         assert_eq!(shared_segment(&a, &b), None);
         let silence = vec![0i16; SAMPLE_RATE * 60];
         assert_eq!(shared_segment(&fingerprint(&silence), &fingerprint(&silence)), None);
+    }
+
+    #[test]
+    fn frame_lanes_are_plain_names() {
+        for ok in ["scrub", "stills", "hover-2", "a_b"] {
+            assert!(valid_lane(ok), "{ok}");
+        }
+        for bad in ["", "..", "../x", "a/b", "a\\b", "C:", &"x".repeat(33), "lane name"] {
+            assert!(!valid_lane(bad), "{bad}");
+        }
     }
 
     /// `TRUONGFLIX_PROBE_TEST=file.mkv cargo test -- --ignored real_probe --nocapture`

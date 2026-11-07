@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tauri::{AppHandle, Manager};
 use walkdir::WalkDir;
 
 pub const TRASH_DIR: &str = ".truongflix-trash";
@@ -20,6 +21,49 @@ pub struct FileMove {
 
 fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
+}
+
+// ---------------------------------------------------------------------------
+// Which folders file operations may touch
+// ---------------------------------------------------------------------------
+
+/// Absolute path with symlinks and `\\?\` forms resolved, also for paths that don't exist yet
+/// (the existing part is canonicalized and the rest appended). `..` and `.` are refused.
+fn resolve(p: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    if !p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+        return None;
+    }
+    let mut rest = Vec::new();
+    let mut cur = p;
+    loop {
+        if let Ok(base) = std::fs::canonicalize(cur) {
+            return Some(rest.iter().rev().fold(base, |acc: PathBuf, part| acc.join(part)));
+        }
+        rest.push(cur.file_name()?.to_os_string());
+        cur = cur.parent()?;
+    }
+}
+
+fn resolve_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    roots.iter().filter_map(|r| resolve(r)).collect()
+}
+
+/// `p` lies below one of `roots` (both already resolved).
+fn inside_any(p: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|r| strictly_inside(p, r))
+}
+
+/// Media folders, torrent folders and earlier rename roots from the database, plus the torrent
+/// engine's own download folders.
+async fn managed_roots(app: &AppHandle) -> Vec<PathBuf> {
+    let mut roots = crate::backup::library_folders(app).await;
+    if let Ok(data) = app.path().app_data_dir() {
+        roots.push(data.join("downloads"));
+        roots.push(data.join("stream-cache"));
+    }
+    roots.extend(crate::torrent::current_stream_cache_root().await);
+    roots
 }
 
 fn file_size(p: &Path) -> u64 {
@@ -249,13 +293,35 @@ fn apply_moves_inner(moves: &[FileMove], with_sidecars: bool, roots: &[PathBuf])
     out
 }
 
+/// Both ends of every move must be inside `allowed` (resolved); the rest are reported as errors.
+fn checked_moves(moves: Vec<FileMove>, allowed: &[PathBuf]) -> (Vec<FileMove>, Vec<String>) {
+    let mut ok = Vec::new();
+    let mut errors = Vec::new();
+    for m in moves {
+        let inside = |p: &str| resolve(Path::new(p)).is_some_and(|r| inside_any(&r, allowed));
+        if inside(&m.from) && inside(&m.to) {
+            ok.push(m);
+        } else {
+            errors.push(format!("{}: outside the library folders", m.from));
+        }
+    }
+    (ok, errors)
+}
+
 /// Applies planned renames. With `with_sidecars`, each video's subtitles/.nfo/artwork follow it
 /// (renamed to the new name); undo passes the exact recorded list with `with_sidecars = false`.
+/// Only files inside the library's folders (as recorded by the app) can be moved; `roots` only
+/// limits which emptied folders are cleaned up.
 #[tauri::command]
-pub async fn apply_moves(moves: Vec<FileMove>, with_sidecars: bool, roots: Vec<String>) -> Result<MoveResult, String> {
+pub async fn apply_moves(app: AppHandle, moves: Vec<FileMove>, with_sidecars: Option<bool>, roots: Option<Vec<String>>) -> Result<MoveResult, String> {
+    let managed = managed_roots(&app).await;
     tauri::async_runtime::spawn_blocking(move || {
-        let roots: Vec<PathBuf> = roots.iter().map(|r| PathBuf::from(r.trim_end_matches(['/', '\\']))).collect();
-        apply_moves_inner(&moves, with_sidecars, &roots)
+        let allowed = resolve_roots(&managed);
+        let roots: Vec<PathBuf> = roots.unwrap_or_default().iter().map(|r| PathBuf::from(r.trim_end_matches(['/', '\\']))).collect();
+        let (moves, rejected) = checked_moves(moves, &allowed);
+        let mut out = apply_moves_inner(&moves, with_sidecars.unwrap_or(false), &roots);
+        out.errors.extend(rejected);
+        out
     })
     .await
     .map_err(|e| e.to_string())
@@ -379,10 +445,17 @@ fn trash_paths(videos: &[PathBuf], root: &Path) -> Result<TrashResult, String> {
 
 /// Moves a movie/episode/show's files into `<media root>/.truongflix-trash/<entry>/`.
 #[tauri::command]
-pub async fn trash_media(video_paths: Vec<String>, root: String) -> Result<TrashResult, String> {
+pub async fn trash_media(app: AppHandle, video_paths: Vec<String>, root: String) -> Result<TrashResult, String> {
+    let managed = managed_roots(&app).await;
     tauri::async_runtime::spawn_blocking(move || {
+        let allowed = resolve_roots(&managed);
         let videos: Vec<PathBuf> = video_paths.into_iter().map(PathBuf::from).collect();
-        trash_paths(&videos, Path::new(&root))
+        if videos.iter().any(|v| !resolve(v).is_some_and(|r| inside_any(&r, &allowed))) {
+            return Err("Only files in your library folders can be deleted.".into());
+        }
+        // Whole folders are only taken below a real library folder; otherwise just the files.
+        let root_known = resolve(Path::new(&root)).is_some_and(|r| allowed.contains(&r));
+        trash_paths(&videos, Path::new(if root_known { root.as_str() } else { "" }))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -394,20 +467,34 @@ pub struct RestoreResult {
     conflicts: Vec<String>,
 }
 
-fn is_trash_entry(p: &Path) -> bool {
-    p.components().any(|c| c.as_os_str() == TRASH_DIR) && p.file_name().is_some_and(|n| n != TRASH_DIR)
+/// For `<folder>/.truongflix-trash/<entry>` (exactly that shape, no `..`), returns the resolved
+/// entry and the folder its files came from.
+fn trash_entry(p: &Path) -> Option<(PathBuf, PathBuf)> {
+    let entry = resolve(p)?;
+    let trash = entry.parent()?;
+    if trash.file_name()? != TRASH_DIR || entry.file_name()? == TRASH_DIR {
+        return None;
+    }
+    Some((entry.clone(), trash.parent()?.to_path_buf()))
 }
 
-/// Moves trashed items back to where they came from (skipping anything that's been replaced).
-#[tauri::command]
-pub fn restore_trash(entry_dir: String, items: Vec<FileMove>) -> Result<RestoreResult, String> {
-    let entry = PathBuf::from(&entry_dir);
-    if !is_trash_entry(&entry) {
-        return Err("Not a TruongFlix trash entry".into());
+fn restore_trash_inner(entry_dir: &str, items: &[FileMove], allowed: Option<&[PathBuf]>) -> Result<RestoreResult, String> {
+    let (entry, origin) = trash_entry(Path::new(entry_dir)).ok_or("Not a TruongFlix trash entry")?;
+    if allowed.is_some_and(|roots| !roots.iter().any(|r| origin == *r || strictly_inside(&origin, r))) {
+        return Err("This trash entry isn't in a library folder".into());
+    }
+    let trash = origin.join(TRASH_DIR);
+    // Items only come out of this entry, and only go back into the folder they were deleted from.
+    for FileMove { from, to } in items {
+        let original = resolve(Path::new(from)).ok_or_else(|| format!("Invalid path: {from}"))?;
+        let trashed = resolve(Path::new(to)).ok_or_else(|| format!("Invalid path: {to}"))?;
+        if !strictly_inside(&trashed, &entry) || !strictly_inside(&original, &origin) || original.starts_with(&trash) {
+            return Err(format!("“{from}” doesn't belong to this trash entry"));
+        }
     }
     let mut restored = 0;
     let mut conflicts = Vec::new();
-    for FileMove { from, to } in &items {
+    for FileMove { from, to } in items {
         let (original, trashed) = (Path::new(from), Path::new(to));
         if original.exists() {
             conflicts.push(from.clone());
@@ -428,20 +515,34 @@ pub fn restore_trash(entry_dir: String, items: Vec<FileMove>) -> Result<RestoreR
     Ok(RestoreResult { restored, conflicts })
 }
 
-/// Permanently deletes one trash entry.
+/// Moves trashed items back to where they came from (skipping anything that's been replaced).
 #[tauri::command]
-pub async fn purge_trash(entry_dir: String) -> Result<(), String> {
-    let entry = PathBuf::from(&entry_dir);
-    if !is_trash_entry(&entry) {
-        return Err("Not a TruongFlix trash entry".into());
+pub async fn restore_trash(app: AppHandle, entry_dir: String, items: Vec<FileMove>) -> Result<RestoreResult, String> {
+    let managed = managed_roots(&app).await;
+    tauri::async_runtime::spawn_blocking(move || restore_trash_inner(&entry_dir, &items, Some(&resolve_roots(&managed))))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn purge_trash_inner(entry_dir: &str, allowed: Option<&[PathBuf]>) -> Result<(), String> {
+    let (entry, origin) = trash_entry(Path::new(entry_dir)).ok_or("Not a TruongFlix trash entry")?;
+    if allowed.is_some_and(|roots| !roots.iter().any(|r| origin == *r || strictly_inside(&origin, r))) {
+        return Err("This trash entry isn't in a library folder".into());
     }
-    tauri::async_runtime::spawn_blocking(move || match std::fs::remove_dir_all(&entry) {
+    match std::fs::remove_dir_all(&entry) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }
+}
+
+/// Permanently deletes one trash entry.
+#[tauri::command]
+pub async fn purge_trash(app: AppHandle, entry_dir: String) -> Result<(), String> {
+    let managed = managed_roots(&app).await;
+    tauri::async_runtime::spawn_blocking(move || purge_trash_inner(&entry_dir, Some(&resolve_roots(&managed))))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Opens Finder / File Explorer with the file selected.
@@ -452,7 +553,7 @@ pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg("-R").arg(target).spawn();
     #[cfg(target_os = "windows")]
-    let result = Command::new("explorer").arg(format!("/select,{}", target.display())).spawn();
+    let result = Command::new(crate::windows_dir().join("explorer.exe")).arg(format!("/select,{}", target.display())).spawn();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let result = Command::new("xdg-open").arg(target.parent().unwrap_or(target)).spawn();
     result.map(|_| ()).map_err(|e| e.to_string())
@@ -583,13 +684,50 @@ mod tests {
         assert!(res.entry_dir.contains(TRASH_DIR));
         assert_eq!(res.size_bytes, BIG * 2 + 10);
 
-        let restored = restore_trash(res.entry_dir.clone(), res.items).unwrap();
+        // Restoring can't be pointed outside the folder the files were deleted from.
+        let elsewhere = vec![FileMove { from: s(&root.join("Movies/evil.mkv")), to: res.items[0].to.clone() }];
+        assert!(restore_trash_inner(&res.entry_dir, &elsewhere, None).is_err());
+        let escape = vec![FileMove { from: res.items[0].from.clone(), to: s(&root.join("Loose.Movie.mkv")) }];
+        assert!(restore_trash_inner(&res.entry_dir, &escape, None).is_err());
+        let allowed = resolve_roots(&[root.join("Movies")]);
+        assert!(restore_trash_inner(&res.entry_dir, &res.items, Some(&allowed)).is_err());
+
+        let allowed = resolve_roots(&[shows_root.clone()]);
+        let restored = restore_trash_inner(&res.entry_dir, &res.items, Some(&allowed)).unwrap();
         assert_eq!(restored.restored, 1);
         assert!(e1.exists() && e2.exists());
         assert!(!Path::new(&res.entry_dir).exists());
 
-        // Purge refuses paths outside the trash.
-        assert!(tauri::async_runtime::block_on(purge_trash(s(&root))).is_err());
+        // Purge refuses paths outside the trash, `..` tricks and the trash folder itself.
+        assert!(purge_trash_inner(&s(&root), None).is_err());
+        assert!(purge_trash_inner(&s(&shows_root.join(TRASH_DIR)), None).is_err());
+        assert!(purge_trash_inner(&s(&shows_root.join(TRASH_DIR).join("x").join("..").join("..")), None).is_err());
+        let entry = shows_root.join(TRASH_DIR).join("123-abc");
+        touch(&entry.join("0/file.mkv"), 10);
+        assert!(purge_trash_inner(&s(&entry), Some(&resolve_roots(&[root.join("Movies")]))).is_err());
+        assert!(purge_trash_inner(&s(&entry), Some(&allowed)).is_ok());
+        assert!(!entry.exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn moves_must_stay_inside_library_folders() {
+        let root = temp_root("guard");
+        let lib = root.join("Library");
+        touch(&lib.join("Film/film.mkv"), 10);
+        touch(&root.join("Outside/secret.txt"), 10);
+        let allowed = resolve_roots(&[lib.clone()]);
+        let moves = vec![
+            FileMove { from: s(&lib.join("Film/film.mkv")), to: s(&lib.join("Film (2020)/Film (2020).mkv")) },
+            FileMove { from: s(&root.join("Outside/secret.txt")), to: s(&lib.join("secret.txt")) },
+            FileMove { from: s(&lib.join("Film/film.mkv")), to: s(&root.join("Outside/film.mkv")) },
+            FileMove { from: s(&lib.join("Film/../../Outside/secret.txt")), to: s(&lib.join("x.txt")) },
+            FileMove { from: s(&lib), to: s(&root.join("Moved")) },
+            FileMove { from: "relative/film.mkv".into(), to: s(&lib.join("y.mkv")) },
+        ];
+        let (ok, rejected) = checked_moves(moves, &allowed);
+        assert_eq!(ok.len(), 1);
+        assert_eq!(rejected.len(), 5);
         fs::remove_dir_all(&root).unwrap();
     }
 }

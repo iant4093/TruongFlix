@@ -38,6 +38,9 @@ fn reachable(host: &str, port: u16, timeout: Duration) -> bool {
 fn mac_of(host: &str, port: u16) -> Option<String> {
     let ip = (host, port).to_socket_addrs().ok()?.find(|a| a.is_ipv4())?.ip().to_string();
     let _ = TcpStream::connect_timeout(&(ip.as_str(), port).to_socket_addrs().ok()?.next()?, Duration::from_secs(2));
+    #[cfg(windows)]
+    let mut cmd = std::process::Command::new(crate::system32("ARP.EXE"));
+    #[cfg(not(windows))]
     let mut cmd = std::process::Command::new("arp");
     if cfg!(windows) {
         cmd.args(["-a", &ip]);

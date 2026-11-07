@@ -278,11 +278,60 @@ impl TorrentFileDelete {
     }
 }
 
+const TORRENT_BYTES_MAX_ENTRIES: usize = 64;
+const TORRENT_BYTES_MAX_TOTAL: usize = 64 * 1024 * 1024;
+
+/// `.torrent` metadata by info hash, oldest dropped first once it holds too much. Losing an entry
+/// only means a magnet has to fetch its metadata again.
+#[derive(Default)]
+struct TorrentBytesCache {
+    entries: HashMap<String, Vec<u8>>,
+    order: std::collections::VecDeque<String>,
+    total: usize,
+}
+
+impl TorrentBytesCache {
+    fn insert(&mut self, hash: String, bytes: Vec<u8>) {
+        self.remove(&hash);
+        self.total += bytes.len();
+        self.order.push_back(hash.clone());
+        self.entries.insert(hash, bytes);
+        while self.entries.len() > TORRENT_BYTES_MAX_ENTRIES || (self.total > TORRENT_BYTES_MAX_TOTAL && self.entries.len() > 1) {
+            let Some(oldest) = self.order.pop_front() else { break };
+            if let Some(old) = self.entries.remove(&oldest) {
+                self.total -= old.len();
+            }
+        }
+    }
+
+    fn get(&self, hash: &str) -> Option<&Vec<u8>> {
+        self.entries.get(hash)
+    }
+
+    fn remove(&mut self, hash: &str) {
+        if let Some(old) = self.entries.remove(hash) {
+            self.total -= old.len();
+            self.order.retain(|h| h != hash);
+        }
+    }
+}
+
+/// A torrent's file list never changes, so it's built once per torrent and folder rather than on
+/// every status poll; only progress and selection are filled in each time.
+type FileList = Arc<Vec<TorrentFileStatus>>;
+static FILE_LISTS: Mutex<Option<HashMap<String, (PathBuf, FileList)>>> = Mutex::new(None);
+
+fn forget_file_list(hash: &str) {
+    if let Some(map) = FILE_LISTS.lock().unwrap().as_mut() {
+        map.remove(hash);
+    }
+}
+
 pub struct TorrentManager {
     app_data_dir: PathBuf,
     config: tokio::sync::RwLock<TorrentEngineConfig>,
     session: tokio::sync::Mutex<Option<Arc<Session>>>,
-    cached_torrent_bytes: Mutex<HashMap<String, Vec<u8>>>,
+    cached_torrent_bytes: Mutex<TorrentBytesCache>,
     pending_magnets: Mutex<HashMap<String, PendingMagnet>>,
     pending_file_deletes: tokio::sync::Mutex<HashMap<String, TorrentFileDelete>>,
     stream_server: tokio::sync::OnceCell<(u16, String)>,
@@ -292,6 +341,11 @@ pub struct TorrentManager {
 
 static MANAGER: OnceLock<Arc<TorrentManager>> = OnceLock::new();
 static PENDING_OPEN_LINKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The folder streamed torrents download into, if the torrent engine has been configured.
+pub(crate) async fn current_stream_cache_root() -> Option<PathBuf> {
+    Some(MANAGER.get()?.stream_cache_root().await)
+}
 
 fn global_manager(app: &AppHandle) -> Result<Arc<TorrentManager>, String> {
     if let Some(m) = MANAGER.get() {
@@ -612,7 +666,7 @@ impl TorrentManager {
             app_data_dir,
             config: tokio::sync::RwLock::new(TorrentEngineConfig::default()),
             session: tokio::sync::Mutex::new(None),
-            cached_torrent_bytes: Mutex::new(HashMap::new()),
+            cached_torrent_bytes: Mutex::new(TorrentBytesCache::default()),
             pending_magnets: Mutex::new(HashMap::new()),
             pending_file_deletes: tokio::sync::Mutex::new(HashMap::new()),
             stream_server: tokio::sync::OnceCell::new(),
@@ -932,43 +986,67 @@ impl TorrentManager {
         let only_set: Option<HashSet<usize>> =
             handle.only_files().map(|v| v.into_iter().collect());
 
-        let mut files = Vec::new();
-        let _ = handle.with_metadata(|meta| {
-            for (idx, fi) in meta.file_infos.iter().enumerate() {
-                if fi.attrs.padding {
-                    continue;
+        let cached = FILE_LISTS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|m| m.get(&info_hash))
+            .filter(|(folder, _)| *folder == output_folder_path)
+            .map(|(_, list)| list.clone());
+        let list = match cached {
+            Some(list) => list,
+            None => {
+                let mut built = Vec::new();
+                let has_metadata = handle
+                    .with_metadata(|meta| {
+                        for (idx, fi) in meta.file_infos.iter().enumerate() {
+                            if fi.attrs.padding {
+                                continue;
+                            }
+                            let rel = &fi.relative_filename;
+                            built.push(TorrentFileStatus {
+                                index: idx,
+                                name: rel
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| format!("file_{idx}")),
+                                relative_path: rel.to_string_lossy().into_owned(),
+                                full_path: output_folder_path.join(rel).to_string_lossy().into_owned(),
+                                size: fi.len,
+                                downloaded_bytes: 0,
+                                included: true,
+                                is_video: is_video_candidate(rel, fi.len),
+                            });
+                        }
+                    })
+                    .is_ok();
+                if !built.iter().any(|f| f.is_video) {
+                    for f in &mut built {
+                        if crate::scanner::has_video_extension(Path::new(&f.relative_path)) {
+                            f.is_video = true;
+                        }
+                    }
                 }
-                let rel = &fi.relative_filename;
-                let fname = rel
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| format!("file_{idx}"));
-                let full_path = output_folder_path
-                    .join(rel)
-                    .to_string_lossy()
-                    .into_owned();
-                let downloaded_bytes = stats.file_progress.get(idx).copied().unwrap_or(0);
-                let included = only_set.as_ref().map(|s| s.contains(&idx)).unwrap_or(true);
-                let is_video = is_video_candidate(rel, fi.len);
-                files.push(TorrentFileStatus {
-                    index: idx,
-                    name: fname,
-                    relative_path: rel.to_string_lossy().into_owned(),
-                    full_path,
-                    size: fi.len,
-                    downloaded_bytes,
-                    included,
-                    is_video,
-                });
-            }
-        });
-        if !files.iter().any(|f| f.is_video) {
-            for f in &mut files {
-                if crate::scanner::has_video_extension(Path::new(&f.relative_path)) {
-                    f.is_video = true;
+                let list = Arc::new(built);
+                // Before metadata arrives (magnets) the list is empty; build it again next time.
+                if has_metadata {
+                    FILE_LISTS
+                        .lock()
+                        .unwrap()
+                        .get_or_insert_with(HashMap::new)
+                        .insert(info_hash.clone(), (output_folder_path.clone(), list.clone()));
                 }
+                list
             }
-        }
+        };
+        let files: Vec<TorrentFileStatus> = list
+            .iter()
+            .map(|f| TorrentFileStatus {
+                downloaded_bytes: stats.file_progress.get(f.index).copied().unwrap_or(0),
+                included: only_set.as_ref().is_none_or(|s| s.contains(&f.index)),
+                ..f.clone()
+            })
+            .collect();
 
         let name = handle
             .name()
@@ -1275,6 +1353,9 @@ impl TorrentManager {
                 seen.insert(st.info_hash.clone());
                 out.push(st);
             }
+            if let Some(map) = FILE_LISTS.lock().unwrap().as_mut() {
+                map.retain(|hash, _| seen.contains(hash));
+            }
         }
 
         let pending = self.pending_magnets.lock().unwrap();
@@ -1326,6 +1407,8 @@ impl TorrentManager {
             "delete_keep_files" | "delete_with_files" | "remove_transfer"
         ) {
             let mut deletions = self.pending_file_deletes.lock().await;
+            self.cached_torrent_bytes.lock().unwrap().remove(&clean_hash);
+            forget_file_list(&clean_hash);
             let pending = self.pending_magnets.lock().unwrap().remove(&clean_hash);
             let cancelled_pending = pending.is_some();
             if let Some(pending) = pending {
@@ -1915,7 +1998,7 @@ mod windows_assoc {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     fn run_reg(args: &[&str]) -> Result<String, String> {
-        let out = Command::new("reg.exe")
+        let out = Command::new(crate::system32("reg.exe"))
             .args(args)
             .creation_flags(CREATE_NO_WINDOW)
             .output()
@@ -2122,6 +2205,22 @@ pub fn torrent_register_os_handler(app: AppHandle) -> Result<OsHandlerStatus, St
 mod tests {
     use super::*;
     use librqbit::CreateTorrentOptions;
+
+    #[test]
+    fn torrent_metadata_cache_stays_bounded() {
+        let mut cache = TorrentBytesCache::default();
+        for i in 0..TORRENT_BYTES_MAX_ENTRIES + 10 {
+            cache.insert(format!("{i:040}"), vec![0; 10]);
+        }
+        assert_eq!(cache.entries.len(), TORRENT_BYTES_MAX_ENTRIES);
+        assert!(cache.get(&format!("{:040}", 0)).is_none());
+        assert!(cache.get(&format!("{:040}", TORRENT_BYTES_MAX_ENTRIES + 9)).is_some());
+        cache.insert("big".into(), vec![0; TORRENT_BYTES_MAX_TOTAL]);
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.total, TORRENT_BYTES_MAX_TOTAL);
+        cache.remove("big");
+        assert_eq!((cache.entries.len(), cache.total, cache.order.len()), (0, 0, 0));
+    }
 
     fn temp_test_dir(prefix: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(

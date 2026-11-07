@@ -2,9 +2,12 @@
 //! job) because repack installers need administrator rights, and only an elevated process can hide
 //! and operate their windows. The job travels on the command line so it cannot be altered after the
 //! user approves it; progress comes back as JSON lines in a file, and a cancel file stops the job.
+//! The helper checks the whole job again (see `guard`) and takes everything it runs from the
+//! installer itself.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,22 +22,40 @@ use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 use super::automation::{self, drive_wizard, tree, WizardEvent, WizardOptions, WizardOutcome};
+use super::guard::{self, Constants, PostAction, Protected};
+use super::installer;
 
 const HELPER_FLAG: &str = "--games-helper";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PostAction {
-    pub label: String,
-    pub filename: String,
-    pub parameters: String,
-    pub working_dir: Option<String>,
-}
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallJob {
+    pub setup_exe: PathBuf,
+    /// The games download folder the installer must be in.
+    pub download_root: PathBuf,
+    pub install_dir: PathBuf,
+    pub language: Option<String>,
+    pub components: Option<Vec<String>>,
+    pub tasks: Option<Vec<String>>,
+    pub no_icons: bool,
+    pub limit_ram: Option<bool>,
+    /// Shortcuts the installer always creates that the user did not want.
+    pub remove_shortcuts: Vec<PathBuf>,
+    /// Indices into the installer's `[Run]` entries.
+    pub post_actions: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallJob {
+    pub install_dir: PathBuf,
+}
+
+/// An install job whose every part was checked against the installer and the file system.
+#[derive(Debug)]
+pub struct CheckedInstall {
     pub setup_exe: PathBuf,
     pub install_dir: PathBuf,
     pub language: Option<String>,
@@ -42,19 +63,41 @@ pub struct InstallJob {
     pub tasks: Option<Vec<String>>,
     pub no_icons: bool,
     pub limit_ram: Option<bool>,
-    /// Shortcut paths the installer always creates that the user did not want.
     pub remove_shortcuts: Vec<PathBuf>,
     pub post_actions: Vec<PostAction>,
-    #[serde(default)]
-    pub log_file: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UninstallJob {
-    pub uninstaller: Option<PathBuf>,
-    pub install_dir: PathBuf,
-    pub remove_shortcuts: Vec<PathBuf>,
+pub fn check_install(job: &InstallJob, protected: &Protected, shortcut_roots: &[PathBuf]) -> Result<CheckedInstall, String> {
+    let root = guard::download_root(&job.download_root, protected)?;
+    let missing = "The installer is missing from the games download folder.";
+    let setup_exe = guard::existing_inside(&job.setup_exe, &root).map_err(|_| missing.to_string())?;
+    if !setup_exe.is_file() || setup_exe.extension().is_none_or(|e| !e.eq_ignore_ascii_case("exe")) {
+        return Err(missing.into());
+    }
+    let info = installer::read(&setup_exe)?;
+    let install_dir = guard::install_dir(&job.install_dir, protected)?;
+    let language = job.language.as_deref().map(|l| guard::language(l, &info)).transpose()?;
+    let components = job.components.as_deref().map(|c| guard::components(c, &info)).transpose()?;
+    let tasks = job.tasks.as_deref().map(|t| guard::tasks(t, &info)).transpose()?;
+    let remove_shortcuts = job
+        .remove_shortcuts
+        .iter()
+        .map(|s| guard::shortcut(s, shortcut_roots))
+        .collect::<Result<Vec<_>, _>>()?;
+    let src = setup_exe.parent().unwrap_or(&root).to_path_buf();
+    let constants = Constants::new(&install_dir, &src);
+    let post_actions = guard::post_actions(&job.post_actions, &info, language.as_deref(), &constants)?;
+    Ok(CheckedInstall {
+        setup_exe,
+        install_dir,
+        language,
+        components,
+        tasks,
+        no_icons: job.no_icons,
+        limit_ram: job.limit_ram,
+        remove_shortcuts,
+        post_actions,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,25 +151,62 @@ impl Reporter {
     }
 }
 
+/// The progress and cancel files sit side by side as `<job>.jsonl` / `<job>.cancel`; the
+/// installer's log goes next to them as `<job>.log`.
+fn job_files_ok(job: &HelperJob) -> bool {
+    let has_ext = |p: &Path, ext: &str| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext));
+    job.progress_file.is_absolute()
+        && has_ext(&job.progress_file, "jsonl")
+        && job.cancel_file == job.progress_file.with_extension("cancel")
+}
+
+/// Opens the progress file without following links, so it can't redirect the elevated writes.
+fn open_progress(path: &Path) -> Option<File> {
+    let file = OpenOptions::new().append(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    (meta.is_file() && !meta.file_type().is_symlink()).then_some(file)
+}
+
 /// Runs the helper when TruongFlix was started with `--games-helper`, returning the exit code.
 pub fn run_from_args() -> Option<i32> {
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() != Some(HELPER_FLAG) {
         return None;
     }
-    let job: HelperJob = args
+    let Some(job) = args
         .next()
         .and_then(|hex| decode_hex(&hex))
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
-    let file = OpenOptions::new().create(true).append(true).open(&job.progress_file).ok()?;
+        .and_then(|bytes| serde_json::from_slice::<HelperJob>(&bytes).ok())
+        .filter(job_files_ok)
+    else {
+        return Some(1);
+    };
+    let Some(file) = open_progress(&job.progress_file) else {
+        return Some(1);
+    };
     let mut reporter = Reporter { file };
     let cancel_file = job.cancel_file.clone();
     let cancelled = move || cancel_file.exists();
+    let log_file = job.progress_file.with_extension("log");
 
     automation::start_window_hider();
+    let protected = Protected::system();
     let ok = match &job.job {
-        JobKind::Install(install) => run_install(install, &mut reporter, &cancelled),
-        JobKind::Uninstall(uninstall) => run_uninstall(uninstall, &mut reporter),
+        JobKind::Install(install) => {
+            // Shortcuts outside this account's Desktop/Start Menu (e.g. when another administrator
+            // approved the prompt) are left alone rather than failing the install.
+            let roots = guard::shortcut_roots();
+            let mut install = install.clone();
+            install.remove_shortcuts.retain(|s| guard::shortcut(s, &roots).is_ok());
+            match check_install(&install, &protected, &roots) {
+                Ok(checked) => run_install(&checked, &log_file, &mut reporter, &cancelled),
+                Err(message) => {
+                    reporter.send(HelperEvent::Error { message });
+                    false
+                }
+            }
+        }
+        JobKind::Uninstall(uninstall) => run_uninstall(uninstall, &protected, &mut reporter),
     };
     let was_cancelled = cancelled();
     reporter.send(HelperEvent::Done { ok, cancelled: was_cancelled });
@@ -137,12 +217,12 @@ fn quote(value: &str) -> String {
     format!("\"{}\"", value.replace('"', ""))
 }
 
-fn setup_arguments(job: &InstallJob) -> String {
+fn setup_arguments(job: &CheckedInstall, log_file: &Path) -> String {
     let mut args = vec![
         "/SP-".to_string(),
         "/NORESTART".to_string(),
         format!("/DIR={}", quote(&job.install_dir.to_string_lossy())),
-        format!("/LOG={}", quote(&job.log_file.to_string_lossy())),
+        format!("/LOG={}", quote(&log_file.to_string_lossy())),
     ];
     if let Some(lang) = &job.language {
         args.push(format!("/LANG={lang}"));
@@ -163,23 +243,12 @@ fn setup_arguments(job: &InstallJob) -> String {
 /// closed on its last page.
 fn installer_temp_dirs() -> Vec<PathBuf> {
     let temp = std::env::temp_dir();
-    let mut dirs: Vec<PathBuf> = tree()
-        .image_dirs()
-        .into_iter()
-        .filter(|d| {
-            d.parent() == Some(temp.as_path())
-                && d.file_name().is_some_and(|n| {
-                    let n = n.to_string_lossy().to_ascii_lowercase();
-                    n.starts_with("is-") && n.ends_with(".tmp")
-                })
-        })
-        .collect();
-    dirs.sort();
-    dirs.dedup();
-    dirs
+    tree().image_dirs().into_iter().filter(|d| guard::is_installer_temp_dir(d, &temp)).collect()
 }
 
 /// The installer's `{tmp}` folder, as recorded in its log ("Created temporary directory: ...").
+/// The log is user-writable, so this is only used to find a folder to delete, never to run
+/// anything, and only real `%TEMP%\is-*.tmp` folders qualify.
 fn temp_dirs_from_log(log: &Path) -> Vec<PathBuf> {
     let Ok(bytes) = std::fs::read(log) else {
         return Vec::new();
@@ -188,7 +257,7 @@ fn temp_dirs_from_log(log: &Path) -> Vec<PathBuf> {
     String::from_utf8_lossy(&bytes)
         .lines()
         .filter_map(|line| line.split_once("Created temporary directory: ").map(|(_, p)| PathBuf::from(p.trim())))
-        .filter(|p| p.parent() == Some(temp.as_path()))
+        .filter(|p| guard::is_installer_temp_dir(p, &temp))
         .collect()
 }
 
@@ -203,12 +272,12 @@ fn wait_for_tree_exit(timeout: Duration) {
 }
 
 /// Quiet switches for the redistributable installers repacks bundle.
-fn silent_parameters(action: &PostAction) -> String {
-    let name = Path::new(&action.filename)
+fn silent_parameters(filename: &Path, parameters: &str) -> String {
+    let name = filename
         .file_name()
         .map(|n| n.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let mut params = action.parameters.trim().to_string();
+    let mut params = parameters.trim().to_string();
     let add = |params: &mut String, extra: &str| {
         if !params.to_ascii_lowercase().contains(&extra.to_ascii_lowercase()) {
             if !params.is_empty() {
@@ -229,19 +298,12 @@ fn silent_parameters(action: &PostAction) -> String {
     params
 }
 
-fn run_post_action(action: &PostAction, temp_dir: Option<&Path>) -> Result<(), String> {
-    let resolve = |s: &str| match temp_dir {
-        Some(t) => s.replace("{tmp}", &t.to_string_lossy()),
-        None => s.to_string(),
-    };
-    let filename = resolve(&action.filename);
-    let mut command = Command::new(&filename);
-    command.raw_arg(resolve(&silent_parameters(action)));
+fn run_post_action(action: &PostAction) -> Result<(), String> {
+    let mut command = Command::new(&action.filename);
+    command.raw_arg(silent_parameters(&action.filename, &action.parameters));
     command.creation_flags(CREATE_NO_WINDOW);
-    if let Some(dir) = &action.working_dir {
-        command.current_dir(resolve(dir));
-    } else if let Some(parent) = Path::new(&filename).parent() {
-        command.current_dir(parent);
+    if let Some(dir) = action.working_dir.as_deref().or_else(|| action.filename.parent()) {
+        command.current_dir(dir);
     }
     let mut child = command.spawn().map_err(|e| format!("{}: {e}", action.label))?;
     tree().add_root(child.id());
@@ -256,13 +318,22 @@ fn run_post_action(action: &PostAction, temp_dir: Option<&Path>) -> Result<(), S
     }
 }
 
-fn run_install(job: &InstallJob, reporter: &mut Reporter, cancelled: &dyn Fn() -> bool) -> bool {
+/// Deletes an unwanted shortcut after checking again, now that it exists, where it really is.
+fn remove_shortcut(path: &Path, roots: &[PathBuf]) {
+    let Ok(real) = guard::shortcut(path, roots) else { return };
+    if std::fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) {
+        let _ = std::fs::remove_file(real);
+    }
+}
+
+fn run_install(job: &CheckedInstall, log_file: &Path, reporter: &mut Reporter, cancelled: &dyn Fn() -> bool) -> bool {
     let created_dir = !job.install_dir.exists();
     let installer_dir = job.setup_exe.parent().map(Path::to_path_buf).unwrap_or_default();
     reporter.send(HelperEvent::Phase { phase: "starting".into() });
+    let _ = std::fs::remove_file(log_file);
 
     let mut command = Command::new(&job.setup_exe);
-    command.raw_arg(setup_arguments(job)).current_dir(&installer_dir);
+    command.raw_arg(setup_arguments(job, log_file)).current_dir(&installer_dir);
     let child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -288,21 +359,21 @@ fn run_install(job: &InstallJob, reporter: &mut Reporter, cancelled: &dyn Fn() -
         WizardEvent::Finalizing => {}
     });
 
-    let setup_temp = temp_dirs_from_log(&job.log_file).into_iter().next();
     let mut temp_dirs = installer_temp_dirs();
-    temp_dirs.extend(setup_temp.clone());
+    temp_dirs.extend(temp_dirs_from_log(log_file));
+    temp_dirs.sort();
+    temp_dirs.dedup();
 
     // Closing on the final page means none of the installer's own after-install actions run.
     let ok = match outcome {
         WizardOutcome::Finished => {
-            let actions: Vec<_> = job.post_actions.clone();
-            if !actions.is_empty() {
+            if !job.post_actions.is_empty() {
                 reporter.send(HelperEvent::Phase { phase: "afterInstall".into() });
             }
             let mut ok = true;
-            for action in &actions {
+            for action in &job.post_actions {
                 reporter.send(HelperEvent::Progress { percent: 100.0, status: action.label.clone() });
-                if let Err(message) = run_post_action(action, setup_temp.as_deref()) {
+                if let Err(message) = run_post_action(action) {
                     reporter.send(HelperEvent::Error { message });
                     ok = false;
                 }
@@ -321,12 +392,14 @@ fn run_install(job: &InstallJob, reporter: &mut Reporter, cancelled: &dyn Fn() -
     stop_mute.store(true, Ordering::Relaxed);
 
     reporter.send(HelperEvent::Phase { phase: "cleanup".into() });
-    for dir in temp_dirs {
+    let temp = std::env::temp_dir();
+    for dir in temp_dirs.into_iter().filter(|d| guard::is_installer_temp_dir(d, &temp)) {
         let _ = std::fs::remove_dir_all(dir);
     }
     if ok {
+        let roots = guard::shortcut_roots();
         for shortcut in &job.remove_shortcuts {
-            let _ = std::fs::remove_file(shortcut);
+            remove_shortcut(shortcut, &roots);
         }
     } else if created_dir {
         let _ = std::fs::remove_dir_all(&job.install_dir);
@@ -334,43 +407,33 @@ fn run_install(job: &InstallJob, reporter: &mut Reporter, cancelled: &dyn Fn() -
     ok
 }
 
-fn run_uninstall(job: &UninstallJob, reporter: &mut Reporter) -> bool {
+fn run_uninstall(job: &UninstallJob, protected: &Protected, reporter: &mut Reporter) -> bool {
     reporter.send(HelperEvent::Phase { phase: "uninstalling".into() });
-    let found = || -> Option<PathBuf> {
-        let mut candidates: Vec<PathBuf> = std::fs::read_dir(&job.install_dir)
-            .ok()?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.file_name().is_some_and(|n| {
-                    let n = n.to_string_lossy().to_ascii_lowercase();
-                    n.starts_with("unins") && n.ends_with(".exe")
-                })
-            })
-            .collect();
-        candidates.sort();
-        candidates.pop()
+    let (dir, uninstaller) = match guard::uninstall_target(&job.install_dir, protected) {
+        Ok(target) => target,
+        Err(message) => {
+            reporter.send(HelperEvent::Error { message });
+            return false;
+        }
     };
-    let uninstaller = job.uninstaller.clone().filter(|p| p.is_file()).or_else(found);
-    if let Some(uninstaller) = uninstaller.as_ref() {
-        let mut command = Command::new(uninstaller);
-        command.raw_arg("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART");
-        match command.spawn() {
-            Ok(child) => {
-                tree().add_root(child.id());
-                let stop_mute = Arc::new(AtomicBool::new(false));
-                super::mute::start(stop_mute.clone());
-                wait_for_tree_exit(Duration::from_secs(30 * 60));
-                stop_mute.store(true, Ordering::Relaxed);
-            }
-            Err(e) => reporter.send(HelperEvent::Error { message: format!("Could not start the uninstaller: {e}") }),
+    let mut command = Command::new(&uninstaller);
+    command.raw_arg("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART").current_dir(&dir);
+    match command.spawn() {
+        Ok(child) => {
+            tree().add_root(child.id());
+            let stop_mute = Arc::new(AtomicBool::new(false));
+            super::mute::start(stop_mute.clone());
+            wait_for_tree_exit(Duration::from_secs(30 * 60));
+            stop_mute.store(true, Ordering::Relaxed);
+        }
+        Err(e) => {
+            reporter.send(HelperEvent::Error { message: format!("Could not start the uninstaller: {e}") });
+            return false;
         }
     }
-    for shortcut in &job.remove_shortcuts {
-        let _ = std::fs::remove_file(shortcut);
-    }
-    if job.install_dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&job.install_dir) {
-            reporter.send(HelperEvent::Error { message: format!("Could not delete '{}': {e}", job.install_dir.display()) });
+    if dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            reporter.send(HelperEvent::Error { message: format!("Could not delete '{}': {e}", dir.display()) });
             return false;
         }
     }
@@ -441,26 +504,53 @@ pub fn run_elevated(job: &HelperJob, mut on_event: impl FnMut(HelperEvent)) -> R
 mod tests {
     use super::*;
 
+    fn install_job(setup_exe: PathBuf, download_root: PathBuf, install_dir: PathBuf) -> InstallJob {
+        InstallJob {
+            setup_exe,
+            download_root,
+            install_dir,
+            language: Some("en".into()),
+            components: Some(vec!["text".into()]),
+            tasks: None,
+            no_icons: false,
+            limit_ram: None,
+            remove_shortcuts: vec![],
+            post_actions: vec![],
+        }
+    }
+
     #[test]
     fn job_round_trips_through_hex() {
         let job = HelperJob {
-            job: JobKind::Uninstall(UninstallJob {
-                uninstaller: Some(PathBuf::from(r"D:\Games\Ünïcode Game\unins000.exe")),
-                install_dir: PathBuf::from(r"D:\Games\Ünïcode Game"),
-                remove_shortcuts: vec![],
-            }),
-            progress_file: PathBuf::from("p.jsonl"),
-            cancel_file: PathBuf::from("c"),
+            job: JobKind::Uninstall(UninstallJob { install_dir: PathBuf::from(r"D:\Games\Ünïcode Game") }),
+            progress_file: PathBuf::from(r"C:\cache\game-jobs\p.jsonl"),
+            cancel_file: PathBuf::from(r"C:\cache\game-jobs\p.cancel"),
         };
         let hex = encode_hex(&serde_json::to_vec(&job).unwrap());
         let back: HelperJob = serde_json::from_slice(&decode_hex(&hex).unwrap()).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&job).unwrap());
         assert!(decode_hex("abc").is_none());
+        assert!(job_files_ok(&back));
+        assert!(!job_files_ok(&HelperJob { cancel_file: PathBuf::from(r"C:\Windows\x.cancel"), ..back.clone() }));
+        assert!(!job_files_ok(&HelperJob { progress_file: PathBuf::from("p.jsonl"), cancel_file: PathBuf::from("p.cancel"), ..back }));
+    }
+
+    #[test]
+    fn progress_file_must_not_be_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("p.jsonl");
+        std::fs::write(&file, b"").unwrap();
+        assert!(open_progress(&file).is_some());
+        assert!(open_progress(&dir.path().join("missing.jsonl")).is_none());
+        let link = dir.path().join("link.jsonl");
+        if std::os::windows::fs::symlink_file(&file, &link).is_ok() {
+            assert!(open_progress(&link).is_none());
+        }
     }
 
     #[test]
     fn setup_arguments_quote_paths_and_pass_choices() {
-        let job = InstallJob {
+        let job = CheckedInstall {
             setup_exe: PathBuf::from(r"E:\Installers\Game\setup.exe"),
             install_dir: PathBuf::from(r"D:\My Games\Game"),
             language: Some("en".into()),
@@ -470,25 +560,75 @@ mod tests {
             limit_ram: None,
             remove_shortcuts: vec![],
             post_actions: vec![],
-            log_file: PathBuf::from(r"C:\Temp\setup.log"),
         };
         assert_eq!(
-            setup_arguments(&job),
+            setup_arguments(&job, Path::new(r"C:\Temp\setup.log")),
             r#"/SP- /NORESTART /DIR="D:\My Games\Game" /LOG="C:\Temp\setup.log" /LANG=en /COMPONENTS="text,lang_de" /TASKS="" /NOICONS"#
         );
     }
 
     #[test]
     fn redistributables_get_quiet_switches() {
-        let action = |file: &str, params: &str| PostAction {
-            label: String::new(),
-            filename: file.into(),
-            parameters: params.into(),
-            working_dir: None,
+        let quiet = |file: &str, params: &str| silent_parameters(Path::new(file), params);
+        assert_eq!(quiet(r"D:\G\_Redist\dxwebsetup.exe", ""), "/Q");
+        assert_eq!(quiet(r"D:\G\_Redist\vc_redist.x64.exe", ""), "/install /quiet /norestart");
+        assert_eq!(quiet(r"C:\Windows\System32\cmd.exe", r#"/c "x.cmd""#), r#"/c "x.cmd""#);
+        assert_eq!(quiet(r"D:\G\_Redist\DXSETUP.exe", "/q"), "/q");
+    }
+
+    #[test]
+    fn installers_must_be_inno_setups_inside_the_download_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Downloads");
+        let game = root.join("Game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join("setup.exe"), b"MZ not an installer").unwrap();
+        std::fs::write(dir.path().join("setup.exe"), b"MZ").unwrap();
+        let none = Protected::new(vec![], vec![], vec![]);
+        let target = dir.path().join("Games").join("Game");
+
+        let outside = install_job(dir.path().join("setup.exe"), root.clone(), target.clone());
+        assert!(check_install(&outside, &none, &[]).unwrap_err().contains("missing"));
+        let escape = install_job(game.join("..").join("..").join("setup.exe"), root.clone(), target.clone());
+        assert!(check_install(&escape, &none, &[]).is_err());
+        let not_inno = install_job(game.join("setup.exe"), root.clone(), target);
+        assert!(check_install(&not_inno, &none, &[]).unwrap_err().contains("Inno Setup"));
+        let root_is_drive = install_job(game.join("setup.exe"), PathBuf::from(r"C:\"), dir.path().join("x"));
+        assert!(check_install(&root_is_drive, &Protected::system(), &[]).is_err());
+    }
+
+    /// Set `TRUONGFLIX_TEST_INSTALLER_DIR` to a downloaded repack folder to check a job against it.
+    #[test]
+    fn checks_a_job_against_a_real_installer_when_available() {
+        let Ok(dir) = std::env::var("TRUONGFLIX_TEST_INSTALLER_DIR") else {
+            return;
         };
-        assert_eq!(silent_parameters(&action(r"D:\G\_Redist\dxwebsetup.exe", "")), "/Q");
-        assert_eq!(silent_parameters(&action(r"D:\G\_Redist\vc_redist.x64.exe", "")), "/install /quiet /norestart");
-        assert_eq!(silent_parameters(&action("cmd.exe", r#"/c "x.cmd""#)), r#"/c "x.cmd""#);
-        assert_eq!(silent_parameters(&action(r"D:\G\_Redist\DXSETUP.exe", "/q")), "/q");
+        let dir = PathBuf::from(dir);
+        let setup = installer::find_setup(&dir).expect("setup.exe");
+        let info = installer::read(&setup).expect("installer parses");
+        let index = |pred: &dyn Fn(&installer::RunInfo) -> bool| info.run_entries.iter().position(pred).expect("run entry");
+        let dx = index(&|r| r.filename.contains("dxwebsetup") && r.languages.as_deref() == Some("en"));
+        let tmp = index(&|r| r.parameters.contains("{tmp}"));
+        let target = tempfile::tempdir().unwrap();
+        let roots = guard::shortcut_roots();
+        let desktop = PathBuf::from(guard::known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_PublicDesktop));
+
+        let mut job = install_job(setup, dir.parent().unwrap().to_path_buf(), target.path().join("Game"));
+        job.components = Some(vec!["TEXT".into(), "directx".into()]);
+        job.post_actions = vec![dx];
+        job.remove_shortcuts = vec![desktop.join(format!("{}.lnk", info.app_name))];
+        let checked = check_install(&job, &Protected::system(), &roots).expect("job is valid");
+        assert_eq!(checked.components, Some(vec!["text".to_string(), "directx".to_string()]));
+        assert_eq!(checked.post_actions.len(), 1);
+        assert!(checked.post_actions[0].filename.starts_with(&checked.install_dir));
+        assert!(checked.post_actions[0].filename.ends_with(r"_Redist\dxwebsetup.exe"));
+
+        assert!(check_install(&InstallJob { post_actions: vec![tmp], ..job.clone() }, &Protected::system(), &roots).is_err());
+        assert!(check_install(&InstallJob { language: Some("en /SILENT".into()), ..job.clone() }, &Protected::system(), &roots).is_err());
+        assert!(check_install(&InstallJob { tasks: Some(vec!["evil".into()]), ..job.clone() }, &Protected::system(), &roots).is_err());
+        let elsewhere = InstallJob { remove_shortcuts: vec![target.path().join("x.lnk")], ..job.clone() };
+        assert!(check_install(&elsewhere, &Protected::system(), &roots).is_err());
+        let windows = guard::known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_Windows);
+        assert!(check_install(&InstallJob { install_dir: PathBuf::from(windows), ..job }, &Protected::system(), &roots).is_err());
     }
 }

@@ -48,12 +48,14 @@ const PIN_TRIES = 5;
 const PIN_LOCKOUT = 15 * 60_000;
 /** Simultaneous browser playbacks across all devices (each may be converting video). */
 export const MAX_REMOTE_STREAMS = 4;
+/** Playback whose browser stopped reporting (closed tab, lost connection) is released after this. */
+export const STREAM_IDLE_MS = 2 * 60_000;
 
 /** Unlock keys for PIN-protected profiles: valid for 12 hours and only while the PIN is unchanged. */
 const unlocked = new Map<number, Map<string, { pin: string; expires: number }>>();
 const pinFailures = new Map<number, number[]>();
 /** Browser playbacks by stream token. Only the signed-in browser that started one may control it. */
-const sessions = new Map<string, { session: string; profile: number; type: 'movie' | 'episode'; id: number; lastProgress: number }>();
+const sessions = new Map<string, { session: string; profile: number; type: 'movie' | 'episode'; id: number; lastProgress: number; lastSeen: number }>();
 
 const key = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -81,6 +83,20 @@ function allowedTitle(items: MediaItem[], episodes: EpisodeRow[], type: 'movie' 
   return !!episode && items.some((i) => i.kind === 'tv' && i.id === episode.series_id);
 }
 
+/** Whether the profile may see a movie or an episode (via its show's rating), reading just that row. */
+async function allowedRow(profile: Profile, type: 'movie' | 'episode', id: number) {
+  if (!Number.isFinite(id)) return false;
+  const conn = await db.getDb();
+  const rows = await conn.select<{ certification: string | null }[]>(
+    type === 'movie'
+      ? 'SELECT certification FROM movies WHERE id = $1'
+      : 'SELECT s.certification FROM episodes e JOIN tv_series s ON s.id = e.series_id WHERE e.id = $1',
+    [id],
+  );
+  if (!rows.length) return false;
+  return allowedForMaturity({ certification: rows[0].certification || null } as MediaItem, profile.maturity);
+}
+
 function ownedStream(token: unknown, caller: Caller) {
   const entry = sessions.get(String(token ?? ''));
   return entry && entry.session === caller.session ? entry : null;
@@ -89,6 +105,11 @@ function ownedStream(token: unknown, caller: Caller) {
 function stopStream(token: string) {
   sessions.delete(token);
   releaseStream(token);
+}
+
+/** Releases playback nobody has reported progress for in a while (abandoned tabs). */
+export function sweepIdleStreams(now = Date.now()) {
+  for (const [token, s] of [...sessions]) if (now - s.lastSeen > STREAM_IDLE_MS) stopStream(token);
 }
 
 /** Ends playback that belonged to a browser that was signed out. */
@@ -196,6 +217,7 @@ async function play(caller: Caller, profile: Profile, type: 'movie' | 'episode',
   if (st.blocked) throw new ApiError(403, blockedMessage(profile, st.blocked));
   // One playback per browser: starting another replaces it.
   for (const [token, s] of [...sessions]) if (s.session === caller.session) stopStream(token);
+  sweepIdleStreams();
   if (sessions.size >= MAX_REMOTE_STREAMS) throw new ApiError(429, 'Too many devices are watching right now. Stop playback on another device and try again.');
   const { movies, episodes, bySeries, items } = await libraryFor(profile);
   const row: MovieRow | EpisodeRow | undefined = type === 'movie' ? movies.find((m) => m.id === id) : episodes.find((e) => e.id === id);
@@ -232,7 +254,7 @@ async function play(caller: Caller, profile: Profile, type: 'movie' | 'episode',
   const token = await registerStream(row.file_path, plan);
   const resume = opts.start != null ? Math.max(0, opts.start) : row.watched ? 0 : row.progress_seconds;
   const url = await streamUrl(token, plan.format === 'direct' ? 0 : resume);
-  sessions.set(token, { session: caller.session, profile: profile.id, type, id, lastProgress: Date.now() });
+  sessions.set(token, { session: caller.session, profile: profile.id, type, id, lastProgress: Date.now(), lastSeen: Date.now() });
 
   let titleText = row.title;
   let subtitle: string | null = null;
@@ -293,8 +315,7 @@ async function play(caller: Caller, profile: Profile, type: 'movie' | 'episode',
 async function progress(caller: Caller, profile: Profile, body: { type: 'movie' | 'episode'; id: number; time: number; duration: number; watched?: number; token?: string }) {
   const type = body.type === 'episode' ? 'episode' : 'movie';
   const id = Number(body.id);
-  const { items, episodes } = await libraryFor(profile);
-  if (!allowedTitle(items, episodes, type, id)) throw new ApiError(404, 'Not found');
+  if (!(await allowedRow(profile, type, id))) throw new ApiError(404, 'Not found');
   const time = Math.max(0, Number(body.time) || 0);
   const duration = Math.max(0, Number(body.duration) || 0);
   await db.recordProgress(type, id, time, duration, profile.id);
@@ -305,6 +326,7 @@ async function progress(caller: Caller, profile: Profile, body: { type: 'movie' 
     const now = Date.now();
     watched = Math.min(Math.max(0, Number(body.watched) || 0), (now - stream.lastProgress) / 1000 + 5, 120);
     stream.lastProgress = now;
+    stream.lastSeen = now;
   }
   body = { ...body, type, id, watched };
   if (body.watched && body.watched > 0) {
@@ -323,7 +345,7 @@ async function progress(caller: Caller, profile: Profile, body: { type: 'movie' 
     await db.logWatchTime(body.type, body.id, Math.min(body.watched, 120), meta, profile.id);
   }
   // Keep the desktop app's rows current when the same profile is open there.
-  if (useLibraryStore.getState().activeProfile?.id === profile.id) void useLibraryStore.getState().reload();
+  if (useLibraryStore.getState().activeProfile?.id === profile.id) useLibraryStore.getState().patchProgress(type, id, time, duration);
   const st = await limitStatus(profile);
   // A limit reached during playback stops the stream here too, not just in the browser.
   if (st.blocked) for (const [token, s] of [...sessions]) if (s.profile === profile.id) stopStream(token);
@@ -374,6 +396,7 @@ export async function route(caller: Caller, method: string, path: string, query:
   if (method === 'POST' && path === '/seek') {
     const s = ownedStream(body.token, caller);
     if (!s) throw new ApiError(404, 'Playback ended');
+    s.lastSeen = Date.now();
     const profile = useLibraryStore.getState().profiles.find((x) => x.id === s.profile);
     const st = profile ? await limitStatus(profile) : null;
     if (!profile || st?.blocked) {
@@ -410,6 +433,7 @@ function describeSecurity(e: { kind: string; device: string; ip: string }) {
 export async function initRemoteApi() {
   if (started) return;
   started = true;
+  setInterval(() => sweepIdleStreams(), 30_000);
   await listen<{ id: number; method: string; path: string; query: Record<string, string>; body: Record<string, unknown> | null; session: string; device: string }>('remote-api', async ({ payload }) => {
     let status = 200;
     let body: unknown;

@@ -157,9 +157,18 @@ mod tests {
     }
 }
 
-/// Reports which media roots are currently reachable (e.g. external drives mounted),
+/// Reports which media roots (or files) are currently reachable (e.g. external drives mounted),
 /// so the frontend never prunes a library just because a disk is unplugged.
+/// An offline network share can block a folder check for a long time; it counts as unreachable.
+const PATH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
 #[tauri::command]
-pub fn check_paths(paths: Vec<String>) -> Vec<bool> {
-    paths.iter().map(|p| Path::new(p).is_dir()).collect()
+pub async fn check_paths(paths: Vec<String>) -> Vec<bool> {
+    let checks: Vec<_> = paths.into_iter().map(|p| tauri::async_runtime::spawn_blocking(move || Path::new(&p).exists())).collect();
+    let deadline = tokio::time::Instant::now() + PATH_CHECK_TIMEOUT;
+    let mut out = Vec::with_capacity(checks.len());
+    for check in checks {
+        out.push(matches!(tokio::time::timeout_at(deadline, check).await, Ok(Ok(true))));
+    }
+    out
 }

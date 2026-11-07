@@ -137,7 +137,11 @@ pub fn find_setup(dir: &Path) -> Option<PathBuf> {
 
 pub fn inspect(dir: &Path) -> Result<InstallerInfo, String> {
     let setup = find_setup(dir).ok_or_else(|| "No installer (setup.exe) was found in the download.".to_string())?;
-    let file = std::fs::File::open(&setup).map_err(|e| format!("Could not open the installer: {e}"))?;
+    read(&setup)
+}
+
+pub fn read(setup: &Path) -> Result<InstallerInfo, String> {
+    let file = std::fs::File::open(setup).map_err(|e| format!("Could not open the installer: {e}"))?;
     let inno = Inno::new(std::io::BufReader::new(file))
         .map_err(|e| format!("This installer could not be read ({e}). Only Inno Setup installers are supported."))?;
     let header = inno.header();

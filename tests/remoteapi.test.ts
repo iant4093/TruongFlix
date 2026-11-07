@@ -9,6 +9,7 @@ vi.mock('../src/services/db', () => ({
   logWatchTime: vi.fn(async () => {}),
   setMyList: vi.fn(async () => {}),
   getSelectedSubtitlePath: vi.fn(async () => null),
+  getDb: vi.fn(),
 }));
 let streamCount = 0;
 vi.mock('../src/services/streaming', () => ({
@@ -52,6 +53,13 @@ beforeEach(async () => {
   const { useLibraryStore } = await import('../src/store/useLibraryStore');
   useLibraryStore.setState({ profiles: [adult, kid, locked] as never, torrents: [] });
   vi.mocked(db.loadLibrary).mockResolvedValue({ movies: [rated, family], series: [], episodes: [] } as never);
+  // One-row lookups used by /progress.
+  vi.mocked(db.getDb).mockResolvedValue({
+    select: vi.fn(async (sql: string, [id]: number[]) => {
+      if (sql.includes('FROM movies')) return [rated, family].filter((m) => m.id === id).map((m) => ({ certification: m.certification }));
+      return [];
+    }),
+  } as never);
   vi.mocked(limits.limitStatus).mockResolvedValue({ blocked: null, remaining: null });
   remote = await import('../src/services/remoteapi');
 });
@@ -83,6 +91,36 @@ describe('browser API rules', () => {
     vi.mocked(db.logWatchTime).mockClear();
     await remote.route(B, 'POST', '/progress', {}, { profile: 1, type: 'movie', id: 2, time: 10, duration: 100, watched: 30, token });
     expect(db.logWatchTime).not.toHaveBeenCalled();
+  });
+
+  it('checks the rating of just the reported title and patches the desktop rows in place', async () => {
+    const { useLibraryStore } = await import('../src/store/useLibraryStore');
+    const patchProgress = vi.fn();
+    const reload = vi.fn(async () => {});
+    useLibraryStore.setState({ activeProfile: adult, patchProgress, reload } as never);
+    await expect(remote.route(A, 'POST', '/progress', {}, { profile: 2, type: 'movie', id: 1, time: 10, duration: 100 })).rejects.toMatchObject({ status: 404 });
+    await expect(remote.route(A, 'POST', '/progress', {}, { profile: 1, type: 'episode', id: 99, time: 10, duration: 100 })).rejects.toMatchObject({ status: 404 });
+    expect(db.recordProgress).not.toHaveBeenCalled();
+    await remote.route(A, 'POST', '/progress', {}, { profile: 1, type: 'movie', id: 1, time: 40, duration: 100 });
+    expect(db.recordProgress).toHaveBeenCalledWith('movie', 1, 40, 100, 1);
+    expect(patchProgress).toHaveBeenCalledWith('movie', 1, 40, 100);
+    expect(db.loadLibrary).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('releases playback from tabs that stopped reporting so new devices can watch', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const tokens: string[] = [];
+    for (let i = 0; i < remote.MAX_REMOTE_STREAMS; i++) tokens.push(((await play({ session: `s${i}`, device: 'x' })) as { token: string }).token);
+    await expect(play({ session: 'late', device: 'x' })).rejects.toMatchObject({ status: 429 });
+    // One tab keeps reporting; the others were abandoned.
+    vi.setSystemTime(Date.now() + remote.STREAM_IDLE_MS - 10_000);
+    await remote.route({ session: 's0', device: 'x' }, 'POST', '/progress', {}, { profile: 1, type: 'movie', id: 2, time: 10, duration: 100, token: tokens[0] });
+    vi.setSystemTime(Date.now() + 20_000);
+    await expect(play({ session: 'late', device: 'x' })).resolves.toMatchObject({ token: expect.any(String) });
+    for (const t of tokens.slice(1)) expect(streaming.releaseStream).toHaveBeenCalledWith(t);
+    expect(streaming.releaseStream).not.toHaveBeenCalledWith(tokens[0]);
+    await expect(remote.route({ session: 's0', device: 'x' }, 'POST', '/seek', {}, { token: tokens[0], time: 5 })).resolves.toBeTruthy();
   });
 
   it('stops playback on the PC when a limit is reached', async () => {

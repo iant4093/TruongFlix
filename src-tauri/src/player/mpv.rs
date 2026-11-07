@@ -103,6 +103,8 @@ unsafe impl Sync for Api {}
 
 fn candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    // Development and tests only: release builds never load a library named by the environment.
+    #[cfg(debug_assertions)]
     if let Some(p) = std::env::var_os("TRUONGFLIX_LIBMPV") {
         paths.push(PathBuf::from(p));
     }

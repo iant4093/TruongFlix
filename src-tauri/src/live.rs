@@ -57,6 +57,33 @@ fn hash(value: &str) -> String {
     format!("{h:016x}")
 }
 
+/// Home-network targets: private, loopback, link-local and Tailscale addresses, and local-only
+/// names (`localhost`, `*.local`, single-label hosts, …).
+fn local_target(url: &Url) -> bool {
+    let Some(host) = url.host_str() else { return true };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_unspecified() || crate::remote_guard::peer_allowed(ip);
+    }
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost"
+        || !name.contains('.')
+        || [".localhost", ".local", ".lan", ".home.arpa", ".internal"].iter().any(|s| name.ends_with(s))
+}
+
+fn same_origin(a: &Url, b: &Url) -> bool {
+    a.scheme() == b.scheme() && a.host_str() == b.host_str() && a.port_or_known_default() == b.port_or_known_default()
+}
+
+/// At most 5 redirects, each to the same origin or to HTTPS. A source on the internet can't send
+/// requests into the home network (a playlist that is itself on the LAN may).
+fn redirect_allowed(next: &Url, previous: &[Url]) -> bool {
+    let (Some(first), Some(last)) = (previous.first(), previous.last()) else { return false };
+    previous.len() <= 5
+        && (same_origin(next, last) || next.scheme() == "https")
+        && (local_target(first) || !local_target(next))
+}
+
 fn client() -> Result<Client, String> {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     if let Some(client) = CLIENT.get() {
@@ -66,7 +93,13 @@ fn client() -> Result<Client, String> {
         .user_agent("TruongFlix/LiveTV")
         .timeout(Duration::from_secs(12))
         .connect_timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if redirect_allowed(attempt.url(), attempt.previous()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
         .build()
         .map_err(|_| "Could not create the network client".to_string())?;
     let _ = CLIENT.set(client.clone());
@@ -443,7 +476,11 @@ fn media_bytes(data: &[u8]) -> bool {
 async fn probe(transport: &Transport) -> Result<Check, Check> {
     let mut url = transport.validate().map_err(|e| result("failed", &e))?;
     let client = client().map_err(|e| result("unknown", &e))?;
+    let lan_source = local_target(&url);
     for _ in 0..3 {
+        if !lan_source && local_target(&url) {
+            return Err(result("failed", "Stream points into the home network"));
+        }
         let response = get(&client, &url, transport).await?;
         let base = response.url().clone();
         let body = bytes(response, 128 * 1024, true)
@@ -718,6 +755,25 @@ mod tests {
         let rows = parse_playlist(hls, Some(&url)).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].transport.url, url.as_str());
+    }
+
+    #[test]
+    fn redirects_stay_safe() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        let public = u("http://iptv.example.com/list.m3u");
+        assert!(redirect_allowed(&u("http://iptv.example.com/other.m3u"), &[public.clone()]));
+        assert!(redirect_allowed(&u("https://cdn.example.net/list.m3u"), &[public.clone()]));
+        assert!(!redirect_allowed(&u("http://cdn.example.net/list.m3u"), &[public.clone()]));
+        assert!(!redirect_allowed(&u("https://192.168.1.1/admin"), &[public.clone()]));
+        assert!(!redirect_allowed(&u("https://localhost:8080/"), &[public.clone()]));
+        assert!(!redirect_allowed(&u("https://[::1]/"), &[public.clone()]));
+        assert!(!redirect_allowed(&u("https://router.lan/"), &[public.clone()]));
+        assert!(!redirect_allowed(&u("https://169.254.169.254/latest"), &[public.clone()]));
+        // A LAN tuner may redirect within the LAN.
+        let tuner = u("http://192.168.1.50:5004/lineup.m3u");
+        assert!(redirect_allowed(&u("http://192.168.1.50:5004/auto/v1"), &[tuner.clone()]));
+        assert!(redirect_allowed(&u("https://10.0.0.2/x"), &[tuner.clone()]));
+        assert!(!redirect_allowed(&u("https://cdn.example.net/x"), &vec![public.clone(); 6]));
     }
 
     async fn server() -> String {

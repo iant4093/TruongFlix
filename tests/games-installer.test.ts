@@ -199,11 +199,10 @@ describe('buildOptions', () => {
     expect(options.limitRamLabel).toBe('Limit installer to 2 GB of RAM usage');
   });
 
-  it('excludes verify, URL and launch entries from after-install', () => {
+  it('excludes verify, URL, launch and temp-folder entries from after-install', () => {
     expect(options.afterInstall.map((a) => [a.id, a.label, a.redist])).toEqual([
       ['1', 'Update DirectX', true],
       ['2', 'Install Visual C++ Redist 2015-2022 x64', true],
-      ['4', 'Redirect fake sites to the real one', false],
     ]);
   });
 
@@ -263,8 +262,8 @@ describe('defaultChoices', () => {
 
   it('shows after-install entries only for selected components', () => {
     const c = defaultChoices(info, options, ctx);
-    expect(visibleAfterInstall(options, c).map((a) => a.id)).toEqual(['4']);
-    expect(visibleAfterInstall(options, { ...c, components: ['text', 'directx'] }).map((a) => a.id)).toEqual(['1', '4']);
+    expect(visibleAfterInstall(options, c).map((a) => a.id)).toEqual([]);
+    expect(visibleAfterInstall(options, { ...c, components: ['text', 'directx'] }).map((a) => a.id)).toEqual(['1']);
   });
 
   it('computes required bytes', () => {
@@ -340,7 +339,7 @@ describe('install job', () => {
       afterInstall: ['1', '2', '4'],
     };
     const job = buildInstallJob(info, options, choices, { folders });
-    expect(job.setupExe).toBe(info.setupExe);
+    expect(job).not.toHaveProperty('setupExe');
     expect(job.installDir).toBe(`E:\\Games\\${GAME}`);
     expect(job.language).toBe('en');
     expect(job.components).toEqual(['text', 'directx']);
@@ -348,10 +347,7 @@ describe('install job', () => {
     expect(job.noIcons).toBe(true);
     expect(job.limitRam).toBe(false);
     expect(job.removeShortcuts).toEqual([`C:\\Users\\Public\\Desktop\\${GAME}.lnk`]);
-    expect(job.postActions).toEqual([
-      { label: 'Update DirectX', filename: `E:\\Games\\${GAME}\\_Redist\\dxwebsetup.exe`, parameters: '', workingDir: null },
-      { label: 'Redirect fake sites to the real one', filename: 'cmd.exe', parameters: '/c ""{tmp}\\host.cmd""', workingDir: null },
-    ]);
+    expect(job.postActions).toEqual([1]);
     expect(buildInstallJob(info, options, { ...choices, desktopShortcut: true, startMenu: true }, { folders })).toMatchObject({
       noIcons: false,
       removeShortcuts: [],

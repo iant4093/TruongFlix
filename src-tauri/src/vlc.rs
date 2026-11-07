@@ -212,6 +212,31 @@ fn restore_main_window(app: &AppHandle) {
     }
 }
 
+/// A custom VLC location from Settings must still be VLC itself (`vlc.exe`, `vlc`, or the
+/// executable inside `VLC.app`), so this command can't be used to start other programs.
+fn looks_like_vlc(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if cfg!(windows) {
+        return name == "vlc.exe";
+    }
+    if cfg!(target_os = "macos") {
+        let parts: Vec<String> = path.components().map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase()).collect();
+        return name == "vlc"
+            && parts.len() >= 4
+            && parts[parts.len() - 2] == "macos"
+            && parts[parts.len() - 3] == "contents"
+            && parts[parts.len() - 4] == "vlc.app";
+    }
+    name == "vlc"
+}
+
+fn allowed_vlc(path: &Path) -> bool {
+    candidate_paths().iter().any(|d| d == path) || looks_like_vlc(path)
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn launch_vlc(
@@ -224,12 +249,15 @@ pub async fn launch_vlc(
     vlc_path: Option<String>,
     subtitle_path: Option<String>,
 ) -> Result<(), String> {
-    let vlc = vlc_path
-        .filter(|p| Path::new(p).is_file())
-        .or_else(detect_vlc)
-        .ok_or("VLC was not found. Install VLC or set its path in Settings.")?;
+    // A saved path that no longer exists falls back to the detected install.
+    let vlc = match vlc_path.filter(|p| Path::new(p).is_file()) {
+        Some(p) if allowed_vlc(Path::new(&p)) => p,
+        Some(_) => return Err("The VLC path in Settings doesn't point to VLC.".into()),
+        None => detect_vlc().ok_or("VLC was not found. Install VLC or set its path in Settings.")?,
+    };
     let is_local_stream = file_path.starts_with("http://127.0.0.1:");
-    if !is_local_stream && !Path::new(&file_path).is_file() {
+    // Absolute paths only, so a file name can never be read as a VLC option.
+    if !is_local_stream && !(Path::new(&file_path).is_absolute() && Path::new(&file_path).is_file()) {
         return Err(format!("File not found: {file_path}"));
     }
 
@@ -315,6 +343,22 @@ pub async fn launch_vlc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_vlc_can_be_launched() {
+        #[cfg(windows)]
+        {
+            assert!(looks_like_vlc(Path::new(r"D:\Apps\VideoLAN\VLC.EXE")));
+            assert!(!looks_like_vlc(Path::new(r"C:\Windows\System32\cmd.exe")));
+            assert!(!looks_like_vlc(Path::new(r"vlc.exe")));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(looks_like_vlc(Path::new("/Users/me/Apps/VLC.app/Contents/MacOS/VLC")));
+            assert!(!looks_like_vlc(Path::new("/tmp/VLC")));
+        }
+        assert!(!looks_like_vlc(Path::new("/bin/sh")));
+    }
 
     #[test]
     fn base64_matches_rfc4648() {

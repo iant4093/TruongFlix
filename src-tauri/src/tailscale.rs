@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 #[cfg(windows)]
@@ -141,12 +141,37 @@ fn apply_serve_status(status: &mut TailscaleStatus, json: &Value, port: u16) {
     status.funnel = json["AllowFunnel"][&host].as_bool().unwrap_or(false);
 }
 
-fn status_blocking(port: u16) -> TailscaleStatus {
-    let Some(exe) = cli() else { return TailscaleStatus::default() };
-    let mut status = match run(&exe, &["status", "--json"], Duration::from_secs(8)) {
+/// This device's tailnet name from the last status check; the media server only accepts browser
+/// pages served from it via Tailscale Serve.
+static OWN_DNS_NAME: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn own_dns_name() -> Option<String> {
+    OWN_DNS_NAME.lock().unwrap().clone()
+}
+
+fn base_status(exe: &PathBuf) -> TailscaleStatus {
+    let status = match run(exe, &["status", "--json"], Duration::from_secs(8)) {
         Ok((_, out)) => serde_json::from_str::<Value>(&out).map(|j| parse_status(&j)).unwrap_or(TailscaleStatus { installed: true, ..Default::default() }),
         Err(_) => TailscaleStatus { installed: true, ..Default::default() },
     };
+    if status.dns_name.is_some() {
+        *OWN_DNS_NAME.lock().unwrap() = status.dns_name.clone();
+    }
+    status
+}
+
+/// Learns this device's tailnet name in the background (when the media server starts).
+pub fn refresh_dns_name() {
+    std::thread::spawn(|| {
+        if let Some(exe) = cli() {
+            base_status(&exe);
+        }
+    });
+}
+
+fn status_blocking(port: u16) -> TailscaleStatus {
+    let Some(exe) = cli() else { return TailscaleStatus::default() };
+    let mut status = base_status(&exe);
     if status.state == "Running" {
         if let Ok((_, out)) = run(&exe, &["serve", "status", "--json"], Duration::from_secs(8)) {
             if let Ok(json) = serde_json::from_str::<Value>(&out) {

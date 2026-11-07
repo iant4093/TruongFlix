@@ -56,17 +56,48 @@ pub fn host_allowed(host: Option<&str>) -> bool {
 }
 
 /// API requests from a browser must come from the TruongFlix page itself. Behind Tailscale Serve
-/// (which connects from this machine) the page's origin is the device's `*.ts.net` address.
-pub fn origin_allowed(origin: Option<&str>, host: Option<&str>, forwarded_host: Option<&str>, via_loopback: bool) -> bool {
+/// (which connects from this machine) the page's origin is this device's own `*.ts.net` address.
+pub fn origin_allowed(
+    origin: Option<&str>,
+    host: Option<&str>,
+    forwarded_host: Option<&str>,
+    via_loopback: bool,
+    tailnet_name: Option<&str>,
+) -> bool {
     let Some(origin) = origin else { return true };
     let Some(rest) = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")) else {
         return false;
     };
     let origin_host = rest.trim_end_matches('/');
     let same = |h: Option<&str>| h.is_some_and(|h| origin_host.eq_ignore_ascii_case(h.trim()));
-    same(host)
-        || same(forwarded_host)
-        || (via_loopback && host_name(origin_host).to_ascii_lowercase().ends_with(".ts.net"))
+    let own_tailnet = tailnet_name
+        .map(|n| n.trim().trim_end_matches('.'))
+        .filter(|n| !n.is_empty())
+        .is_some_and(|n| host_name(origin_host).trim_end_matches('.').eq_ignore_ascii_case(n));
+    same(host) || (via_loopback && (same(forwarded_host) || own_tailnet))
+}
+
+/// Forwarding headers are only believed from Tailscale Serve, which connects from this machine.
+/// Serve appends the real client to `X-Forwarded-For`, so the last entry is the one it added.
+pub fn forwarded_ip(peer: IpAddr, forwarded_for: Option<&str>) -> Option<IpAddr> {
+    if !peer.is_loopback() {
+        return None;
+    }
+    forwarded_for?.rsplit(',').next()?.trim().parse().ok()
+}
+
+/// Who wrong-code lockouts apply to: the device behind Tailscale Serve (its tailnet address, or
+/// the signed-in Tailscale user), otherwise the connecting address.
+pub fn client_key(peer: IpAddr, tailscale_login: Option<&str>, forwarded_for: Option<&str>) -> String {
+    if let Some(ip) = forwarded_ip(peer, forwarded_for) {
+        return ip.to_string();
+    }
+    if peer.is_loopback() {
+        if let Some(login) = tailscale_login.map(str::trim).filter(|l| !l.is_empty()) {
+            return format!("tailscale:{}", login.to_ascii_lowercase());
+        }
+    }
+    peer.to_string()
 }
 
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
@@ -131,7 +162,7 @@ pub enum LoginCheck {
 /// hour from anywhere pause sign-in until a new code is made, so a 6-digit code can't be guessed.
 #[derive(Default)]
 pub struct LoginGuard {
-    per_device: HashMap<IpAddr, Vec<Instant>>,
+    per_device: HashMap<String, Vec<Instant>>,
     recent: Vec<Instant>,
     paused: bool,
 }
@@ -145,11 +176,12 @@ impl LoginGuard {
         *self = Self::default();
     }
 
-    pub fn check(&mut self, ip: IpAddr, now: Instant) -> LoginCheck {
+    pub fn check(&mut self, key: &str, now: Instant) -> LoginCheck {
         if self.paused {
             return LoginCheck::Paused;
         }
-        let failures = self.per_device.entry(ip).or_default();
+        self.per_device.retain(|_, f| f.last().is_some_and(|t| now.duration_since(*t) < DEVICE_LOCKOUT));
+        let Some(failures) = self.per_device.get_mut(key) else { return LoginCheck::Allowed };
         failures.retain(|t| now.duration_since(*t) < DEVICE_LOCKOUT);
         if failures.len() >= MAX_FAILURES_PER_DEVICE {
             let oldest = failures[0];
@@ -159,20 +191,20 @@ impl LoginGuard {
     }
 
     /// Records a wrong code; returns how many tries this device has left.
-    pub fn failed(&mut self, ip: IpAddr, now: Instant) -> usize {
+    pub fn failed(&mut self, key: &str, now: Instant) -> usize {
         self.recent.retain(|t| now.duration_since(*t) < FAILURE_WINDOW);
         self.recent.push(now);
         if self.recent.len() >= MAX_FAILURES_TOTAL {
             self.paused = true;
         }
-        let failures = self.per_device.entry(ip).or_default();
+        let failures = self.per_device.entry(key.to_string()).or_default();
         failures.retain(|t| now.duration_since(*t) < DEVICE_LOCKOUT);
         failures.push(now);
         MAX_FAILURES_PER_DEVICE.saturating_sub(failures.len())
     }
 
-    pub fn succeeded(&mut self, ip: IpAddr) {
-        self.per_device.remove(&ip);
+    pub fn succeeded(&mut self, key: &str) {
+        self.per_device.remove(key);
     }
 }
 
@@ -208,15 +240,43 @@ mod tests {
     #[test]
     fn api_origins_must_match_the_host() {
         let lan = Some("192.168.1.5:8732");
-        assert!(origin_allowed(None, lan, None, false));
-        assert!(origin_allowed(Some("http://192.168.1.5:8732"), lan, None, false));
-        assert!(origin_allowed(Some("https://pc.tail1.ts.net"), Some("pc.tail1.ts.net"), None, true));
-        assert!(origin_allowed(Some("https://pc.tail1.ts.net"), Some("127.0.0.1:8732"), Some("pc.tail1.ts.net"), true));
-        assert!(origin_allowed(Some("https://pc.tail1.ts.net"), Some("127.0.0.1:8732"), None, true));
-        assert!(!origin_allowed(Some("https://pc.tail1.ts.net"), lan, None, false));
-        assert!(!origin_allowed(Some("https://evil.example"), lan, None, false));
-        assert!(!origin_allowed(Some("https://evil.example"), Some("127.0.0.1:8732"), None, true));
-        assert!(!origin_allowed(Some("null"), lan, None, false));
+        let me = Some("pc.tail1.ts.net");
+        assert!(origin_allowed(None, lan, None, false, None));
+        assert!(origin_allowed(Some("http://192.168.1.5:8732"), lan, None, false, None));
+        assert!(origin_allowed(Some("https://pc.tail1.ts.net"), Some("pc.tail1.ts.net"), None, true, None));
+        assert!(origin_allowed(Some("https://pc.tail1.ts.net"), Some("127.0.0.1:8732"), Some("pc.tail1.ts.net"), true, None));
+        assert!(origin_allowed(Some("https://pc.tail1.ts.net"), Some("127.0.0.1:8732"), None, true, me));
+        assert!(origin_allowed(Some("https://PC.tail1.ts.net"), Some("127.0.0.1:8732"), None, true, Some("pc.tail1.ts.net.")));
+        // Another tailnet's device, or ours before its name is known.
+        assert!(!origin_allowed(Some("https://other.tail9.ts.net"), Some("127.0.0.1:8732"), None, true, me));
+        assert!(!origin_allowed(Some("https://pc.tail1.ts.net"), Some("127.0.0.1:8732"), None, true, None));
+        assert!(!origin_allowed(Some("https://pc.tail1.ts.net"), lan, None, false, me));
+        // Forwarding headers only count when Serve (loopback) sent them.
+        assert!(!origin_allowed(Some("https://evil.example"), lan, Some("evil.example"), false, me));
+        assert!(!origin_allowed(Some("https://evil.example"), lan, None, false, me));
+        assert!(!origin_allowed(Some("https://evil.example"), Some("127.0.0.1:8732"), None, true, me));
+        assert!(!origin_allowed(Some("null"), lan, None, false, me));
+    }
+
+    #[test]
+    fn lockouts_follow_the_tailscale_client_behind_serve() {
+        let lo = ip("127.0.0.1");
+        assert_eq!(client_key(lo, Some("Ann@example.com"), Some("100.70.1.2")), "100.70.1.2");
+        assert_eq!(client_key(lo, None, Some("1.2.3.4, 100.70.1.3")), "100.70.1.3");
+        assert_eq!(client_key(lo, Some("Ann@example.com"), None), "tailscale:ann@example.com");
+        assert_eq!(client_key(lo, None, None), "127.0.0.1");
+        // Headers from anyone but Serve are ignored.
+        assert_eq!(client_key(ip("192.168.1.30"), Some("ann@example.com"), Some("100.70.1.2")), "192.168.1.30");
+        assert_eq!(forwarded_ip(ip("192.168.1.30"), Some("100.70.1.2")), None);
+
+        let mut guard = LoginGuard::default();
+        let t = Instant::now();
+        for _ in 0..MAX_FAILURES_PER_DEVICE {
+            guard.failed(&client_key(lo, None, Some("100.70.1.2")), t);
+        }
+        assert!(matches!(guard.check("100.70.1.2", t), LoginCheck::Locked(_)));
+        assert_eq!(guard.check(&client_key(lo, None, Some("100.70.1.3")), t), LoginCheck::Allowed);
+        assert_eq!(guard.check(&client_key(lo, None, None), t), LoginCheck::Allowed);
     }
 
     #[test]
@@ -231,7 +291,7 @@ mod tests {
     fn devices_lock_out_and_too_many_failures_pause_sign_in() {
         let mut guard = LoginGuard::default();
         let t = Instant::now();
-        let phone = ip("192.168.1.30");
+        let phone = "192.168.1.30";
         for left in (0..MAX_FAILURES_PER_DEVICE).rev() {
             assert_eq!(guard.check(phone, t), LoginCheck::Allowed);
             assert_eq!(guard.failed(phone, t), left);
@@ -241,11 +301,11 @@ mod tests {
 
         let mut guard = LoginGuard::default();
         for i in 0..MAX_FAILURES_TOTAL {
-            guard.failed(ip(&format!("192.168.1.{}", i % 250 + 1)), t);
+            guard.failed(&format!("192.168.1.{}", i % 250 + 1), t);
         }
-        assert_eq!(guard.check(ip("192.168.1.251"), t), LoginCheck::Paused);
+        assert_eq!(guard.check("192.168.1.251", t), LoginCheck::Paused);
         guard.reset();
-        assert_eq!(guard.check(ip("192.168.1.251"), t), LoginCheck::Allowed);
+        assert_eq!(guard.check("192.168.1.251", t), LoginCheck::Allowed);
     }
 
     #[test]

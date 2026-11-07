@@ -28,8 +28,8 @@ pub async fn audio_devices() -> Result<Vec<AudioDevice>, String> {
 
 /// The system's current default output, named the way mpv names it.
 #[tauri::command]
-pub fn default_audio_device() -> Option<AudioDevice> {
-    platform::default_device()
+pub async fn default_audio_device() -> Option<AudioDevice> {
+    tauri::async_runtime::spawn_blocking(platform::default_device).await.ok().flatten()
 }
 
 #[cfg(target_os = "macos")]
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     #[ignore]
     fn lists_real_devices() {
-        println!("default: {:?}", super::default_audio_device());
+        println!("default: {:?}", super::platform::default_device());
         println!("all: {:?}", tauri::async_runtime::block_on(super::audio_devices()));
     }
 }

@@ -8,6 +8,7 @@ import type {
   KnownFolders,
   TaskOption,
 } from './types';
+import { basename } from '../lib/path';
 
 export interface InstallerOptions {
   components: ComponentOption[];
@@ -159,7 +160,7 @@ function byLanguage<T extends { name: string; languages: string | null }>(items:
 const words = (s: string) => lower(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 
 function optionalLabel(file: string): string {
-  return lower(file.split(/[\\/]/).pop() ?? file)
+  return lower(basename(file))
     .replace(/\.[a-z0-9]+$/, '')
     .replace(/[-._]part\d+$/, '')
     .replace(/^(fg-)?(optional|selective)-/, '');
@@ -207,6 +208,8 @@ export function buildOptions(info: InstallerInfo, language: string | null, missi
   info.runEntries.forEach((r, i) => {
     if (!r.postInstall || !languageMatches(r.languages, language)) return;
     if (r.shellExec || isUrl(r.filename)) return;
+    // `{tmp}` is user-writable, so TruongFlix never runs anything from it with administrator rights.
+    if ([r.filename, r.parameters, r.workingDir ?? ''].some((s) => /\{tmp\}/i.test(s))) return;
     if (/\{cm:LaunchProgram\b/i.test(r.description) || (r.skipIfSilent && /^\{app\}.*\.exe$/i.test(r.filename.trim()))) return;
     const label = text(r.description);
     if (/quicksfv/i.test(r.filename) || /verify|integrity/i.test(label)) return;
@@ -238,7 +241,7 @@ export function defaultChoices(
   options: InstallerOptions,
   ctx: { language: string | null; installRoot: string; installRedists: boolean; desktopShortcut: boolean; totalRamGb: number },
 ): InstallChoices {
-  const last = expandMessages(info.defaultDirName, info, ctx.language).split(/[\\/]/).filter(Boolean).pop() ?? '';
+  const last = basename(expandMessages(info.defaultDirName, info, ctx.language));
   const folder = (!last.includes('{') && sanitize(last)) || sanitize(info.appName) || 'Game';
 
   const source = byLanguage(info.components, ctx.language);
@@ -399,15 +402,9 @@ export function buildInstallJob(
   const picked = new Set(choices.afterInstall);
   const postActions = visibleAfterInstall(options, choices)
     .filter((a) => picked.has(a.id))
-    .map((a) => ({
-      label: a.label,
-      filename: resolvePath(a.filename, where),
-      parameters: resolvePath(a.parameters, where),
-      workingDir: a.workingDir ? resolvePath(a.workingDir, where) : null,
-    }));
+    .map((a) => Number(a.id));
 
   return {
-    setupExe: info.setupExe,
     installDir: choices.installDir,
     language: choices.language,
     components: info.components.length ? choices.components : null,

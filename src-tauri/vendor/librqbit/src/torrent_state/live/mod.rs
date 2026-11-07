@@ -1410,9 +1410,12 @@ impl PeerHandler {
 
     /// TruongFlix patch: a random sample of needed pieces this peer has, rarest in the swarm first.
     /// Sampling keeps the cost bounded on torrents with many pieces and peers; ties stay random.
+    /// Only the first `MAX_SCAN` queued pieces the peer has are considered, so each call is cheap
+    /// even on torrents with tens of thousands of pieces.
     fn rarest_candidates(&self) -> Vec<ValidPieceIndex> {
         use rand::{RngExt, seq::SliceRandom};
         const SAMPLE: usize = 32;
+        const MAX_SCAN: usize = 512;
 
         let Some(bf) = self
             .state
@@ -1439,6 +1442,9 @@ impl PeerHandler {
             {
                 if bf.get(piece.get_usize()).map(|v| *v) != Some(true) {
                     continue;
+                }
+                if seen == MAX_SCAN {
+                    break;
                 }
                 seen += 1;
                 if sample.len() < SAMPLE {

@@ -36,11 +36,27 @@ pub use source_browser::smoke::run as source_browser_smoke;
 
 use tauri::Manager;
 
-/// `TRUONGFLIX_AUTOPLAY=<video path>` starts playback at launch (used by CI's player smoke test).
+/// `%SystemRoot%` (the Windows folder). System programs are started by full path so a same-named
+/// file on PATH or in the working folder is never run instead.
+#[cfg(windows)]
+pub(crate) fn windows_dir() -> std::path::PathBuf {
+    std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(|| r"C:\Windows".into())
+}
+
+#[cfg(windows)]
+pub(crate) fn system32(program: &str) -> std::path::PathBuf {
+    windows_dir().join("System32").join(program)
+}
+
+/// `TRUONGFLIX_AUTOPLAY=<video path>` starts playback at launch (development builds only).
 #[tauri::command]
 fn startup_autoplay() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
     std::env::var("TRUONGFLIX_AUTOPLAY").ok().filter(|p| std::path::Path::new(p).is_file())
 }
+
 
 /// The updater only reports "no valid release JSON" when the feed fails, so this fetches the feed
 /// itself to tell the user what actually happened (offline, HTTP 403/404/429, …).
@@ -83,6 +99,7 @@ pub fn run() {
     if let Some(code) = games::helper::run_from_args() {
         std::process::exit(code);
     }
+    backup::install_sql_guard();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {

@@ -85,7 +85,7 @@ export function handleGamesCommand(cmd: string, a: Record<string, unknown>): unk
     case 'games_uninstall':
       return wait(1500).then(() => true);
     case 'games_launch':
-      setTimeout(() => void emit('games-session', { gameId: a.gameId, seconds: 1860, error: null }), 5000);
+      setTimeout(() => void emit('games-session', { gameId: String(a.gameId), seconds: 1860, error: null }), 5000);
       return null;
     case 'games_cancel': case 'games_delete_folder':
       return null;

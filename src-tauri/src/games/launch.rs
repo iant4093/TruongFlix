@@ -38,7 +38,7 @@ fn processes_in(dir: &Path) -> Vec<u32> {
                     let mut len = buf.len() as u32;
                     if QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
                         let image = PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
-                        if image.starts_with(dir) {
+                        if super::guard::strictly_inside(&image, dir) {
                             out.push(entry.th32ProcessID);
                         }
                     }

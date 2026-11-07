@@ -36,6 +36,7 @@ const SESSION_IDLE: Duration = Duration::from_secs(14 * 24 * 3600);
 const SESSION_MAX: Duration = Duration::from_secs(60 * 24 * 3600);
 const MAX_SESSIONS: usize = 32;
 const PROBE_TTL: Duration = Duration::from_secs(120);
+const PROBE_CACHE_MAX: usize = 256;
 const LOOKAHEAD_SEGS: u32 = 6;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -59,6 +60,36 @@ pub struct StreamOptions {
     /// mpv subtitle appearance options `[name, value]` applied when `sid` is set.
     #[serde(default)]
     pub sub_style: Vec<(String, String)>,
+}
+
+fn is_number(v: &str, max: f64) -> bool {
+    v.len() <= 24 && v.parse::<f64>().is_ok_and(|n| n.is_finite() && (0.0..=max).contains(&n))
+}
+
+fn is_color(v: &str) -> bool {
+    v.strip_prefix('#').is_some_and(|h| matches!(h.len(), 6 | 8) && h.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Subtitle appearance options are passed straight to mpv, so only known keys with plain values
+/// get through (no paths, filters or extra options).
+pub(crate) fn sub_style_allowed(key: &str, value: &str) -> bool {
+    match key {
+        "sub-font-size" => is_number(value, 200.0),
+        "sub-outline-size" | "sub-border-size" | "sub-shadow-offset" => is_number(value, 50.0),
+        "sub-margin-y" | "sub-margin-x" => is_number(value, 500.0),
+        "sub-scale" => is_number(value, 10.0),
+        "sub-color" | "sub-outline-color" | "sub-border-color" | "sub-back-color" | "sub-shadow-color" => is_color(value),
+        "sub-border-style" => matches!(value, "outline-and-shadow" | "opaque-box" | "background-box"),
+        "sub-bold" | "sub-italic" => matches!(value, "yes" | "no"),
+        "sub-font" => {
+            !value.is_empty() && value.len() <= 64 && value.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
+        }
+        _ => false,
+    }
+}
+
+fn sanitize_sub_style(style: Vec<(String, String)>) -> Vec<(String, String)> {
+    style.into_iter().filter(|(k, v)| sub_style_allowed(k, v)).take(16).collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -378,6 +409,7 @@ async fn ensure_server(port: u16) -> Result<u16, String> {
     if let Some(old) = old {
         old.abort();
     }
+    crate::tailscale::refresh_dns_name();
     Ok(bound)
 }
 
@@ -535,7 +567,7 @@ fn minutes(d: Duration) -> u64 {
     d.as_secs().div_ceil(60).max(1)
 }
 
-async fn login(conn: &mut TcpStream, req: &Request, ip: IpAddr) -> std::io::Result<()> {
+async fn login(conn: &mut TcpStream, req: &Request, ip: IpAddr, key: &str) -> std::io::Result<()> {
     let s = shared().map_err(std::io::Error::other)?;
     let code = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v["code"].as_str().map(str::to_owned)).unwrap_or_default();
     let device = remote_guard::describe_device(req.headers.get("user-agent").map(String::as_str).unwrap_or_default());
@@ -548,12 +580,12 @@ async fn login(conn: &mut TcpStream, req: &Request, ip: IpAddr) -> std::io::Resu
     }
     let (outcome, evicted) = {
         let mut inner = s.inner.lock().unwrap();
-        match inner.login.check(ip, now) {
+        match inner.login.check(key, now) {
             LoginCheck::Paused => (Outcome::Paused, Vec::new()),
             LoginCheck::Locked(d) => (Outcome::Locked(d), Vec::new()),
             LoginCheck::Allowed => {
                 if !code.trim().is_empty() && remote_guard::constant_time_eq(code.trim(), &inner.access_code) {
-                    inner.login.succeeded(ip);
+                    inner.login.succeeded(key);
                     let mut evicted = Vec::new();
                     if inner.web_sessions.len() >= MAX_SESSIONS {
                         if let Some(oldest) = inner.web_sessions.iter().min_by_key(|(_, w)| w.last_used).map(|(t, _)| t.clone()) {
@@ -568,7 +600,7 @@ async fn login(conn: &mut TcpStream, req: &Request, ip: IpAddr) -> std::io::Resu
                     inner.web_sessions.insert(token.clone(), WebSession { id, device: device.clone(), ip, created: now, last_used: now });
                     (Outcome::Token(token), evicted)
                 } else {
-                    let left = inner.login.failed(ip, now);
+                    let left = inner.login.failed(key, now);
                     (Outcome::Wrong(left, inner.login.paused()), Vec::new())
                 }
             }
@@ -637,18 +669,22 @@ async fn handle(mut conn: TcpStream, peer: SocketAddr) -> std::io::Result<()> {
     }
     let origin = req.headers.get("origin").map(String::as_str);
     let forwarded = req.headers.get("x-forwarded-host").map(String::as_str);
-    if !remote_guard::origin_allowed(origin, host, forwarded, peer.ip().is_loopback()) {
+    let tailnet_name = crate::tailscale::own_dns_name();
+    if !remote_guard::origin_allowed(origin, host, forwarded, peer.ip().is_loopback(), tailnet_name.as_deref()) {
         return respond_json(&mut conn, 403, r#"{"error":"Open TruongFlix from its own address"}"#).await;
     }
+    let forwarded_for = req.headers.get("x-forwarded-for").map(String::as_str);
+    let client_ip = remote_guard::forwarded_ip(peer.ip(), forwarded_for).unwrap_or(peer.ip());
     if req.path == "/api/login" {
         if req.method != "POST" {
             return respond_json(&mut conn, 405, r#"{"error":"Not allowed"}"#).await;
         }
-        return login(&mut conn, &req, peer.ip()).await;
+        let key = remote_guard::client_key(peer.ip(), req.headers.get("tailscale-user-login").map(String::as_str), forwarded_for);
+        return login(&mut conn, &req, client_ip, &key).await;
     }
     let token = req.headers.get("x-tf-token").cloned().unwrap_or_default();
     let mut ended = Vec::new();
-    let session = s.inner.lock().unwrap().session_for(&token, peer.ip(), &mut ended);
+    let session = s.inner.lock().unwrap().session_for(&token, client_ip, &mut ended);
     announce_ended(&s.app, ended);
     let Some((session_id, device)) = session else {
         return respond_json(&mut conn, 401, r#"{"error":"Sign in with the access code"}"#).await;
@@ -837,22 +873,15 @@ async fn serve_segment(conn: &mut TcpStream, token: &str, idx: u32, head_only: b
         Err(msg) => return respond(conn, 404, "text/plain", "", msg, false).await,
     };
 
-    if seg_file.exists() {
-        let bytes = tokio::fs::read(&seg_file).await?;
-        return respond(conn, 200, "video/mp2t", "Cache-Control: public, max-age=3600\r\n", &bytes, head_only).await;
-    }
-
     let started = Instant::now();
     let mut our_job: Option<String> = None;
     loop {
-        if seg_file.exists() {
-            let bytes = tokio::fs::read(&seg_file).await?;
-            return respond(conn, 200, "video/mp2t", "Cache-Control: public, max-age=3600\r\n", &bytes, head_only).await;
+        if tokio::fs::try_exists(&seg_file).await.unwrap_or(false) {
+            return send_segment(conn, &seg_file, head_only).await;
         }
 
         enum Step {
             Wait,
-            Ready,
             EmptyEof,
             Failed(String),
             Gone,
@@ -862,9 +891,7 @@ async fn serve_segment(conn: &mut TcpStream, token: &str, idx: u32, head_only: b
             let mut inner = s.inner.lock().unwrap();
             if let Some(st) = inner.streams.get_mut(token) {
                 st.touched = Instant::now();
-                if seg_file.exists() {
-                    Step::Ready
-                } else {
+                {
                     let plan = st.hls.clone().unwrap();
                     let active_covers = st.job.as_ref().is_some_and(|j| {
                         !j.cancel.load(Ordering::Acquire)
@@ -942,7 +969,6 @@ async fn serve_segment(conn: &mut TcpStream, token: &str, idx: u32, head_only: b
         };
 
         match step {
-            Step::Ready => continue,
             Step::EmptyEof => return respond(conn, 200, "video/mp2t", "Cache-Control: no-store\r\n", b"", head_only).await,
             Step::Failed(e) => return respond(conn, 503, "text/plain", "", e.as_bytes(), false).await,
             Step::Gone => return respond(conn, 404, "text/plain", "", b"Segment superseded", false).await,
@@ -954,6 +980,25 @@ async fn serve_segment(conn: &mut TcpStream, token: &str, idx: u32, head_only: b
             }
         }
     }
+}
+
+/// A finished HLS segment, copied to the socket in chunks rather than read into memory.
+async fn send_segment(conn: &mut TcpStream, path: &Path, head_only: bool) -> std::io::Result<()> {
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(_) => return respond(conn, 404, "text/plain", "", b"Segment not found", false).await,
+    };
+    let len = file.metadata().await?.len();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nContent-Length: {len}\r\n{}{SECURITY_HEADERS}Cache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n",
+        cors(),
+    );
+    conn.write_all(header.as_bytes()).await?;
+    if !head_only {
+        let mut limited = (&mut file).take(len);
+        tokio::io::copy_buf(&mut tokio::io::BufReader::with_capacity(128 * 1024, &mut limited), conn).await?;
+    }
+    conn.flush().await
 }
 
 /// Original file with single-range support (seeking in browsers, TVs and Chromecast).
@@ -1185,7 +1230,13 @@ fn probe_file(path: &Path) -> Result<StreamProbe, String> {
     drop(core);
 
     let probe = StreamProbe { duration, fps, audio, subs, chapters };
-    cache.lock().unwrap().insert(path.to_path_buf(), (Instant::now(), probe.clone()));
+    let mut cache = cache.lock().unwrap();
+    cache.retain(|_, (at, _)| at.elapsed() < PROBE_TTL);
+    while cache.len() >= PROBE_CACHE_MAX {
+        let Some(oldest) = cache.iter().min_by_key(|(_, (at, _))| *at).map(|(k, _)| k.clone()) else { break };
+        cache.remove(&oldest);
+    }
+    cache.insert(path.to_path_buf(), (Instant::now(), probe.clone()));
     Ok(probe)
 }
 
@@ -1223,7 +1274,6 @@ fn spawn_hls_job(
     dir: &Path,
     prev_done: Option<Arc<AtomicBool>>,
 ) -> Result<Job, String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let id = random_token()[..12].to_string();
     let start = start_seg as f64 * plan.seg_len;
     let frontier = Arc::new(AtomicU32::new(start_seg));
@@ -1258,7 +1308,6 @@ fn spawn_ts_job(
 ) -> Result<Job, String> {
     let id = random_token()[..12].to_string();
     let dir = root.join(&id);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let frontier = Arc::new(AtomicU32::new(0));
     let cancel = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));
@@ -1295,6 +1344,12 @@ fn run_encode(
     eof: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
 ) {
+    // Created here so callers holding the server lock don't touch the disk.
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        *error.lock().unwrap() = Some(e.to_string());
+        done.store(true, Ordering::Release);
+        return;
+    }
     if let Some(prev) = prev_done {
         let wait = Instant::now();
         while !prev.load(Ordering::Acquire) && wait.elapsed() < Duration::from_secs(8) {
@@ -1374,7 +1429,7 @@ fn run_encode(
         ];
         if sid != "no" {
             options.push(("sub-auto", "fuzzy"));
-            for (k, v) in &opts.sub_style {
+            for (k, v) in opts.sub_style.iter().filter(|(k, v)| sub_style_allowed(k, v)) {
                 options.push((k.as_str(), v.as_str()));
             }
         }
@@ -1519,7 +1574,8 @@ pub async fn stream_encoder() -> Result<String, String> {
 
 /// Makes a file streamable; returns its token.
 #[tauri::command]
-pub async fn stream_register(path: String, options: StreamOptions) -> Result<String, String> {
+pub async fn stream_register(path: String, mut options: StreamOptions) -> Result<String, String> {
+    options.sub_style = sanitize_sub_style(std::mem::take(&mut options.sub_style));
     ensure_server(0).await?;
     let s = shared()?;
     let p = PathBuf::from(&path);
@@ -1560,6 +1616,16 @@ pub struct StreamUrl {
 pub async fn stream_url(_app: AppHandle, token: String, start: f64, host: Option<String>) -> Result<StreamUrl, String> {
     let port = ensure_server(0).await?;
     let s = shared()?;
+    let hls_seg = |plan: &HlsPlan| ((start.max(0.0) / plan.seg_len).floor() as u32).min(plan.seg_count.saturating_sub(1));
+    let seg_file = {
+        let inner = s.inner.lock().unwrap();
+        let st = inner.streams.get(&token).ok_or("Unknown stream")?;
+        st.hls.as_ref().map(|plan| st.dir.join(format!("seg{}.ts", hls_seg(plan))))
+    };
+    let cached = match seg_file {
+        Some(f) => tokio::fs::try_exists(f).await.unwrap_or(false),
+        None => false,
+    };
     let (rel, offset) = {
         let mut inner = s.inner.lock().unwrap();
         let st = inner.streams.get_mut(&token).ok_or("Unknown stream")?;
@@ -1568,8 +1634,7 @@ pub async fn stream_url(_app: AppHandle, token: String, start: f64, host: Option
             "direct" => (format!("/stream/{token}/file"), 0.0),
             "hls" => {
                 let plan = st.hls.clone().ok_or("Missing HLS plan")?;
-                let seg = ((start.max(0.0) / plan.seg_len).floor() as u32).min(plan.seg_count.saturating_sub(1));
-                let cached = st.dir.join(format!("seg{seg}.ts")).exists();
+                let seg = hls_seg(&plan);
                 let covered = st.job.as_ref().is_some_and(|j| {
                     !j.cancel.load(Ordering::Acquire)
                         && !j.done.load(Ordering::Acquire)
@@ -1812,6 +1877,32 @@ mod tests {
         assert_eq!(percent_decode("%41"), "A");
         assert_eq!(percent_decode_with("/a+b", false), "/a+b");
         assert_eq!(percent_decode("%zz%"), "%zz%");
+    }
+
+    #[test]
+    fn subtitle_styles_are_allowlisted() {
+        let style = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        let ok = style(&[
+            ("sub-font-size", "46"),
+            ("sub-color", "#FFE600"),
+            ("sub-font", "Segoe UI Semibold"),
+            ("sub-border-style", "opaque-box"),
+            ("sub-outline-size", "1.2"),
+            ("sub-back-color", "#80000000"),
+            ("sub-shadow-offset", "0"),
+        ]);
+        assert_eq!(sanitize_sub_style(ok.clone()), ok);
+        let bad = style(&[
+            ("o", "C:/Windows/evil.ts"),
+            ("vf", "lavfi=[movie=x]"),
+            ("sub-font-size", "46,o=x"),
+            ("sub-color", "red\nx"),
+            ("sub-font", "../../etc"),
+            ("sub-file", "x.srt"),
+            ("script-opts", "a=b"),
+            ("sub-font-size", "NaN"),
+        ]);
+        assert!(sanitize_sub_style(bad).is_empty());
     }
 
     #[test]

@@ -299,18 +299,17 @@ async function findGameExe(info: InstallerInfo | null, installDir: string): Prom
 }
 
 async function removeInstaller(game: LibraryGame) {
-  const { settings } = useGamesStore.getState();
-  const torrent = useLibraryStore.getState().torrents.find((t) => t.infoHash === game.infoHash);
   if (game.infoHash) {
     await invoke('torrent_action', { infoHash: game.infoHash, action: 'delete_keep_files' }).catch(() => {});
-    await db.deleteTorrentRecord(game.infoHash);
   }
-  const folder = torrent?.savePath || game.installerDir;
-  if (folder && settings.downloadDir) {
-    await invoke('games_delete_folder', { dir: folder, root: settings.downloadDir }).catch((e) =>
+  // Rust deletes the folder recorded for the game (its torrent's, else the installer's), so the
+  // torrent record is only dropped afterwards.
+  if ((game.infoHash || game.installerDir) && useGamesStore.getState().settings.downloadDir) {
+    await invoke('games_delete_folder', { gameId: game.id }).catch((e) =>
       toast(`The installer couldn't be deleted: ${String(e)}`, 'error'),
     );
   }
+  if (game.infoHash) await db.deleteTorrentRecord(game.infoHash);
   await lib.updateGame(game.id, { installerDir: null, infoHash: null });
   await pollTorrents();
 }
@@ -331,11 +330,11 @@ export async function installGame(gameId: number, chosen?: InstallChoices, inspe
     const job = buildInstallJob(info, options, choices, { folders: await folders() });
     await patchGame(gameId, { status: 'installing', choices, installDir: choices.installDir, error: null });
 
-    const ok = await invoke<boolean>('games_install', { jobId, job });
+    const ok = await invoke<boolean>('games_install', { jobId, gameId, job });
     if (!ok) {
       if (jobCancelled.has(jobId)) {
         await patchGame(gameId, { status: 'downloaded', installDir: null, error: null });
-        toast(`Cancelled installing “${game.title}”`, 'info');
+        toast(`Canceled installing “${game.title}”`, 'info');
       } else {
         await patchGame(gameId, { status: 'install_failed', error: jobErrors.get(jobId) ?? 'The installer stopped before finishing.' });
       }
@@ -390,7 +389,7 @@ export async function launchGame(gameId: number) {
   const game = gameById(gameId);
   if (!game?.exePath || !game.installDir) throw new Error('Choose the game’s program file first.');
   if (useGamesStore.getState().running[gameId]) return;
-  await invoke('games_launch', { gameId: String(gameId), exe: game.exePath, installDir: game.installDir });
+  await invoke('games_launch', { gameId });
   useGamesStore.setState((s) => ({ running: { ...s.running, [gameId]: true } }));
 }
 
@@ -418,10 +417,7 @@ export async function uninstallGame(gameId: number) {
   setJob(gameId, { jobId, phase: 'uninstalling', percent: null, status: 'Waiting for Windows permission…' });
   try {
     await patchGame(gameId, { status: 'uninstalling' });
-    const ok = await invoke<boolean>('games_uninstall', {
-      jobId,
-      job: { uninstaller: joinPath(game.installDir, 'unins000.exe'), installDir: game.installDir, removeShortcuts: [] },
-    });
+    const ok = await invoke<boolean>('games_uninstall', { jobId, gameId });
     if (!ok) {
       await patchGame(gameId, { status: 'installed', error: jobErrors.get(jobId) ?? 'Uninstall did not finish.' });
       return;

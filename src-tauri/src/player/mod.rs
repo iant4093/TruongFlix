@@ -287,6 +287,7 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
     let mut last_emit = Instant::now() - Duration::from_secs(1);
     let mut dirty = false;
     let debug = debug_enabled();
+    #[cfg(target_os = "macos")]
     let mut last_debug = Instant::now();
 
     loop {
@@ -515,6 +516,10 @@ pub async fn player_open(
         for (k, v) in [("cache", "yes"), ("demuxer-max-bytes", "128MiB"), ("demuxer-max-back-bytes", "64MiB")] { api.set_property(h, k, v)?; }
     }
     for (name, value) in options.unwrap_or_default() {
+        if !property_allowed(&name, &value) {
+            eprintln!("[player] ignored option {name}");
+            continue;
+        }
         if let Err(e) = api.set_property(h, &name, &value) {
             eprintln!("[player] {e}");
         }
@@ -630,9 +635,64 @@ pub async fn player_layout(app: AppHandle, rect: Option<MiniRect>) -> Result<(),
     Ok(())
 }
 
+fn number_in(value: &str, min: f64, max: f64) -> bool {
+    value.len() <= 32 && value.trim().parse::<f64>().is_ok_and(|n| n.is_finite() && n >= min && n <= max)
+}
+
+fn yes_no(value: &str) -> bool {
+    matches!(value, "yes" | "no")
+}
+
+/// The audio filter chains the app builds (night mode, dialogue boost); nothing else may be set.
+const AUDIO_FILTERS: &[&str] = &[
+    "@dialogue:lavfi=[pan=stereo|FL=FC+0.30*FL+0.30*SL+0.30*BL|FR=FC+0.30*FR+0.30*SR+0.30*BR]",
+    "@dialogue:lavfi=[highpass=f=90,equalizer=f=2500:t=q:w=1.1:g=5,equalizer=f=200:t=q:w=1:g=-2]",
+    "@night:lavfi=[dynaudnorm=f=200:g=15:p=0.9:m=8]",
+];
+
+fn audio_filters_allowed(mut value: &str) -> bool {
+    while !value.is_empty() {
+        let Some(rest) = AUDIO_FILTERS.iter().find_map(|f| value.strip_prefix(f)) else { return false };
+        value = rest.strip_prefix(',').unwrap_or(rest);
+    }
+    true
+}
+
+/// mpv properties the UI may change, with plain values only. Anything that can load scripts or
+/// configs, write files or run programs (`script-opts`, `input-conf`, `stream-record`, …) is refused.
+fn property_allowed(name: &str, value: &str) -> bool {
+    match name {
+        "pause" | "mute" | "audio-exclusive" => yes_no(value),
+        "volume" => number_in(value, 0.0, 200.0),
+        "speed" => number_in(value, 0.05, 10.0),
+        "sub-delay" | "audio-delay" => number_in(value, -600.0, 600.0),
+        "aid" | "sid" => matches!(value, "no" | "auto") || (value.len() <= 4 && value.parse::<u32>().is_ok_and(|n| n > 0)),
+        "audio-device" => !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control),
+        "audio-spdif" => value.split(',').all(|c| c.is_empty() || (c.len() <= 16 && c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-'))),
+        "af" => audio_filters_allowed(value),
+        _ => crate::stream::sub_style_allowed(name, value),
+    }
+}
+
+fn command_allowed(args: &[&str]) -> bool {
+    let seek_mode = |m: &str| matches!(m, "relative" | "absolute" | "absolute+exact" | "relative+exact" | "exact" | "keyframes");
+    match args {
+        ["cycle", "pause" | "mute"] => true,
+        ["seek", t] => number_in(t, -1e7, 1e7),
+        ["seek", t, mode] => number_in(t, -1e7, 1e7) && seek_mode(mode),
+        ["add", "volume" | "speed" | "sub-delay" | "audio-delay", n] => number_in(n, -1000.0, 1000.0),
+        ["sub-reload"] => true,
+        ["sub-reload", id] => id.len() <= 4 && id.parse::<u32>().is_ok(),
+        _ => false,
+    }
+}
+
 /// Runs an mpv command, e.g. `["seek", "10", "relative"]` or `["cycle", "pause"]`.
 #[tauri::command]
 pub async fn player_command(args: Vec<String>) -> Result<(), String> {
+    if !command_allowed(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
+        return Err("This player command isn't allowed".into());
+    }
     let api = mpv::api()?;
     let _lifecycle = LIFECYCLE.lock().unwrap();
     let h = current_handle()?;
@@ -649,6 +709,9 @@ pub async fn player_command(args: Vec<String>) -> Result<(), String> {
 /// Sets an mpv property, e.g. `volume` = `"80"` or `sid` = `"2"`.
 #[tauri::command]
 pub async fn player_set(name: String, value: String) -> Result<(), String> {
+    if !property_allowed(&name, &value) {
+        return Err(format!("The player setting “{name}” can't be changed"));
+    }
     let api = mpv::api()?;
     let _lifecycle = LIFECYCLE.lock().unwrap();
     let h = current_handle()?;
@@ -681,4 +744,70 @@ pub async fn player_close(app: AppHandle) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", windows)))]
     let _ = &app;
     api.command(addr as *mut mpv::Handle, &["quit"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_ui_commands_and_properties_reach_mpv() {
+        for ok in [
+            &["cycle", "pause"][..],
+            &["cycle", "mute"],
+            &["seek", "-10", "relative"],
+            &["seek", "1234.5678901234567", "absolute+exact"],
+            &["add", "volume", "-5"],
+            &["sub-reload"],
+        ] {
+            assert!(command_allowed(ok), "{ok:?}");
+        }
+        for bad in [
+            &["run", "calc.exe"][..],
+            &["subprocess", "x"],
+            &["load-script", "C:/x.lua"],
+            &["write-watch-later-config"],
+            &["screenshot-to-file", "C:/x.png"],
+            &["loadfile", "C:/x.mkv"],
+            &["set", "script-opts", "x"],
+            &["seek", "10", "relative; quit"],
+            &["cycle", "pause", "extra"],
+        ] {
+            assert!(!command_allowed(bad), "{bad:?}");
+        }
+
+        for (k, v) in [
+            ("pause", "yes"),
+            ("volume", "80"),
+            ("aid", "2"),
+            ("sid", "no"),
+            ("sub-delay", "-1.5"),
+            ("speed", "1.25"),
+            ("audio-device", "wasapi/{0.0.0.00000000}.{abc}"),
+            ("audio-spdif", "ac3,eac3,dts,dts-hd,truehd"),
+            ("audio-spdif", ""),
+            ("af", ""),
+            ("af", "@night:lavfi=[dynaudnorm=f=200:g=15:p=0.9:m=8]"),
+            ("af", "@dialogue:lavfi=[highpass=f=90,equalizer=f=2500:t=q:w=1.1:g=5,equalizer=f=200:t=q:w=1:g=-2],@night:lavfi=[dynaudnorm=f=200:g=15:p=0.9:m=8]"),
+            ("sub-color", "#FFE600"),
+            ("sub-font-size", "46"),
+        ] {
+            assert!(property_allowed(k, v), "{k}={v}");
+        }
+        for (k, v) in [
+            ("script-opts", "a=b"),
+            ("scripts", "C:/x.lua"),
+            ("input-conf", "C:/x.conf"),
+            ("config-dir", "C:/"),
+            ("stream-record", "C:/x.ts"),
+            ("dump-cache", "x"),
+            ("watch-later-directory", "C:/"),
+            ("af", "lavfi=[amovie=C\\:/secret.wav]"),
+            ("volume", "loud"),
+            ("aid", "1;quit"),
+            ("audio-device", "a\nb"),
+        ] {
+            assert!(!property_allowed(k, v), "{k}={v}");
+        }
+    }
 }
