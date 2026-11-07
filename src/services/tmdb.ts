@@ -2,6 +2,7 @@ import type { CastMember, CollectionPart } from '../types/media';
 import type { EpisodeMetadata, MovieExtras, MovieMetadata, SeriesExtras, SeriesMetadata } from './db';
 import { saveSeasonCache } from './db';
 import type { CatalogDetail, CatalogSeason } from '../types/browse';
+import { getAirSchedule, localDateKey, mergeNextEpisode, mergeSeasonAirDates, seasonNeedsSchedule, type ShowIds } from './airdates';
 
 const API = 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p';
@@ -182,7 +183,7 @@ interface TmdbTv {
   created_by?: { id: number; name: string; profile_path?: string | null }[];
   credits?: TmdbCredits;
   images?: { logos?: TmdbImage[] };
-  external_ids?: { imdb_id?: string | null };
+  external_ids?: { imdb_id?: string | null; tvdb_id?: number | null };
   content_ratings?: { results?: { iso_3166_1: string; rating: string }[] };
   videos?: { results?: TmdbVideo[] };
   status?: string;
@@ -374,10 +375,29 @@ function seriesExtras(d: TmdbTv): SeriesExtras {
   };
 }
 
+const externalIds = new Map<number, ShowIds>();
+
+async function showIds(tvId: number, known?: TmdbTv['external_ids']): Promise<ShowIds> {
+  if (known) externalIds.set(tvId, { imdb: known.imdb_id, tvdb: known.tvdb_id });
+  const saved = externalIds.get(tvId);
+  if (saved) return saved;
+  const d = await request<NonNullable<TmdbTv['external_ids']>>(`/tv/${tvId}/external_ids`);
+  const ids = { imdb: d.imdb_id, tvdb: d.tvdb_id };
+  externalIds.set(tvId, ids);
+  return ids;
+}
+
+/** Moves the next episode onto its earliest release (streaming often precedes TMDB's broadcast date). */
+async function withEarliestNext(extras: SeriesExtras, d: TmdbTv): Promise<SeriesExtras> {
+  if (d.status === 'Ended' || d.status === 'Canceled') return extras;
+  const schedule = await getAirSchedule(d.id, () => showIds(d.id, d.external_ids)).catch(() => null);
+  return { ...extras, next_episode: mergeNextEpisode(extras.next_episode, schedule) };
+}
+
 /** Rating, trailer, status and next airing for a show already in the library. */
 export async function getSeriesExtras(tmdbId: number): Promise<SeriesExtras> {
-  const d = await request<TmdbTv>(`/tv/${tmdbId}`, { append_to_response: 'content_ratings,videos' });
-  return seriesExtras(d);
+  const d = await request<TmdbTv>(`/tv/${tmdbId}`, { append_to_response: 'content_ratings,videos,external_ids' });
+  return withEarliestNext(seriesExtras(d), d);
 }
 
 export interface TmdbCollection {
@@ -510,7 +530,7 @@ export async function getSeriesDetails(tmdbId: number): Promise<SeriesMetadata> 
     logo_path: pickLogo(d.images?.logos),
     number_of_seasons: d.number_of_seasons ?? 1,
     imdb_id: d.external_ids?.imdb_id || '',
-    extras: seriesExtras(d),
+    extras: await withEarliestNext(seriesExtras(d), d),
   };
 }
 
@@ -535,7 +555,12 @@ export async function getSeasonEpisodes(tvId: number, season: number): Promise<M
   const map = new Map<number, EpisodeMetadata>();
   try {
     const data = await request<{ episodes?: TmdbEpisode[] }>(`/tv/${tvId}/season/${season}`);
-    for (const e of data.episodes ?? []) map.set(e.episode_number, toEpisodeMeta(e));
+    let episodes = (data.episodes ?? []).map(toEpisodeMeta);
+    if (season > 0 && seasonNeedsSchedule(episodes.map((e) => e.air_date))) {
+      const schedule = await getAirSchedule(tvId, () => showIds(tvId)).catch(() => null);
+      episodes = mergeSeasonAirDates(season, episodes, schedule);
+    }
+    for (const e of episodes) map.set(e.episode_number, e);
     // Keep the full season list for "missing" and "upcoming" episodes on the show page.
     await saveSeasonCache(
       tvId,
@@ -655,7 +680,7 @@ export async function getCatalogSeason(detail: CatalogDetail, season: number): P
   const closed = ['Ended', 'Canceled'].includes(detail.status)
     || (detail.nextSeason != null && detail.nextSeason > season)
     || (detail.lastSeason != null && detail.lastSeason > season);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateKey();
   const complete = closed && declared > 0 && episodes.length === declared
     && episodes.every((e) => !!e.air_date && e.air_date < today)
     && new Set(episodes.map((e) => e.episode_number)).size === declared;

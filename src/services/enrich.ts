@@ -12,6 +12,7 @@ const PROBE_CHUNK = 6;
 /** How much of each episode's audio is compared when looking for the intro. */
 const INTRO_WINDOW_SECONDS = 420;
 const SERIES_REFRESH_DAYS = 3;
+const AIRING_REFRESH_DAYS = 0.5;
 const COLLECTION_REFRESH_DAYS = 30;
 const OMDB_REFRESH_DAYS = 30;
 /** Stay well inside OMDb's free 1,000 requests a day. */
@@ -112,8 +113,10 @@ async function fetchExtras() {
   const { movies, series } = useLibraryStore.getState();
   // `stinger` arrived later: movies enriched before it are fetched once more.
   const movieIds = [...new Set(movies.filter((m) => m.tmdb_id && (!m.enriched_at || m.stinger == null)).map((m) => m.tmdb_id!))];
-  const stale = (at: string | null) => !at || Date.now() - Date.parse(at.replace(' ', 'T') + 'Z') > SERIES_REFRESH_DAYS * 864e5;
-  const shows = series.filter((s) => s.tmdb_id > 0 && (!s.enriched_at || (s.tmdb_status !== 'Ended' && s.tmdb_status !== 'Canceled' && stale(s.enriched_at))));
+  const stale = (at: string | null, days = SERIES_REFRESH_DAYS) => !at || Date.now() - Date.parse(at.replace(' ', 'T') + 'Z') > days * 864e5;
+  // Shows that are airing refresh twice a day so the next episode and its release date stay current.
+  const shows = series.filter((s) => s.tmdb_id > 0 && (!s.enriched_at || (s.tmdb_status !== 'Ended' && s.tmdb_status !== 'Canceled'
+    && stale(s.enriched_at, s.next_episode ? AIRING_REFRESH_DAYS : SERIES_REFRESH_DAYS))));
   const total = movieIds.length + shows.length;
   if (!total) return;
   let done = 0;
