@@ -1,10 +1,13 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
-import { AnimatePresence } from 'framer-motion';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
+import { AnimatePresence, MotionConfig, motion, useIsPresent } from 'framer-motion';
+import { SectionMemory } from './lib/sectionMemory';
+import { fade } from './lib/motion';
 import { useLibraryStore } from './store/useLibraryStore';
 import Navbar, { Wordmark } from './components/layout/Navbar';
 import { BrowseView, MyListView, SearchView } from './components/home/Browse';
 import HoverPreview from './components/home/HoverPreview';
 import Toasts from './components/common/Toasts';
+import TvNavigation from './components/common/TvNavigation';
 import ConfirmDialog from './components/common/ConfirmDialog';
 import MiniPlayer from './components/player/MiniPlayer';
 import ProfileGate from './components/profiles/ProfileGate';
@@ -62,6 +65,16 @@ const AddTorrentModal = lazy(loaders.addTorrent);
 /** Warms every lazy chunk once the app is idle, so the first open never waits on the network/disk. */
 function prefetchLazyChunks() {
   for (const load of Object.values(loaders)) void load().catch(() => {});
+}
+
+/** A top-level section: fades in/out and remembers its scroll position and view state. */
+function SectionFrame({ section, children }: { section: string; children: ReactNode }) {
+  const present = useIsPresent();
+  return (
+    <motion.div variants={fade} initial="initial" animate="animate" exit="exit" className={present ? '' : 'pointer-events-none'}>
+      <SectionMemory section={section} active={present}>{children}</SectionMemory>
+    </motion.div>
+  );
 }
 
 export default function App() {
@@ -170,6 +183,9 @@ export default function App() {
       else if (s.settingsOpen) s.setSettingsOpen(false);
       else if (s.overlay) s.setOverlay(null);
       else if (s.hover) s.setHover(null);
+      else return;
+      // Handled: TV mode's Back falls through to the navbar/Home only when nothing closed.
+      e.preventDefault();
     };
     const onDragOver = (e: DragEvent) => {
       if (e.dataTransfer?.types.includes('Files') || e.dataTransfer?.types.includes('text/uri-list')) {
@@ -232,53 +248,63 @@ export default function App() {
     );
   }
 
-  return (
-    <div id="app-root" className="relative min-h-screen bg-nf-bg">
-      {/* Stays mounted (just hidden) during playback so scroll position and open pages survive. */}
-      <div id="app-shell">
-        <Navbar />
-        <main>
-          {view === 'browse' ? (
-            <Suspense fallback={null}><Discover /></Suspense>
-          ) : view === 'games' ? (
-            GamesView ? <Suspense fallback={null}><GamesView /></Suspense> : <GamesUnavailable />
-          ) : view === 'live' ? (
-            <Suspense fallback={null}><LiveTV /></Suspense>
-          ) : search.trim() ? (
-            <SearchView query={search} />
-          ) : view === 'mylist' ? (
-            <MyListView />
-          ) : (
-            <BrowseView key={view} view={view} />
-          )}
-        </main>
+  const section = view === 'browse' || view === 'games' || view === 'live' ? view : search.trim() ? 'search' : view;
 
-        <HoverPreview />
-        {/* Each dialog gets its own boundary so loading one never blanks the others. */}
-        <Suspense fallback={null}><AnimatePresence>{detailKey && <DetailModal key="detail" />}</AnimatePresence></Suspense>
-        <Suspense fallback={null}><AnimatePresence>{fixMatchKey && <FixMatchModal key={fixMatchKey} />}</AnimatePresence></Suspense>
-        <Suspense fallback={null}><AnimatePresence>{settingsOpen && <SettingsDialog key="settings" />}</AnimatePresence></Suspense>
-        <Suspense fallback={null}><AnimatePresence>{addTorrentOpen && <AddTorrentModal key="add-torrent" />}</AnimatePresence></Suspense>
-        <Suspense fallback={null}><AnimatePresence>{onboardingOpen && <OnboardingModal key="onboarding" />}</AnimatePresence></Suspense>
-        <Suspense fallback={null}><ActorModal /></Suspense>
-        <Suspense fallback={null}>
-          <AnimatePresence>
-            {pageOverlay === 'wrapped' && <WrappedModal key="wrapped" />}
-            {pageOverlay === 'history' && <HistoryModal key="history" />}
-            {pageOverlay === 'rename' && <RenameModal key="rename" />}
-            {pageOverlay === 'health' && <HealthModal key="health" />}
-          </AnimatePresence>
-        </Suspense>
+  return (
+    <MotionConfig reducedMotion="user">
+      <div id="app-root" className="relative min-h-screen bg-nf-bg">
+        {/* Stays mounted (just hidden) during playback so scroll position and open pages survive. */}
+        <div id="app-shell">
+          <Navbar />
+          <main>
+            {/* One short fade between sections; each section restores where you left it. */}
+            <AnimatePresence mode="wait" initial={false}>
+              <SectionFrame key={section} section={section}>
+                {view === 'browse' ? (
+                  <Suspense fallback={null}><Discover /></Suspense>
+                ) : view === 'games' ? (
+                  GamesView ? <Suspense fallback={null}><GamesView /></Suspense> : <GamesUnavailable />
+                ) : view === 'live' ? (
+                  <Suspense fallback={null}><LiveTV /></Suspense>
+                ) : search.trim() ? (
+                  <SearchView query={search} />
+                ) : view === 'mylist' ? (
+                  <MyListView />
+                ) : (
+                  <BrowseView view={view} />
+                )}
+              </SectionFrame>
+            </AnimatePresence>
+          </main>
+
+          <HoverPreview />
+          {/* Each dialog gets its own boundary so loading one never blanks the others. */}
+          <Suspense fallback={null}><AnimatePresence>{detailKey && <DetailModal key="detail" />}</AnimatePresence></Suspense>
+          <Suspense fallback={null}><AnimatePresence>{fixMatchKey && <FixMatchModal key={fixMatchKey} />}</AnimatePresence></Suspense>
+          <Suspense fallback={null}><AnimatePresence>{settingsOpen && <SettingsDialog key="settings" />}</AnimatePresence></Suspense>
+          <Suspense fallback={null}><AnimatePresence>{addTorrentOpen && <AddTorrentModal key="add-torrent" />}</AnimatePresence></Suspense>
+          <Suspense fallback={null}><AnimatePresence>{onboardingOpen && <OnboardingModal key="onboarding" />}</AnimatePresence></Suspense>
+          <Suspense fallback={null}><ActorModal /></Suspense>
+          <Suspense fallback={null}>
+            <AnimatePresence>
+              {pageOverlay === 'wrapped' && <WrappedModal key="wrapped" />}
+              {pageOverlay === 'history' && <HistoryModal key="history" />}
+              {pageOverlay === 'rename' && <RenameModal key="rename" />}
+              {pageOverlay === 'health' && <HealthModal key="health" />}
+            </AnimatePresence>
+          </Suspense>
+        </div>
+        <MiniPlayer />
+        <CastBar />
+        <CastPicker />
+        <Suspense fallback={null}><PlayerScreen /></Suspense>
+        <ProfileGate />
+        <PinPrompt />
+        <Toasts />
+        <ConfirmDialog />
+        <TvNavigation />
+        {launchIntro && !introDone && !onboardingOpen && <LaunchIntro sound={introSound} onDone={() => setIntroDone(true)} />}
       </div>
-      <MiniPlayer />
-      <CastBar />
-      <CastPicker />
-      <Suspense fallback={null}><PlayerScreen /></Suspense>
-      <ProfileGate />
-      <PinPrompt />
-      <Toasts />
-      <ConfirmDialog />
-      {launchIntro && !introDone && !onboardingOpen && <LaunchIntro sound={introSound} onDone={() => setIntroDone(true)} />}
-    </div>
+    </MotionConfig>
   );
 }

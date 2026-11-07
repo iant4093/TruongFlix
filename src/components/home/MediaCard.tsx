@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { Clock, Download } from 'lucide-react';
 import type { ContinueEntry, MediaItem } from '../../types/media';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
@@ -9,45 +9,19 @@ import { useItemTorrent } from './useItemTorrent';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import ProgressBar from '../common/ProgressBar';
+import { closeCardHoverCards, HOVER_DELAY_MS, useHoverIntentCore, type HoverRect } from '../common/HoverCard';
 
-export const HOVER_DELAY_MS = 350;
+export { HOVER_DELAY_MS };
 
-/**
- * Netflix hover intent: only pop the preview card after the pointer rests for 350ms,
- * so quick sweeps across a row never trigger it.
- */
+/** Hover intent for library cards: opens the shared library hover card held in the store. */
 export function useHoverIntent(build: () => Omit<HoverState, 'rect'>) {
-  const ref = useRef<HTMLDivElement>(null);
-  const timer = useRef<number | null>(null);
-  const buildRef = useRef(build);
-  buildRef.current = build;
   const setHover = useLibraryStore((s) => s.setHover);
-
-  const cancel = useCallback(() => {
-    if (timer.current != null) window.clearTimeout(timer.current);
-    timer.current = null;
-  }, []);
-
-  const onMouseEnter = useCallback(() => {
-    cancel();
-    timer.current = window.setTimeout(() => {
-      const el = ref.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      timer.current = null;
-      if (r.right <= 0 || r.left >= window.innerWidth || r.bottom <= 68 || r.top >= window.innerHeight) return;
-      setHover({ ...buildRef.current(), rect: { top: r.top, left: r.left, width: r.width, height: r.height } });
-    }, HOVER_DELAY_MS);
-  }, [cancel, setHover]);
-
-  const onMouseMove = useCallback(() => {
-    // Scroll/reloads can dismiss a preview without a new mouseenter on the underlying card.
-    if (timer.current == null && !useLibraryStore.getState().hover) onMouseEnter();
-  }, [onMouseEnter]);
-
-  useEffect(() => cancel, [cancel]);
-
-  return { ref, onMouseEnter, onMouseMove, onMouseLeave: cancel };
+  const open = useCallback((rect: HoverRect) => {
+    closeCardHoverCards();
+    setHover({ ...build(), rect });
+  }, [build, setHover]);
+  // Scroll/reloads can dismiss a preview without a new mouseenter on the underlying card.
+  return useHoverIntentCore(open, () => !!useLibraryStore.getState().hover);
 }
 
 /** Small ClearLogo (or title) overlaid on 16:9 boxart, like Netflix title treatments. */
@@ -116,6 +90,10 @@ function MediaCard({ item, entry }: Props) {
         onMouseEnter={hover.onMouseEnter}
         onMouseMove={hover.onMouseMove}
         onMouseLeave={hover.onMouseLeave}
+        onFocus={hover.onFocus}
+        onBlur={hover.onBlur}
+        data-tv-card=""
+        data-item-key={item.key}
         data-torrent-downloading={isDownloading ? 'true' : undefined}
         className="relative aspect-video w-full cursor-pointer overflow-hidden rounded-sm bg-[#232323]"
       >

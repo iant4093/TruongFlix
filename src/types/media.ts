@@ -381,6 +381,8 @@ export interface Settings {
   launch_intro_sound: boolean;
   /** Hover cards cycle through stills from the actual file. */
   hover_stills: boolean;
+  /** TV mode (arrow keys / remote / controller, larger 10-foot layout): auto-detect, always or never. */
+  tv_mode: 'auto' | 'on' | 'off';
   /** Show the "Who's watching?" screen at launch when there are several profiles. */
   ask_profile: boolean;
   active_profile: number;

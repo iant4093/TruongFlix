@@ -3,6 +3,7 @@ import { motion, useIsPresent } from 'framer-motion';
 import { X } from 'lucide-react';
 import { useModalDialog } from '../../hooks/useModalDialog';
 import IconButton from './IconButton';
+import { backdrop, dialogPanel } from '../../lib/motion';
 
 export type DialogSize = 'sm' | 'md' | 'lg' | 'xl' | 'window';
 
@@ -14,8 +15,6 @@ const SIZES: Record<DialogSize, string> = {
   // App-window-sized panels such as Settings.
   window: 'max-w-[1060px]',
 };
-
-const EASE = [0.21, 0, 0.27, 1] as const;
 
 type BackdropEvents = Pick<HTMLAttributes<HTMLDivElement>, 'onDragOver' | 'onDrop'> & { [data: `data-${string}`]: string | boolean };
 
@@ -114,10 +113,10 @@ export default function Dialog({
   return (
     <motion.div
       ref={backdropRef}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
+      variants={backdrop}
+      initial="initial"
+      animate="animate"
+      exit="exit"
       onMouseDown={onBackdropMouseDown}
       style={{ zIndex: priority }}
       className={`fixed inset-0 bg-black/75 backdrop-blur-xs ${
@@ -134,10 +133,10 @@ export default function Dialog({
         aria-labelledby={labelledBy ?? (labelled ? titleId : undefined)}
         aria-label={labelled || labelledBy ? undefined : label}
         aria-describedby={describedBy}
-        initial={{ opacity: 0, scale: 0.96, y: 20 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.96, y: 20 }}
-        transition={{ duration: 0.24, ease: EASE }}
+        variants={dialogPanel}
+        initial="initial"
+        animate="animate"
+        exit="exit"
         className={`relative w-full ${SIZES[size]} rounded-xl bg-nf-surface shadow-2xl outline-none ring-1 ring-white/10 ${
           centered ? 'flex max-h-[90vh] flex-col overflow-hidden' : 'mx-auto h-max'
         } ${className}`}
@@ -202,10 +201,10 @@ export function FullScreenOverlay({ onClose, label, priority, children, classNam
   useModalDialog(ref, { onClose, active: active && present, priority, initialFocus });
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
+      variants={backdrop}
+      initial="initial"
+      animate="animate"
+      exit="exit"
       ref={ref}
       role="dialog"
       tabIndex={-1}

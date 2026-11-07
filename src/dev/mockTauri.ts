@@ -361,6 +361,8 @@ const settings: Record<string, string> = {
   imdb_last_sync: new Date().toISOString(),
   omdb_api_key: 'dev-omdb-key',
 };
+/** In-memory stand-in for the system keychain; the keys above move here at startup. */
+const keychain = new Map<string, string>();
 
 // --- Profiles & per-profile state -------------------------------------------------------------
 
@@ -489,6 +491,11 @@ function handleProfileSql(q: string, values: unknown[]): unknown | undefined {
     const [name, color, maturity, daily_limit, bedtime, wake_time, pin] = values as [string, string, string, number, string, string, string];
     profiles.push({ id, name, color, maturity, created_at: ts(0), daily_limit: daily_limit ?? 0, bedtime: bedtime ?? '', wake_time: wake_time ?? '07:00', pin: pin ?? '' });
     return [1, id];
+  }
+  if (q.startsWith('UPDATE profiles SET pin = $2')) {
+    const pr = profiles.find((x) => x.id === values[0] && x.pin === values[2]);
+    if (pr) pr.pin = values[1] as string;
+    return [pr ? 1 : 0, 0];
   }
   if (q.startsWith('UPDATE profiles')) {
     const pr = profiles.find((x) => x.id === values[0]);
@@ -887,6 +894,8 @@ function handleExecute(query: string, values: unknown[]) {
     if (s) s.last_watched_at = ts(0);
   } else if (q.startsWith('INSERT INTO settings')) {
     settings[values[0] as string] = values[1] as string;
+  } else if (q.startsWith('DELETE FROM settings WHERE key = $1')) {
+    delete settings[values[0] as string];
   }
   return [1, 0];
 }
@@ -1183,6 +1192,14 @@ export function installMocks() {
       const games = handleGamesCommand(cmd, a);
       if (games !== undefined) return games;
       switch (cmd) {
+        case 'secret_get':
+          return keychain.get(String(a.key)) ?? null;
+        case 'secret_set':
+          keychain.set(String(a.key), String(a.value));
+          return null;
+        case 'secret_delete':
+          keychain.delete(String(a.key));
+          return null;
         case 'backup_restore_result':
           return false;
         case 'backup_recovery_path':

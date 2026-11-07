@@ -138,7 +138,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
             <h2 className="text-shadow mt-1 max-w-[80%] text-4xl font-bold leading-tight">{ep.title}</h2>
           </div>
           <div className="mt-1 flex items-center gap-2.5">
-            <button onClick={() => play(target)} disabled={!!dlLocked} className="nf-btn-play px-8 text-lg disabled:opacity-50">
+            <button onClick={() => play(target)} disabled={!!dlLocked} data-nav-autofocus="" className="nf-btn-play px-8 text-lg disabled:opacity-50">
               {dlLocked ? <Download className="h-6 w-6" /> : <Play className="h-6 w-6 fill-black" strokeWidth={0} />}
               {dlLocked
                 ? formatDownloadingLabel(dlLocked.pct)

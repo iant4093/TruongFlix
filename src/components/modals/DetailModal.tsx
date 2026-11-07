@@ -53,6 +53,7 @@ import type { CollectionPart, EpisodeRow, MediaItem, PlayTarget, SeasonEpisodeIn
 import * as db from '../../services/db';
 import { setEpisodesWatched } from '../../services/db';
 import { getSeasonEpisodes } from '../../services/tmdb';
+import { localDateKey, seasonNeedsSchedule } from '../../services/airdates';
 import { parseMediaInfo } from '../../services/mediainfo';
 import { selectItem, useLibraryStore } from '../../store/useLibraryStore';
 import {
@@ -236,7 +237,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             <h2 className="text-shadow max-w-[70%] text-5xl font-black uppercase leading-none tracking-tight">{item.title}</h2>
           )}
           <div className="flex items-center gap-2.5">
-            <button onClick={() => target && play(target)} disabled={!target || !!blockingDownload} className="nf-btn-play px-8 text-lg disabled:opacity-50">
+            <button onClick={() => target && play(target)} disabled={!target || !!blockingDownload} data-nav-autofocus="" className="nf-btn-play px-8 text-lg disabled:opacity-50">
               {blockingDownload ? <Download className="h-6 w-6" /> : <Play className="h-6 w-6 fill-black" strokeWidth={0} />}
               {playLabel}
               {epHint && <span className="text-base font-medium text-black/60">{epHint}</span>}
@@ -528,29 +529,39 @@ interface SelectorProps {
   onSeasonChange: (season: number) => void;
 }
 
+/** Seasons with recent or upcoming episodes re-fetched this session, so release dates stay current. */
+const refreshedSeasons = new Set<string>();
+
 /** TMDB's episode list per season (cached in SQLite), fetched on demand for missing/upcoming episodes. */
 function useSeasonList(tmdbId: number | null, season: number) {
   const [cache, setCache] = useState<Map<number, SeasonEpisodeInfo[]>>(new Map());
+  const [loadedFor, setLoadedFor] = useState<number | null>(null);
   const fetched = useRef(new Set<number>());
   useEffect(() => {
     if (!tmdbId) return;
     let alive = true;
-    void db.getSeasonCache(tmdbId).then((rows) => {
-      if (!alive) return;
+    void Promise.resolve().then(() => db.getSeasonCache(tmdbId)).then((rows) => {
+      if (!alive || !rows) return;
       setCache(new Map(rows.map((r) => [r.season_number, JSON.parse(r.episodes) as SeasonEpisodeInfo[]])));
+    }).catch(() => {}).finally(() => {
+      if (alive) setLoadedFor(tmdbId);
     });
     return () => {
       alive = false;
     };
   }, [tmdbId]);
   useEffect(() => {
-    if (!tmdbId || cache.has(season) || fetched.current.has(season)) return;
+    if (!tmdbId || loadedFor !== tmdbId || fetched.current.has(season)) return;
+    const cached = cache.get(season);
+    const sessionKey = `${tmdbId}:${season}`;
+    if (cached && (refreshedSeasons.has(sessionKey) || !seasonNeedsSchedule(cached.map((e) => e.air_date)))) return;
     fetched.current.add(season);
+    refreshedSeasons.add(sessionKey);
     void getSeasonEpisodes(tmdbId, season)
       .then(() => db.getSeasonCache(tmdbId))
       .then((rows) => setCache(new Map(rows.map((r) => [r.season_number, JSON.parse(r.episodes) as SeasonEpisodeInfo[]]))))
       .catch(() => {});
-  }, [tmdbId, season, cache]);
+  }, [tmdbId, season, cache, loadedFor]);
   return cache.get(season) ?? [];
 }
 
@@ -587,7 +598,7 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
     const imdbHint = avg != null && imdbEnabled ? ` · ★ ${avg.toFixed(1)}` : '';
     return { value: s, label: seasonName(s), hint: n ? `${n} Episode${n === 1 ? '' : 's'}${imdbHint}` : 'Not in your library' };
   });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateKey();
 
   return (
     <section className="px-12 pb-6">
@@ -737,7 +748,7 @@ function CollectionSection({ item }: { item: MediaItem }) {
     }
   }, [collection?.parts]);
   if (!collection || parts.length < 2) return null;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateKey();
 
   return (
     <section className="px-12 pb-8">

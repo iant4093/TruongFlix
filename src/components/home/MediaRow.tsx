@@ -3,6 +3,9 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { ContinueEntry, MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import MediaCard from './MediaCard';
+import { useSectionState } from '../../lib/sectionMemory';
+import { useTvActive } from '../../lib/tvMode';
+import { EDGE_EVENT, type EdgeEventDetail } from '../../lib/spatialNav';
 
 export function useItemsPerRow() {
   const calc = () => {
@@ -14,12 +17,14 @@ export function useItemsPerRow() {
     return 2;
   };
   const [n, setN] = useState(calc);
+  // TV mode: one card fewer per row, so each is bigger from across the room.
+  const tv = useTvActive();
   useEffect(() => {
     const onResize = () => setN(calc());
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
-  return n;
+  return tv ? Math.max(2, n - 1) : n;
 }
 
 interface SliderProps {
@@ -32,9 +37,12 @@ interface SliderProps {
 
 /** Netflix carousel: page-at-a-time sliding with hover chevrons and page indicators. */
 export const Slider = memo(function Slider({ title, count, perPage, renderItem, itemKey }: SliderProps) {
-  const [start, setStart] = useState(0);
+  // Each row keeps its page when you leave the section and come back.
+  const [start, setStart] = useSectionState(`row:${title}`, 0);
   const track = useRef<HTMLDivElement>(null);
-  const focusPage = useRef(false);
+  const section = useRef<HTMLElement>(null);
+  /** Card to focus once the page has moved (keyboard paging), or null. */
+  const focusIndex = useRef<number | null>(null);
   const setHover = useLibraryStore((s) => s.setHover);
   const pages = Math.max(1, Math.ceil(count / perPage));
   const maxStart = Math.max(0, count - perPage);
@@ -45,19 +53,43 @@ export const Slider = memo(function Slider({ title, count, perPage, renderItem, 
   }, [start, maxStart]);
 
   useLayoutEffect(() => {
-    if (!focusPage.current) return;
-    focusPage.current = false;
-    track.current?.children[start]?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+    const index = focusIndex.current;
+    if (index == null) return;
+    focusIndex.current = null;
+    track.current?.children[index]?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
   }, [start]);
 
-  const go = (dir: 1 | -1, keyboard: boolean) => {
+  const go = (dir: 1 | -1, focus: number | null) => {
     setHover(null);
-    focusPage.current = keyboard;
+    focusIndex.current = focus;
     setStart((s) => (dir > 0 ? Math.min(s + perPage, maxStart) : Math.max(s - perPage, 0)));
   };
+  const goRef = useRef(go);
+  goRef.current = go;
+  const startRef = useRef(start);
+  startRef.current = start;
+
+  // TV mode: moving past the first/last visible card pages the row and focuses the next card.
+  useEffect(() => {
+    const el = section.current;
+    if (!el) return;
+    const onEdge = (event: Event) => {
+      const { direction } = (event as CustomEvent<EdgeEventDetail>).detail;
+      const s = startRef.current;
+      if (direction === 'right' && s < maxStart) {
+        event.preventDefault();
+        goRef.current(1, s + perPage);
+      } else if (direction === 'left' && s > 0) {
+        event.preventDefault();
+        goRef.current(-1, s - 1);
+      }
+    };
+    el.addEventListener(EDGE_EVENT, onEdge);
+    return () => el.removeEventListener(EDGE_EVENT, onEdge);
+  }, [maxStart, perPage]);
 
   return (
-    <section className="group/row relative my-[3vw] first:mt-0">
+    <section ref={section} data-nav-row="" className="group/row relative my-[3vw] first:mt-0">
       <div className="mb-2 flex items-end justify-between px-[4%]">
         <h2 className="nf-row-title">{title}</h2>
         {pages > 1 && (
@@ -70,10 +102,11 @@ export const Slider = memo(function Slider({ title, count, perPage, renderItem, 
       </div>
 
       <div className="relative">
-        <div className="overflow-hidden px-[4%]">
+        {/* Vertical padding (cancelled by the margin) leaves room for the TV focus ring. */}
+        <div className="-my-2 overflow-hidden px-[4%] py-2">
           <div
             ref={track}
-            className="flex transition-transform duration-[750ms] ease-[cubic-bezier(0.5,0,0.1,1)]"
+            className="flex transition-transform duration-[750ms] ease-[cubic-bezier(0.5,0,0.1,1)] motion-reduce:transition-none"
             style={{ transform: `translate3d(${-(start / perPage) * 100}%,0,0)` }}
           >
             {Array.from({ length: count }, (_, i) => (
@@ -87,8 +120,9 @@ export const Slider = memo(function Slider({ title, count, perPage, renderItem, 
 
         {start > 0 && (
           <button
-            onClick={(event) => go(-1, event.detail === 0)}
+            onClick={(event) => go(-1, event.detail === 0 ? Math.max(start - perPage, 0) : null)}
             aria-label="Previous"
+            data-nav-skip=""
             className="group/chev absolute bottom-0 left-0 top-0 z-20 flex w-[4%] items-center justify-center rounded-r bg-[rgba(20,20,20,0.5)] opacity-0 transition-opacity hover:bg-[rgba(20,20,20,0.7)] focus-visible:opacity-100 group-hover/row:opacity-100"
           >
             <ChevronLeft className="h-9 w-9 transition-transform group-hover/chev:scale-125" />
@@ -96,8 +130,9 @@ export const Slider = memo(function Slider({ title, count, perPage, renderItem, 
         )}
         {start < maxStart && (
           <button
-            onClick={(event) => go(1, event.detail === 0)}
+            onClick={(event) => go(1, event.detail === 0 ? Math.min(start + perPage, maxStart) : null)}
             aria-label="Next"
+            data-nav-skip=""
             className="group/chev absolute bottom-0 right-0 top-0 z-20 flex w-[4%] items-center justify-center rounded-l bg-[rgba(20,20,20,0.5)] opacity-0 transition-opacity hover:bg-[rgba(20,20,20,0.7)] focus-visible:opacity-100 group-hover/row:opacity-100"
           >
             <ChevronRight className="h-9 w-9 transition-transform group-hover/chev:scale-125" />

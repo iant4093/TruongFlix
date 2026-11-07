@@ -37,7 +37,14 @@ import EventFeeds from './LiveEventFeeds';
 import { button, leagueLabel } from './ui';
 import SegmentedControl from '../common/SegmentedControl';
 import SearchField from '../common/SearchField';
-import { LoadingState, RestrictedProfileNotice } from '../common/States';
+import { RestrictedProfileNotice } from '../common/States';
+import { Bone, ChannelTileSkeleton, EventCardSkeleton, SkeletonStatus } from '../common/Skeleton';
+import { useSectionState } from '../../lib/sectionMemory';
+import { fade } from '../../lib/motion';
+import { AnimatePresence, motion } from 'framer-motion';
+
+const EVENT_GRID = 'grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4';
+const CHANNEL_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-3 2xl:grid-cols-4';
 
 const dateLabel = (date: Date) =>
   date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
@@ -47,8 +54,8 @@ export default function LiveTV() {
   const toast = useLibraryStore((s) => s.toast);
   const playerOpen = useLibraryStore((s) => !!s.playerSession);
   const state = useLiveStore();
-  const [tab, setTab] = useState<'sports' | 'channels'>('sports');
-  const [league, setLeague] = useState('football/nfl');
+  const [tab, setTab] = useSectionState<'sports' | 'channels'>('tab', 'sports');
+  const [league, setLeague] = useSectionState('league', 'football/nfl');
   const [day, setDay] = useState(() => {
     const d = new Date();
     d.setHours(12, 0, 0, 0);
@@ -59,12 +66,16 @@ export default function LiveTV() {
   const [favouritesOnly, setFavouritesOnly] = useState(false);
   const [count, setCount] = useState(60);
   const [events, setEvents] = useState<SportsEvent[]>([]);
+  // The previous league/day's events stay up (dimmed) until the new schedule arrives.
+  const [outdated, setOutdated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [scheduleError, setScheduleError] = useState('');
   const [stale, setStale] = useState(false);
   const [updated, setUpdated] = useState(0);
   const [refresh, setRefresh] = useState(0);
   const forcedRefresh = useRef(0);
+  const outdatedRef = useRef(outdated);
+  outdatedRef.current = outdated;
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<SportsEvent | null>(null);
   const [clock, setClock] = useState(0);
@@ -93,7 +104,7 @@ export default function LiveTV() {
   const date = localDate(day);
 
   useEffect(() => {
-    setEvents([]);
+    setOutdated(true);
     setUpdated(0);
     setStale(false);
     setScheduleError('');
@@ -121,7 +132,8 @@ export default function LiveTV() {
       if (good.length) {
         setEvents(next);
         setUpdated(Math.min(...good.map((r) => r.fetchedAt)));
-      }
+      } else setEvents((current) => (outdatedRef.current ? [] : current));
+      setOutdated(false);
       setStale(!good.length || good.some((r) => r.stale));
       setScheduleError(
         results.some((r) => r.status === 'rejected')
@@ -355,190 +367,206 @@ export default function LiveTV() {
           />
         )}
       </div>
-      {tab === 'sports' ? (
-        <>
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <button className={button} aria-label="Previous day" onClick={() => stepDay(-1)}>
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <span className="min-w-36 text-center text-sm font-semibold">{dateLabel(day)}</span>
-              <button className={button} aria-label="Next day" onClick={() => stepDay(1)}>
-                <ChevronRight className="h-4 w-4" />
-              </button>
-              <button
-                className="ml-2 text-xs text-nf-secondary hover:text-white"
-                onClick={() => {
-                  const d = new Date();
-                  d.setHours(12, 0, 0, 0);
-                  setDay(d);
-                }}
-              >
-                Today
-              </button>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              {updated > 0 && (
-                <span className="text-xs text-nf-muted">
-                  Updated {new Date(updated).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
-                </span>
-              )}
-              <button className={button} disabled={loading} onClick={() => setRefresh((v) => v + 1)}>
-                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Refresh scores
-              </button>
-            </div>
-          </div>
-          {(scheduleError || stale) && (
-            <p
-              role="status"
-              className="mb-5 rounded border border-nf-warn/30 bg-nf-warn/5 p-3 text-sm text-amber-200"
-            >
-              {scheduleError || 'Showing saved scores and schedules. Refresh to check for changes.'}
-              {updated > 0 && ` Last updated ${new Date(updated).toLocaleString()}.`}
-            </p>
-          )}
-          {!state.playlists.length && (
-            <div className="mb-7 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-white/10 bg-gradient-to-r from-nf-red/15 to-white/5 p-6">
-              <div>
-                <h2 className="text-lg font-bold">Bring your channels</h2>
-                <p className="mt-1 text-sm text-nf-secondary">Add an M3U playlist to find streams for these events.</p>
-              </div>
-              <button className="nf-btn-red" onClick={() => setSourcesOpen(true)}>
-                <Plus className="h-4 w-4" /> Add playlist
-              </button>
-            </div>
-          )}
-          {loading && !events.length ? (
-            <LoadingState inline label="Loading events…" className="justify-center py-20" />
-          ) : filteredEvents.length ? (
-            (['live', 'upcoming', 'finished'] as const).map((status) => {
-              const row = filteredEvents.filter((e) => e.status === status);
-              return (
-                row.length > 0 && (
-                  <div key={status} className="mb-9">
-                    <h2 className="mb-4 flex items-center gap-2 text-xl font-bold">
-                      {status === 'live' && <span className="h-2 w-2 rounded-full bg-nf-red" />}
-                      {status === 'live' ? 'Live now' : status === 'upcoming' ? 'Upcoming' : 'Finished'}
-                    </h2>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                      {row.map((event) => (
-                        <EventCard
-                          key={event.id}
-                          event={event}
-                          matches={eventMatches(event, playlists, state.preferences.showUnavailable, state.preferences.matches)}
-                          onOpen={() => openEvent(event)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )
-              );
-            })
-          ) : (
-            <p className="py-16 text-center text-nf-secondary">
-              {query || favouritesOnly
-                ? 'No events match your filters.'
-                : 'No scheduled events for this league and day. Try another date or league.'}
-            </p>
-          )}
-        </>
-      ) : (
-        <>
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-nf-secondary">
-              {channels.length.toLocaleString()} {channels.length === 1 ? 'channel' : 'channels'} ·{' '}
-              {state.checking ? `Checking ${state.checked}/${state.total}` : 'Availability updates in the background'}
-            </p>
-            <div className="flex gap-4">
-              <label className="flex cursor-pointer items-center gap-2 text-sm text-nf-secondary">
-                <input
-                  type="checkbox"
-                  checked={state.preferences.showUnavailable}
-                  onChange={(e) => void setLivePreferences({ showUnavailable: e.target.checked })}
-                />{' '}
-                Show unavailable
-              </label>
-              <button
-                className={button}
-                disabled={!available.length}
-                onClick={() =>
-                  void (state.checking ? cancelChecks() : checkChannels(available, true)).catch(() =>
-                    toast('Could not check playlist', 'error'),
-                  )
-                }
-              >
-                <Activity className="h-4 w-4" /> {state.checking ? 'Stop checking' : 'Check playlist'}
-              </button>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 2xl:grid-cols-4">
-            {channels.slice(0, count).map((match) => {
-              const health = match.playlist.health[match.channel.id];
-              return (
-                <div
-                  key={match.key}
-                  className="group flex min-w-0 items-center gap-3 rounded-md border border-white/10 bg-nf-hover p-4 transition hover:border-white/30"
-                >
-                  <button
-                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                    onClick={() => multiview ? addFeed({ match }) : void playLive(match, undefined, channels)}
-                    aria-label={multiview ? `Add ${match.channel.name} to multiview` : `Play ${match.channel.name}`}
-                    aria-pressed={multiview ? feeds.some((f) => f.match.key === match.key) : undefined}
-                  >
-                    <LiveArtwork url={match.channel.logo} className="h-12 w-16 rounded bg-black/25 p-1" />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-bold">{match.channel.name}</span>
-                      <span className="mt-1 block truncate text-xs text-nf-muted">
-                        {match.playlist.name} ·{' '}
-                        {health?.state === 'verified'
-                          ? 'Played successfully'
-                          : health?.state === 'reachable'
-                            ? 'Recently reachable'
-                            : health?.state === 'unavailable'
-                              ? health.reason
-                              : health?.state === 'suspect'
-                                ? 'Rechecking availability'
-                                : 'Not yet verified'}
-                      </span>
-                    </span>
-                  </button>
-                  <button
-                    aria-label={`Favorite ${match.channel.name}`}
-                    aria-pressed={state.preferences.favourites.includes(match.key)}
-                    onClick={() => toggleFavourite(match.key)}
-                    className="p-1 text-nf-muted hover:text-yellow-400"
-                  >
-                    <Star
-                      className={`h-4 w-4 ${state.preferences.favourites.includes(match.key) ? 'fill-yellow-400 text-yellow-400' : ''}`}
-                    />
-                  </button>
-                  {health?.state === 'unavailable' && (
-                    <button
-                      title="Retry channel"
-                      aria-label={`Retry ${match.channel.name}`}
-                      onClick={() => void checkChannels([match], true)}
-                    >
-                      <RefreshCw className="h-4 w-4" />
+      <div className="relative">
+        <AnimatePresence mode="popLayout" initial={false}>
+          <motion.div key={tab} variants={fade} initial="initial" animate="animate" exit="exit" className="w-full">
+            {tab === 'sports' ? (
+              <>
+                <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button className={button} aria-label="Previous day" onClick={() => stepDay(-1)}>
+                      <ChevronLeft className="h-4 w-4" />
                     </button>
-                  )}
+                    <span className="min-w-36 text-center text-sm font-semibold">{dateLabel(day)}</span>
+                    <button className={button} aria-label="Next day" onClick={() => stepDay(1)}>
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                    <button
+                      className="ml-2 text-xs text-nf-secondary hover:text-white"
+                      onClick={() => {
+                        const d = new Date();
+                        d.setHours(12, 0, 0, 0);
+                        setDay(d);
+                      }}
+                    >
+                      Today
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {updated > 0 && (
+                      <span className="text-xs text-nf-muted">
+                        Updated {new Date(updated).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                      </span>
+                    )}
+                    <button className={button} disabled={loading} onClick={() => setRefresh((v) => v + 1)}>
+                      <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Refresh scores
+                    </button>
+                  </div>
                 </div>
-              );
-            })}
-          </div>
-          {!channels.length && (
-            <div className="py-16 text-center text-nf-secondary">
-              {state.playlists.length
-                ? 'No channels match your filters. Try Show unavailable or another playlist.'
-                : 'Add a playlist to browse your channels.'}
-            </div>
-          )}
-          {channels.length > count && (
-            <button className={`${button} mx-auto mt-6 flex`} onClick={() => setCount((c) => c + 60)}>
-              Show more channels
-            </button>
-          )}
-        </>
-      )}
+                {(scheduleError || stale) && (
+                  <p
+                    role="status"
+                    className="mb-5 rounded border border-nf-warn/30 bg-nf-warn/5 p-3 text-sm text-amber-200"
+                  >
+                    {scheduleError || 'Showing saved scores and schedules. Refresh to check for changes.'}
+                    {updated > 0 && ` Last updated ${new Date(updated).toLocaleString()}.`}
+                  </p>
+                )}
+                {state.ready && !state.playlists.length && (
+                  <div className="mb-7 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-white/10 bg-gradient-to-r from-nf-red/15 to-white/5 p-6">
+                    <div>
+                      <h2 className="text-lg font-bold">Bring your channels</h2>
+                      <p className="mt-1 text-sm text-nf-secondary">Add an M3U playlist to find streams for these events.</p>
+                    </div>
+                    <button className="nf-btn-red" onClick={() => setSourcesOpen(true)}>
+                      <Plus className="h-4 w-4" /> Add playlist
+                    </button>
+                  </div>
+                )}
+                {(loading || outdated) && !events.length ? (
+                  <SkeletonStatus label="Loading events…" className="mb-9">
+                    <div className="mb-4 flex h-7 items-center"><Bone className="h-5 w-28" /></div>
+                    <div className={EVENT_GRID}>
+                      {Array.from({ length: 8 }, (_, i) => <EventCardSkeleton key={i} />)}
+                    </div>
+                  </SkeletonStatus>
+                ) : filteredEvents.length ? (
+                  (['live', 'upcoming', 'finished'] as const).map((status) => {
+                    const row = filteredEvents.filter((e) => e.status === status);
+                    return (
+                      row.length > 0 && (
+                        <div key={status} className={`mb-9 transition-opacity duration-300 ${outdated ? 'opacity-50' : ''}`} aria-busy={outdated || undefined}>
+                          <h2 className="mb-4 flex items-center gap-2 text-xl font-bold">
+                            {status === 'live' && <span className="h-2 w-2 rounded-full bg-nf-red" />}
+                            {status === 'live' ? 'Live now' : status === 'upcoming' ? 'Upcoming' : 'Finished'}
+                          </h2>
+                          <div className={EVENT_GRID}>
+                            {row.map((event) => (
+                              <EventCard
+                                key={event.id}
+                                event={event}
+                                matches={eventMatches(event, playlists, state.preferences.showUnavailable, state.preferences.matches)}
+                                onOpen={() => openEvent(event)}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    );
+                  })
+                ) : (
+                  <p className="py-16 text-center text-nf-secondary">
+                    {query || favouritesOnly
+                      ? 'No events match your filters.'
+                      : 'No scheduled events for this league and day. Try another date or league.'}
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-sm text-nf-secondary">
+                    {channels.length.toLocaleString()} {channels.length === 1 ? 'channel' : 'channels'} ·{' '}
+                    {state.checking ? `Checking ${state.checked}/${state.total}` : 'Availability updates in the background'}
+                  </p>
+                  <div className="flex gap-4">
+                    <label className="flex cursor-pointer items-center gap-2 text-sm text-nf-secondary">
+                      <input
+                        type="checkbox"
+                        checked={state.preferences.showUnavailable}
+                        onChange={(e) => void setLivePreferences({ showUnavailable: e.target.checked })}
+                      />{' '}
+                      Show unavailable
+                    </label>
+                    <button
+                      className={button}
+                      disabled={!available.length}
+                      onClick={() =>
+                        void (state.checking ? cancelChecks() : checkChannels(available, true)).catch(() =>
+                          toast('Could not check playlist', 'error'),
+                        )
+                      }
+                    >
+                      <Activity className="h-4 w-4" /> {state.checking ? 'Stop checking' : 'Check playlist'}
+                    </button>
+                  </div>
+                </div>
+                {!state.ready && (
+                  <SkeletonStatus label="Loading channels…">
+                    <div className={CHANNEL_GRID}>{Array.from({ length: 12 }, (_, i) => <ChannelTileSkeleton key={i} />)}</div>
+                  </SkeletonStatus>
+                )}
+                <div className={CHANNEL_GRID}>
+                  {channels.slice(0, count).map((match) => {
+                    const health = match.playlist.health[match.channel.id];
+                    return (
+                      <div
+                        key={match.key}
+                        className="group flex min-w-0 items-center gap-3 rounded-md border border-white/10 bg-nf-hover p-4 transition hover:border-white/30"
+                      >
+                        <button
+                          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                          onClick={() => multiview ? addFeed({ match }) : void playLive(match, undefined, channels)}
+                          aria-label={multiview ? `Add ${match.channel.name} to multiview` : `Play ${match.channel.name}`}
+                          aria-pressed={multiview ? feeds.some((f) => f.match.key === match.key) : undefined}
+                        >
+                          <LiveArtwork url={match.channel.logo} className="h-12 w-16 rounded bg-black/25 p-1" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-bold">{match.channel.name}</span>
+                            <span className="mt-1 block truncate text-xs text-nf-muted">
+                              {match.playlist.name} ·{' '}
+                              {health?.state === 'verified'
+                                ? 'Played successfully'
+                                : health?.state === 'reachable'
+                                  ? 'Recently reachable'
+                                  : health?.state === 'unavailable'
+                                    ? health.reason
+                                    : health?.state === 'suspect'
+                                      ? 'Rechecking availability'
+                                      : 'Not yet verified'}
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          aria-label={`Favorite ${match.channel.name}`}
+                          aria-pressed={state.preferences.favourites.includes(match.key)}
+                          onClick={() => toggleFavourite(match.key)}
+                          className="p-1 text-nf-muted hover:text-yellow-400"
+                        >
+                          <Star
+                            className={`h-4 w-4 ${state.preferences.favourites.includes(match.key) ? 'fill-yellow-400 text-yellow-400' : ''}`}
+                          />
+                        </button>
+                        {health?.state === 'unavailable' && (
+                          <button
+                            title="Retry channel"
+                            aria-label={`Retry ${match.channel.name}`}
+                            onClick={() => void checkChannels([match], true)}
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {state.ready && !channels.length && (
+                  <div className="py-16 text-center text-nf-secondary">
+                    {state.playlists.length
+                      ? 'No channels match your filters. Try Show unavailable or another playlist.'
+                      : 'Add a playlist to browse your channels.'}
+                  </div>
+                )}
+                {channels.length > count && (
+                  <button className={`${button} mx-auto mt-6 flex`} onClick={() => setCount((c) => c + 60)}>
+                    Show more channels
+                  </button>
+                )}
+              </>
+            )}
+          </motion.div>
+        </AnimatePresence>
+      </div>
       {sourcesOpen && <Sources onClose={() => setSourcesOpen(false)} />}
       {selectedEvent && (
         <EventFeeds

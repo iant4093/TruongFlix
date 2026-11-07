@@ -13,6 +13,7 @@ mod player;
 mod power;
 mod remote_guard;
 mod scanner;
+mod secrets;
 mod source_blocker;
 mod source_browser;
 mod stream;
@@ -138,6 +139,9 @@ pub fn run() {
             backup::backup_stage_restore,
             backup::backup_restore_result,
             backup::backup_recovery_path,
+            secrets::secret_get,
+            secrets::secret_set,
+            secrets::secret_delete,
             source_browser::source_browser_open,
             source_browser::source_browser_control,
             source_browser::pane::source_browser_place,

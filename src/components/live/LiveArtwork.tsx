@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Radio } from 'lucide-react';
 import { liveArtwork } from '../../services/live';
+import { FadeImage } from '../common/Artwork';
 
 export function LiveArtwork({ url, className = '' }: { url: string; className?: string }) {
   const [src, setSrc] = useState('');
@@ -32,7 +33,7 @@ export function LiveArtwork({ url, className = '' }: { url: string; className?: 
   return (
     <span ref={ref} className={`inline-flex shrink-0 items-center justify-center ${className}`}>
       {src ? (
-        <img src={src} alt="" className="h-full w-full object-contain" onError={() => setSrc('')} />
+        <FadeImage src={src} alt="" eager fit="contain" className="h-full w-full" onError={() => setSrc('')} />
       ) : (
         <Radio className="h-1/2 w-1/2 text-white/30" />
       )}

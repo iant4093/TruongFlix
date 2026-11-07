@@ -14,6 +14,7 @@ import type {
   TechInfo,
 } from '../types/media';
 import { formatSize, parseMediaInfo } from '../services/mediainfo';
+import { airDayLabel, daysUntil } from '../services/airdates';
 
 const parseJson = <T,>(s: string | null, fallback: T): T => {
   if (!s) return fallback;
@@ -331,20 +332,12 @@ export function allowedForMaturity(item: MediaItem, maturity: Maturity): boolean
 
 export const MATURITY_LABEL: Record<Maturity, string> = { kids: 'Kids', teen: 'Teens', all: 'All Maturity Ratings' };
 
-/** "Friday" within a week, otherwise "Nov 6". */
-export function airDayLabel(date: string): string {
-  const d = new Date(`${date}T12:00:00`);
-  const days = (d.getTime() - Date.now()) / 864e5;
-  if (days < -0.5) return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  if (days < 0.5) return 'Today';
-  if (days < 1.5) return 'Tomorrow';
-  if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
+/** "Friday" within a week, otherwise "Nov 6" (calendar days in the local time zone). */
+export { airDayLabel };
 
 /** The next episode airs within the coming week (or aired in the last few days). */
-export const newEpisodeSoon = (n: NextEpisode | null) => {
-  if (!n) return false;
-  const days = (new Date(`${n.air_date}T12:00:00`).getTime() - Date.now()) / 864e5;
-  return days > -4 && days < 7;
+export const newEpisodeSoon = (n: NextEpisode | null, now: Date = new Date()) => {
+  if (!n?.air_date) return false;
+  const days = daysUntil(n.air_date, now);
+  return days >= -3 && days < 7;
 };

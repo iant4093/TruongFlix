@@ -56,12 +56,13 @@ export default function SettingsDialog() {
       className="h-[min(800px,92vh)]"
       bodyClassName="flex min-h-0 flex-1"
     >
-        <nav className="flex w-56 shrink-0 flex-col border-r border-white/10 bg-black/25 p-3">
+        <nav data-nav-tabs="" className="flex w-56 shrink-0 flex-col border-r border-white/10 bg-black/25 p-3">
           <h1 className="px-3 pb-4 pt-2 text-xl font-bold">Settings</h1>
           {PAGES.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               aria-current={id === current.id ? 'page' : undefined}
+              data-nav-autofocus={id === current.id ? '' : undefined}
               onClick={() => setOpen(true, id)}
               className={`flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors ${
                 id === current.id ? 'bg-white/10 font-semibold text-white' : 'text-nf-secondary hover:bg-white/5 hover:text-white'

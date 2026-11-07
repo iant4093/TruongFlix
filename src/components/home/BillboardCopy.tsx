@@ -5,6 +5,8 @@ import type { MediaItem } from '../../types/media';
 import CriticScores from '../common/CriticScores';
 import ImdbRating from '../common/ImdbRating';
 import TechBadges from '../common/TechBadges';
+import { useSkipEntrance } from '../../lib/sectionMemory';
+import { billboardCopy } from '../../lib/motion';
 
 type BillboardDetails = Pick<MediaItem, 'title' | 'logo' | 'year' | 'kind' | 'seasonCount' | 'overview' | 'imdbRating' | 'rtScore' | 'metacritic'>
   & Partial<Pick<MediaItem, 'tech'>>;
@@ -17,12 +19,13 @@ export default function BillboardCopy({ item, trailerActive, onInfo, play, copyR
   copyRef?: Ref<HTMLDivElement>;
 }) {
   const [failedLogo, setFailedLogo] = useState<string | null>(null);
+  const skipEntrance = useSkipEntrance();
   return (
     <motion.div
       ref={copyRef}
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.7, delay: 0.2 }}
+      variants={billboardCopy}
+      initial={skipEntrance ? false : 'initial'}
+      animate="animate"
       className="nf-billboard-copy"
     >
       {item.logo && item.logo !== failedLogo ? (
@@ -67,12 +70,12 @@ export default function BillboardCopy({ item, trailerActive, onInfo, play, copyR
 
       <div className="mt-1 flex items-center gap-3">
         {play && (
-          <button onClick={play.onClick} className="nf-btn-play text-lg">
+          <button onClick={play.onClick} data-nav-autofocus="" className="nf-btn-play text-lg">
             <Play className="h-7 w-7 fill-black" strokeWidth={0} />
             {play.resume ? 'Resume' : 'Play'}
           </button>
         )}
-        <button onClick={onInfo} className="nf-btn-info text-lg">
+        <button onClick={onInfo} data-nav-autofocus={play ? undefined : ''} className="nf-btn-info text-lg">
           <Info className="h-7 w-7" />
           More Info
         </button>

@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, ChevronDown, Clock, Download, HardDriveDownload, Play, Plus, Wrench } from 'lucide-react';
+import { Check, Clock, Download, HardDriveDownload, Play, Plus, Wrench } from 'lucide-react';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
 import { formatRuntime, genreBuckets, playTargetFor } from '../../store/selectors';
 import type { MediaItem } from '../../types/media';
@@ -24,8 +24,8 @@ import ProgressBar from '../common/ProgressBar';
 import TechBadges from '../common/TechBadges';
 import ImdbRating from '../common/ImdbRating';
 import { CardTitleOverlay } from './MediaCard';
+import { GenreDots, HoverButton, HoverCardFrame, MoreInfoButton } from '../common/HoverCard';
 
-const SCALE = 1.35;
 const STILL_POINTS = [0.14, 0.28, 0.42, 0.56, 0.7];
 const STILL_DELAY_MS = 700;
 const STILL_INTERVAL_MS = 1700;
@@ -73,31 +73,12 @@ function useStills(item: MediaItem, available: boolean) {
 
   return frames.length ? frames[index % frames.length] : null;
 }
-const EDGE = 0.04; // matches the rows' 4% gutters
-
 /**
- * The expanded Netflix hover card. Rendered once at the app root (fixed position) so it is
- * never clipped by the carousel's overflow, and positioned over the hovered card's rect.
+ * The expanded Netflix hover card for library titles. Rendered once at the app root (fixed
+ * position) so it is never clipped by the carousel's overflow, and positioned over the hovered card.
  */
 export default function HoverPreview() {
   const hover = useLibraryStore((s) => s.hover);
-  const setHover = useLibraryStore((s) => s.setHover);
-
-  useEffect(() => {
-    if (!hover) return;
-    const close = () => setHover(null);
-    window.addEventListener('scroll', close, { passive: true });
-    window.addEventListener('wheel', close, { passive: true });
-    window.addEventListener('resize', close);
-    document.documentElement.addEventListener('mouseleave', close);
-    return () => {
-      window.removeEventListener('scroll', close);
-      window.removeEventListener('wheel', close);
-      window.removeEventListener('resize', close);
-      document.documentElement.removeEventListener('mouseleave', close);
-    };
-  }, [hover, setHover]);
-
   // The hover snapshot is passed as a prop so the card can finish its exit animation after
   // the store has already cleared `hover`.
   return <AnimatePresence>{hover && <PreviewCard key={hover.item.key + hover.rect.left} hover={hover} />}</AnimatePresence>;
@@ -105,6 +86,7 @@ export default function HoverPreview() {
 
 function PreviewCard({ hover }: { hover: HoverState }) {
   const setHover = useLibraryStore((s) => s.setHover);
+  const close = useCallback(() => setHover(null), [setHover]);
   const openDetail = useLibraryStore((s) => s.openDetail);
   const openFixMatch = useLibraryStore((s) => s.openFixMatch);
   const toggleMyList = useLibraryStore((s) => s.toggleMyList);
@@ -117,37 +99,6 @@ function PreviewCard({ hover }: { hover: HoverState }) {
   });
   const isDownloading = Boolean(torrent && !torrent.finished);
   const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
-  const { rect } = hover;
-  const cardRef = useRef<HTMLDivElement>(null);
-  const [cardHeight, setCardHeight] = useState(0);
-  useLayoutEffect(() => {
-    const el = cardRef.current;
-    if (!el) return;
-    const update = () => setCardHeight(el.offsetHeight);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  const layout = useMemo(() => {
-    const vw = window.innerWidth;
-    const width = Math.min(rect.width * SCALE, vw - 16);
-    const imgH = (width * 9) / 16;
-    let left = rect.left - (width - rect.width) / 2;
-    let originX = 'center';
-    if (rect.left < vw * EDGE + 8) {
-      left = rect.left;
-      originX = 'left';
-    } else if (rect.left + rect.width > vw * (1 - EDGE) - 8) {
-      left = rect.left + rect.width - width;
-      originX = 'right';
-    }
-    left = Math.max(8, Math.min(left, vw - width - 8));
-    const top = Math.max(72, Math.min(rect.top - (imgH - rect.height) / 2, window.innerHeight - cardHeight - 8));
-    return { width, left, top, origin: `${originX} ${rect.top - top + rect.height / 2}px` };
-  }, [rect, cardHeight]);
-
   const still = useStills(item, !isDownloading);
   const genres = genreBuckets(item.genres).slice(0, 3);
   const meta =
@@ -157,18 +108,14 @@ function PreviewCard({ hover }: { hover: HoverState }) {
         ? `${item.seasonCount} Seasons`
         : `${item.episodeCount} Episode${item.episodeCount === 1 ? '' : 's'}`;
 
+  const playLabel = blockingDownload ? formatDownloadingLabel(blockingDownload.progressPct) : torrent && canStreamTorrent(torrent) ? 'Stream now' : 'Play';
+
   return (
-    <motion.div
-      ref={cardRef}
-      onMouseLeave={() => setHover(null)}
-      initial={{ scale: 1 / SCALE, opacity: 0.4 }}
-      animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 1 / SCALE, opacity: 0, transition: { duration: 0.18 } }}
-      transition={{ duration: 0.26, ease: [0.21, 0, 0.27, 1] }}
-      style={{ position: 'fixed', top: layout.top, left: layout.left, width: layout.width, transformOrigin: layout.origin }}
-      className="z-40 overflow-hidden rounded-md bg-nf-surface shadow-card"
-    >
-      <div className="relative aspect-video w-full cursor-pointer" onClick={() => openDetail(item.key)}>
+    <HoverCardFrame
+      rect={hover.rect}
+      onClose={close}
+      onMediaClick={() => openDetail(item.key)}
+      media={<>
         <Artwork
           src={resize(item.backdrop, 'w780')}
           alt={item.title}
@@ -209,68 +156,43 @@ function PreviewCard({ hover }: { hover: HoverState }) {
             </div>
           )
         )}
+      </>}
+      actions={<>
+        <HoverButton primary label={playLabel} onClick={() => playItem(item)} disabled={!!blockingDownload}>
+          {blockingDownload ? <Download className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4 fill-black" strokeWidth={0} />}
+        </HoverButton>
+        <HoverButton label={item.myList ? 'Remove from My List' : 'Add to My List'} onClick={() => toggleMyList(item)}>
+          {item.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+        </HoverButton>
+        <HoverButton label="Fix match" onClick={() => openFixMatch(item.key)}>
+          <Wrench className="h-3.5 w-3.5" />
+        </HoverButton>
+        {torrent?.mode === 'stream' && (
+          <HoverButton label="Keep permanently in library" onClick={() => void keepStreamPermanently(torrent.infoHash)} className="text-amber-200 hover:!border-amber-300">
+            <HardDriveDownload className="h-4 w-4" />
+          </HoverButton>
+        )}
+        <MoreInfoButton onClick={() => openDetail(item.key)} />
+      </>}
+    >
+      {isDownloading && torrent && (
+        <div className="truncate text-xs font-medium text-nf-download-text">
+          Downloading {formatPercent(torrent.progressPct, 1)}
+          {torrent.downloadSpeedBps > 0 ? ` · ↓ ${formatSpeed(torrent.downloadSpeedBps)}` : ''}
+        </div>
+      )}
+
+      {hover.subtitle && <div className="truncate text-xs font-semibold text-white">{hover.subtitle}</div>}
+
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium">
+        <ImdbRating rating={item.imdbRating} />
+        <CriticScores rt={item.rtScore} metacritic={item.metacritic} />
+        <MaturityRating rating={item.certification} />
+        {meta && <span className="text-nf-secondary">{meta}</span>}
+        <TechBadges tech={item.tech} showAudio={false} />
       </div>
 
-      <div className="space-y-2.5 bg-nf-surface p-[5%] pt-3">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => playItem(item)}
-            disabled={!!blockingDownload}
-            title={blockingDownload ? formatDownloadingLabel(blockingDownload.progressPct) : torrent && canStreamTorrent(torrent) ? 'Stream now' : 'Play'}
-            aria-label={blockingDownload ? formatDownloadingLabel(blockingDownload.progressPct) : torrent && canStreamTorrent(torrent) ? 'Stream now' : 'Play'}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-white/80 disabled:opacity-50"
-          >
-            {blockingDownload ? <Download className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4 fill-black" strokeWidth={0} />}
-          </button>
-          <button onClick={() => toggleMyList(item)} title={item.myList ? 'Remove from My List' : 'Add to My List'} aria-label={item.myList ? 'Remove from My List' : 'Add to My List'} className="nf-circle-btn h-9 w-9">
-            {item.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-          </button>
-          <button onClick={() => openFixMatch(item.key)} title="Fix match" aria-label="Fix match" className="nf-circle-btn h-9 w-9">
-            <Wrench className="h-3.5 w-3.5" />
-          </button>
-          {torrent?.mode === 'stream' && (
-            <button
-              onClick={() => void keepStreamPermanently(torrent.infoHash)}
-              title="Keep permanently in library"
-              aria-label="Keep permanently in library"
-              className="nf-circle-btn h-9 w-9 text-amber-200 hover:!border-amber-300"
-            >
-              <HardDriveDownload className="h-4 w-4" />
-            </button>
-          )}
-          <button onClick={() => openDetail(item.key)} title="More info" aria-label="More info" className="nf-circle-btn ml-auto h-9 w-9">
-            <ChevronDown className="h-5 w-5" />
-          </button>
-        </div>
-
-        {isDownloading && torrent && (
-          <div className="truncate text-xs font-medium text-nf-download-text">
-            Downloading {formatPercent(torrent.progressPct, 1)}
-            {torrent.downloadSpeedBps > 0 ? ` · ↓ ${formatSpeed(torrent.downloadSpeedBps)}` : ''}
-          </div>
-        )}
-
-        {hover.subtitle && <div className="truncate text-xs font-semibold text-white">{hover.subtitle}</div>}
-
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium">
-          <ImdbRating rating={item.imdbRating} />
-          <CriticScores rt={item.rtScore} metacritic={item.metacritic} />
-          <MaturityRating rating={item.certification} />
-          {meta && <span className="text-nf-secondary">{meta}</span>}
-          <TechBadges tech={item.tech} showAudio={false} />
-        </div>
-
-        {genres.length > 0 && (
-          <div className="flex flex-wrap items-center text-xs text-white">
-            {genres.map((g, i) => (
-              <span key={g} className="flex items-center">
-                {i > 0 && <span className="mx-1.5 text-[8px] text-[#646464]">●</span>}
-                {g}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-    </motion.div>
+      <GenreDots genres={genres} />
+    </HoverCardFrame>
   );
 }

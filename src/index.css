@@ -80,6 +80,49 @@ html.nf-modal-open { overflow-y: hidden; }
   .nf-menu-enter, .nf-dialog-enter { animation: none; }
 }
 
+/* TV mode: a larger 10-foot layout (rows also show one card fewer), with the cursor hidden when idle. */
+html.tv-mode {
+  font-size: 112.5%;
+}
+html.tv-cursor-hidden,
+html.tv-cursor-hidden * {
+  cursor: none !important;
+}
+/* Arrow-key / controller focus: Netflix's white ring with a slight lift. Mouse users never see it. */
+html.tv-focus :focus {
+  outline: 3px solid #fff !important;
+  outline-offset: 2px;
+}
+html.tv-focus :is(button, a[href], [role="button"], [role="switch"], [role="tab"]):focus:not([data-tv-card-host]) {
+  scale: 1.03;
+}
+html.tv-focus [role="dialog"]:focus,
+html.tv-focus [data-tv-card] :focus,
+html.tv-focus [data-tv-card-host]:focus {
+  outline: none !important;
+}
+html.tv-focus [data-tv-card] :focus {
+  scale: none;
+}
+html.tv-focus [data-tv-card]:focus-within,
+html.tv-focus :focus > [data-tv-card] {
+  position: relative;
+  z-index: 1;
+  scale: 1.05;
+  box-shadow: 0 0 0 3px #fff, 0 8px 24px rgba(0, 0, 0, 0.6);
+  transition: scale 0.15s ease-out;
+}
+html.tv-focus [data-hover-card] {
+  box-shadow: 0 0 0 3px #fff, 0 14px 36px rgba(0, 0, 0, 0.75);
+}
+@media (prefers-reduced-motion: reduce) {
+  html.tv-focus :focus,
+  html.tv-focus [data-tv-card]:focus-within,
+  html.tv-focus :focus > [data-tv-card] {
+    scale: none;
+  }
+}
+
 /* Built-in player: the page turns transparent so the native video view underneath shows through. */
 html.player-mode,
 html.player-mode body,

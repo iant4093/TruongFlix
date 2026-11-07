@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import * as db from '../services/db';
 import { setApiKey } from '../services/tmdb';
 import { guardAdult } from '../services/profilelock';
+import { forgetSection } from '../lib/sectionMemory';
 import type { BrowseEntry } from '../types/browse';
 import type {
   BuiltinPlayerState,
@@ -60,7 +61,7 @@ export interface AnalysisState {
 export interface PinRequest {
   title: string;
   subtitle?: string;
-  check: (pin: string) => boolean;
+  check: (pin: string) => boolean | Promise<boolean>;
   then: () => void;
 }
 
@@ -211,6 +212,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     launch_intro: true,
     launch_intro_sound: true,
     hover_stills: true,
+    tv_mode: 'auto',
     ask_profile: true,
     active_profile: 0,
     still_watching_after: 3,
@@ -364,6 +366,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       view: 'home', search: '', detailKey: null, detailEpisodeId: null, browseEntry: null,
       settingsOpen: false, addTorrentModal: null, pinRequest: null,
     }));
+    forgetSection();
     await get().reload();
     window.scrollTo({ top: 0 });
     const pending = get().pendingTorrentLink;
@@ -397,15 +400,16 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     set({ settings });
   },
 
-  setView: (view) => {
-    set({ view, search: '', hover: null, browseEntry: null });
-    window.scrollTo({ top: 0 });
-  },
+  // The section frame restores each section's own scroll position (see lib/sectionMemory).
+  setView: (view) => set({ view, search: '', hover: null, browseEntry: null }),
   setSearch: (search) => set({ search, hover: null }),
   openBrowseEntry: (browseEntry) => {
     if (get().activeProfile?.maturity !== 'all' || get().profileGate) return;
+    // A new Browse entry starts at the top; from another section the frame does that on entry.
+    const already = get().view === 'browse';
+    forgetSection('browse');
     set({ view: 'browse', search: '', hover: null, detailKey: null, detailEpisodeId: null, browseEntry });
-    window.scrollTo({ top: 0 });
+    if (already) window.scrollTo({ top: 0 });
   },
   clearBrowseEntry: () => set({ browseEntry: null }),
   openDetail: (detailKey) => set({ detailKey, detailEpisodeId: null, hover: null }),

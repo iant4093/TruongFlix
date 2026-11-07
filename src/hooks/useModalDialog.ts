@@ -27,6 +27,11 @@ function topLayer(visibleOnly = false) {
   );
 }
 
+/** Root of the top visible dialog layer (spatial navigation stays inside it), or null. */
+export function topDialogRoot(): HTMLElement | null {
+  return topLayer(true)?.root ?? null;
+}
+
 function ownsFocus(root: HTMLElement, target: Element) {
   if (root.contains(target)) return true;
   // Dropdowns and action menus are portalled to body and keep their owner via aria-controls.

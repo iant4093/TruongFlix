@@ -99,15 +99,15 @@ it('uses the missing franchise movie’s TMDB ID rather than the open Library mo
   expect(tmdb.getCatalogDetail).toHaveBeenCalledWith(missing);
 });
 
-it('applies the parental PIN to direct Settings and magnet entry points', () => {
+it('applies the parental PIN to direct Settings and magnet entry points', async () => {
   const adult = { id: 1, name: 'Adult', maturity: 'all', pin: '1234' } as Profile;
   const child = { id: 2, name: 'Child', maturity: 'kids' } as Profile;
   useLibraryStore.setState({ profiles: [adult, child], activeProfile: child });
   useLibraryStore.getState().setSettingsOpen(true, 'library');
   expect(useLibraryStore.getState().settingsOpen).toBe(false);
-  expect(useLibraryStore.getState().pinRequest?.check('0000')).toBe(false);
+  expect(await useLibraryStore.getState().pinRequest?.check('0000')).toBe(false);
   const approval = useLibraryStore.getState().pinRequest!;
-  expect(approval.check('1234')).toBe(true);
+  expect(await approval.check('1234')).toBe(true);
   approval.then();
   expect(useLibraryStore.getState().settingsOpen).toBe(true);
 

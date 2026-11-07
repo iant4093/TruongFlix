@@ -79,6 +79,7 @@ export default function Navbar() {
 
   return (
     <header
+      data-nav-fixed=""
       className="fixed inset-x-0 top-0 z-50 flex h-[68px] items-center px-[4%] transition-colors duration-300 ease-in-out"
       style={{
         background: scrolled ? '#141414' : 'linear-gradient(180deg, rgba(0,0,0,0.7) 10%, transparent)',
@@ -88,7 +89,7 @@ export default function Navbar() {
         <Wordmark className="text-[1.9rem]" />
       </button>
 
-      <nav aria-label="Main navigation" className="flex items-center gap-3 text-sm xl:gap-5">
+      <nav aria-label="Main navigation" data-nav-tabs="" className="flex items-center gap-3 text-sm xl:gap-5">
         {LINKS.map((l) => (
           <button
             key={l.view}

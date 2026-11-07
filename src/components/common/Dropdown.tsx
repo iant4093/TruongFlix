@@ -101,7 +101,8 @@ export default function Dropdown<T extends string | number>({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      const handled = ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Home', 'End', 'Tab'].includes(e.key);
+      // Left/Right are swallowed so TV-mode navigation can't leave an open menu sideways.
+      const handled = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape', 'Home', 'End', 'Tab'].includes(e.key);
       if (!handled) return;
       if (e.key !== 'Tab') {
         e.preventDefault();
@@ -113,7 +114,7 @@ export default function Dropdown<T extends string | number>({
       else if (e.key === 'Home') setActive(0);
       else if (e.key === 'End') setActive(options.length - 1);
       else if (e.key === 'Enter' && options[active]) choose(options[active].value);
-      else close();
+      else if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') close();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -145,7 +146,8 @@ export default function Dropdown<T extends string | number>({
         aria-label={ariaLabel}
         onClick={() => (open ? close() : openMenu())}
         onKeyDown={(e) => {
-          if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+          // In TV mode Up/Down move between controls; Enter/A opens the menu.
+          if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && !document.documentElement.classList.contains('tv-focus')) {
             e.preventDefault();
             openMenu();
           }

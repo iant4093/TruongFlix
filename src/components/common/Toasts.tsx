@@ -4,16 +4,11 @@ import { AlertCircle, CheckCircle2, Info, RefreshCw, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { miniRect } from '../../services/player';
 import ProgressBar from './ProgressBar';
+import { toast as toastMotion } from '../../lib/motion';
 
 const SCAN_RESULT_MS = 4000;
 
-const enter = {
-  layout: 'position' as const,
-  initial: { opacity: 0, y: 12 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, x: 40, transition: { duration: 0.18 } },
-  transition: { duration: 0.25, ease: [0.21, 0, 0.27, 1] as const },
-};
+const enter = toastMotion;
 
 /** Notification stack + the scan-progress card (bottom-right). */
 export default function Toasts() {
@@ -57,7 +52,7 @@ export default function Toasts() {
         : 'Library is up to date';
 
   return (
-    <div className="pointer-events-none fixed right-6 z-[180] flex w-[360px] flex-col items-end gap-2 transition-[bottom]" style={{ bottom }}>
+    <div data-nav-skip="" className="pointer-events-none fixed right-6 z-[180] flex w-[360px] flex-col items-end gap-2 transition-[bottom]" style={{ bottom }}>
       {/* popLayout removes exiting items from the flow immediately, so the stack never jumps. */}
       <AnimatePresence initial={false} mode="popLayout">
         {toasts.map((t) => (

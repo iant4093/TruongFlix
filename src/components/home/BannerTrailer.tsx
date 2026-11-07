@@ -1,4 +1,4 @@
-import { useState, type Ref } from 'react';
+import { useLayoutEffect, useRef, useState, type Ref } from 'react';
 import { motion } from 'framer-motion';
 import { RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import type { useBannerTrailer } from './useBannerTrailer';
@@ -7,11 +7,21 @@ type Trailer = ReturnType<typeof useBannerTrailer>;
 
 export function BillboardMedia({ title, backdrop, trailer }: { title: string; backdrop: string | null; trailer?: Trailer }) {
   const [loadedBackdrop, setLoadedBackdrop] = useState<string | null>(null);
+  const [cached, setCached] = useState<string | null>(null);
+  const image = useRef<HTMLImageElement>(null);
   const loaded = backdrop === loadedBackdrop;
+  // Artwork already in the cache (coming back to a page) appears at once instead of fading again.
+  useLayoutEffect(() => {
+    if (backdrop && image.current?.complete && image.current.naturalWidth > 0) {
+      setCached(backdrop);
+      setLoadedBackdrop(backdrop);
+    }
+  }, [backdrop]);
   return (
     <>
       {backdrop && (
         <motion.img
+          ref={image}
           key={backdrop}
           src={backdrop}
           alt=""
@@ -19,7 +29,7 @@ export function BillboardMedia({ title, backdrop, trailer }: { title: string; ba
           onLoad={() => setLoadedBackdrop(backdrop)}
           initial={{ opacity: 0, scale: 1.04 }}
           animate={{ opacity: loaded ? 1 : 0, scale: loaded ? 1 : 1.04 }}
-          transition={{ duration: 1.1, ease: 'easeOut' }}
+          transition={cached === backdrop ? { duration: 0 } : { duration: 1.1, ease: 'easeOut' }}
           className="absolute inset-0 h-full w-full object-cover object-top"
         />
       )}

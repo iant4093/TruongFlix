@@ -21,9 +21,11 @@ import useCatalogRatings from '../../hooks/useCatalogRatings';
 import { errorMessage } from '../../lib/errors';
 import Spinner from '../common/Spinner';
 
-export default function CatalogTitle({ item, initialEpisode, onClose, onSource, suspended = false, save }: {
+export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, onSource, suspended = false, save }: {
   item: SearchResult;
   initialEpisode?: BrowseEpisodeSelection;
+  /** Start this quick action (1080p) as soon as the title is ready, e.g. from a hover card. */
+  autoRun?: TorrentMode;
   onClose: () => void;
   onSource: () => void;
   suspended?: boolean;
@@ -168,6 +170,14 @@ export default function CatalogTitle({ item, initialEpisode, onClose, onSource, 
       if (active.current && !options.signal.aborted) setReleaseSearch({ key: releaseKey, quality, releases });
     }, true);
   };
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (!autoRun || autoRan.current || suspended) return;
+    if (!sourceUrl) { autoRan.current = true; onSource(); return; }
+    if (!detail || !ready || scope.kind === 'season') return;
+    autoRan.current = true;
+    run(autoRun, '1080p');
+  });
   const manual = () => {
     setError('');
     if (!sourceUrl) { onSource(); return; }
