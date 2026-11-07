@@ -15,20 +15,29 @@ function Pad({ request }: { request: PinRequest }) {
   const setRequest = useLibraryStore((s) => s.setPinRequest);
   const [pin, setPin] = useState('');
   const [wrong, setWrong] = useState(0);
+  const [checking, setChecking] = useState(false);
   const present = useIsPresent();
 
   const type = (d: string) => {
-    if (pin.length >= 4) return;
+    if (pin.length >= 4 || checking) return;
     const next = pin + d;
     setPin(next);
     if (next.length === 4) {
-      if (request.check(next)) {
-        setRequest(null);
-        request.then();
-      } else {
-        setWrong((w) => w + 1);
-        window.setTimeout(() => setPin(''), 350);
-      }
+      setChecking(true);
+      void Promise.resolve(request.check(next))
+        .catch(() => false)
+        .then((ok) => {
+          // The prompt may have been cancelled or replaced while the PIN was being checked.
+          setChecking(false);
+          if (useLibraryStore.getState().pinRequest !== request) return setPin('');
+          if (ok) {
+            setRequest(null);
+            request.then();
+          } else {
+            setWrong((w) => w + 1);
+            window.setTimeout(() => setPin(''), 350);
+          }
+        });
     }
   };
 
@@ -36,7 +45,9 @@ function Pad({ request }: { request: PinRequest }) {
     if (!present) return;
     const onKey = (e: KeyboardEvent) => {
       if (/^[0-9]$/.test(e.key)) type(e.key);
-      else if (e.key === 'Backspace') setPin((p) => p.slice(0, -1));
+      else if (e.key === 'Backspace') {
+        if (!checking) setPin((p) => p.slice(0, -1));
+      }
       else return;
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -73,7 +84,7 @@ function Pad({ request }: { request: PinRequest }) {
         </motion.div>
         <div className="grid grid-cols-3 gap-3">
           {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
-            <button key={d} onClick={() => type(d)} className="h-14 w-20 rounded bg-white/10 text-2xl font-semibold hover:bg-white/20">
+            <button key={d} onClick={() => type(d)} data-nav-autofocus={d === '1' ? '' : undefined} className="h-14 w-20 rounded bg-white/10 text-2xl font-semibold hover:bg-white/20">
               {d}
             </button>
           ))}
@@ -81,7 +92,7 @@ function Pad({ request }: { request: PinRequest }) {
           <button onClick={() => type('0')} className="h-14 w-20 rounded bg-white/10 text-2xl font-semibold hover:bg-white/20">
             0
           </button>
-          <button onClick={() => setPin((p) => p.slice(0, -1))} aria-label="Delete" className="flex h-14 w-20 items-center justify-center rounded hover:bg-white/10">
+          <button onClick={() => !checking && setPin((p) => p.slice(0, -1))} aria-label="Delete" className="flex h-14 w-20 items-center justify-center rounded hover:bg-white/10">
             <Delete className="h-6 w-6" />
           </button>
         </div>

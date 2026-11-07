@@ -42,18 +42,16 @@ const PORTABLE_TABLES: &[&str] = &[
 ];
 
 /// Account keys, passwords and the browser access code never leave this computer in a backup;
-/// restoring keeps the ones already set here.
-const SECRET_SETTINGS: &[&str] = &[
-    "tmdb_api_key",
-    "omdb_api_key",
-    "opensubtitles_api_key",
-    "opensubtitles_username",
-    "opensubtitles_password",
-    "remote_code",
-];
+/// restoring keeps the ones already set here. They normally live in the system keychain, but the
+/// settings table still holds them when the keychain is unavailable (or before migration).
+const SECRET_SETTINGS: &[&str] = crate::secrets::KEYS;
+
+fn sql_list<S: AsRef<str>>(keys: &[S]) -> String {
+    keys.iter().map(|k| format!("'{}'", k.as_ref().replace('\'', "''"))).collect::<Vec<_>>().join(", ")
+}
 
 fn secret_list() -> String {
-    SECRET_SETTINGS.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ")
+    sql_list(SECRET_SETTINGS)
 }
 
 #[derive(Default)]
@@ -579,7 +577,9 @@ pub async fn backup_stage_restore(
     Ok(())
 }
 
-async fn apply_restore(dir: &Path, pending: &Path) -> Result<(), String> {
+/// `local_secrets`: secret settings this computer keeps in its keychain. An older backup that
+/// still holds them must not override those (a settings row takes precedence over the keychain).
+async fn apply_restore(dir: &Path, pending: &Path, local_secrets: &[String]) -> Result<(), String> {
     let mut source = connect(pending, true, true)
         .await
         .map_err(|error| error.to_string())?;
@@ -621,8 +621,13 @@ async fn apply_restore(dir: &Path, pending: &Path) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(", ");
         let insert = if *table == "settings" { "INSERT OR IGNORE" } else { "INSERT" };
+        let filter = if *table == "settings" && !local_secrets.is_empty() {
+            format!(" WHERE key NOT IN ({})", sql_list(local_secrets))
+        } else {
+            String::new()
+        };
         sqlx::query(&format!(
-            "{insert} INTO main.{table} ({columns}) SELECT {columns} FROM incoming.{table}"
+            "{insert} INTO main.{table} ({columns}) SELECT {columns} FROM incoming.{table}{filter}"
         ))
         .execute(&mut *tx)
         .await
@@ -642,7 +647,10 @@ pub fn restore_at_startup(app: &AppHandle) {
     let claimed = dir.join("restore-in-progress.db");
     let result = match fs::rename(&pending, &claimed) {
         Ok(()) => {
-            let result = tauri::async_runtime::block_on(apply_restore(&dir, &claimed));
+            // If the keychain can't be read, keep every secret out of the restore to be safe.
+            let local_secrets = crate::secrets::stored_keys()
+                .unwrap_or_else(|_| SECRET_SETTINGS.iter().map(|k| k.to_string()).collect());
+            let result = tauri::async_runtime::block_on(apply_restore(&dir, &claimed, &local_secrets));
             let _ = fs::remove_file(claimed);
             result
         }
@@ -737,7 +745,7 @@ mod tests {
         )
         .await
         .unwrap();
-        apply_restore(path, &path.join(PENDING)).await.unwrap();
+        apply_restore(path, &path.join(PENDING), &[]).await.unwrap();
         let mut restored = connect(&path.join(DB), true, false).await.unwrap();
         let library: (i64, String, i64) = sqlx::query_as("SELECT id, file_path, progress_seconds FROM movies JOIN profile_state ON movies.id = media_id")
             .fetch_one(&mut restored).await.unwrap();
@@ -819,13 +827,39 @@ mod tests {
             .unwrap();
         db.close().await.unwrap();
         stage(path, &file, Vec::new()).await.unwrap();
-        apply_restore(path, &path.join(PENDING)).await.unwrap();
+        apply_restore(path, &path.join(PENDING), &[]).await.unwrap();
         let mut restored = connect(&path.join(DB), true, false).await.unwrap();
         let settings: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings ORDER BY key").fetch_all(&mut restored).await.unwrap();
         let get = |k: &str| settings.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
         assert_eq!(get("tmdb_api_key"), Some("new-key"));
         assert_eq!(get("remote_code"), Some("123456"));
         assert_eq!(get("subtitle_language"), Some("fr"));
+    }
+
+    #[tokio::test]
+    async fn old_backups_do_not_override_keychain_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let db = fixture(path).await;
+        db.close().await.unwrap();
+        let file = path.join("old.truongflix-backup");
+        snapshot(&path.join(DB), &file).await.unwrap();
+        // Backups made before secrets were excluded still contain them.
+        let mut old = connect(&file, false, false).await.unwrap();
+        sqlx::raw_sql("INSERT INTO settings VALUES ('tmdb_api_key', 'stale-key'), ('omdb_api_key', 'omdb-from-backup');")
+            .execute(&mut old)
+            .await
+            .unwrap();
+        old.close().await.unwrap();
+
+        stage(path, &file, Vec::new()).await.unwrap();
+        apply_restore(path, &path.join(PENDING), &["tmdb_api_key".to_string()]).await.unwrap();
+        let mut restored = connect(&path.join(DB), true, false).await.unwrap();
+        let keys: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE '%api_key' ORDER BY key")
+            .fetch_all(&mut restored)
+            .await
+            .unwrap();
+        assert_eq!(keys, [("omdb_api_key".to_string(), "omdb-from-backup".to_string())]);
     }
 
     #[tokio::test]
@@ -856,7 +890,7 @@ mod tests {
             .await
             .unwrap();
         damaged.close().await.unwrap();
-        assert!(apply_restore(dir.path(), &backup)
+        assert!(apply_restore(dir.path(), &backup, &[])
             .await
             .unwrap_err()
             .contains("movies"));

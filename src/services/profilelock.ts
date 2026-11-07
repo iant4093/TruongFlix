@@ -1,5 +1,6 @@
 import { useLibraryStore } from '../store/useLibraryStore';
 import { adultPinRequired } from './limits';
+import { verifyAnyPin, verifyPin } from './pin';
 
 /** Switches profile, asking for that profile's PIN first when it has one. */
 export function switchProfileGuarded(id: number) {
@@ -12,7 +13,7 @@ export function switchProfileGuarded(id: number) {
   setPinRequest({
     title: `Enter ${target.name}’s PIN`,
     subtitle: 'This profile is locked.',
-    check: (pin) => pin === target.pin,
+    check: (pin) => verifyPin(target.pin, pin),
     then: () => void switchProfile(id),
   });
 }
@@ -29,7 +30,7 @@ export function guardAdult(action: () => void, opts: { atGate?: boolean } = {}) 
   setPinRequest({
     title: 'Enter a parent’s PIN',
     subtitle: adults.length === 1 ? `${adults[0].name}’s profile PIN` : 'The PIN of any adult profile',
-    check: (pin) => adults.some((p) => p.pin === pin),
+    check: (pin) => verifyAnyPin(adults.map((p) => p.pin), pin),
     then: () => {
       const current = useLibraryStore.getState();
       if (current.activeProfile?.id === activeProfile?.id && current.profileGate === profileGate) action();

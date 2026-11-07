@@ -1,4 +1,7 @@
+import { invoke } from '@tauri-apps/api/core';
 import Database from '@tauri-apps/plugin-sql';
+import { hashPin, isPlainPin, storedPin } from './pin';
+import { parseTvMode } from '../lib/tvMode';
 import type { SavedBrowseTitle } from '../types/browse';
 import type {
   CollectionPart,
@@ -330,6 +333,41 @@ async function migrate(db: Database) {
   }
 }
 
+/** Hashes PINs saved in plaintext by earlier versions. */
+export async function migratePins(db: Database) {
+  try {
+    const rows = await db.select<{ id: number; pin: string | null }[]>('SELECT * FROM profiles ORDER BY id');
+    for (const { id, pin } of rows) {
+      if (pin && isPlainPin(pin)) await db.execute('UPDATE profiles SET pin = $2 WHERE id = $1 AND pin = $3', [id, await hashPin(pin), pin]);
+    }
+  } catch (error) {
+    console.warn('Could not secure the saved profile PINs', error);
+  }
+}
+
+/**
+ * Moves API keys and passwords from the settings table into the system keychain. A row is only
+ * deleted after the keychain wrote it and gave the same value back.
+ */
+export async function migrateSecrets(db: Database) {
+  try {
+    const rows = await db.select<{ key: string; value: string }[]>(
+      `SELECT key, value FROM settings WHERE key IN (${SECRET_SETTINGS.map((k) => `'${k}'`).join(', ')})`,
+    );
+    for (const { key, value } of rows.filter((r) => isSecretSetting(r.key))) {
+      if (value) {
+        await invoke('secret_set', { key, value });
+        if ((await invoke<string | null>('secret_get', { key })) !== value) throw new Error(`The keychain did not return ${key} as saved`);
+      } else {
+        await invoke('secret_delete', { key });
+      }
+      await db.execute('DELETE FROM settings WHERE key = $1', [key]);
+    }
+  } catch (error) {
+    keychainUnavailable(error);
+  }
+}
+
 let dbPromise: Promise<Database> | null = null;
 
 export function getDb(): Promise<Database> {
@@ -338,6 +376,8 @@ export function getDb(): Promise<Database> {
       const db = await Database.load(DB_URL);
       for (const stmt of SCHEMA) await db.execute(stmt);
       await migrate(db);
+      await migratePins(db);
+      await migrateSecrets(db);
       await db.execute('PRAGMA foreign_keys = ON');
       return db;
     })();
@@ -372,9 +412,46 @@ function chunks<T>(list: T[], size = 400): T[][] {
 // Settings
 // ---------------------------------------------------------------------------
 
+/**
+ * API keys, passwords and the browser access code live in the system keychain (see secrets.rs).
+ * A row in the settings table wins: it is either not migrated yet or was written while the
+ * keychain was unavailable, and is moved into the keychain at the next startup.
+ */
+export const SECRET_SETTINGS = [
+  'tmdb_api_key',
+  'omdb_api_key',
+  'opensubtitles_api_key',
+  'opensubtitles_username',
+  'opensubtitles_password',
+  'remote_code',
+] as const satisfies readonly (keyof Settings)[];
+
+export const isSecretSetting = (key: string): key is (typeof SECRET_SETTINGS)[number] => (SECRET_SETTINGS as readonly string[]).includes(key);
+
+let keychainWarned = false;
+function keychainUnavailable(error: unknown) {
+  if (keychainWarned) return;
+  keychainWarned = true;
+  console.warn('The system keychain is unavailable; API keys stay in the local database.', error);
+}
+
+async function readSecrets(map: Record<string, string>) {
+  await Promise.all(
+    SECRET_SETTINGS.filter((key) => map[key] == null).map(async (key) => {
+      try {
+        const value = await invoke<string | null>('secret_get', { key });
+        if (value != null) map[key] = value;
+      } catch (error) {
+        keychainUnavailable(error);
+      }
+    }),
+  );
+}
+
 export async function getSettings(): Promise<Settings> {
   const rows = await select<{ key: string; value: string }[]>('SELECT key, value FROM settings');
-  const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const map: Record<string, string> = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  await readSecrets(map);
   let dirs: string[] = [];
   try {
     dirs = JSON.parse(map.media_directories ?? '[]');
@@ -406,6 +483,7 @@ export async function getSettings(): Promise<Settings> {
     launch_intro: map.launch_intro !== 'false',
     launch_intro_sound: map.launch_intro_sound !== 'false',
     hover_stills: map.hover_stills !== 'false',
+    tv_mode: parseTvMode(map.tv_mode),
     ask_profile: map.ask_profile !== 'false',
     active_profile: Number(map.active_profile) || 0,
     still_watching_after: map.still_watching_after != null ? Number(map.still_watching_after) : 3,
@@ -461,6 +539,16 @@ function parseStyle(raw: string | undefined): SubtitleStyle {
 
 export async function saveSetting(key: keyof Settings, value: string | string[] | boolean | number | object) {
   const stored = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  if (isSecretSetting(key)) {
+    try {
+      if (stored) await invoke('secret_set', { key, value: stored });
+      else await invoke('secret_delete', { key });
+      await exec('DELETE FROM settings WHERE key = $1', [key]);
+      return;
+    } catch (error) {
+      keychainUnavailable(error);
+    }
+  }
   await exec(
     'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     [key, stored],
@@ -485,16 +573,17 @@ export async function listProfiles() {
   return select<Profile[]>('SELECT * FROM profiles ORDER BY id');
 }
 
+/** `p.pin` is a new 4-digit PIN (stored hashed), the profile's stored PIN unchanged, or '' for none. */
 export async function createProfile(p: ProfileInput): Promise<number> {
   const res = await exec('INSERT INTO profiles (name, color, maturity, daily_limit, bedtime, wake_time, pin) VALUES ($1,$2,$3,$4,$5,$6,$7)', [
-    p.name, p.color, p.maturity, p.daily_limit, p.bedtime, p.wake_time, p.pin,
+    p.name, p.color, p.maturity, p.daily_limit, p.bedtime, p.wake_time, await storedPin(p.pin),
   ]);
   return res.lastInsertId ?? (await select<{ id: number }[]>('SELECT MAX(id) AS id FROM profiles'))[0].id;
 }
 
 export async function updateProfile(id: number, p: ProfileInput) {
   await exec('UPDATE profiles SET name = $2, color = $3, maturity = $4, daily_limit = $5, bedtime = $6, wake_time = $7, pin = $8 WHERE id = $1', [
-    id, p.name, p.color, p.maturity, p.daily_limit, p.bedtime, p.wake_time, p.pin,
+    id, p.name, p.color, p.maturity, p.daily_limit, p.bedtime, p.wake_time, await storedPin(p.pin),
   ]);
 }
 

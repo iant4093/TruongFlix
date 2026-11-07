@@ -44,6 +44,8 @@ librqbit = { version = "9", default-features = false, features = ["default-tls"]
 # Same version librqbit uses; needed to size uTP packets for VPN tunnels.
 librqbit-utp = "=0.7.0"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+# API keys and passwords in macOS Keychain / Windows Credential Manager.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 adblock = { version = "=0.13.5", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling", "content-blocking"] }
 
 [target.'cfg(windows)'.dependencies]

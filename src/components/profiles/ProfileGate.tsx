@@ -148,7 +148,9 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
   const [dailyLimit, setDailyLimit] = useState(profile?.daily_limit ?? 0);
   const [bedtime, setBedtime] = useState(profile?.bedtime ?? '');
   const [wakeTime, setWakeTime] = useState(profile?.wake_time || '07:00');
-  const [pin, setPin] = useState(profile?.pin ?? '');
+  // The saved PIN is only stored hashed: it stays unless a new one is typed or it is removed.
+  const [pin, setPin] = useState('');
+  const [keepPin, setKeepPin] = useState(!!profile?.pin);
 
   const save = async () => {
     const clean = name.trim() || 'Profile';
@@ -159,7 +161,7 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
       daily_limit: dailyLimit,
       bedtime,
       wake_time: wakeTime,
-      pin: /^\d{4}$/.test(pin) ? pin : '',
+      pin: /^\d{4}$/.test(pin) ? pin : keepPin && profile ? profile.pin : '',
     };
     if (profile) await db.updateProfile(profile.id, input);
     else await db.createProfile(input);
@@ -274,16 +276,17 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
                 value={pin}
                 onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
                 inputMode="numeric"
-                placeholder="4-digit PIN"
+                placeholder={keepPin ? 'New PIN' : '4-digit PIN'}
                 className="w-36 bg-nf-cardHover px-3 py-1.5 tracking-[0.4em] text-white outline-none placeholder:tracking-normal placeholder:text-white/50"
               />
-              {pin && (
-                <button onClick={() => setPin('')} className="text-xs text-nf-muted hover:text-white">
+              {(pin || keepPin) && (
+                <button onClick={() => { setPin(''); setKeepPin(false); }} className="text-xs text-nf-muted hover:text-white">
                   Remove PIN
                 </button>
               )}
             </div>
             <p className="mt-2 text-xs text-nf-muted">
+              {keepPin && !pin && 'A PIN is set. Type a new one to change it. '}
               {maturity === 'all'
                 ? 'Asked when switching to this profile. While a kids profile is active, a parent’s PIN also protects Settings and profile changes.'
                 : 'Asked when switching to this profile.'}
