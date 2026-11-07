@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { motion, useIsPresent } from 'framer-motion';
-import { Search, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { X } from 'lucide-react';
 import type { WatchLogRow } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import { FullScreenOverlay, OverlayCloseButton } from '../common/Dialog';
+import SearchField from '../common/SearchField';
 import { deleteWatchLogEntry, listWatchLog } from '../../services/db';
-import { formatDuration } from '../../services/wrapped';
+import { formatDuration } from '../../lib/format';
 import ProfileAvatar from '../common/ProfileAvatar';
 
 const PAGE = 100;
@@ -19,11 +19,6 @@ function label(r: WatchLogRow) {
 /** Netflix's "Viewing Activity": everything this profile watched, newest first. */
 export default function HistoryModal() {
   const setOverlay = useLibraryStore((s) => s.setOverlay);
-  const dialog = useRef<HTMLDivElement>(null);
-  const present = useIsPresent();
-  useModalDialog(dialog, {
-    onClose: () => setOverlay(null), active: present, priority: 140,
-  });
   const profile = useLibraryStore((s) => s.activeProfile);
   const items = useLibraryStore((s) => s.items);
   const openDetail = useLibraryStore((s) => s.openDetail);
@@ -56,52 +51,29 @@ export default function HistoryModal() {
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
-      ref={dialog}
-      role="dialog"
-      tabIndex={-1}
-      aria-modal="true"
-      aria-hidden={!present || undefined}
-      aria-label="Viewing Activity"
-      className={`fixed inset-0 z-[140] overflow-y-auto bg-nf-bg outline-none ${present ? '' : 'pointer-events-none'}`}
-    >
+    <FullScreenOverlay onClose={() => setOverlay(null)} label="Viewing activity" priority={140}>
       <div className="mx-auto max-w-4xl px-8 pb-20 pt-10">
         <div className="mb-8 flex items-center gap-4">
           {profile && <ProfileAvatar color={profile.color} maturity={profile.maturity} size={44} />}
           <div className="flex-1">
-            <h1 className="text-4xl font-semibold">Viewing Activity</h1>
+            <h1 className="text-4xl font-semibold">Viewing activity</h1>
             <p className="text-sm text-nf-secondary">
               {profile?.name} · {filtered.length} entr{filtered.length === 1 ? 'y' : 'ies'} · {formatDuration(total)} watched
             </p>
           </div>
-          <button onClick={() => setOverlay(null)} aria-label="Close" className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 hover:bg-white/20">
-            <X className="h-5 w-5" />
-          </button>
+          <OverlayCloseButton onClose={() => setOverlay(null)} />
         </div>
 
-        <div className="mb-4 flex items-center gap-2 border border-white/20 bg-black/40 px-3 py-2">
-          <Search className="h-4 w-4 text-nf-muted" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search your history"
-            placeholder="Search your history"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-nf-muted"
-          />
-        </div>
+        <SearchField className="mb-4" value={query} onChange={setQuery} ariaLabel="Search your history" placeholder="Search your history" />
 
         {filtered.length === 0 ? (
           <p className="py-16 text-center text-nf-secondary">{log.length ? 'No matches.' : 'Nothing here yet. Titles appear after you watch them in the built-in player or VLC.'}</p>
         ) : (
           <div className="divide-y divide-white/10 border-y border-white/10">
-            {filtered.slice(0, limit).map((r) => {
+            {filtered.slice(0, limit).map((r, i) => {
               const l = label(r);
               return (
-                <div key={`${r.media_type}-${r.media_id}-${r.day}`} className="group flex items-center gap-6 py-3 text-sm">
+                <div key={`${r.profile_id}-${r.media_type}-${r.media_id}-${r.day}-${i}`} className="group flex items-center gap-6 py-3 text-sm">
                   <span className="w-24 shrink-0 tabular-nums text-nf-secondary">
                     {new Date(`${r.day}T12:00:00`).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric', year: '2-digit' })}
                   </span>
@@ -113,7 +85,8 @@ export default function HistoryModal() {
                   <button
                     onClick={() => void remove(r)}
                     title="Hide from viewing history"
-                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-nf-muted opacity-0 transition hover:bg-white/10 hover:text-white group-hover:opacity-100"
+                    aria-label={`Hide ${l.title} from viewing history`}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-nf-muted opacity-0 transition hover:bg-white/10 hover:text-white focus-visible:opacity-100 group-hover:opacity-100"
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -130,6 +103,6 @@ export default function HistoryModal() {
           </div>
         )}
       </div>
-    </motion.div>
+    </FullScreenOverlay>
   );
 }

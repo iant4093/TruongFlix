@@ -19,10 +19,8 @@ import type { OsHandlerStatus, TorrentItem, TorrentMode, TorrentState } from '..
 import {
   canStreamTorrent,
   checkOsHandlerStatus,
-  formatBytes,
   formatEta,
   formatExpiryRemaining,
-  formatSpeed,
   isActiveDownload,
   keepStreamPermanently,
   pauseAllTorrents,
@@ -38,6 +36,9 @@ import {
 } from '../../services/torrents';
 import { FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
 import Dropdown from '../common/Dropdown';
+import { formatBytes, formatPercent, formatSpeed } from '../../lib/format';
+import { errorMessage } from '../../lib/errors';
+import { basename } from '../../lib/path';
 import { Block, BTN, BTN_DANGER, BTN_PRIMARY, Group, INPUT, Page, Row, Segmented, StatusText, Switch, ToggleRow } from './ui';
 
 type TransferFilter = 'all' | 'downloading' | 'streams' | 'seeding' | 'completed';
@@ -66,8 +67,8 @@ const SEED_TIME_OPTIONS: [number, string][] = [
 
 const badgeStyles: Record<TorrentState, string> = {
   resolving: 'border-amber-400/40 bg-amber-500/15 text-amber-200',
-  initializing: 'border-sky-400/40 bg-sky-500/15 text-sky-200',
-  downloading: 'border-sky-400/40 bg-sky-500/15 text-sky-200',
+  initializing: 'border-nf-download/40 bg-nf-download/15 text-nf-download-text',
+  downloading: 'border-nf-download/40 bg-nf-download/15 text-nf-download-text',
   seeding: 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200',
   stopped_seeding: 'border-white/20 bg-white/10 text-nf-secondary',
   completed: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200',
@@ -133,7 +134,7 @@ export default function TorrentsPage() {
       { value: '', label: 'Auto-detect from library' },
       ...settings.media_directories.map((dir) => ({
         value: dir,
-        label: dir.split(/[\\/]/).filter(Boolean).pop() ?? dir,
+        label: basename(dir),
         hint: dir,
       })),
     ],
@@ -170,7 +171,7 @@ export default function TorrentsPage() {
     try {
       await run();
     } catch (e) {
-      toast(`Could not ${verb} “${t.name}”: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      toast(`Could not ${verb} “${t.name}”: ${errorMessage(e)}`, 'error');
     } finally {
       activeActions.current.delete(t.infoHash);
       setBusyTransfers(new Set(activeActions.current));
@@ -181,7 +182,7 @@ export default function TorrentsPage() {
     const ok = await confirm({
       title: 'Delete torrent & downloaded files?',
       message: `This will remove “${t.name}” and permanently delete its downloaded files. For an inactive download, delete its files from the Library.`,
-      confirmLabel: 'Delete Files',
+      confirmLabel: 'Delete files',
       danger: true,
     });
     if (!ok) return;
@@ -229,7 +230,7 @@ export default function TorrentsPage() {
           <div className="flex flex-wrap items-center gap-2">
             {hasActiveTransfers && (
               <div className="mr-1 flex items-center gap-2.5 rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs tabular-nums">
-                <span className="flex w-24 items-center gap-1 whitespace-nowrap text-sky-300">
+                <span className="flex w-24 items-center gap-1 whitespace-nowrap text-nf-download-text">
                   <ArrowDown className="h-3 w-3 shrink-0" /> {formatSpeed(totals.dl)}
                 </span>
                 <span className="flex w-24 items-center gap-1 whitespace-nowrap text-emerald-300">
@@ -252,7 +253,7 @@ export default function TorrentsPage() {
               onClick={() => openAddTorrent()}
               className={BTN_PRIMARY}
             >
-              <Plus className="h-4 w-4" /> Add Magnet / .torrent
+              <Plus className="h-4 w-4" /> Add magnet or .torrent
             </button>
           </div>
         </Block>
@@ -315,7 +316,7 @@ export default function TorrentsPage() {
                   </div>
 
                   <span className="shrink-0 font-mono text-xs tabular-nums text-white/85">
-                    {t.progressPct.toFixed(1)}%
+                    {formatPercent(t.progressPct, 1)}
                   </span>
                 </div>
 
@@ -323,7 +324,7 @@ export default function TorrentsPage() {
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                   <div
                     className={`h-full transition-all duration-300 ${
-                      t.error ? 'bg-nf-red' : t.finished ? 'bg-nf-green' : 'bg-sky-400'
+                      t.error ? 'bg-nf-red' : t.finished ? 'bg-nf-green' : 'bg-nf-download'
                     }`}
                     style={{ width: `${Math.max(t.state === 'resolving' ? 4 : 0, Math.min(100, t.progressPct))}%` }}
                   />
@@ -337,7 +338,7 @@ export default function TorrentsPage() {
                     </span>
                     {!t.finished && t.inSession && !t.paused && (
                       <>
-                        <span className="whitespace-nowrap text-sky-300">↓ {formatSpeed(t.downloadSpeedBps)}</span>
+                        <span className="whitespace-nowrap text-nf-download-text">↓ {formatSpeed(t.downloadSpeedBps)}</span>
                         <span className="truncate" title={`ETA ${formatEta(t.etaSecs)}`}>ETA {formatEta(t.etaSecs)}</span>
                       </>
                     )}
@@ -378,7 +379,7 @@ export default function TorrentsPage() {
                       className="nf-btn-red h-8 px-3 py-0 text-xs"
                     >
                       <Play className="h-3.5 w-3.5 fill-current" />
-                      {t.finished ? 'Play' : 'Stream Now'}
+                      {t.finished ? 'Play' : 'Stream now'}
                     </button>
                   )}
 
@@ -420,7 +421,7 @@ export default function TorrentsPage() {
                   {revealTarget && (
                     <button
                       type="button"
-                      onClick={() => revealInFileManager(revealTarget).catch((e) => toast(String(e), 'error'))}
+                      onClick={() => revealInFileManager(revealTarget).catch((e) => toast(errorMessage(e), 'error'))}
                       className="nf-btn-ghost h-8 px-2.5 py-0 text-xs"
                       title={`Show in ${FILE_MANAGER_NAME}`}
                     >
@@ -457,7 +458,7 @@ export default function TorrentsPage() {
 
       {/* 2. Seeding, Stream Cache & Default Folders */}
       <Group
-        title="Downloads, Stream Cache & Seeding"
+        title="Downloads, stream cache & seeding"
         description="Choose how new torrents behave, how long temporary streams stay cached, and whether to seed after completion."
       >
         <Row label="Default mode when opening torrents" description="Stream prioritizes pieces sequentially with an expiration timer; Download saves permanently.">
@@ -559,7 +560,7 @@ export default function TorrentsPage() {
         </Row>
 
         <Row
-          label="Default Movies library folder"
+          label="Default movies library folder"
           description="Used automatically when a torrent matches a movie."
         >
           <Dropdown
@@ -567,13 +568,13 @@ export default function TorrentsPage() {
             options={folderOptions}
             onChange={(v) => void update({ torrent_movies_dir: v })}
             align="right"
-            ariaLabel="Default Movies library folder"
+            ariaLabel="Default movies library folder"
             className="min-w-[240px]"
           />
         </Row>
 
         <Row
-          label="Default TV Shows library folder"
+          label="Default TV shows library folder"
           description="Used automatically when a torrent matches a TV series or season pack."
         >
           <Dropdown
@@ -581,7 +582,7 @@ export default function TorrentsPage() {
             options={folderOptions}
             onChange={(v) => void update({ torrent_tv_dir: v })}
             align="right"
-            ariaLabel="Default TV Shows library folder"
+            ariaLabel="Default TV shows library folder"
             className="min-w-[240px]"
           />
         </Row>
@@ -589,7 +590,7 @@ export default function TorrentsPage() {
 
       {/* 3. Speed Limits & Connection (qBittorrent-level control) */}
       <Group
-        title="Speed & Connection"
+        title="Speed & connection"
         description="Global bandwidth limits, incoming TCP/uTP listening port, and peer connection caps."
       >
         <Row
@@ -708,23 +709,23 @@ export default function TorrentsPage() {
 
       {/* 4. BitTorrent Protocol & Discovery */}
       <Group
-        title="BitTorrent Protocol & Discovery"
+        title="BitTorrent protocol & discovery"
         description="Control decentralized peer discovery and tracker announces."
       >
         <ToggleRow
-          label="Enable DHT (Distributed Hash Table)"
+          label="Enable DHT (distributed hash table)"
           description="Find peers and resolve magnet links without relying on centralized trackers."
           checked={settings.torrent_dht}
           onChange={(v) => void update({ torrent_dht: v })}
         />
         <ToggleRow
-          label="Enable Local Peer Discovery (LSD)"
+          label="Enable local peer discovery (LSD)"
           description="Discover BitTorrent peers on your local network to transfer at LAN speeds."
           checked={settings.torrent_lsd}
           onChange={(v) => void update({ torrent_lsd: v })}
         />
         <ToggleRow
-          label="Enable BitTorrent Trackers"
+          label="Enable BitTorrent trackers"
           description="Announce to HTTP and UDP trackers embedded in magnets and .torrent files."
           checked={settings.torrent_trackers}
           onChange={(v) => void update({ torrent_trackers: v })}
@@ -733,7 +734,7 @@ export default function TorrentsPage() {
 
       {/* 5. System & Browser Integration */}
       <Group
-        title="System & Browser Integration"
+        title="System & browser integration"
         description="Open magnet links from your browser and double-click .torrent files directly in TruongFlix."
       >
         <Row

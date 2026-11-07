@@ -28,7 +28,7 @@ import Dropdown from '../common/Dropdown';
 import LivePlayer from '../live/LivePlayer';
 import type { LivePlayerSession } from '../../types/live';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { formatTimestamp } from '../../store/selectors';
+import { formatClock, formatPercent } from '../../lib/format';
 import { languageName } from '../../services/subtitles';
 import {
   autoAdvance,
@@ -290,7 +290,7 @@ function Scrubber({
             <img src={thumb} alt="" className="aspect-video w-64 rounded-sm bg-black object-cover shadow-2xl ring-2 ring-white/90" />
           )}
           {chapter?.title && <div className="max-w-64 truncate text-sm font-semibold text-white drop-shadow">{chapter.title}</div>}
-          <div className="rounded bg-black/85 px-2 py-1 text-sm font-semibold tabular-nums text-white">{formatTimestamp(previewTime)}</div>
+          <div className="rounded bg-black/85 px-2 py-1 text-sm font-semibold tabular-nums text-white">{formatClock(previewTime)}</div>
         </div>
       )}
     </div>
@@ -329,7 +329,7 @@ function VolumeControl({ volume, muted }: { volume: number; muted: boolean }) {
             exit={{ opacity: 0, y: 6 }}
             transition={{ duration: 0.12 }}
             onClick={(e) => e.stopPropagation()}
-            className="absolute bottom-full left-1/2 mb-1 flex h-36 w-11 -translate-x-1/2 items-center justify-center rounded bg-[#262626] py-4"
+            className="absolute bottom-full left-1/2 mb-1 flex h-36 w-11 -translate-x-1/2 items-center justify-center rounded bg-nf-panel py-4"
           >
             <div
               ref={ref}
@@ -399,13 +399,13 @@ function TrackRow({ selected, main, detail, onClick }: { selected: boolean; main
       type="button"
       onClick={onClick}
       className={`flex w-full items-start gap-3 rounded px-3 py-2 text-left transition-colors hover:bg-white/10 ${
-        selected ? 'text-white' : 'text-[#b3b3b3]'
+        selected ? 'text-white' : 'text-nf-dim'
       }`}
     >
       <Check className={`mt-0.5 h-5 w-5 shrink-0 ${selected ? 'text-white' : 'text-transparent'}`} />
       <span className="min-w-0">
         <span className={`block text-lg leading-snug ${selected ? 'font-semibold' : ''}`}>{main}</span>
-        {detail && <span className="block truncate text-xs text-[#8c8c8c]">{detail}</span>}
+        {detail && <span className="block truncate text-xs text-nf-faint">{detail}</span>}
       </span>
     </button>
   );
@@ -415,7 +415,7 @@ function DelayControl({ label, value, prop, onSet }: { label: string; value: num
   const set = (v: number) => (onSet ? onSet(v) : void playerSet(prop, v.toFixed(1)));
   const step = (d: number) => set(Math.round((value + d) * 10) / 10);
   return (
-    <div className="flex items-center justify-between gap-3 text-sm text-[#b3b3b3]">
+    <div className="flex items-center justify-between gap-3 text-sm text-nf-dim">
       <span>{label}</span>
       <div className="flex items-center gap-1">
         <button type="button" onClick={() => step(-0.1)} className="h-7 w-9 rounded bg-white/10 font-semibold text-white hover:bg-white/20">
@@ -426,7 +426,7 @@ function DelayControl({ label, value, prop, onSet }: { label: string; value: num
           +
         </button>
         {value !== 0 && (
-          <button type="button" onClick={() => set(0)} className="ml-1 text-xs text-[#8c8c8c] hover:text-white">
+          <button type="button" onClick={() => set(0)} className="ml-1 text-xs text-nf-faint hover:text-white">
             Reset
           </button>
         )}
@@ -442,7 +442,7 @@ function TracksPanel({ tracks, state }: { tracks: PlayerTrack[]; state: BuiltinP
   const selectedSub = subs.find((t) => t.selected);
   const audioOutput = useLibraryStore((s) => s.audioOutput);
   return (
-    <div className="w-[min(640px,90vw)] rounded-md bg-[#262626]/95 p-5 shadow-2xl backdrop-blur">
+    <div className="w-[min(640px,90vw)] rounded-md bg-nf-panel/95 p-5 shadow-2xl backdrop-blur">
       <div className="grid grid-cols-2 gap-6">
         <div className="min-w-0">
           <h3 className="mb-2 px-3 text-2xl font-bold">Audio</h3>
@@ -453,7 +453,7 @@ function TracksPanel({ tracks, state }: { tracks: PlayerTrack[]; state: BuiltinP
                 return <TrackRow key={t.id} selected={!!t.selected} main={l.main} detail={l.detail} onClick={() => void playerSet('aid', t.id)} />;
               })
             ) : (
-              <p className="px-3 text-sm text-[#8c8c8c]">No audio tracks</p>
+              <p className="px-3 text-sm text-nf-faint">No audio tracks</p>
             )}
           </div>
         </div>
@@ -495,14 +495,14 @@ function AudioOutput() {
   }));
   return (
     <div className="mt-4 flex items-center gap-3 border-t border-white/10 pt-4 text-sm">
-      <span className="text-[#b3b3b3]">Speaker</span>
+      <span className="text-nf-dim">Speaker</span>
       <Dropdown value={device || 'auto'} options={options} onChange={(v) => void setAudioDevice(v)} ariaLabel="Speaker" className="min-w-[220px]" />
       <button
         type="button"
         onClick={() => void setPassthrough(!passthrough)}
         title="Sends Dolby Digital, Dolby Atmos (TrueHD) and DTS untouched to an AV receiver or soundbar over HDMI/optical. Volume, night mode and dialogue boost are then handled by the receiver."
         className={`ml-auto rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
-          passthrough ? 'border-white bg-white text-black' : 'border-white/30 text-[#b3b3b3] hover:border-white hover:text-white'
+          passthrough ? 'border-white bg-white text-black' : 'border-white/30 text-nf-dim hover:border-white hover:text-white'
         }`}
       >
         Receiver passthrough {passthrough ? 'on' : 'off'}
@@ -551,11 +551,11 @@ function SubtitleSync({ subtitlePath }: { subtitlePath: string }) {
   };
 
   return (
-    <div className="flex items-center justify-between gap-3 text-sm text-[#b3b3b3]">
+    <div className="flex items-center justify-between gap-3 text-sm text-nf-dim">
       <span>Out of sync?</span>
       <div className="flex items-center gap-2">
         {canUndo && busy == null && (
-          <button type="button" onClick={() => void undo()} className="text-xs text-[#8c8c8c] hover:text-white">
+          <button type="button" onClick={() => void undo()} className="text-xs text-nf-faint hover:text-white">
             Undo sync
           </button>
         )}
@@ -565,7 +565,7 @@ function SubtitleSync({ subtitlePath }: { subtitlePath: string }) {
           disabled={busy != null}
           className="flex items-center gap-1.5 rounded bg-white/10 px-3 py-1 font-semibold text-white hover:bg-white/20 disabled:opacity-70"
         >
-          {busy != null ? `Listening to the dialogue… ${Math.round(busy * 100)}%` : 'Sync to dialogue'}
+          {busy != null ? `Listening to the dialogue… ${formatPercent(busy * 100)}` : 'Sync to dialogue'}
         </button>
       </div>
     </div>
@@ -586,13 +586,13 @@ function AudioEnhancements() {
       onClick={onClick}
       title={hint}
       className={`flex flex-1 items-center gap-3 rounded border px-3 py-2 text-left transition-colors ${
-        on ? 'border-white bg-white/15 text-white' : 'border-white/20 text-[#b3b3b3] hover:border-white/50 hover:text-white'
+        on ? 'border-white bg-white/15 text-white' : 'border-white/20 text-nf-dim hover:border-white/50 hover:text-white'
       }`}
     >
       {icon}
       <span className="min-w-0">
         <span className="block text-sm font-semibold">{label}</span>
-        <span className="block truncate text-xs text-[#8c8c8c]">{hint}</span>
+        <span className="block truncate text-xs text-nf-faint">{hint}</span>
       </span>
       <span className={`ml-auto h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors ${on ? 'bg-nf-red' : 'bg-white/25'}`}>
         <span className={`block h-4 w-4 rounded-full bg-white transition-transform ${on ? 'translate-x-4' : ''}`} />
@@ -609,8 +609,8 @@ function AudioEnhancements() {
 
 function SpeedPanel({ speed }: { speed: number }) {
   return (
-    <div className="w-[min(560px,90vw)] rounded-md bg-[#262626]/95 px-8 pb-7 pt-5 shadow-2xl backdrop-blur">
-      <h3 className="mb-6 text-2xl font-bold">Playback Speed</h3>
+    <div className="w-[min(560px,90vw)] rounded-md bg-nf-panel/95 px-8 pb-7 pt-5 shadow-2xl backdrop-blur">
+      <h3 className="mb-6 text-2xl font-bold">Playback speed</h3>
       <div className="relative flex justify-between">
         <div className="absolute left-3 right-3 top-[11px] h-[2px] bg-white/30" />
         {SPEEDS.map((s) => {
@@ -618,9 +618,9 @@ function SpeedPanel({ speed }: { speed: number }) {
           return (
             <button key={s} type="button" onClick={() => void playerSet('speed', s)} className="relative z-10 flex flex-col items-center gap-3">
               <span
-                className={`flex h-6 w-6 items-center justify-center rounded-full ${on ? 'border-[5px] border-white bg-nf-red' : 'bg-[#808080] hover:bg-white'}`}
+                className={`flex h-6 w-6 items-center justify-center rounded-full ${on ? 'border-[5px] border-white bg-nf-red' : 'bg-white/40 hover:bg-white'}`}
               />
-              <span className={`text-sm ${on ? 'font-bold text-white' : 'text-[#b3b3b3]'}`}>{s === 1 ? '1x (Normal)' : `${s}x`}</span>
+              <span className={`text-sm ${on ? 'font-bold text-white' : 'text-nf-dim'}`}>{s === 1 ? '1x (Normal)' : `${s}x`}</span>
             </button>
           );
         })}
@@ -641,11 +641,11 @@ function SleepPanel({ isEpisode, onPick }: { isEpisode: boolean; onPick: () => v
   const chip = (on: boolean) =>
     `rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${on ? 'border-white bg-white text-black' : 'border-white/30 text-white hover:border-white'}`;
   return (
-    <div className="w-[min(520px,90vw)] rounded-md bg-[#262626]/95 p-6 shadow-2xl backdrop-blur">
-      <h3 className="text-2xl font-bold">Sleep Timer</h3>
-      <p className="mb-5 mt-1 text-sm text-[#b3b3b3]">
+    <div className="w-[min(520px,90vw)] rounded-md bg-nf-panel/95 p-6 shadow-2xl backdrop-blur">
+      <h3 className="text-2xl font-bold">Sleep timer</h3>
+      <p className="mb-5 mt-1 text-sm text-nf-dim">
         {timer?.mode === 'minutes'
-          ? `Pausing in ${formatTimestamp(remaining)}. The sound fades out first.`
+          ? `Pausing in ${formatClock(remaining)}. The sound fades out first.`
           : timer?.mode === 'episode'
             ? `Stopping when this ${isEpisode ? 'episode' : 'movie'} ends.`
             : 'Fade out and pause after a while, or stop at the end.'}
@@ -702,12 +702,12 @@ function PlayerPrompt({ session }: { session: PlayerSession }) {
             {prompt === 'still-watching' ? (
               <>
                 <h2 className="text-5xl font-bold leading-tight">Are you still watching {session.title}?</h2>
-                <p className="text-lg text-[#b3b3b3]">We paused so you don’t miss anything.</p>
+                <p className="text-lg text-nf-dim">We paused so you don’t miss anything.</p>
               </>
             ) : prompt === 'limit' || prompt === 'bedtime' ? (
               <>
                 <h2 className="text-5xl font-bold leading-tight">{prompt === 'limit' ? 'That’s all for today!' : 'It’s bedtime'}</h2>
-                <p className="text-lg text-[#b3b3b3]">
+                <p className="text-lg text-nf-dim">
                   {prompt === 'limit'
                     ? `${profileName}’s TV time for today is used up. See you tomorrow!`
                     : `${profileName} can watch again in the morning. Sleep tight!`}
@@ -718,7 +718,7 @@ function PlayerPrompt({ session }: { session: PlayerSession }) {
                 <h2 className="flex items-center gap-4 text-5xl font-bold">
                   <Moon className="h-12 w-12" /> Sleep timer ended
                 </h2>
-                <p className="text-lg text-[#b3b3b3]">{session.title} is paused. Good night.</p>
+                <p className="text-lg text-nf-dim">{session.title} is paused. Good night.</p>
               </>
             )}
             <div className="flex flex-col gap-3 sm:w-72">
@@ -749,7 +749,6 @@ function PlayerPrompt({ session }: { session: PlayerSession }) {
   );
 }
 
-const clock = (t: number) => formatTimestamp(Math.max(0, t));
 
 /** Chapter list with thumbnails, plus hand-editing of the intro/credits skip markers. */
 function ChaptersPanel({
@@ -800,16 +799,16 @@ function ChaptersPanel({
     const t = Math.round(time * 10) / 10;
     const start = edge === 'start' ? t : intro && intro.start < t ? intro.start : Math.max(0, t - 60);
     const end = edge === 'end' ? t : intro && intro.end > t ? intro.end : Math.min(duration, t + 60);
-    void save([...others('intro'), { kind: 'intro', start, end, source: 'manual' }], edge === 'start' ? `Intro starts at ${clock(start)}` : `Intro ends at ${clock(end)}`);
+    void save([...others('intro'), { kind: 'intro', start, end, source: 'manual' }], edge === 'start' ? `Intro starts at ${formatClock(start)}` : `Intro ends at ${formatClock(end)}`);
   };
   const setCredits = () => {
     const t = Math.round(time * 10) / 10;
-    void save([...others('credits'), { kind: 'credits', start: t, end: duration, source: 'manual' }], `Credits start at ${clock(t)}`);
+    void save([...others('credits'), { kind: 'credits', start: t, end: duration, source: 'manual' }], `Credits start at ${formatClock(t)}`);
   };
   const markerBtn = 'rounded bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-40';
 
   return (
-    <div className="w-[min(560px,90vw)] rounded-md bg-[#262626]/95 p-5 shadow-2xl backdrop-blur">
+    <div className="w-[min(560px,90vw)] rounded-md bg-nf-panel/95 p-5 shadow-2xl backdrop-blur">
       {list.length > 0 && (
         <>
           <h3 className="mb-3 text-2xl font-bold">Chapters</h3>
@@ -828,8 +827,8 @@ function ChaptersPanel({
                   {thumbs[i] && <img src={thumbs[i]} alt="" className="h-full w-full object-cover" />}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className={`block truncate ${i === currentIdx ? 'font-semibold text-white' : 'text-[#d2d2d2]'}`}>{c.title || `Chapter ${i + 1}`}</span>
-                  <span className="text-xs tabular-nums text-[#8c8c8c]">{clock(c.time)}</span>
+                  <span className={`block truncate ${i === currentIdx ? 'font-semibold text-white' : 'text-nf-soft'}`}>{c.title || `Chapter ${i + 1}`}</span>
+                  <span className="text-xs tabular-nums text-nf-faint">{formatClock(c.time)}</span>
                 </span>
               </button>
             ))}
@@ -837,11 +836,11 @@ function ChaptersPanel({
         </>
       )}
       <h3 className={`${list.length ? 'border-t border-white/10 pt-4' : ''} mb-1 text-lg font-bold`}>Skip markers</h3>
-      <p className="mb-3 text-xs text-[#8c8c8c]">Wrong or missing? Pause where it starts or ends and set it here. Saved for this {session.target.type === 'movie' ? 'movie' : 'episode'}.</p>
+      <p className="mb-3 text-xs text-nf-faint">Wrong or missing? Pause where it starts or ends and set it here. Saved for this {session.target.type === 'movie' ? 'movie' : 'episode'}.</p>
       <div className="space-y-3 text-sm">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="w-16 text-[#b3b3b3]">Intro</span>
-          <span className="w-32 tabular-nums">{intro ? `${clock(intro.start)} – ${clock(intro.end)}` : 'Not set'}</span>
+          <span className="w-16 text-nf-dim">Intro</span>
+          <span className="w-32 tabular-nums">{intro ? `${formatClock(intro.start)} – ${formatClock(intro.end)}` : 'Not set'}</span>
           <button type="button" className={markerBtn} onClick={() => setIntro('start')}>
             Starts here
           </button>
@@ -849,19 +848,19 @@ function ChaptersPanel({
             Ends here
           </button>
           {intro && (
-            <button type="button" className="text-xs text-[#8c8c8c] hover:text-white" onClick={() => void save(others('intro'), 'Intro marker removed')}>
+            <button type="button" className="text-xs text-nf-faint hover:text-white" onClick={() => void save(others('intro'), 'Intro marker removed')}>
               Remove
             </button>
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="w-16 text-[#b3b3b3]">Credits</span>
-          <span className="w-32 tabular-nums">{credits ? `from ${clock(credits.start)}` : 'Not set'}</span>
+          <span className="w-16 text-nf-dim">Credits</span>
+          <span className="w-32 tabular-nums">{credits ? `from ${formatClock(credits.start)}` : 'Not set'}</span>
           <button type="button" className={markerBtn} onClick={setCredits}>
             Start here
           </button>
           {credits && (
-            <button type="button" className="text-xs text-[#8c8c8c] hover:text-white" onClick={() => void save(others('credits'), 'Credits marker removed')}>
+            <button type="button" className="text-xs text-nf-faint hover:text-white" onClick={() => void save(others('credits'), 'Credits marker removed')}>
               Remove
             </button>
           )}
@@ -1134,7 +1133,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
             className="pointer-events-none absolute inset-0 flex items-center bg-black/60 px-[6%]"
           >
             <div className="max-w-[45%] space-y-3">
-              <div className="text-lg text-[#b3b3b3]">You’re watching</div>
+              <div className="text-lg text-nf-dim">You’re watching</div>
               {session.logo ? (
                 <img src={session.logo} alt={session.title} className="max-h-28 max-w-full object-contain object-left" />
               ) : (
@@ -1145,9 +1144,9 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
                   {session.subtitle?.split(' · ')[0].replace(':', ' ')}: “{title.name}”
                 </div>
               )}
-              {session.overview && <p className="line-clamp-4 text-lg leading-snug text-[#d2d2d2]">{session.overview}</p>}
+              {session.overview && <p className="line-clamp-4 text-lg leading-snug text-nf-soft">{session.overview}</p>}
             </div>
-            <div className="absolute bottom-[8%] right-[6%] text-xl font-semibold text-[#b3b3b3]">Paused</div>
+            <div className="absolute bottom-[8%] right-[6%] text-xl font-semibold text-nf-dim">Paused</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1174,7 +1173,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
                 className="flex items-center gap-1.5 rounded-full bg-black/40 px-3 py-1 text-xs font-semibold tabular-nums text-white/90"
               >
                 <Timer className="h-3.5 w-3.5" />
-                {sleepTimer.mode === 'minutes' ? `Sleep in ${formatTimestamp(sleepLeft)}` : `Stopping after this ${session.target.type === 'episode' ? 'episode' : 'movie'}`}
+                {sleepTimer.mode === 'minutes' ? `Sleep in ${formatClock(sleepLeft)}` : `Stopping after this ${session.target.type === 'episode' ? 'episode' : 'movie'}`}
               </button>
             )}
             {isHdr && (
@@ -1211,7 +1210,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         >
           <div className="mb-2 flex items-center gap-4">
             <Scrubber time={time} duration={duration} chapters={chapters} onSeek={(t) => void playerCommand('seek', t.toFixed(2), 'absolute')} />
-            <span className="w-20 text-right text-lg tabular-nums text-white/90">{state?.duration ? formatTimestamp(remaining) : '--:--'}</span>
+            <span className="w-20 text-right text-lg tabular-nums text-white/90">{state?.duration ? formatClock(remaining) : '--:--'}</span>
           </div>
 
           <div className="flex items-center">
@@ -1233,7 +1232,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
               {title.ep && (
                 <>
                   <span className="mx-2 font-bold">{title.ep}</span>
-                  <span className="text-[#d2d2d2]">{title.name}</span>
+                  <span className="text-nf-soft">{title.name}</span>
                 </>
               )}
             </div>
@@ -1247,7 +1246,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
               <ControlButton label={playerControlTitles.tracks} onClick={() => setPanel(panel === 'tracks' ? null : 'tracks')} active={panel === 'tracks'}>
                 <MessageSquareText className="h-8 w-8" />
               </ControlButton>
-              <ControlButton label="Playback Speed" onClick={() => setPanel(panel === 'speed' ? null : 'speed')} active={panel === 'speed'}>
+              <ControlButton label="Playback speed" onClick={() => setPanel(panel === 'speed' ? null : 'speed')} active={panel === 'speed'}>
                 <Gauge className="h-8 w-8" />
               </ControlButton>
               <ControlButton label="Chapters & skip markers (C)" onClick={() => setPanel(panel === 'chapters' ? null : 'chapters')} active={panel === 'chapters'}>
@@ -1301,7 +1300,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
             onClick={(e) => e.stopPropagation()}
             className="absolute left-1/2 top-6 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-5 py-2.5 text-sm font-semibold backdrop-blur"
           >
-            <Sparkles className="h-4 w-4 text-[#ffd76a]" />
+            <Sparkles className="h-4 w-4 text-nf-gold" />
             {stinger === 'during' ? 'Keep watching: there’s a scene during the credits' : 'Stay tuned: there’s a scene after the credits'}
           </motion.div>
         )}

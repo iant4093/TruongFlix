@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, Trash2, Undo2 } from 'lucide-react';
+import { Trash2, Undo2 } from 'lucide-react';
 import type { TrashRow } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { daysLeft, emptyTrash, formatBytes, listTrash, purgeTrash, restoreTrash, TRASH_RETENTION_DAYS } from '../../services/files';
+import { formatBytes } from '../../lib/format';
+import { daysLeft, emptyTrash, listTrash, purgeTrash, restoreTrash, TRASH_RETENTION_DAYS } from '../../services/files';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import { BTN, BTN_DANGER, Group, Page, Row } from './ui';
+import Spinner from '../common/Spinner';
 
-const KIND_LABEL: Record<TrashRow['kind'], string> = { movie: 'Movie', tv: 'TV Show', episode: 'Episode' };
+const KIND_LABEL: Record<TrashRow['kind'], string> = { movie: 'Movie', tv: 'TV show', episode: 'Episode' };
 
 export default function TrashPage() {
   const toast = useLibraryStore((s) => s.toast);
@@ -37,7 +39,7 @@ export default function TrashPage() {
     const ok = await confirm({
       title: `Permanently delete “${row.label}”?`,
       message: `${formatBytes(row.size_bytes)} will be erased from disk. This can’t be undone.`,
-      confirmLabel: 'Delete Forever',
+      confirmLabel: 'Delete forever',
       danger: true,
     });
     if (ok)
@@ -50,7 +52,7 @@ export default function TrashPage() {
   const empty = async () => {
     const total = (rows ?? []).reduce((n, r) => n + r.size_bytes, 0);
     const ok = await confirm({
-      title: 'Empty Recently Deleted?',
+      title: 'Empty Recently deleted?',
       message: `${rows?.length} item${rows?.length === 1 ? '' : 's'} (${formatBytes(total)}) will be erased from disk. This can’t be undone.`,
       confirmLabel: 'Empty',
       danger: true,
@@ -59,7 +61,7 @@ export default function TrashPage() {
   };
 
   return (
-    <Page title="Recently Deleted" description={`Deleted titles stay here for ${TRASH_RETENTION_DAYS} days, then they’re removed from disk for good.`}>
+    <Page title="Recently deleted" description={`Deleted titles stay here for ${TRASH_RETENTION_DAYS} days, then they’re removed from disk for good.`}>
       <Group>
         {!rows ? (
           <Row label="Loading…" />
@@ -79,18 +81,18 @@ export default function TrashPage() {
                   </div>
                   <div className="text-xs text-nf-muted">
                     {KIND_LABEL[row.kind]} · {formatBytes(row.size_bytes)} ·{' '}
-                    <span className={left <= 3 ? 'text-[#e87c03]' : ''}>
+                    <span className={left <= 3 ? 'text-nf-warn' : ''}>
                       {left} day{left === 1 ? '' : 's'} left
                     </span>
                   </div>
                 </div>
                 <button onClick={() => run(row.id, () => restoreTrash(row))} disabled={busy != null} className={BTN}>
-                  {busy === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Undo2 className="h-4 w-4" />} Restore
+                  {busy === row.id ? <Spinner className="h-4 w-4" tone="inherit" /> : <Undo2 className="h-4 w-4" />} Restore
                 </button>
                 <button
                   onClick={() => void purge(row)}
                   disabled={busy != null}
-                  title="Delete forever"
+                  aria-label="Delete forever" title="Delete forever"
                   className="flex h-9 w-9 items-center justify-center rounded text-white/50 transition hover:bg-nf-red/20 hover:text-nf-red disabled:opacity-40"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -102,7 +104,7 @@ export default function TrashPage() {
       </Group>
       {!!rows?.length && (
         <button onClick={() => void empty()} disabled={busy != null} className={BTN_DANGER}>
-          {busy === 'all' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Empty Recently Deleted
+          {busy === 'all' ? <Spinner className="h-4 w-4" tone="inherit" /> : <Trash2 className="h-4 w-4" />} Empty Recently deleted
         </button>
       )}
     </Page>

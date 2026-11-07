@@ -29,7 +29,7 @@ function LibraryBillboard({ game, onOpen, onDownload, onInstall }: GameOpeners &
   const eyebrow = running ? 'Playing now' : installed ? (game.lastPlayed ? 'Continue playing' : 'Recently installed') : 'In progress';
   const extra = installed
     ? <span className="text-nf-green">{game.lastPlayed ? `Played ${relativeDay(game.lastPlayed)} · ${formatPlayTime(game.playSeconds)} total` : 'Ready to play'}</span>
-    : <span className={job ? 'text-white' : 'text-sky-300'}>{gameStatusLabel(game, job, torrent)}</span>;
+    : <span className={job ? 'text-white' : 'text-nf-download-text'}>{gameStatusLabel(game, job, torrent)}</span>;
   return (
     <GameBillboard
       id={`library-${game.id}`}

@@ -16,7 +16,7 @@ export default function EventCard({
   const teams = useLiveStore((s) => s.preferences.teams);
   const favourite = event.teams.some((t) => teams.includes(t.id));
   return (
-    <article className="relative overflow-hidden rounded-lg border border-white/10 bg-[#202020] transition hover:-translate-y-1 hover:border-white/25">
+    <article className="relative overflow-hidden rounded-lg border border-white/10 bg-nf-hover transition hover:-translate-y-1 hover:border-white/25">
       <button onClick={onOpen} className="w-full text-left">
         <EventScoreboard event={event} />
         <div className="p-4">
@@ -42,8 +42,8 @@ export default function EventCard({
       </button>
       <button
         className="absolute right-2 top-2 rounded-full bg-black/40 p-2 text-white/70 hover:text-yellow-400"
-        title="Favourite these teams"
-        aria-label={`Favourite teams in ${event.name}`}
+        title="Favorite these teams"
+        aria-label={`Favorite teams in ${event.name}`}
         aria-pressed={favourite}
         onClick={() =>
           void setLivePreferences({

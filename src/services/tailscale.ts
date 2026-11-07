@@ -33,9 +33,3 @@ export const tailscaleServe = (enable: boolean, port: number) =>
 
 export const remoteSessions = () => invoke<RemoteSession[]>('remote_sessions');
 export const signOutRemote = (id: string | null) => invoke('remote_session_revoke', { id });
-
-/** True for addresses Tailscale hands out (100.64.0.0/10). */
-export function isTailscaleAddress(ip: string) {
-  const [a, b] = ip.split('.').map(Number);
-  return a === 100 && b >= 64 && b <= 127;
-}

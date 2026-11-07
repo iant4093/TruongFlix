@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { FolderOpen, Magnet, RefreshCw } from 'lucide-react';
-import type { MediaItem } from '../../types/media';
+import type { MediaItem, TorrentItem } from '../../types/media';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
 import { continueWatching, genreBuckets, seededShuffle } from '../../store/selectors';
 import { runScan } from '../../services/scanner';
@@ -61,13 +61,35 @@ function EmptyLibrary() {
   );
 }
 
+/** "Downloading Now": the only row that follows torrent progress, so the rest never rebuild on polls. */
+function DownloadingRow({ items }: { items: MediaItem[] }) {
+  // A key string keeps the selector stable while progress numbers tick.
+  const last = useRef<{ items: MediaItem[]; torrents: TorrentItem[]; keys: string } | null>(null);
+  const keys = useLibraryStore((s) => {
+    if (!s.torrents.length) return '';
+    if (last.current?.items === items && last.current.torrents === s.torrents) return last.current.keys;
+    let out = '';
+    for (const i of items) {
+      const t = torrentForItem(i, s.torrents);
+      if (t && isActiveDownload(t)) out += `${i.key}\n`;
+    }
+    last.current = { items, torrents: s.torrents, keys: out };
+    return out;
+  });
+  const entries = useMemo(() => {
+    const set = new Set(keys.split('\n'));
+    return wrap(items.filter((i) => set.has(i.key)));
+  }, [items, keys]);
+  if (!entries.length) return null;
+  return <MediaRow title="Downloading Now" entries={entries} />;
+}
+
 /** Home / TV Shows / Movies pages: hero billboard + Netflix rows. */
 export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movies'> }) {
   const allItems = useLibraryStore((s) => s.items);
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
   const collections = useLibraryStore((s) => s.collections);
-  const torrents = useLibraryStore((s) => s.torrents);
 
   const items = useMemo(
     () => (view === 'home' ? allItems : allItems.filter((i) => i.kind === (view === 'tv' ? 'tv' : 'movie'))),
@@ -79,14 +101,6 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
   const rows = useMemo(() => {
     const out: { title: string; entries: RowEntry[]; top10?: MediaItem[] }[] = [];
     const noun = view === 'tv' ? 'TV Shows' : view === 'movies' ? 'Movies' : '';
-
-    const downloading = items.filter((i) => {
-      const t = torrentForItem(i, torrents);
-      return !!t && isActiveDownload(t);
-    });
-    if (downloading.length > 0) {
-      out.push({ title: 'Downloading Now', entries: wrap(downloading) });
-    }
 
     const cw = continueWatching(items, episodesBySeries);
     out.push({ title: 'Continue Watching for You', entries: cw.map((entry) => ({ item: entry.item, entry })) });
@@ -162,7 +176,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
 
     out.push({ title: 'Unidentified Files · Fix Match', entries: wrap(items.filter((i) => !i.matched)) });
     return out.filter((r) => r.entries.length || r.top10?.length);
-  }, [items, episodesBySeries, view, imdbEnabled, collections, torrents]);
+  }, [items, episodesBySeries, view, imdbEnabled, collections]);
 
   if (!items.length) return <EmptyLibrary />;
 
@@ -170,6 +184,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
     <>
       {featured && <HeroBillboard key={featured.key} item={featured} />}
       <div className={`relative z-10 flow-root pb-16 ${featured ? '-mt-32' : 'pt-24'}`}>
+        <DownloadingRow items={items} />
         {rows.map((r) =>
           r.top10 ? <Top10Row key={r.title} title={r.title} items={r.top10} /> : <MediaRow key={r.title} title={r.title} entries={r.entries} />,
         )}

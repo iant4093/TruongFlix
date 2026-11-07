@@ -4,9 +4,9 @@ import type { AudioDevice } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { listAudioDevices, setAudioDevice, setPassthrough } from '../../services/player';
 import Dropdown from '../common/Dropdown';
+import { IS_MAC } from '../../lib/platform';
 import { Group, Page, Row, ToggleRow } from './ui';
 
-const IS_MAC = navigator.userAgent.includes('Mac');
 
 export default function AudioPage() {
   const settings = useLibraryStore((s) => s.settings);
@@ -60,7 +60,7 @@ export default function AudioPage() {
                   delete next[key];
                   void updateSettings({ audio_delays: next });
                 }}
-                title="Reset to 0"
+                aria-label="Reset to 0" title="Reset to 0"
                 className="flex h-8 w-8 items-center justify-center rounded text-nf-muted hover:bg-white/10 hover:text-white"
               >
                 <X className="h-4 w-4" />

@@ -20,7 +20,6 @@ import {
   episodeFileProgress,
   formatDownloadingLabel,
   formatExpiryRemaining,
-  formatSpeed,
   keepStreamPermanently,
   torrentForEpisode,
 } from '../../services/torrents';
@@ -32,6 +31,9 @@ import { setWatched } from '../../services/db';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import ProgressBar from '../common/ProgressBar';
+import IconButton from '../common/IconButton';
+import { formatClock, formatPercent, formatSpeed } from '../../lib/format';
+import { errorMessage } from '../../lib/errors';
 import TechBadges from '../common/TechBadges';
 import SubtitlesPanel from '../common/SubtitlesPanel';
 import ImdbRating from '../common/ImdbRating';
@@ -86,7 +88,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
   const seasonRating = series.imdbSeasons[ep.season_number];
   const cast = series.cast.filter((c) => !c.job);
   const airDate = formatAirDate(ep.air_date);
-  const heroImage = ep.still_path ? resize(ep.still_path, 'original') : resize(series.backdrop, 'w1280');
+  const heroImage = ep.still_path ? resize(ep.still_path, 'w1280') : resize(series.backdrop, 'w1280');
 
   const toggleWatched = async () => {
     setBusy(true);
@@ -108,18 +110,14 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
 
         <button
           onClick={() => openEpisode(null)}
-          className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full bg-nf-surface/90 py-2 pl-2.5 pr-4 text-sm font-semibold text-white hover:bg-[#2a2a2a]"
+          className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full bg-nf-surface/90 py-2 pl-2.5 pr-4 text-sm font-semibold text-white hover:bg-nf-raised"
         >
           <ArrowLeft className="h-4 w-4" />
           {series.title}
         </button>
-        <button
-          onClick={() => openDetail(null)}
-          aria-label="Close"
-          className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-nf-surface text-white hover:bg-[#2a2a2a]"
-        >
+        <IconButton onClick={() => openDetail(null)} aria-label="Close" variant="surface" className="absolute right-4 top-4 z-10">
           <X className="h-5 w-5" />
-        </button>
+        </IconButton>
 
         <div className="absolute bottom-[8%] left-12 right-12 flex flex-col gap-3">
           {series.logo && !logoFailed ? (
@@ -145,13 +143,13 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
               {dlLocked
                 ? formatDownloadingLabel(dlLocked.pct)
                 : dlProg
-                  ? inProgress ? 'Resume Stream' : 'Stream Now'
+                  ? inProgress ? 'Resume stream' : 'Stream now'
                   : inProgress ? 'Resume' : 'Play'}
             </button>
             {inProgress && !dlLocked && (
               <button
                 onClick={() => play({ ...target, startTime: 0 })}
-                title="Play from beginning"
+                aria-label="Play from beginning" title="Play from beginning"
                 className="nf-circle-btn h-11 w-11"
               >
                 <RotateCcw className="h-5 w-5" />
@@ -160,13 +158,13 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
             <button
               onClick={toggleWatched}
               disabled={busy}
-              title={ep.watched ? 'Mark as unwatched' : 'Mark as watched'}
+              aria-label={ep.watched ? 'Mark as unwatched' : 'Mark as watched'} title={ep.watched ? 'Mark as unwatched' : 'Mark as watched'}
               className={`nf-circle-btn h-11 w-11 ${ep.watched ? '!border-white bg-white/10' : ''}`}
             >
               {ep.watched ? <Check className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
             </button>
             <button
-              onClick={() => revealInFileManager(ep.file_path).catch((e) => toast(String(e), 'error'))}
+              onClick={() => revealInFileManager(ep.file_path).catch((e) => toast(errorMessage(e), 'error'))}
               title={`Show in ${FILE_MANAGER_NAME}`}
               className="nf-circle-btn h-11 w-11"
             >
@@ -176,7 +174,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
               onClick={async () => {
                 if (await deleteMedia({ kind: 'episode', episode: ep, series })) openEpisode(null);
               }}
-              title="Delete episode"
+              aria-label="Delete episode" title="Delete episode"
               className="nf-circle-btn h-11 w-11 hover:!border-nf-red hover:!bg-nf-red/20"
             >
               <Trash2 className="h-5 w-5" />
@@ -192,7 +190,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
               <span className="inline-flex items-center gap-2">
                 <Clock className="h-4 w-4 text-amber-300" />
                 <span>
-                  <strong className="font-semibold">Temporary Stream</strong> · {expiry.label}
+                  <strong className="font-semibold">Temporary stream</strong> · {expiry.label}
                 </span>
               </span>
               <button
@@ -200,23 +198,21 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
                 onClick={() => void keepStreamPermanently(torrent.infoHash)}
                 className="inline-flex h-8 items-center gap-1.5 rounded bg-white px-3 text-xs font-semibold text-black hover:bg-white/85"
               >
-                <HardDriveDownload className="h-3.5 w-3.5" /> Keep in Library
+                <HardDriveDownload className="h-3.5 w-3.5" /> Keep in library
               </button>
             </div>
           )}
           {dlProg && (
-            <div className="space-y-2 rounded-lg border border-sky-400/25 bg-sky-500/[0.07] px-4 py-2.5 text-xs">
+            <div className="space-y-2 rounded-lg border border-nf-download/25 bg-nf-download/[0.07] px-4 py-2.5 text-xs">
               <div className="flex items-center justify-between gap-2">
-                <span className="inline-flex items-center gap-1.5 font-semibold text-sky-300">
-                  <Download className="h-3.5 w-3.5" /> Downloading episode · {dlProg.pct.toFixed(1)}%
+                <span className="inline-flex items-center gap-1.5 font-semibold text-nf-download-text">
+                  <Download className="h-3.5 w-3.5" /> Downloading episode · {formatPercent(dlProg.pct, 1)}
                 </span>
                 {torrent.downloadSpeedBps > 0 && !torrent.paused && (
-                  <span className="tabular-nums text-sky-200">↓ {formatSpeed(torrent.downloadSpeedBps)}</span>
+                  <span className="tabular-nums text-nf-download-text">↓ {formatSpeed(torrent.downloadSpeedBps)}</span>
                 )}
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${Math.max(4, dlProg.pct)}%` }} />
-              </div>
+              <ProgressBar value={dlProg.pct / 100} min={0.04} tone="download" size="regular" rounded animated className="!bg-white/10" />
             </div>
           )}
         </div>
@@ -309,7 +305,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
               <button
                 key={other.id}
                 onClick={() => openEpisode(other.id)}
-                className="group flex items-center gap-4 rounded-md bg-[#2f2f2f] p-3 text-left transition-colors hover:bg-[#383838]"
+                className="group flex items-center gap-4 rounded-md bg-nf-card p-3 text-left transition-colors hover:bg-nf-cardHover"
               >
                 {i === 0 && <ChevronLeft className="h-5 w-5 shrink-0 text-white/60 group-hover:text-white" />}
                 <div className="relative aspect-video w-[120px] shrink-0 overflow-hidden rounded">
@@ -333,8 +329,6 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
   );
 }
 
-const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
-
 /** Detected intro / recap / credits, so it's clear what Skip Intro will do. */
 function IntroInfo({ segments }: { segments: string | null }) {
   const list = parseSegments(segments);
@@ -345,7 +339,7 @@ function IntroInfo({ segments }: { segments: string | null }) {
       <span className="text-nf-muted">Skippable: </span>
       {list
         .sort((a, b) => a.start - b.start)
-        .map((x) => `${name[x.kind]} ${clock(x.start)}–${clock(x.end)}`)
+        .map((x) => `${name[x.kind]} ${formatClock(x.start)}–${formatClock(x.end)}`)
         .join(' · ')}
     </p>
   );

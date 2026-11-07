@@ -201,7 +201,7 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && save()}
             placeholder="Name"
-            className="w-full bg-[#666] px-3 py-2 text-lg text-white outline-none placeholder:text-white/60"
+            className="w-full bg-white/35 px-3 py-2 text-lg text-white outline-none placeholder:text-white/60"
           />
           <div>
             <div className="mb-2 text-sm text-nf-secondary">Colour</div>
@@ -275,7 +275,7 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
                 onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
                 inputMode="numeric"
                 placeholder="4-digit PIN"
-                className="w-36 bg-[#333] px-3 py-1.5 tracking-[0.4em] text-white outline-none placeholder:tracking-normal placeholder:text-white/50"
+                className="w-36 bg-nf-cardHover px-3 py-1.5 tracking-[0.4em] text-white outline-none placeholder:tracking-normal placeholder:text-white/50"
               />
               {pin && (
                 <button onClick={() => setPin('')} className="text-xs text-nf-muted hover:text-white">

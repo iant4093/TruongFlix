@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import Dialog from '../common/Dialog';
+import IconButton from '../common/IconButton';
+import Badge from '../common/Badge';
+import { formatBytes, formatPercent, formatSpeed } from '../../lib/format';
+import { errorMessage } from '../../lib/errors';
 import {
   Cast,
   Check,
@@ -24,11 +29,9 @@ import {
   canStreamTorrent,
   downloadBlockingPlayback,
   episodeFileProgress,
-  formatBytes,
   formatDownloadingLabel,
   formatEta,
   formatExpiryRemaining,
-  formatSpeed,
   isActiveDownload,
   keepStreamPermanently,
   pauseTorrent,
@@ -67,14 +70,12 @@ import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import ProgressBar from '../common/ProgressBar';
 import TechBadges from '../common/TechBadges';
-import { useModalDialog } from '../../hooks/useModalDialog';
 
 export default function DetailModal() {
   const detailKey = useLibraryStore((s) => s.detailKey);
   const liveItem = useLibraryStore(selectItem(detailKey));
   const openDetail = useLibraryStore((s) => s.openDetail);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
   const lastItem = useRef<MediaItem | null>(null);
   if (liveItem) lastItem.current = liveItem;
   // Keep rendering the last item while the modal plays its exit animation.
@@ -82,11 +83,6 @@ export default function DetailModal() {
 
   const episodeId = useLibraryStore((s) => s.detailEpisodeId);
   const openEpisode = useLibraryStore((s) => s.openEpisode);
-  const { onBackdropMouseDown } = useModalDialog(dialogRef, {
-    onClose: () => openDetail(null),
-    onEscape: () => episodeId != null ? openEpisode(null) : openDetail(null),
-    active: !!detailKey && !!liveItem, priority: 60,
-  });
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const episodes = item?.kind === 'tv' ? (episodesBySeries.get(item.id) ?? []) : [];
   const episode = episodeId != null ? (episodes.find((e) => e.id === episodeId) ?? null) : null;
@@ -113,27 +109,18 @@ export default function DetailModal() {
   if (!item) return null;
 
   return (
-    <motion.div
-      ref={scrollRef}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
-      onMouseDown={onBackdropMouseDown}
-      className="fixed inset-0 z-[60] flex justify-center overflow-y-auto bg-black/70 px-4 pb-10 pt-8 backdrop-blur-xs"
+    <Dialog
+      backdropRef={scrollRef}
+      onClose={() => openDetail(null)}
+      onEscape={() => episodeId != null ? openEpisode(null) : openDetail(null)}
+      active={!!detailKey && !!liveItem}
+      priority={60}
+      size="xl"
+      align="top"
+      chrome="none"
+      label={episode?.title ?? item.title}
+      className="overflow-hidden"
     >
-      <motion.div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={episode?.title ?? item.title}
-        tabIndex={-1}
-        initial={{ opacity: 0, scale: 0.94, y: 30 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.94, y: 30 }}
-        transition={{ duration: 0.28, ease: [0.21, 0, 0.27, 1] }}
-        className="relative h-max w-full max-w-4xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl"
-      >
         <motion.div
           key={episode ? `ep-${episode.id}` : item.key}
           initial={{ opacity: 0 }}
@@ -146,8 +133,7 @@ export default function DetailModal() {
             <DetailContent item={item} season={season} onSeasonChange={setSeason} />
           )}
         </motion.div>
-      </motion.div>
-    </motion.div>
+    </Dialog>
   );
 }
 
@@ -199,8 +185,8 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
     ? formatDownloadingLabel(blockingDownload.progressPct)
     : isDownloading && torrent && canStreamTorrent(torrent)
       ? target && target.startTime > 0
-        ? 'Resume Stream'
-        : 'Stream Now'
+        ? 'Resume stream'
+        : 'Stream now'
       : target && target.startTime > 0
         ? 'Resume'
         : 'Play';
@@ -233,13 +219,9 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           </div>
         )}
 
-        <button
-          onClick={() => openDetail(null)}
-          aria-label="Close"
-          className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-nf-surface text-white hover:bg-[#2a2a2a]"
-        >
+        <IconButton onClick={() => openDetail(null)} aria-label="Close" variant="surface" className="absolute right-4 top-4 z-10">
           <X className="h-5 w-5" />
-        </button>
+        </IconButton>
 
         <div className="absolute bottom-[8%] left-12 right-12 flex flex-col gap-5">
           {item.logo && !logoFailed ? (
@@ -261,7 +243,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             </button>
             <button
               onClick={() => toggleMyList(item)}
-              title={item.myList ? 'Remove from My List' : 'Add to My List'}
+              aria-label={item.myList ? 'Remove from My List' : 'Add to My List'} title={item.myList ? 'Remove from My List' : 'Add to My List'}
               className="nf-circle-btn h-11 w-11"
             >
               {item.myList ? <Check className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
@@ -269,18 +251,18 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             {target && !blockingDownload && (
               <button
                 onClick={() => useLibraryStore.getState().setCastPicker({ target, start: target.startTime })}
-                title="Cast to a TV"
+                aria-label="Cast to a TV" title="Cast to a TV"
                 className="nf-circle-btn h-11 w-11"
               >
                 <Cast className="h-4 w-4" />
               </button>
             )}
-            <button onClick={() => openFixMatch(item.key)} title="Fix Match" className="nf-circle-btn h-11 w-11">
+            <button onClick={() => openFixMatch(item.key)} title="Fix match" aria-label="Fix match" className="nf-circle-btn h-11 w-11">
               <Wrench className="h-4 w-4" />
             </button>
             {revealPath && (
               <button
-                onClick={() => revealInFileManager(revealPath).catch((e) => toast(String(e), 'error'))}
+                onClick={() => revealInFileManager(revealPath).catch((e) => toast(errorMessage(e), 'error'))}
                 title={`Show in ${FILE_MANAGER_NAME}`}
                 className="nf-circle-btn h-11 w-11"
               >
@@ -291,7 +273,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
               onClick={async () => {
                 if (await deleteMedia({ kind: item.kind, item })) openDetail(null);
               }}
-              title={item.kind === 'tv' ? 'Delete show' : 'Delete movie'}
+              aria-label={item.kind === 'tv' ? 'Delete show' : 'Delete movie'} title={item.kind === 'tv' ? 'Delete show' : 'Delete movie'}
               className="nf-circle-btn h-11 w-11 hover:!border-nf-red hover:!bg-nf-red/20"
             >
               <Trash2 className="h-4 w-4" />
@@ -314,7 +296,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
               <div className="flex items-center gap-2.5">
                 <Clock className="h-4 w-4 shrink-0 text-amber-300" />
                 <div>
-                  <span className="font-semibold">Temporary Stream</span>
+                  <span className="font-semibold">Temporary stream</span>
                   <span className="mx-2 text-white/40">·</span>
                   <span>{expiry.label}</span>
                 </div>
@@ -346,24 +328,24 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           )}
 
           {isDownloading && (
-            <div className="space-y-2.5 rounded-lg border border-sky-400/25 bg-sky-500/[0.07] px-4 py-3">
+            <div className="space-y-2.5 rounded-lg border border-nf-download/25 bg-nf-download/[0.07] px-4 py-3">
               <div className="space-y-3 text-xs">
                 <div className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-2 tabular-nums">
-                  <span className="inline-flex items-center gap-1.5 font-semibold text-sky-300">
+                  <span className="inline-flex items-center gap-1.5 font-semibold text-nf-download-text">
                     <Download className="h-3.5 w-3.5" />
                     {torrentStatusLabel(torrent)}
                   </span>
                   <span className="whitespace-nowrap text-right text-white/80">
-                    {torrent.progressPct.toFixed(1)}% ({formatBytes(torrent.progressBytes)} /{' '}
+                    {formatPercent(torrent.progressPct, 1)} ({formatBytes(torrent.progressBytes)} /{' '}
                     {torrent.totalBytes > 0 ? formatBytes(torrent.totalBytes) : '—'})
                   </span>
-                  <span className="text-sky-200">↓ {formatSpeed(isActiveDownload(torrent) ? torrent.downloadSpeedBps : 0)}</span>
+                  <span className="text-nf-download-text">↓ {formatSpeed(isActiveDownload(torrent) ? torrent.downloadSpeedBps : 0)}</span>
                   <span className="whitespace-nowrap text-right text-nf-secondary">
                     Peers {torrent.peersLive} · ETA {formatEta(isActiveDownload(torrent) ? torrent.etaSecs : null)}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between gap-3 border-t border-sky-400/10 pt-2.5">
+                <div className="flex items-center justify-between gap-3 border-t border-nf-download/10 pt-2.5">
                   <label className="flex cursor-pointer items-center gap-1.5 text-xs text-nf-secondary select-none">
                     <input
                       type="checkbox"
@@ -394,12 +376,15 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                 </div>
               </div>
 
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full bg-sky-400 transition-all duration-300"
-                  style={{ width: `${Math.min(100, Math.max(torrent.state === 'resolving' ? 4 : 0, torrent.progressPct))}%` }}
-                />
-              </div>
+              <ProgressBar
+                value={torrent.progressPct / 100}
+                min={torrent.state === 'resolving' ? 0.04 : 0}
+                tone="download"
+                size="regular"
+                rounded
+                animated
+                className="!bg-white/10"
+              />
             </div>
           )}
 
@@ -413,7 +398,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                 onClick={() => void stopSeedingTorrent(torrent.infoHash)}
                 className="nf-btn-ghost h-7 px-2.5 py-0 text-xs"
               >
-                <Square className="h-3 w-3" /> Stop Seeding
+                <Square className="h-3 w-3" /> Stop seeding
               </button>
             </div>
           )}
@@ -427,7 +412,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             <ImdbRating rating={item.imdbRating} votes={item.imdbVotes} imdbId={item.imdbId} showVotes size="md" />
             <CriticScores rt={item.rtScore} metacritic={item.metacritic} size="md" />
             {item.stinger && (
-              <span className="flex items-center gap-1 text-sm text-[#ffd76a]" title="TMDB lists a scene during or after the credits">
+              <span className="flex items-center gap-1 text-sm text-nf-gold" title="TMDB lists a scene during or after the credits">
                 <Sparkles className="h-4 w-4" />
                 {item.stinger === 'during' ? 'Scene during the credits' : item.stinger === 'after' ? 'Scene after the credits' : 'Scenes during & after the credits'}
               </span>
@@ -487,7 +472,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             <p className="text-sm text-nf-secondary">
               This file couldn’t be identified automatically.{' '}
               <button onClick={() => openFixMatch(item.key)} className="font-semibold text-white underline underline-offset-2">
-                Fix Match
+                Fix match
               </button>
             </p>
           )}
@@ -637,7 +622,7 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
             const upcoming = !info.air_date || info.air_date > today;
             const tmdbId = item.tmdbId;
             return (
-              <div key={`missing-${info.episode_number}`} className="group relative flex w-full items-center gap-5 rounded-md border-b border-[#404040] px-6 py-6 last:border-b-0 has-[button]:hover:bg-[#282828]">
+              <div key={`missing-${info.episode_number}`} className="group relative flex w-full items-center gap-5 rounded-md border-b border-nf-border px-6 py-6 last:border-b-0 has-[button]:hover:bg-nf-raised">
                 {canBrowse && tmdbId && <button type="button"
                   aria-label={`Find Season ${season}, Episode ${info.episode_number}, ${info.name} in Browse`}
                   className="absolute inset-0 z-10 rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white"
@@ -645,8 +630,8 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
                     item: { id: tmdbId, kind: 'tv', title: item.title, year: item.year, overview: item.overview, poster: item.poster, backdrop: item.backdrop, voteAverage: item.voteAverage },
                     episode: { season, episode: info.episode_number },
                   })} />}
-                <span className="w-6 shrink-0 text-center text-2xl text-[#6d6d6d]">{info.episode_number}</span>
-                <div className="relative aspect-video w-[130px] shrink-0 overflow-hidden rounded bg-[#2a2a2a]">
+                <span className="w-6 shrink-0 text-center text-2xl text-nf-muted">{info.episode_number}</span>
+                <div className="relative aspect-video w-[130px] shrink-0 overflow-hidden rounded bg-nf-raised">
                   {info.still_path && <Artwork src={info.still_path} alt={info.name} className="h-full w-full opacity-30 grayscale" />}
                 </div>
                 <div className="min-w-0 flex-1 opacity-60">
@@ -674,11 +659,11 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
           return (
             <div
               key={ep.id}
-              className="group relative flex w-full cursor-pointer items-center gap-5 rounded-md border-b border-[#404040] px-6 py-6 text-left transition-colors last:border-b-0 hover:bg-[#333]"
+              className="group relative flex w-full cursor-pointer items-center gap-5 rounded-md border-b border-nf-border px-6 py-6 text-left transition-colors last:border-b-0 hover:bg-nf-cardHover"
             >
               <button type="button" aria-label={`Episode details for ${ep.title}`} onClick={() => openEpisode(ep.id)}
                 className="absolute inset-0 rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white" />
-              <span className="w-6 shrink-0 text-center text-2xl text-[#d2d2d2]">{ep.episode_number}</span>
+              <span className="w-6 shrink-0 text-center text-2xl text-nf-soft">{ep.episode_number}</span>
               <button
                 type="button"
                 onClick={() => playEpisode(ep, item)}
@@ -701,7 +686,7 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
                 )}
                 {dlProg ? (
                   <div className="absolute inset-x-0 bottom-0 h-1.5 bg-black/80">
-                    <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${Math.max(4, dlProg.pct)}%` }} />
+                    <div className="h-full bg-nf-download transition-all duration-300" style={{ width: `${Math.max(4, dlProg.pct)}%` }} />
                   </div>
                 ) : (
                   progress > 0 && (
@@ -723,9 +708,7 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
                 <div className="mt-1.5 flex items-center gap-2">
                   <TechBadges tech={ep} showCodec={false} showAudio={false} />
                   {dlProg && (
-                    <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-sky-300">
-                      {formatDownloadingLabel(dlProg.pct)}
-                    </span>
+                    <Badge tone="download">{formatDownloadingLabel(dlProg.pct)}</Badge>
                   )}
                   {ep.watched ? <span className="text-[11px] text-nf-muted">Watched</span> : null}
                 </div>
@@ -782,7 +765,7 @@ function CollectionSection({ item }: { item: MediaItem }) {
               className="group rounded-md text-left disabled:cursor-default"
             >
               <div
-                className={`relative aspect-[2/3] overflow-hidden rounded-md bg-[#2f2f2f] ${
+                className={`relative aspect-[2/3] overflow-hidden rounded-md bg-nf-card ${
                   current ? 'ring-2 ring-white' : owned || browse ? 'transition group-hover:ring-2 group-hover:ring-white/60' : ''
                 }`}
               >
@@ -834,11 +817,11 @@ function WatchedMenu({ episodes, season, seasonLabel }: { episodes: EpisodeRow[]
   const item = 'block w-full px-4 py-2 text-left text-sm hover:bg-white/10';
   return (
     <div ref={ref} className="relative">
-      <button onClick={() => setOpen(!open)} title="Mark watched or unwatched" className="nf-circle-btn h-11 w-11">
+      <button onClick={() => setOpen(!open)} aria-label="Mark watched or unwatched" title="Mark watched or unwatched" className="nf-circle-btn h-11 w-11">
         <CheckCheck className="h-5 w-5" />
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-2 w-60 overflow-hidden rounded-md border border-white/15 bg-[#242424] py-1 shadow-2xl">
+        <div className="absolute right-0 top-full z-20 mt-2 w-60 overflow-hidden rounded-md border border-white/15 bg-nf-menu py-1 shadow-2xl">
           {inSeason.length > 0 && (
             <>
               <button className={item} onClick={() => void run(inSeason, true, seasonLabel)}>
@@ -890,7 +873,7 @@ function MoreLikeThis({ item }: { item: MediaItem }) {
         {similar.map((s) => (
           <div
             key={s.key}
-            className="relative cursor-pointer overflow-hidden rounded-md bg-[#2f2f2f] transition-colors hover:bg-[#383838]"
+            className="relative cursor-pointer overflow-hidden rounded-md bg-nf-card transition-colors hover:bg-nf-cardHover"
           >
             <button type="button" aria-label={`View ${s.title}`} onClick={() => openDetail(s.key)}
               className="absolute inset-0 z-10 rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white" />
@@ -925,7 +908,7 @@ function MoreLikeThis({ item }: { item: MediaItem }) {
                   {s.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                 </button>
               </div>
-              <p className="line-clamp-4 text-[13px] leading-snug text-[#d2d2d2]">{s.overview}</p>
+              <p className="line-clamp-4 text-[13px] leading-snug text-nf-soft">{s.overview}</p>
             </div>
           </div>
         ))}

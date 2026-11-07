@@ -64,7 +64,7 @@ export default function Toasts() {
           <motion.div
             key={t.id}
             {...enter}
-            className="pointer-events-auto flex w-full items-start gap-3 rounded-md border border-white/10 bg-[#232323]/95 px-4 py-3 text-sm text-white shadow-2xl backdrop-blur"
+            className="pointer-events-auto flex w-full items-start gap-3 rounded-md border border-white/10 bg-nf-hover/95 px-4 py-3 text-sm text-white shadow-2xl backdrop-blur"
           >
             {t.kind === 'error' ? (
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-nf-red" />
@@ -74,7 +74,7 @@ export default function Toasts() {
               <Info className="mt-0.5 h-4 w-4 shrink-0 text-white/70" />
             )}
             <span className="flex-1 leading-snug">{t.message}</span>
-            <button onClick={() => dismiss(t.id)} className="text-white/50 hover:text-white">
+            <button onClick={() => dismiss(t.id)} aria-label="Dismiss" className="text-white/50 hover:text-white">
               <X className="h-4 w-4" />
             </button>
           </motion.div>
@@ -84,7 +84,7 @@ export default function Toasts() {
           <motion.div
             key="scan"
             {...enter}
-            className="pointer-events-auto w-full overflow-hidden rounded-md border border-white/10 bg-[#181818]/95 shadow-2xl backdrop-blur"
+            className="pointer-events-auto w-full overflow-hidden rounded-md border border-white/10 bg-nf-surface/95 shadow-2xl backdrop-blur"
           >
             <div className="flex items-center gap-3 px-4 pb-2.5 pt-3">
               {scan.running ? (
@@ -106,7 +106,7 @@ export default function Toasts() {
                 <div className="truncate text-xs text-nf-muted">{scan.message}</div>
               </div>
               {finished && (
-                <button onClick={() => setShowScan(false)} className="self-start text-white/50 hover:text-white">
+                <button onClick={() => setShowScan(false)} aria-label="Dismiss" className="self-start text-white/50 hover:text-white">
                   <X className="h-4 w-4" />
                 </button>
               )}

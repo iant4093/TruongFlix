@@ -3,6 +3,7 @@ import { Slider, useItemsPerRow } from '../../components/home/MediaRow';
 import { launchGame } from '../jobs';
 import type { GameCard } from '../types';
 import { toastError, useOwnedGame } from './actions';
+import ProgressBar from '../../components/common/ProgressBar';
 import GameCover from './GameCover';
 import { formatPlayTime, gameProgress, gameStatusLabel, isInstalled } from './status';
 
@@ -45,7 +46,7 @@ export function GamePoster({ game, onOpen, caption = false }: { game: GameCard; 
           </div>
 
           {busy && owned && (
-            <span className={`absolute left-1.5 top-1.5 z-20 inline-flex max-w-[calc(100%-12px)] items-center gap-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ring-1 ring-white/15 backdrop-blur-xs ${job ? 'text-white' : 'text-sky-300'}`}>
+            <span className={`absolute left-1.5 top-1.5 z-20 inline-flex max-w-[calc(100%-12px)] items-center gap-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ring-1 ring-white/15 backdrop-blur-xs ${job ? 'text-white' : 'text-nf-download-text'}`}>
               {job ? <Loader2 className="h-2.5 w-2.5 shrink-0 animate-spin" /> : <Download className="h-2.5 w-2.5 shrink-0" />}
               <span className="truncate">{status}</span>
             </span>
@@ -64,9 +65,7 @@ export function GamePoster({ game, onOpen, caption = false }: { game: GameCard; 
           )}
 
           {progress != null && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-1.5 bg-black/80">
-              <div className={`h-full transition-all duration-300 ${job ? 'bg-nf-red' : 'bg-sky-400'}`} style={{ width: `${Math.max(3, progress)}%` }} />
-            </div>
+            <ProgressBar value={progress / 100} min={0.03} size="regular" tone={job ? 'red' : 'download'} track="overlay" animated className="pointer-events-none absolute inset-x-0 bottom-0 z-20" />
           )}
         </div>
       </div>

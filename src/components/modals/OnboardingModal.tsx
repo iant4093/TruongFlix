@@ -65,7 +65,7 @@ export default function OnboardingModal() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className={`fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-[#141414] p-6 ${present ? '' : 'pointer-events-none'}`}
+      className={`fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-nf-bg p-6 ${present ? '' : 'pointer-events-none'}`}
     >
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(229,9,20,0.22),transparent_60%),radial-gradient(ellipse_at_bottom_left,rgba(229,9,20,0.10),transparent_55%)]" />
       <div className="absolute left-[4%] top-6">

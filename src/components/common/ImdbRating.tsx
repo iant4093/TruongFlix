@@ -21,7 +21,7 @@ export default function ImdbRating({ rating, votes, imdbId, showVotes, suffix, s
   const badge = size === 'md' ? 'text-[11px] px-[5px] py-[1px]' : 'text-[9px] px-1 py-0';
   const content = (
     <>
-      <span className={`rounded-[3px] bg-[#F5C518] font-black leading-[1.35] tracking-tight text-black ${badge}`}>IMDb</span>
+      <span className={`rounded-[3px] bg-nf-imdb font-black leading-[1.35] tracking-tight text-black ${badge}`}>IMDb</span>
       <span className="font-semibold text-white">{rating.toFixed(1)}</span>
       {showVotes && votes ? <span className="font-normal text-nf-muted">({formatVotes(votes)})</span> : null}
       {suffix && <span className="font-normal text-nf-muted">{suffix}</span>}

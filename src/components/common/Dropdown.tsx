@@ -151,7 +151,7 @@ export default function Dropdown<T extends string | number>({
           }
         }}
         className={`inline-flex shrink-0 items-center justify-between gap-3 rounded border font-semibold text-white outline-none transition-colors focus-visible:border-white ${
-          open ? 'border-white/70 bg-[#2c2c2c]' : 'border-[#4d4d4d] bg-[#242424] hover:bg-[#2c2c2c]'
+          open ? 'border-white/70 bg-nf-raised' : 'border-nf-track bg-nf-menu hover:bg-nf-raised'
         } ${height} ${className}`}
       >
         <span className="truncate">{current?.label ?? 'Select…'}</span>
@@ -174,7 +174,7 @@ export default function Dropdown<T extends string | number>({
               maxHeight: pos.maxHeight,
               transformOrigin: pos.up ? 'bottom' : 'top',
             }}
-            className="nf-menu-enter z-[250] overflow-y-auto overscroll-contain rounded-md border border-[#4d4d4d] bg-[#242424]/[0.98] py-1 shadow-[0_10px_30px_rgba(0,0,0,0.6)] backdrop-blur"
+            className="nf-menu-enter z-[250] overflow-y-auto overscroll-contain rounded-md border border-nf-track bg-nf-menu/[0.98] py-1 shadow-[0_10px_30px_rgba(0,0,0,0.6)] backdrop-blur"
           >
             {options.map((o, i) => {
               const selected = o.value === value;
@@ -190,7 +190,7 @@ export default function Dropdown<T extends string | number>({
                   onClick={() => choose(o.value)}
                   className={`flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm ${
                     i === active ? 'bg-white/10' : ''
-                  } ${selected ? 'font-semibold text-white' : 'text-[#d2d2d2]'}`}
+                  } ${selected ? 'font-semibold text-white' : 'text-nf-soft'}`}
                 >
                   <Check className={`h-4 w-4 shrink-0 ${selected ? 'text-white' : 'text-transparent'}`} />
                   <span className="min-w-0 flex-1">

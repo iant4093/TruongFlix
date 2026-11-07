@@ -54,11 +54,11 @@ it('waits for the current source and discards a file list that arrives after a s
   }));
 
   render(<AddTorrentModal />);
-  const start = screen.getByRole<HTMLButtonElement>('button', { name: 'Start Download' });
+  const start = screen.getByRole<HTMLButtonElement>('button', { name: 'Start download' });
   await screen.findByText('Discovering file list from peers…');
   expect(start.disabled).toBe(true);
 
-  fireEvent.change(screen.getByRole('textbox', { name: 'Torrent Source' }), { target: { value: second } });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Torrent source' }), { target: { value: second } });
   expect(start.disabled).toBe(true);
   await screen.findByRole('checkbox', { name: /New-6\.mkv/ });
   await act(async () => finishOldInspection(metadata('Old', [1])));
@@ -72,7 +72,7 @@ it('requires a selected file and submits the current selection only once', async
   vi.mocked(initiateTorrent).mockImplementationOnce(() => new Promise(() => {}));
   render(<AddTorrentModal />);
 
-  const start = screen.getByRole<HTMLButtonElement>('button', { name: 'Start Download' });
+  const start = screen.getByRole<HTMLButtonElement>('button', { name: 'Start download' });
   const firstFile = await screen.findByRole('checkbox', { name: /Episode-2\.mkv/ });
   const secondFile = screen.getByRole('checkbox', { name: /Episode-5\.mkv/ });
   await waitFor(() => expect(start.disabled).toBe(false));

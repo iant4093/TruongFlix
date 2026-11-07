@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { motion, useIsPresent } from 'framer-motion';
-import { Flame, Popcorn, Tv, X, Zap } from 'lucide-react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { motion } from 'framer-motion';
+import { Flame, Popcorn, Tv, Zap } from 'lucide-react';
 import type { WatchLogRow } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import { FullScreenOverlay, OverlayCloseButton } from '../common/Dialog';
 import { listWatchLog } from '../../services/db';
 import { computeWrapped, formatHours, logYears } from '../../services/wrapped';
 import Dropdown from '../common/Dropdown';
@@ -29,11 +29,6 @@ function Card({ children, className = '', delay = 0 }: { children: ReactNode; cl
 /** Yearly stats from the viewing history, Spotify-Wrapped style. */
 export default function WrappedModal() {
   const setOverlay = useLibraryStore((s) => s.setOverlay);
-  const dialog = useRef<HTMLDivElement>(null);
-  const present = useIsPresent();
-  useModalDialog(dialog, {
-    onClose: () => setOverlay(null), active: present, priority: 140,
-  });
   const profile = useLibraryStore((s) => s.activeProfile);
   const [log, setLog] = useState<WatchLogRow[] | null>(null);
   const [year, setYear] = useState(new Date().getFullYear());
@@ -51,19 +46,7 @@ export default function WrappedModal() {
   const topDay = stats ? stats.weekdays.indexOf(Math.max(...stats.weekdays)) : 0;
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.25 }}
-      ref={dialog}
-      role="dialog"
-      tabIndex={-1}
-      aria-modal="true"
-      aria-hidden={!present || undefined}
-      aria-label="TruongFlix Wrapped"
-      className={`fixed inset-0 z-[140] overflow-y-auto bg-[#0b0b0b] outline-none ${present ? '' : 'pointer-events-none'}`}
-    >
+    <FullScreenOverlay onClose={() => setOverlay(null)} label="TruongFlix Wrapped" priority={140} className="bg-black">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_at_top,rgba(229,9,20,0.28),transparent_60%)]" />
       <div className="relative mx-auto max-w-5xl px-8 pb-20 pt-10">
         <div className="mb-10 flex items-center gap-4">
@@ -73,9 +56,7 @@ export default function WrappedModal() {
             <h1 className="nf-wordmark text-5xl">TruongFlix Wrapped</h1>
           </div>
           <Dropdown value={year} options={years.map((y) => ({ value: y, label: String(y) }))} onChange={setYear} ariaLabel="Year" />
-          <button onClick={() => setOverlay(null)} aria-label="Close" className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 hover:bg-white/20">
-            <X className="h-5 w-5" />
-          </button>
+          <OverlayCloseButton onClose={() => setOverlay(null)} />
         </div>
 
         {!stats ? null : stats.seconds < 60 ? (
@@ -85,7 +66,7 @@ export default function WrappedModal() {
           </Card>
         ) : (
           <div key={year} className="grid grid-cols-6 gap-5">
-            <Card className="col-span-6 bg-gradient-to-br from-[#E50914] via-[#b20710] to-[#3d0205]">
+            <Card className="col-span-6 bg-gradient-to-br from-nf-red via-[#b20710] to-[#3d0205]">
               <div className="text-lg font-semibold text-white/80">In {year} you watched</div>
               <div className="mt-1 flex items-baseline gap-4">
                 <span className="text-[clamp(4rem,10vw,8rem)] font-black leading-none tracking-tight">{formatHours(stats.seconds)}</span>
@@ -159,7 +140,7 @@ export default function WrappedModal() {
 
             {stats.binge && (
               <Card delay={0.32} className="col-span-3 bg-gradient-to-br from-[#F5B70A]/35 to-[#E67E22]/10 ring-1 ring-white/10">
-                <div className="flex items-center gap-2 text-sm uppercase tracking-widest text-[#ffd76a]">
+                <div className="flex items-center gap-2 text-sm uppercase tracking-widest text-nf-gold">
                   <Flame className="h-5 w-5" /> Biggest binge
                 </div>
                 <div className="mt-3 text-6xl font-black">{stats.binge.episodes} episodes</div>
@@ -219,6 +200,6 @@ export default function WrappedModal() {
           </div>
         )}
       </div>
-    </motion.div>
+    </FullScreenOverlay>
   );
 }

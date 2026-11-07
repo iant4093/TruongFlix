@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { episodeTarget, playTargetFor } from '../store/selectors';
+import { IS_MAC } from '../lib/platform';
 import type {
   AudioDevice,
   BuiltinPlayerState,
@@ -67,7 +68,6 @@ async function subtitleFor(target: PlayTarget) {
   return getSelectedSubtitlePath(target.type, target.id).catch(() => null);
 }
 
-const IS_MAC = navigator.userAgent.includes('Mac');
 
 function mediaInfoFor(target: PlayTarget) {
   const { movies, episodes } = useLibraryStore.getState();
@@ -511,7 +511,7 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   const limit = await limitStatus(store.activeProfile, liveSeconds + pendingSeconds);
   if (limit.blocked) return store.toast(blockedMessage(store.activeProfile!, limit.blocked), 'error');
   if (store.activeProfile?.maturity !== 'all')
-    return store.toast('Live channels have no verified age ratings. Switch to an adult profile to watch.', 'info');
+    return store.toast('Live channels have no verified age ratings. Switch to an unrestricted profile to watch.', 'info');
   if (!(await engineStatus()).available)
     return store.toast(
       'Live TV needs the built-in player. Reinstall TruongFlix to restore its player engine.',

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
+import { CheckCircle2, RefreshCw } from 'lucide-react';
 import type { EngineStatus } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { engineStatus } from '../../services/player';
@@ -7,6 +7,7 @@ import { startBackgroundAnalysis } from '../../services/enrich';
 import Dropdown from '../common/Dropdown';
 import { VlcSetup } from '../common/SetupControls';
 import { Block, BTN, Group, Page, Row, StatusText, ToggleRow } from './ui';
+import Spinner from '../common/Spinner';
 
 export default function PlaybackPage() {
   const settings = useLibraryStore((s) => s.settings);
@@ -106,7 +107,7 @@ function AnalysisStatus() {
       <span className="min-w-0 truncate text-xs text-nf-muted">
         {analysis.running ? (
           <span className="flex items-center gap-1.5 text-nf-secondary">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> {analysis.message}
+            <Spinner className="h-3.5 w-3.5" tone="inherit" /> {analysis.message}
           </span>
         ) : (
           `Intros found for ${withIntro} of ${episodes.length} episode${episodes.length === 1 ? '' : 's'}`

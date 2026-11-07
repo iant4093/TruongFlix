@@ -8,7 +8,8 @@ import { episodeTarget, seriesPlayEpisode } from '../store/selectors';
 import { play } from './player';
 import { parseMediaInfo } from './mediainfo';
 import { advertisedQuality, check, type Release } from './browseSelection';
-import { canStreamTorrent, formatBytes, initiateTorrent, inspectTorrentFilesLive, pickDestinationFolder, playTorrentByHash } from './torrents';
+import { formatBytes } from '../lib/format';
+import { canStreamTorrent, initiateTorrent, inspectTorrentFilesLive, pickDestinationFolder, playTorrentByHash } from './torrents';
 
 export const canceled = () => new DOMException('Canceled', 'AbortError');
 const abort = (signal: AbortSignal) => { if (signal.aborted) throw canceled(); };

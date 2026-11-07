@@ -71,7 +71,7 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
       aria-checked={checked}
       aria-label={label}
       onClick={() => onChange(!checked)}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? 'bg-nf-red' : 'bg-[#4d4d4d]'}`}
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? 'bg-nf-red' : 'bg-nf-track'}`}
     >
       <span className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[22px]' : 'translate-x-0.5'}`} />
     </button>
@@ -108,6 +108,6 @@ export function Segmented<T extends string | number>({ value, options, onChange 
 }
 
 export function StatusText({ tone = 'muted', children }: { tone?: 'muted' | 'good' | 'warn' | 'bad'; children: ReactNode }) {
-  const color = tone === 'good' ? 'text-nf-green' : tone === 'warn' ? 'text-[#e87c03]' : tone === 'bad' ? 'text-nf-red' : 'text-nf-muted';
+  const color = tone === 'good' ? 'text-nf-green' : tone === 'warn' ? 'text-nf-warn' : tone === 'bad' ? 'text-nf-red' : 'text-nf-muted';
   return <span className={`text-xs ${color}`}>{children}</span>;
 }

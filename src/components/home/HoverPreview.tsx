@@ -11,10 +11,10 @@ import {
   downloadBlockingPlayback,
   formatDownloadingLabel,
   formatExpiryRemaining,
-  formatSpeed,
   keepStreamPermanently,
-  torrentForItem,
 } from '../../services/torrents';
+import { formatPercent, formatSpeed } from '../../lib/format';
+import { useItemTorrent } from './useItemTorrent';
 import MaturityRating from '../common/MaturityRating';
 import CriticScores from '../common/CriticScores';
 import { playItem } from '../../services/player';
@@ -110,7 +110,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
   const toggleMyList = useLibraryStore((s) => s.toggleMyList);
   const liveItem = useLibraryStore((s) => s.items.find((i) => i.key === hover.item.key));
   const item = liveItem ?? hover.item;
-  const torrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
+  const torrent = useItemTorrent(item);
   const blockingDownload = useLibraryStore((s) => {
     const target = playTargetFor(item, s.episodesBySeries);
     return target ? downloadBlockingPlayback(target.filePath, s.torrents) : null;
@@ -201,12 +201,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
           </span>
         )}
         {isDownloading && torrent ? (
-          <div className="absolute inset-x-0 bottom-0 h-1.5 bg-black/80">
-            <div
-              className="h-full bg-sky-400 transition-all duration-300"
-              style={{ width: `${Math.min(100, Math.max(4, torrent.progressPct))}%` }}
-            />
-          </div>
+          <ProgressBar value={torrent.progressPct / 100} size="regular" tone="download" track="overlay" animated min={0.04} className="pointer-events-none absolute inset-x-0 bottom-0" />
         ) : (
           hover.progress != null && (
             <div className="absolute inset-x-0 bottom-0">
@@ -221,34 +216,36 @@ function PreviewCard({ hover }: { hover: HoverState }) {
           <button
             onClick={() => playItem(item)}
             disabled={!!blockingDownload}
-            title={blockingDownload ? formatDownloadingLabel(blockingDownload.progressPct) : torrent && canStreamTorrent(torrent) ? 'Stream Now' : 'Play'}
+            title={blockingDownload ? formatDownloadingLabel(blockingDownload.progressPct) : torrent && canStreamTorrent(torrent) ? 'Stream now' : 'Play'}
+            aria-label={blockingDownload ? formatDownloadingLabel(blockingDownload.progressPct) : torrent && canStreamTorrent(torrent) ? 'Stream now' : 'Play'}
             className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-white/80 disabled:opacity-50"
           >
             {blockingDownload ? <Download className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4 fill-black" strokeWidth={0} />}
           </button>
-          <button onClick={() => toggleMyList(item)} title={item.myList ? 'Remove from My List' : 'Add to My List'} className="nf-circle-btn h-9 w-9">
+          <button onClick={() => toggleMyList(item)} title={item.myList ? 'Remove from My List' : 'Add to My List'} aria-label={item.myList ? 'Remove from My List' : 'Add to My List'} className="nf-circle-btn h-9 w-9">
             {item.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
           </button>
-          <button onClick={() => openFixMatch(item.key)} title="Fix Match" className="nf-circle-btn h-9 w-9">
+          <button onClick={() => openFixMatch(item.key)} title="Fix match" aria-label="Fix match" className="nf-circle-btn h-9 w-9">
             <Wrench className="h-3.5 w-3.5" />
           </button>
           {torrent?.mode === 'stream' && (
             <button
               onClick={() => void keepStreamPermanently(torrent.infoHash)}
               title="Keep permanently in library"
+              aria-label="Keep permanently in library"
               className="nf-circle-btn h-9 w-9 text-amber-200 hover:!border-amber-300"
             >
               <HardDriveDownload className="h-4 w-4" />
             </button>
           )}
-          <button onClick={() => openDetail(item.key)} title="More info" className="nf-circle-btn ml-auto h-9 w-9">
+          <button onClick={() => openDetail(item.key)} title="More info" aria-label="More info" className="nf-circle-btn ml-auto h-9 w-9">
             <ChevronDown className="h-5 w-5" />
           </button>
         </div>
 
         {isDownloading && torrent && (
-          <div className="truncate text-xs font-medium text-sky-300">
-            Downloading {torrent.progressPct.toFixed(1)}%
+          <div className="truncate text-xs font-medium text-nf-download-text">
+            Downloading {formatPercent(torrent.progressPct, 1)}
             {torrent.downloadSpeedBps > 0 ? ` · ↓ ${formatSpeed(torrent.downloadSpeedBps)}` : ''}
           </div>
         )}

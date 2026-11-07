@@ -37,7 +37,7 @@ export default function ProfilesPage() {
             description={<span className="pl-10">{summary(p)}</span>}
           />
         ))}
-        <Row label="Add or edit profiles" description="Name, colour, age rating, daily viewing limit, bedtime and PIN.">
+        <Row label="Add or edit profiles" description="Name, color, age rating, daily viewing limit, bedtime and PIN.">
           <button onClick={manage} className={BTN}>
             <Users className="h-4 w-4" /> Manage profiles
           </button>

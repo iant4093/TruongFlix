@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react';
-import { Loader2, Plus, Radio, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { Plus, Radio, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { cancelChecks, importPlaylist, removePlaylist, useLiveStore } from '../../services/live';
 import Modal from './LiveDialog';
+import Spinner from '../common/Spinner';
 import { button } from './ui';
 
 export default function Sources({ onClose }: { onClose: () => void }) {
@@ -161,13 +162,13 @@ export default function Sources({ onClose }: { onClose: () => void }) {
             </button>
           )}
           <button className="nf-btn-red" disabled={busy || !input.trim()} onClick={() => void save()}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            {busy ? <Spinner className="h-4 w-4" tone="inherit" /> : <Plus className="h-4 w-4" />}
             {busy ? 'Importing…' : editing ? 'Save playlist' : 'Add playlist'}
           </button>
         </div>
       </div>
       <p className="mt-5 text-xs text-nf-muted">
-        Sources stay on this device. Refreshing keeps saved favourites and matches where channel identity is preserved.
+        Sources stay on this device. Refreshing keeps saved favorites and matches where channel identity is preserved.
       </p>
     </Modal>
   );

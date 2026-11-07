@@ -111,9 +111,3 @@ export function formatHours(seconds: number): string {
   if (h >= 1) return h.toFixed(1);
   return `${Math.round(seconds / 60)}m`;
 }
-
-export function formatDuration(seconds: number): string {
-  const m = Math.round(seconds / 60);
-  if (m < 60) return `${m}m`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
-}

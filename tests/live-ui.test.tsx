@@ -110,8 +110,8 @@ it('keeps unavailable channels reversible and saves channel favourites', async (
   expect(screen.queryByRole('button', { name: 'Play Broken NBC' })).toBeNull();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Show unavailable' }));
   expect(screen.getByRole('button', { name: 'Play Broken NBC' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Favourite Provider Seven' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Favourites', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Favorite Provider Seven' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Favorites', exact: true }));
   expect(screen.queryByRole('button', { name: 'Play Broken NBC' })).toBeNull();
   expect(useLiveStore.getState().preferences.favourites).toEqual(['one/custom']);
 });
@@ -200,7 +200,7 @@ it('imports pasted source text through the native importer', async () => {
 it('keeps unrated channels out of restricted profile views', () => {
   useLibraryStore.setState({ activeProfile: { id: 2, maturity: 'kids', name: 'Kids' } as Profile });
   render(<LiveTV />);
-  expect(screen.getByText(/Switch to an adult profile/)).toBeTruthy();
+  expect(screen.getByText(/Switch to an unrestricted profile/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Sources' })).toBeNull();
   expect(invoke).not.toHaveBeenCalledWith('live_sports', expect.anything());
 });

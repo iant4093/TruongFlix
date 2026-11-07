@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
 import { Delete, Lock, X } from 'lucide-react';
 import { useLibraryStore, type PinRequest } from '../../store/useLibraryStore';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import { FullScreenOverlay } from '../common/Dialog';
+import IconButton from '../common/IconButton';
 
 /** 4-digit PIN entry (keyboard or on-screen keypad). */
 export default function PinPrompt() {
@@ -14,9 +15,7 @@ function Pad({ request }: { request: PinRequest }) {
   const setRequest = useLibraryStore((s) => s.setPinRequest);
   const [pin, setPin] = useState('');
   const [wrong, setWrong] = useState(0);
-  const dialog = useRef<HTMLDivElement>(null);
   const present = useIsPresent();
-  useModalDialog(dialog, { onClose: () => setRequest(null), active: present, priority: 195 });
 
   const type = (d: string) => {
     if (pin.length >= 4) return;
@@ -47,21 +46,15 @@ function Pad({ request }: { request: PinRequest }) {
   });
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      ref={dialog}
-      role="dialog"
-      tabIndex={-1}
-      aria-modal="true"
-      aria-hidden={!present || undefined}
-      aria-label={request.title}
-      className={`fixed inset-0 z-[195] flex items-center justify-center bg-black/85 backdrop-blur-sm outline-none ${present ? '' : 'pointer-events-none'}`}
+    <FullScreenOverlay
+      onClose={() => setRequest(null)}
+      label={request.title}
+      priority={195}
+      className="flex items-center justify-center bg-black/85 backdrop-blur-sm"
     >
-      <button onClick={() => setRequest(null)} aria-label="Cancel" className="absolute right-8 top-8 text-white/70 hover:text-white">
+      <IconButton onClick={() => setRequest(null)} aria-label="Cancel" size="lg" className="absolute right-8 top-8">
         <X className="h-8 w-8" />
-      </button>
+      </IconButton>
       <div className="flex flex-col items-center">
         <Lock className="mb-4 h-8 w-8 text-nf-secondary" />
         <h2 className="text-3xl font-medium">{request.title}</h2>
@@ -94,6 +87,6 @@ function Pad({ request }: { request: PinRequest }) {
         </div>
         {wrong > 0 && <p className="mt-6 text-sm text-nf-red">Wrong PIN. Try again.</p>}
       </div>
-    </motion.div>
+    </FullScreenOverlay>
   );
 }

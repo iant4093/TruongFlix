@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { Download, Gamepad2, Loader2, Pause, Play, RotateCcw, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { errorMessage } from '../../lib/errors';
 import { pauseTorrent, resumeTorrent } from '../../services/torrents';
 import { cancelJob, launchGame, retryDownload, useGamesStore } from '../jobs';
 import type { GameDetail, LibraryGame } from '../types';
 import { gameStatusLabel, isInstalled } from './status';
 
-export const toastError = (e: unknown) => useLibraryStore.getState().toast(e instanceof Error ? e.message : String(e), 'error');
+export const toastError = (e: unknown) => useLibraryStore.getState().toast(errorMessage(e), 'error');
 
 /** The library entry, install job, running state and torrent for a game, all live. */
 export function useOwnedGame(slug: string) {

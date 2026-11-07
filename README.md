@@ -135,6 +135,7 @@ Library screenshots use the development preview with sample metadata and artwork
 
 - Cast to a TV: send playback to a Chromecast or a DLNA smart TV, with play/pause, seeking and progress kept in sync. Files the TV can't play are converted on the fly (H.264/AAC, HDR tone-mapped to SDR)
 - Watch in a browser on your home network: turn on browser access in Settings › Devices, scan the QR code with a phone or tablet and enter the access code. Profiles, PINs, kids' limits and progress are shared with the desktop app, with full-length VOD scrubbing, subtitles, audio tracks, chapters, Skip Intro and next-episode advance
+- Watch away from home through Tailscale: Settings › Devices shows your private Tailscale address and can add an HTTPS address with Tailscale Serve. Connections from the public internet are always refused, wrong access codes lock a device out, and you can see and sign out every signed-in browser
 
 ## Install
 

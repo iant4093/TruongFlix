@@ -36,7 +36,7 @@ it('shows an unfinished download as downloading instead of offering to stream it
   render(<DetailModal />);
   const button = screen.getByRole('button', { name: /Downloading 42%/ }) as HTMLButtonElement;
   expect(button.disabled).toBe(true);
-  expect(screen.queryByText(/Stream Now|Resume Stream/)).toBeNull();
+  expect(screen.queryByText(/Stream now|Resume stream/)).toBeNull();
   expect(screen.queryByTitle('Cast to a TV')).toBeNull();
 });
 
@@ -46,14 +46,14 @@ it.each([
 ])('still offers to stream %s', (_label, patch) => {
   useLibraryStore.setState({ detailKey: item.key, torrents: [torrentItem(patch)] });
   render(<DetailModal />);
-  expect((screen.getByRole('button', { name: /Resume Stream/ }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole('button', { name: /Resume stream/ }) as HTMLButtonElement).disabled).toBe(false);
 });
 
 it('plays a finished download normally', () => {
   useLibraryStore.setState({ detailKey: item.key, torrents: [torrentItem({ finished: true, progressPct: 100, state: 'seeding' })] });
   render(<DetailModal />);
   expect((screen.getByRole('button', { name: /^Resume/ }) as HTMLButtonElement).disabled).toBe(false);
-  expect(screen.queryByText(/Downloading|Stream Now|Resume Stream/)).toBeNull();
+  expect(screen.queryByText(/Downloading|Stream now|Resume stream/)).toBeNull();
 });
 
 it('refuses to start playback of an unfinished download from any entry point', async () => {

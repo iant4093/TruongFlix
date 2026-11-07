@@ -3,6 +3,9 @@ import { AnimatePresence } from 'framer-motion';
 import { FolderOpen, Gamepad2, Loader2, Search, Settings2, ShieldCheck, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { validateSourceUrl } from '../../services/browse';
+import { errorMessage } from '../../lib/errors';
+import Badge from '../../components/common/Badge';
+import { ErrorBanner, RestrictedProfileNotice } from '../../components/common/States';
 import { Switch } from '../../components/settings/ui';
 import { initGames, updateGameSettings, useGamesStore } from '../jobs';
 import { resetSourceCache } from '../source';
@@ -49,7 +52,7 @@ export function GameSettingsDialog({ onClose }: { onClose: () => void }) {
       if (sourceUrl !== current.sourceUrl) resetSourceCache();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setSaving(false);
     }
@@ -118,7 +121,7 @@ function SubNav({ tab, onTab, query, onQuery, searching, onSettings }: {
           <button key={t} aria-current={tab === t ? 'page' : undefined} onClick={() => onTab(t)}
             className={`text-shadow flex items-center gap-1.5 whitespace-nowrap transition-colors duration-300 ${tab === t ? 'font-semibold text-white' : 'text-[#e5e5e5] hover:text-[#b3b3b3]'}`}>
             {t === 'browse' ? 'Browse' : 'Library'}
-            {t === 'library' && activeCount > 0 && <span className="rounded-full bg-sky-500/20 px-1.5 py-[1px] text-[10px] font-bold text-sky-300" aria-label={`${activeCount} in progress`}>{activeCount}</span>}
+            {t === 'library' && activeCount > 0 && <Badge tone="download" pill label={`${activeCount} in progress`}>{activeCount}</Badge>}
           </button>
         ))}
       </nav>
@@ -154,7 +157,7 @@ export default function GamesView() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    initGames().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    initGames().catch((e) => setError(errorMessage(e)));
   }, []);
 
   const switchTab = useCallback((next: Tab) => {
@@ -167,13 +170,13 @@ export default function GamesView() {
   const openers = { onOpen: setSelected, onDownload: setDownloading, onInstall: setInstalling };
 
   if (profile?.maturity !== 'all' || profileGate) {
-    return <div className="px-[4%] pt-32"><h1 className="text-4xl font-bold">Games</h1><p className="mt-5 text-nf-secondary">Switch to an unrestricted profile to browse and install games.</p></div>;
+    return <RestrictedProfileNotice title="Games" action="browse and install games" />;
   }
 
   return (
     <div className="relative min-h-screen">
       <SubNav tab={tab} onTab={switchTab} query={query} onQuery={setQuery} searching={searching} onSettings={() => setSettingsOpen(true)} />
-      {error && <p role="alert" className="relative z-20 mx-[4%] mb-6 mt-[136px] rounded border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-200">{error}</p>}
+      {error && <ErrorBanner className="relative z-20 mx-[4%] mb-6 mt-[136px]">{error}</ErrorBanner>}
       {!ready && !error
         ? <div role="status" aria-label="Loading games"><GameBillboardSkeleton /><div className="relative z-10 -mt-32"><GameRowSkeleton /><GameRowSkeleton /></div></div>
         : ready && (tab === 'browse'

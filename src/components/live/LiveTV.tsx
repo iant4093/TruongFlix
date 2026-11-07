@@ -3,12 +3,10 @@ import {
   Activity,
   ChevronLeft,
   ChevronRight,
-  Loader2,
   PanelsTopLeft,
   Plus,
   Radio,
   RefreshCw,
-  Search,
   Settings2,
   Star,
   X,
@@ -37,6 +35,9 @@ import EventCard from './LiveEventCard';
 import Sources from './LiveSources';
 import EventFeeds from './LiveEventFeeds';
 import { button, leagueLabel } from './ui';
+import SegmentedControl from '../common/SegmentedControl';
+import SearchField from '../common/SearchField';
+import { LoadingState, RestrictedProfileNotice } from '../common/States';
 
 const dateLabel = (date: Date) =>
   date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
@@ -250,15 +251,7 @@ export default function LiveTV() {
   };
 
   if (profile?.maturity !== 'all')
-    return (
-      <section className="px-[4%] pb-20 pt-32">
-        <Radio className="mb-5 h-12 w-12 text-nf-red" />
-        <h1 className="text-3xl font-bold">Live TV</h1>
-        <p className="mt-4 text-nf-secondary">
-          Live channels have no verified age ratings. Switch to an adult profile to use Live TV.
-        </p>
-      </section>
-    );
+    return <RestrictedProfileNotice title="Live TV" reason="Live channels have no verified age ratings." action="use Live TV" icon={<Radio className="h-12 w-12 text-nf-red" aria-hidden />} />;
   return (
     <section className="min-h-screen px-[4%] pb-20 pt-28">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-5">
@@ -288,7 +281,7 @@ export default function LiveTV() {
         </div>
       </div>
       {multiview && (
-        <section aria-label="Multiview selection" className="mb-6 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-[#202020] p-4">
+        <section aria-label="Multiview selection" className="mb-6 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-nf-hover p-4">
           <div className="mr-auto">
             <h2 className="font-semibold">Watch two channels</h2>
             <p className="text-sm text-nf-secondary">Add channels from Sports or Channels. Choose which one to hear during playback.</p>
@@ -319,38 +312,29 @@ export default function LiveTV() {
         </section>
       )}
       <div className="mb-7 flex flex-wrap items-center gap-3 border-b border-white/10 pb-5">
-        <div className="mr-3 flex rounded bg-white/5 p-1" role="group" aria-label="Live TV view">
-          {(['sports', 'channels'] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={tab === value}
-              className={`rounded px-5 py-2 text-sm font-semibold ${tab === value ? 'bg-white text-black' : 'text-nf-secondary hover:text-white'}`}
-              onClick={() => setTab(value)}
-            >
-              {value === 'sports' ? 'Sports' : 'Channels'}
-            </button>
-          ))}
-        </div>
-        <label className="flex min-w-[220px] flex-1 items-center gap-2 rounded border border-white/15 bg-black/30 px-3">
-          <Search className="h-4 w-4 text-nf-muted" />
-          <input
-            aria-label="Search live TV"
-            className="w-full bg-transparent py-2.5 text-sm outline-none"
-            placeholder={tab === 'sports' ? 'Search teams, events, broadcasters…' : 'Search channels…'}
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setCount(60);
-            }}
-          />
-        </label>
+        <SegmentedControl
+          ariaLabel="Live TV view"
+          className="mr-3"
+          value={tab}
+          onChange={setTab}
+          options={[{ value: 'sports', label: 'Sports' }, { value: 'channels', label: 'Channels' }]}
+        />
+        <SearchField
+          className="min-w-[220px] flex-1"
+          ariaLabel="Search live TV"
+          placeholder={tab === 'sports' ? 'Search teams, events, broadcasters…' : 'Search channels…'}
+          value={query}
+          onChange={(value) => {
+            setQuery(value);
+            setCount(60);
+          }}
+        />
         <button
           className={`${button} ${favouritesOnly ? 'text-yellow-400' : ''}`}
           onClick={() => setFavouritesOnly(!favouritesOnly)}
           aria-pressed={favouritesOnly}
         >
-          <Star className={`h-4 w-4 ${favouritesOnly ? 'fill-current' : ''}`} /> Favourites
+          <Star className={`h-4 w-4 ${favouritesOnly ? 'fill-current' : ''}`} /> Favorites
         </button>
         {tab === 'sports' ? (
           <Dropdown
@@ -407,7 +391,7 @@ export default function LiveTV() {
           {(scheduleError || stale) && (
             <p
               role="status"
-              className="mb-5 rounded border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200"
+              className="mb-5 rounded border border-nf-warn/30 bg-nf-warn/5 p-3 text-sm text-amber-200"
             >
               {scheduleError || 'Showing saved scores and schedules. Refresh to check for changes.'}
               {updated > 0 && ` Last updated ${new Date(updated).toLocaleString()}.`}
@@ -425,9 +409,7 @@ export default function LiveTV() {
             </div>
           )}
           {loading && !events.length ? (
-            <div role="status" className="flex items-center justify-center gap-3 py-20 text-nf-secondary">
-              <Loader2 className="h-5 w-5 animate-spin" /> Loading events…
-            </div>
+            <LoadingState inline label="Loading events…" className="justify-center py-20" />
           ) : filteredEvents.length ? (
             (['live', 'upcoming', 'finished'] as const).map((status) => {
               const row = filteredEvents.filter((e) => e.status === status);
@@ -495,7 +477,7 @@ export default function LiveTV() {
               return (
                 <div
                   key={match.key}
-                  className="group flex min-w-0 items-center gap-3 rounded-md border border-white/10 bg-[#202020] p-4 transition hover:border-white/30"
+                  className="group flex min-w-0 items-center gap-3 rounded-md border border-white/10 bg-nf-hover p-4 transition hover:border-white/30"
                 >
                   <button
                     className="flex min-w-0 flex-1 items-center gap-3 text-left"
@@ -521,7 +503,7 @@ export default function LiveTV() {
                     </span>
                   </button>
                   <button
-                    aria-label={`Favourite ${match.channel.name}`}
+                    aria-label={`Favorite ${match.channel.name}`}
                     aria-pressed={state.preferences.favourites.includes(match.key)}
                     onClick={() => toggleFavourite(match.key)}
                     className="p-1 text-nf-muted hover:text-yellow-400"

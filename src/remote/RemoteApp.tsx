@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Lock, Play, Search, Sparkles, X } from 'lucide-react';
 import CriticScores from '../components/common/CriticScores';
 import ProfileAvatar from '../components/common/ProfileAvatar';
+import ProgressBar from '../components/common/ProgressBar';
 import type { RemoteItem, RemoteLibrary, RemotePlayable, RemoteProfile, RemoteTitle } from './types';
 import { api, AuthError, getToken, login, qs } from './api';
 import RemotePlayer from './RemotePlayer';
+import { errorMessage } from '../lib/errors';
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
 type Screen = { name: 'home' } | { name: 'title'; key: string } | { name: 'play'; target: RemotePlayable };
@@ -63,7 +65,7 @@ function Login({ onDone }: { onDone: () => void }) {
       await login(code.trim());
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -102,7 +104,7 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
       const { key } = await api<{ key: string }>('/unlock', { body: { profile: p.id, pin: value } });
       onPick({ id: p.id, key, profile: p });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
       setPin('');
     }
   };
@@ -151,9 +153,7 @@ function Poster({ item, onClick }: { item: RemoteItem; onClick: () => void }) {
       <div className="relative aspect-[2/3] overflow-hidden rounded bg-white/10">
         {art ? <img src={art} alt={item.title} loading="lazy" className="h-full w-full object-cover" /> : <div className="flex h-full items-center p-2 text-sm font-bold">{item.title}</div>}
         {item.progress != null && (
-          <div className="absolute inset-x-0 bottom-0 h-1 bg-white/30">
-            <div className="h-full bg-nf-red" style={{ width: `${Math.round(item.progress * 100)}%` }} />
-          </div>
+          <ProgressBar value={item.progress} height={4} className="absolute inset-x-0 bottom-0" />
         )}
       </div>
       {item.hint && <div className="mt-1 truncate text-xs text-nf-secondary">{item.hint}</div>}
@@ -186,7 +186,7 @@ function Browse({
       .then(setLib)
       .catch((e) => {
         onAuthError(e);
-        setError(String(e instanceof Error ? e.message : e));
+        setError(errorMessage(e));
       });
   }, [who, screen.name, onAuthError]);
 
@@ -202,10 +202,10 @@ function Browse({
       <header className="sticky top-0 z-30 flex items-center gap-3 bg-gradient-to-b from-black/90 to-transparent px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))]">
         <Wordmark className="text-3xl" />
         <div className="flex-1" />
-        <button onClick={() => setQuery(query == null ? '' : null)} aria-label="Search" className="p-2">
+        <button onClick={() => setQuery(query == null ? '' : null)} aria-label={query == null ? 'Search' : 'Close search'} className="p-2">
           {query == null ? <Search className="h-6 w-6" /> : <X className="h-6 w-6" />}
         </button>
-        <button onClick={switchProfile} title="Switch profile">
+        <button onClick={switchProfile} title="Switch profile" aria-label="Switch profile">
           <ProfileAvatar color={who.profile.color} maturity={who.profile.maturity} size={30} />
         </button>
       </header>
@@ -329,9 +329,7 @@ function TitlePage({ who, itemKey, back, play }: { who: Who; itemKey: string; ba
                   <div className="relative aspect-video w-32 shrink-0 overflow-hidden rounded bg-white/10">
                     {e.still && <img src={e.still} alt="" loading="lazy" className="h-full w-full object-cover" />}
                     {e.progress > 0 && (
-                      <div className="absolute inset-x-0 bottom-0 h-1 bg-white/30">
-                        <div className="h-full bg-nf-red" style={{ width: `${Math.round(e.progress * 100)}%` }} />
-                      </div>
+                      <ProgressBar value={e.progress} height={4} className="absolute inset-x-0 bottom-0" />
                     )}
                   </div>
                   <div className="min-w-0">

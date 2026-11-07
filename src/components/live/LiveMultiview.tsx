@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { ArrowLeft, Loader2, Maximize, Pause, Play, RefreshCw, SquarePlay, Volume2, VolumeX } from 'lucide-react';
+import { ArrowLeft, Maximize, Pause, Play, RefreshCw, SquarePlay, Volume2, VolumeX } from 'lucide-react';
 import type { LivePlayerSession } from '../../types/live';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import Spinner from '../common/Spinner';
 import { useLiveStore } from '../../services/live';
 import {
   closeBuiltin,
@@ -161,7 +162,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
 
   return (
     <section className="fixed inset-0 z-[110] flex min-h-0 flex-col text-white" aria-label="Live TV multiview">
-      <header className="flex items-center gap-4 border-b border-white/10 bg-[#141414] px-[4%] py-4">
+      <header className="flex items-center gap-4 border-b border-white/10 bg-nf-bg px-[4%] py-4">
         <button className={button} disabled={!!prompt} onClick={() => void closeBuiltin()} aria-label="Back to Live TV"><ArrowLeft className="h-5 w-5" /></button>
         <h1 className="flex-1 text-xl font-bold">Live TV multiview</h1>
         <button className={button} disabled={!!prompt} onClick={() => void toggleFullscreen()} aria-label="Toggle fullscreen" title="Toggle fullscreen (F)"><Maximize className="h-5 w-5" /></button>
@@ -174,7 +175,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
           const isRight = pane.key === 'right';
           return (
             <div key={pane.key} className="flex min-h-0 min-w-0 flex-col border-r border-white/10 last:border-r-0">
-              <div className={`flex items-center justify-between gap-3 border-b bg-[#181818] px-4 py-3 ${audio === pane.key ? 'border-sky-400' : 'border-white/10'}`}>
+              <div className={`flex items-center justify-between gap-3 border-b bg-nf-surface px-4 py-3 ${audio === pane.key ? 'border-nf-red' : 'border-white/10'}`}>
                 <div className="min-w-0">
                   <h2 className="truncate text-sm font-bold" title={pane.name}>{pane.name}</h2>
                   {pane.subtitle && <p className="truncate text-xs text-nf-secondary" title={pane.subtitle}>{pane.subtitle}</p>}
@@ -217,7 +218,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
                   </div>
                 ) : pane.buffering && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/80" role="status" aria-label={`Buffering ${pane.name}`}>
-                    <Loader2 className="h-8 w-8 animate-spin text-nf-red" />
+                    <Spinner className="h-8 w-8" />
                   </div>
                 )}
               </div>
@@ -225,7 +226,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
           );
         })}
       </div>
-      <footer className="flex items-center gap-3 border-t border-white/10 bg-[#141414] px-[4%] py-3">
+      <footer className="flex items-center gap-3 border-t border-white/10 bg-nf-bg px-[4%] py-3">
         <button
           className={button}
           disabled={!!prompt}
@@ -258,7 +259,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
       </footer>
       {prompt && (
         <div key={prompt} role="dialog" aria-modal="true" aria-label="Playback paused" className="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
-          <div className="rounded-lg bg-[#181818] p-8 text-center">
+          <div className="rounded-lg bg-nf-surface p-8 text-center">
             <h2 className="mb-5 text-xl font-bold">
               {prompt === 'limit' ? 'That’s all for today!' : prompt === 'bedtime' ? 'It’s bedtime' : 'Playback paused'}
             </h2>

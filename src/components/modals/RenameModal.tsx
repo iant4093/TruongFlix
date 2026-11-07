@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { motion, useIsPresent } from 'framer-motion';
-import { ArrowRight, FileVideo, RotateCcw, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowRight, FileVideo, RotateCcw } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import Dialog from '../common/Dialog';
+import { errorMessage } from '../../lib/errors';
 import * as db from '../../services/db';
 import { rootFor } from '../../services/files';
 import { applyRenames, planRenames, undoRename, type RenamePlanItem } from '../../services/rename';
@@ -15,11 +15,6 @@ const rel = (path: string, roots: string[]) => {
 /** Plex-style renaming with a full preview first, and undo for recent batches. */
 export default function RenameModal() {
   const setOverlay = useLibraryStore((s) => s.setOverlay);
-  const dialog = useRef<HTMLDivElement>(null);
-  const present = useIsPresent();
-  const { onBackdropMouseDown } = useModalDialog(dialog, {
-    onClose: () => setOverlay(null), active: present, priority: 140,
-  });
   const roots = useLibraryStore((s) => s.settings.media_directories);
   const libraryVersion = useLibraryStore((s) => s.libraryVersion);
   const toast = useLibraryStore((s) => s.toast);
@@ -59,7 +54,7 @@ export default function RenameModal() {
       if (res.errors.length) toast(`Renamed ${res.renamed}; ${res.errors.length} failed: ${res.errors[0]}`, 'error');
       else toast(`Renamed ${res.renamed} file${res.renamed === 1 ? '' : 's'}`, 'success');
     } catch (e) {
-      toast(`Rename failed: ${String(e)}`, 'error');
+      toast(`Rename failed: ${errorMessage(e)}`, 'error');
     } finally {
       setBusy(false);
     }
@@ -72,41 +67,26 @@ export default function RenameModal() {
       if (res.errors.length) toast(`Undo finished with ${res.errors.length} problem(s): ${res.errors[0]}`, 'error');
       else toast('Rename undone', 'success');
     } catch (e) {
-      toast(`Undo failed: ${String(e)}`, 'error');
+      toast(`Undo failed: ${errorMessage(e)}`, 'error');
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
-      onMouseDown={onBackdropMouseDown}
-      className={`fixed inset-0 z-[140] flex justify-center overflow-y-auto bg-black/75 px-4 py-10 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
+    <Dialog
+      onClose={() => setOverlay(null)}
+      priority={140}
+      size="xl"
+      align="top"
+      title="Rename files"
+      description={<p className="max-w-2xl">
+        Plex-style names: <span className="font-mono text-white/80">Movie (Year)/Movie (Year).mkv</span> and{' '}
+        <span className="font-mono text-white/80">Show/Season 01/Show - S01E01.mkv</span>. Subtitles, .nfo files and artwork move with their
+        video. Files stay inside their media folder.
+      </p>}
     >
-      <div
-        ref={dialog}
-        role="dialog"
-        tabIndex={-1}
-        aria-modal="true"
-        aria-hidden={!present || undefined}
-        aria-label="Rename Files"
-        className="relative h-max w-full max-w-4xl rounded-xl bg-nf-surface p-8 shadow-2xl outline-none"
-      >
-        <button onClick={() => setOverlay(null)} aria-label="Close" className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full hover:bg-white/10">
-          <X className="h-5 w-5" />
-        </button>
-        <h2 className="text-3xl font-bold">Rename Files</h2>
-        <p className="mt-2 max-w-2xl text-sm text-nf-secondary">
-          Plex-style names: <span className="font-mono text-white/80">Movie (Year)/Movie (Year).mkv</span> and{' '}
-          <span className="font-mono text-white/80">Show/Season 01/Show - S01E01.mkv</span>. Subtitles, .nfo files and artwork move with their
-          video. Files stay inside their media folder.
-        </p>
-
-        <div className="mt-6 flex items-center justify-between">
+        <div className="mt-2 flex items-center justify-between">
           <h3 className="text-lg font-semibold">
             {plan.length ? `${chosen.length} of ${plan.length} file${plan.length === 1 ? '' : 's'} will be renamed` : 'Everything is already named correctly'}
           </h3>
@@ -121,7 +101,7 @@ export default function RenameModal() {
               const off = excluded.has(p.from);
               return (
                 <label key={p.from} className={`flex cursor-pointer items-start gap-3 px-4 py-3 text-sm hover:bg-white/5 ${off ? 'opacity-45' : ''}`}>
-                  <input type="checkbox" checked={!off} onChange={() => toggle(p)} className="mt-1 accent-[#E50914]" />
+                  <input type="checkbox" checked={!off} onChange={() => toggle(p)} className="mt-1 accent-nf-red" />
                   <FileVideo className="mt-0.5 h-4 w-4 shrink-0 text-nf-muted" />
                   <div className="min-w-0 flex-1">
                     <div className="font-semibold">{p.label}</div>
@@ -179,7 +159,6 @@ export default function RenameModal() {
             </div>
           </section>
         )}
-      </div>
-    </motion.div>
+    </Dialog>
   );
 }

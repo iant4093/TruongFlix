@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
-import { Cast, Loader2, Pause, Play, RefreshCw, RotateCcw, RotateCw, Tv, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Cast, Pause, Play, RefreshCw, RotateCcw, RotateCw, Tv, X } from 'lucide-react';
 import type { PlayTarget } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { useModalDialog } from '../../hooks/useModalDialog';
 import { castControl, castSeek, castTo, discoverDevices, stopCasting, type CastDevice } from '../../services/cast';
-import { formatTimestamp } from '../../store/selectors';
-
-const IS_MAC = navigator.userAgent.includes('Mac');
+import { formatClock } from '../../lib/format';
+import { IS_MAC } from '../../lib/platform';
+import Dialog from '../common/Dialog';
+import IconButton from '../common/IconButton';
+import Spinner from '../common/Spinner';
+import { LoadingState } from '../common/States';
 
 /** "Cast to…" device picker. */
 export function CastPicker() {
@@ -19,11 +21,6 @@ export function CastPicker() {
 function Picker({ picker }: { picker: { target: PlayTarget; start: number } }) {
   const setPicker = useLibraryStore((s) => s.setCastPicker);
   const [devices, setDevices] = useState<CastDevice[] | null>(null);
-  const dialog = useRef<HTMLDivElement>(null);
-  const present = useIsPresent();
-  const { onBackdropMouseDown } = useModalDialog(dialog, {
-    onClose: () => setPicker(null), active: present, priority: 230,
-  });
   const search = () => {
     setDevices(null);
     void discoverDevices().then(setDevices).catch(() => setDevices([]));
@@ -31,37 +28,16 @@ function Picker({ picker }: { picker: { target: PlayTarget; start: number } }) {
   useEffect(search, []);
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      onMouseDown={onBackdropMouseDown}
-      className={`fixed inset-0 z-[230] flex items-center justify-center bg-black/70 p-6 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
+    <Dialog
+      onClose={() => setPicker(null)}
+      priority={230}
+      size="sm"
+      icon={<Cast className="h-5 w-5" />}
+      title="Cast to a TV"
+      description={picker.target.label}
     >
-      <motion.div
-        ref={dialog}
-        role="dialog"
-        tabIndex={-1}
-        aria-modal="true"
-        aria-hidden={!present || undefined}
-        aria-label="Cast to a TV"
-        initial={{ scale: 0.96, y: 10 }}
-        animate={{ scale: 1, y: 0 }}
-        className="w-full max-w-md rounded-xl bg-nf-surface p-6 shadow-2xl outline-none ring-1 ring-white/10"
-      >
-        <div className="mb-1 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-xl font-bold">
-            <Cast className="h-5 w-5" /> Cast to a TV
-          </h2>
-          <button onClick={() => setPicker(null)} aria-label="Close" className="rounded-full p-1.5 text-white/70 hover:bg-white/10 hover:text-white">
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        <p className="mb-4 text-sm text-nf-secondary">{picker.target.label}</p>
         {devices == null ? (
-          <div className="flex items-center gap-3 py-8 text-nf-secondary">
-            <Loader2 className="h-5 w-5 animate-spin" /> Looking for Chromecasts and TVs…
-          </div>
+          <LoadingState inline label="Looking for Chromecasts and TVs…" className="py-8" />
         ) : devices.length ? (
           <div className="divide-y divide-white/10 overflow-hidden rounded-lg border border-white/10">
             {devices.map((d) => (
@@ -94,8 +70,7 @@ function Picker({ picker }: { picker: { target: PlayTarget; start: number } }) {
         <button onClick={search} disabled={devices == null} className="nf-btn-ghost mt-4 h-9 px-3 py-0 text-sm">
           <RefreshCw className="h-4 w-4" /> Search again
         </button>
-      </motion.div>
-    </motion.div>
+    </Dialog>
   );
 }
 
@@ -124,7 +99,7 @@ export function CastBar() {
     <motion.div
       initial={{ y: 80, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
-      className="pointer-events-auto w-[min(820px,94vw)] overflow-hidden rounded-xl bg-[#1f1f1f]/95 shadow-[0_12px_40px_rgba(0,0,0,0.7)] ring-1 ring-white/10 backdrop-blur"
+      className="pointer-events-auto w-[min(820px,94vw)] overflow-hidden rounded-xl bg-nf-hover/95 shadow-[0_12px_40px_rgba(0,0,0,0.7)] ring-1 ring-white/10 backdrop-blur"
     >
       <div className="flex items-center gap-4 p-3">
         <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded bg-black">{cast.image && <img src={cast.image} alt="" className="h-full w-full object-cover" />}</div>
@@ -139,27 +114,28 @@ export function CastBar() {
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={() => void castSeek(absolute - 10)} disabled={busy} title="Back 10 seconds" className="rounded-full p-2 hover:bg-white/10 disabled:opacity-40">
+          <IconButton onClick={() => void castSeek(absolute - 10)} disabled={busy} aria-label="Back 10 seconds" variant="plain">
             <RotateCcw className="h-5 w-5" />
-          </button>
+          </IconButton>
           <button
             onClick={() => castControl(cast.state === 'playing' ? 'pause' : 'play')}
             disabled={busy || cast.state === 'error'}
             title={cast.state === 'playing' ? 'Pause' : 'Play'}
+            aria-label={cast.state === 'playing' ? 'Pause' : 'Play'}
             className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-black hover:bg-white/80 disabled:opacity-40"
           >
-            {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : cast.state === 'playing' ? <Pause className="h-5 w-5 fill-black" strokeWidth={0} /> : <Play className="ml-0.5 h-5 w-5 fill-black" strokeWidth={0} />}
+            {busy ? <Spinner className="h-5 w-5" tone="inherit" /> : cast.state === 'playing' ? <Pause className="h-5 w-5 fill-black" strokeWidth={0} /> : <Play className="ml-0.5 h-5 w-5 fill-black" strokeWidth={0} />}
           </button>
-          <button onClick={() => void castSeek(absolute + 10)} disabled={busy} title="Forward 10 seconds" className="rounded-full p-2 hover:bg-white/10 disabled:opacity-40">
+          <IconButton onClick={() => void castSeek(absolute + 10)} disabled={busy} aria-label="Forward 10 seconds" variant="plain">
             <RotateCw className="h-5 w-5" />
-          </button>
-          <button onClick={() => void stopCasting()} title="Stop casting" className="ml-2 rounded-full p-2 text-white/70 hover:bg-white/10 hover:text-white">
+          </IconButton>
+          <IconButton onClick={() => void stopCasting()} aria-label="Stop casting" className="ml-2">
             <X className="h-5 w-5" />
-          </button>
+          </IconButton>
         </div>
       </div>
       <div className="flex items-center gap-3 px-4 pb-3">
-        <span className="w-14 text-right text-xs tabular-nums text-nf-secondary">{formatTimestamp(shown)}</span>
+        <span className="w-14 text-right text-xs tabular-nums text-nf-secondary">{formatClock(shown)}</span>
         <input
           type="range"
           min={0}
@@ -175,9 +151,9 @@ export function CastBar() {
             if (scrub != null) void castSeek(scrub);
             setScrub(null);
           }}
-          className="h-1 flex-1 accent-[#e50914]"
+          className="h-1 flex-1 accent-nf-red"
         />
-        <span className="w-14 text-xs tabular-nums text-nf-secondary">{formatTimestamp(cast.duration)}</span>
+        <span className="w-14 text-xs tabular-nums text-nf-secondary">{formatClock(cast.duration)}</span>
       </div>
     </motion.div>
     </div>

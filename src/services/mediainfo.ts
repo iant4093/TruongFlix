@@ -1,4 +1,5 @@
 import type { MediaInfo, Segment, TechInfo } from '../types/media';
+import { formatBytes } from '../lib/format';
 
 export function parseMediaInfo(json: string | null | undefined): MediaInfo | null {
   if (!json) return null;
@@ -106,8 +107,7 @@ export function describeStreams(info: MediaInfo): { video: string; audio: string
   return { video, audio, subtitles: info.subs.length };
 }
 
+/** Like formatBytes, but empty when the size is unknown. */
 export function formatSize(bytes: number | null | undefined): string {
-  if (!bytes) return '';
-  const gb = bytes / 1024 ** 3;
-  return gb >= 1 ? `${gb.toFixed(gb >= 10 ? 0 : 1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+  return bytes ? formatBytes(bytes) : '';
 }

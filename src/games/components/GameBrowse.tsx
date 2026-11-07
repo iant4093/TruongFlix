@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { ChevronLeft, ChevronRight, Gamepad2, Info, Loader2, Pause, Play, RefreshCw, Settings2 } from 'lucide-react';
+import { errorMessage } from '../../lib/errors';
 import { fetchGame, fetchNewest, fetchPopular, searchGames } from '../source';
 import type { GameCard, GameDetail, GameRow as Row, LibraryGame } from '../types';
 import { PrimaryAction } from './actions';
 import GameBillboard, { GameBillboardSkeleton, Top10Badge } from './GameBillboard';
 import { GameGrid, GameRow, GameRowSkeleton } from './GamePoster';
 
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const ROTATE_MS = 12_000;
 const navButton = 'flex h-9 w-9 items-center justify-center rounded-full border border-white/40 bg-black/35 hover:bg-white/15';
 
@@ -129,7 +129,7 @@ export default function GameBrowse({ origin, query, blocked, onOpenSettings, onS
       if (newest.status === 'fulfilled' && newest.value.games.length) out.splice(Math.min(1, out.length), 0, { title: 'Newly added', games: newest.value.games });
       if (!out.length) {
         const failure = [popular, newest].find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
-        setError(failure ? message(failure.reason) : 'The game source returned no games.');
+        setError(failure ? errorMessage(failure.reason) : 'The game source returned no games.');
       }
       setRows(out);
     });
@@ -144,7 +144,7 @@ export default function GameBrowse({ origin, query, blocked, onOpenSettings, onS
       setSearching(true);
       searchGames(origin, q, 1)
         .then((r) => { if (active) setResults({ query: q, games: r.games, page: 1, pages: r.totalPages }); })
-        .catch((e) => { if (active) { setResults({ query: q, games: [], page: 1, pages: 1 }); setError(message(e)); } })
+        .catch((e) => { if (active) { setResults({ query: q, games: [], page: 1, pages: 1 }); setError(errorMessage(e)); } })
         .finally(() => { if (active) setSearching(false); });
     }, 400);
     return () => { active = false; window.clearTimeout(timer); setSearching(false); };
@@ -157,7 +157,7 @@ export default function GameBrowse({ origin, query, blocked, onOpenSettings, onS
       const next = await searchGames(origin, results.query, results.page + 1);
       setResults((r) => (r ? { ...r, games: [...r.games, ...next.games.filter((g) => !r.games.some((x) => x.slug === g.slug))], page: r.page + 1, pages: next.totalPages } : r));
     } catch (e) {
-      setError(message(e));
+      setError(errorMessage(e));
     } finally {
       setSearching(false);
     }

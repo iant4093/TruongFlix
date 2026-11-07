@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Bookmark } from 'lucide-react';
-import { ChevronDown, Download, ListOrdered, Search, Loader2, Play, Star, UserRound } from 'lucide-react';
+import { ChevronDown, Download, ListOrdered, Search, Play, Star, UserRound } from 'lucide-react';
 import { getCatalogDetail, getCatalogSeason, type SearchResult } from '../../services/tmdb';
 import { cancelSourceBrowser, quickTorrent, searchTorrentReleases, type ReleaseSearchOptions } from '../../services/browse';
 import type { BrowseEpisodeSelection, BrowseScope, BrowseTarget, CatalogDetail, CatalogSeason, SourceRelease } from '../../types/browse';
@@ -18,6 +18,8 @@ import ImdbRating from '../common/ImdbRating';
 import MaturityRating from '../common/MaturityRating';
 import { formatRuntime } from '../../store/selectors';
 import useCatalogRatings from '../../hooks/useCatalogRatings';
+import { errorMessage } from '../../lib/errors';
+import Spinner from '../common/Spinner';
 
 export default function CatalogTitle({ item, initialEpisode, onClose, onSource, suspended = false, save }: {
   item: SearchResult;
@@ -143,7 +145,7 @@ export default function CatalogTitle({ item, initialEpisode, onClose, onSource, 
       await task({ signal: abort.signal, verification: (id) => { if (active.current) setVerification(id); }, progress: (message) => {
           if (active.current) { setProgress(message); if (message === 'Preparing playback…' || message === 'Starting download…') setCommitting(true); }
         } });
-    } catch (e) { if (active.current && !(e instanceof DOMException && e.name === 'AbortError')) setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { if (active.current && !(e instanceof DOMException && e.name === 'AbortError')) setError(errorMessage(e)); }
     finally {
       controller.current = null;
       if (active.current) { setBusy(false); setProgress(''); setCommitting(false); setVerification(null); }
@@ -201,7 +203,7 @@ export default function CatalogTitle({ item, initialEpisode, onClose, onSource, 
         <div className="flex flex-wrap items-center gap-2.5">
           <div ref={actionRef} className="relative">
             <button className="nf-btn-play px-4 disabled:opacity-50" aria-expanded={actionsOpen} aria-controls={actionsOpen ? menuId : undefined} aria-haspopup="menu" disabled={!ready || busy || (scope.kind === 'season' && !scope.complete)} onClick={() => setActionsOpen((v) => !v)}><Play className="h-5 w-5 shrink-0 fill-current" strokeWidth={0} />Quick stream / download<ChevronDown className="h-4 w-4 shrink-0" /></button>
-            {actionsOpen && menuPosition && createPortal(<div id={menuId} ref={menuRef} role="menu" aria-label="Quick torrent actions" style={menuPosition} className="fixed z-[250] w-64 overflow-y-auto overscroll-contain rounded-md border border-white/20 bg-[#252525] py-1 shadow-2xl">
+            {actionsOpen && menuPosition && createPortal(<div id={menuId} ref={menuRef} role="menu" aria-label="Quick torrent actions" style={menuPosition} className="fixed z-[250] w-64 overflow-y-auto overscroll-contain rounded-md border border-white/20 bg-nf-menu py-1 shadow-2xl">
               {(['stream', 'download'] as const).flatMap((mode) => (['1080p', '4K'] as const).map((quality) => <button key={`${mode}:${quality}`} role="menuitem" className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-white/10 focus:bg-white/10" onClick={() => void run(mode, quality)}>{mode === 'stream' ? <Play className="h-4 w-4" /> : <Download className="h-4 w-4" />}{mode === 'stream' ? 'Stream' : 'Download'} {quality}</button>))}
             </div>, document.body)}
           </div>
@@ -221,7 +223,7 @@ export default function CatalogTitle({ item, initialEpisode, onClose, onSource, 
     <div className="px-6 pb-9 pt-2 md:px-12">
       <div ref={statusRef} className="scroll-mt-16">
         {busy && <div role="status" className="mb-5 rounded-lg border border-white/15 bg-white/5 p-5">
-          <p className="mb-2 text-xs font-semibold text-white/50">{selection}</p><div className="flex flex-wrap items-center justify-between gap-4"><p className="flex min-w-0 items-center gap-2 break-words text-sm"><Loader2 className="h-4 w-4 shrink-0 animate-spin" />{progress}</p>
+          <p className="mb-2 text-xs font-semibold text-white/50">{selection}</p><div className="flex flex-wrap items-center justify-between gap-4"><p className="flex min-w-0 items-center gap-2 break-words text-sm"><Spinner className="h-4 w-4" tone="inherit" />{progress}</p>
             {!committing && <button ref={cancelSearchButton} className="nf-btn-ghost shrink-0 text-sm" onClick={() => { controller.current?.abort(); cancelSourceBrowser(); }}>Cancel search</button>}</div>
         </div>}
         {verification && <SourceVerification requestId={verification} />}
@@ -255,7 +257,7 @@ export default function CatalogTitle({ item, initialEpisode, onClose, onSource, 
           {!!detail?.networks?.length && <p><span className="text-nf-muted">Network: </span>{detail.networks.join(', ')}</p>}
         </div>
       </div>
-      {!detail && !detailError && <p role="status" className="my-6 flex items-center gap-2 text-sm text-white/55"><Loader2 className="h-4 w-4 animate-spin" />Loading title details…</p>}
+      {!detail && !detailError && <p role="status" className="my-6 flex items-center gap-2 text-sm text-white/55"><Spinner className="h-4 w-4" tone="inherit" />Loading title details…</p>}
       {detailError && <div role="alert" className="my-6 text-sm text-red-300">{detailError}<button className="nf-btn-ghost ml-3" onClick={() => setRetry((v) => v + 1)}>Retry</button></div>}
       {detail && !detail.imdbId && <p className="my-5 text-sm text-white/55">This title does not have an IMDb ID yet, so source matching is unavailable.</p>}
       {detail?.kind === 'tv' && <section className="mt-8 border-t border-white/10 pt-6">

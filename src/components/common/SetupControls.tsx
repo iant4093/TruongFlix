@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
-import { CheckCircle2, Download, ExternalLink, Eye, EyeOff, FolderPlus, Folder, Loader2, Search, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, ExternalLink, Eye, EyeOff, FolderPlus, Folder, Search, Trash2, XCircle } from 'lucide-react';
 import { detectVlc, installVlc } from '../../services/player';
 import { validateApiKey } from '../../services/tmdb';
 import { verifyOpenSubtitles } from '../../services/subtitles';
+import { IS_MAC } from '../../lib/platform';
 import { LanguageSelect } from './SubtitlesPanel';
-
-const IS_MAC = navigator.userAgent.includes('Mac');
+import Spinner from './Spinner';
 
 // ---------------------------------------------------------------------------
 // TMDB key
@@ -55,13 +55,14 @@ export function TmdbKeyField({ value, onChange, onValidated }: KeyProps) {
           <button
             type="button"
             onClick={() => setShow((s) => !s)}
+            aria-label={show ? 'Hide key' : 'Show key'}
             className="absolute right-3 top-1/2 -translate-y-1/2 text-nf-muted hover:text-white"
           >
             {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
         <button type="button" onClick={check} disabled={!value.trim() || status === 'checking'} className="nf-btn-ghost">
-          {status === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Verify'}
+          {status === 'checking' ? <Spinner className="h-4 w-4" tone="inherit" /> : 'Verify'}
         </button>
       </div>
       <div className="flex items-center justify-between text-xs">
@@ -76,7 +77,7 @@ export function TmdbKeyField({ value, onChange, onValidated }: KeyProps) {
               <XCircle className="h-3.5 w-3.5" /> TMDB rejected this key
             </span>
           )}
-          {status === 'offline' && <span className="text-[#e87c03]">Couldn’t reach TMDB — check your connection</span>}
+          {status === 'offline' && <span className="text-nf-warn">Couldn’t reach TMDB — check your connection</span>}
         </span>
         <button
           type="button"
@@ -154,7 +155,7 @@ export function VlcSetup({ value, onChange }: VlcProps) {
     <div className="space-y-3">
       <div className="flex items-center gap-3 rounded border border-white/10 bg-black/30 px-4 py-3">
         {status === 'checking' || status === 'installing' ? (
-          <Loader2 className="h-5 w-5 shrink-0 animate-spin text-nf-secondary" />
+          <Spinner className="h-5 w-5" tone="muted" />
         ) : status === 'found' ? (
           <CheckCircle2 className="h-5 w-5 shrink-0 text-nf-green" />
         ) : (
@@ -244,7 +245,7 @@ export function OpenSubtitlesFields({ value, onChange, showAccount }: SubtitleFi
           disabled={!value.apiKey.trim() || status.kind === 'checking'}
           className="nf-btn-ghost"
         >
-          {status.kind === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Verify'}
+          {status.kind === 'checking' ? <Spinner className="h-4 w-4" tone="inherit" /> : 'Verify'}
         </button>
       </div>
 
@@ -336,7 +337,7 @@ export function FolderList({ value, onChange }: FolderProps) {
               <button
                 type="button"
                 onClick={() => onChange(value.filter((d) => d !== dir))}
-                title="Remove folder"
+                aria-label="Remove folder" title="Remove folder"
                 className="text-nf-muted opacity-60 transition hover:text-nf-red group-hover:opacity-100"
               >
                 <Trash2 className="h-4 w-4" />

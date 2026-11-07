@@ -1,8 +1,9 @@
 import { useEffect, useRef, type ComponentType } from 'react';
-import { motion, useIsPresent } from 'framer-motion';
-import { Captions, Home, Info, Library, Magnet, MonitorSmartphone, PlayCircle, Star, Trash2, Users, Volume2, X, type LucideIcon } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Captions, Home, Info, Library, Magnet, MonitorSmartphone, PlayCircle, Star, Trash2, Users, Volume2, type LucideIcon } from 'lucide-react';
 import { useLibraryStore, type SettingsTab } from '../../store/useLibraryStore';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import Dialog from '../common/Dialog';
+import Badge from '../common/Badge';
 import LibraryPage from './LibraryPage';
 import TorrentsPage from './TorrentsPage';
 import PlaybackPage from './PlaybackPage';
@@ -21,11 +22,11 @@ const PAGES: { id: SettingsTab; label: string; icon: LucideIcon; page: Component
   { id: 'playback', label: 'Playback', icon: PlayCircle, page: PlaybackPage },
   { id: 'audio', label: 'Audio', icon: Volume2, page: AudioPage },
   { id: 'subtitles', label: 'Subtitles', icon: Captions, page: SubtitlesPage },
-  { id: 'ratings', label: 'Ratings & Data', icon: Star, page: RatingsPage },
+  { id: 'ratings', label: 'Ratings & data', icon: Star, page: RatingsPage },
   { id: 'devices', label: 'Devices', icon: MonitorSmartphone, page: DevicesPage },
   { id: 'home', label: 'Home', icon: Home, page: HomePage },
   { id: 'profiles', label: 'Profiles', icon: Users, page: ProfilesPage },
-  { id: 'trash', label: 'Recently Deleted', icon: Trash2, page: TrashPage },
+  { id: 'trash', label: 'Recently deleted', icon: Trash2, page: TrashPage },
   { id: 'about', label: 'About', icon: Info, page: AboutPage },
 ];
 
@@ -38,11 +39,6 @@ export default function SettingsDialog() {
     (s) => s.torrents.filter((t) => !t.finished && t.inSession && !t.paused && t.state !== 'error').length,
   );
   const scroller = useRef<HTMLDivElement>(null);
-  const dialog = useRef<HTMLDivElement>(null);
-  const present = useIsPresent();
-  const { onBackdropMouseDown } = useModalDialog(dialog, {
-    onClose: () => setOpen(false), active: present, priority: 66,
-  });
   const current = PAGES.find((p) => p.id === tab) ?? PAGES[0];
   const Current = current.page;
 
@@ -51,27 +47,15 @@ export default function SettingsDialog() {
   }, [tab]);
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.18 }}
-      onMouseDown={onBackdropMouseDown}
-      className={`fixed inset-0 z-[66] flex items-center justify-center bg-black/70 p-6 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
+    <Dialog
+      onClose={() => setOpen(false)}
+      priority={66}
+      size="window"
+      chrome="floating"
+      label="Settings"
+      className="h-[min(800px,92vh)]"
+      bodyClassName="flex min-h-0 flex-1"
     >
-      <motion.div
-        initial={{ opacity: 0, scale: 0.97, y: 12 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.97, y: 12 }}
-        transition={{ duration: 0.22, ease: [0.21, 0, 0.27, 1] }}
-        ref={dialog}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-hidden={!present || undefined}
-        aria-label="Settings"
-        className="flex h-[min(800px,92vh)] w-[min(1060px,96vw)] overflow-hidden rounded-xl bg-nf-surface shadow-2xl outline-none ring-1 ring-white/10"
-      >
         <nav className="flex w-56 shrink-0 flex-col border-r border-white/10 bg-black/25 p-3">
           <h1 className="px-3 pb-4 pt-2 text-xl font-bold">Settings</h1>
           {PAGES.map(({ id, label, icon: Icon }) => (
@@ -87,22 +71,15 @@ export default function SettingsDialog() {
               <span className="flex-1">{label}</span>
               {id === 'library' && scanning && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-nf-red" title="Scanning" />}
               {id === 'torrents' && activeTorrentCount > 0 && (
-                <span className="rounded-full bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-sky-300" title="Active downloads">
+                <Badge tone="download" pill title="Active downloads">
                   {activeTorrentCount}
-                </span>
+                </Badge>
               )}
             </button>
           ))}
         </nav>
 
         <div className="relative flex min-w-0 flex-1 flex-col">
-          <button
-            onClick={() => setOpen(false)}
-            aria-label="Close settings"
-            className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white"
-          >
-            <X className="h-5 w-5" />
-          </button>
           <div ref={scroller} className="flex-1 overflow-y-auto">
             <motion.div
               key={current.id}
@@ -115,7 +92,6 @@ export default function SettingsDialog() {
             </motion.div>
           </div>
         </div>
-      </motion.div>
-    </motion.div>
+    </Dialog>
   );
 }

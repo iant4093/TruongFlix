@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { ContinueEntry, MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -31,7 +31,7 @@ interface SliderProps {
 }
 
 /** Netflix carousel: page-at-a-time sliding with hover chevrons and page indicators. */
-export function Slider({ title, count, perPage, renderItem, itemKey }: SliderProps) {
+export const Slider = memo(function Slider({ title, count, perPage, renderItem, itemKey }: SliderProps) {
   const [start, setStart] = useState(0);
   const track = useRef<HTMLDivElement>(null);
   const focusPage = useRef(false);
@@ -78,7 +78,8 @@ export function Slider({ title, count, perPage, renderItem, itemKey }: SliderPro
           >
             {Array.from({ length: count }, (_, i) => (
               <div key={itemKey(i)} {...(i < start || i >= start + perPage ? { inert: '' } : {})} className="shrink-0 px-[0.2vw]" style={{ width: `${100 / perPage}%` }}>
-                {renderItem(i)}
+                {/* Only the visible page and its neighbours mount; off-screen slots stay empty. */}
+                {i >= start - perPage && i < start + perPage * 2 ? renderItem(i) : null}
               </div>
             ))}
           </div>
@@ -105,7 +106,7 @@ export function Slider({ title, count, perPage, renderItem, itemKey }: SliderPro
       </div>
     </section>
   );
-}
+});
 
 export interface RowEntry {
   item: MediaItem;
@@ -117,16 +118,10 @@ interface Props {
   entries: RowEntry[];
 }
 
-export default function MediaRow({ title, entries }: Props) {
+export default memo(function MediaRow({ title, entries }: Props) {
   const perPage = useItemsPerRow();
+  const itemKey = useCallback((i: number) => entries[i].item.key, [entries]);
+  const renderItem = useCallback((i: number) => <MediaCard item={entries[i].item} entry={entries[i].entry} />, [entries]);
   if (!entries.length) return null;
-  return (
-    <Slider
-      title={title}
-      count={entries.length}
-      perPage={perPage}
-      itemKey={(i) => entries[i].item.key}
-      renderItem={(i) => <MediaCard item={entries[i].item} entry={entries[i].entry} />}
-    />
-  );
-}
+  return <Slider title={title} count={entries.length} perPage={perPage} itemKey={itemKey} renderItem={renderItem} />;
+});

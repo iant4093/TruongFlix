@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
-import { ExternalLink, Loader2, RefreshCw } from 'lucide-react';
+import { ExternalLink, RefreshCw } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { runImdbSync } from '../../services/scanner';
 import { refreshCriticScores } from '../../services/enrich';
@@ -8,6 +8,7 @@ import { verifyOmdbKey } from '../../services/omdb';
 import ProviderCredits from './ProviderCredits';
 import { TmdbKeyField } from '../common/SetupControls';
 import { BTN, BTN_PRIMARY, Group, INPUT, Page, Row, StatusText, ToggleRow } from './ui';
+import Spinner from '../common/Spinner';
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -19,7 +20,7 @@ export default function RatingsPage() {
   const [tmdbKey, setTmdbKey] = useState(settings.tmdb_api_key);
 
   return (
-    <Page title="Ratings & Data" description="Where titles, artwork and ratings come from.">
+    <Page title="Ratings & data" description="Where titles, artwork and ratings come from.">
       <Group title="TMDB" footer="Required. Artwork, title logos, cast, episode details, age ratings and trailers come from The Movie Database.">
         <Row label="API key" stacked>
           <TmdbKeyField value={tmdbKey} onChange={setTmdbKey} />
@@ -136,7 +137,7 @@ function CriticScores() {
         <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="Paste your key" spellCheck={false} className={`${INPUT} w-52 font-mono`} />
         {key.trim() !== saved && (
           <button onClick={() => void save()} disabled={busy != null} className={BTN_PRIMARY}>
-            {busy === 'saving' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
+            {busy === 'saving' ? <Spinner className="h-4 w-4" tone="inherit" /> : 'Save'}
           </button>
         )}
       </Row>

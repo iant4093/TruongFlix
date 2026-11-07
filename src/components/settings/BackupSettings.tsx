@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { Download, FolderOpen, History, Loader2, Upload } from 'lucide-react';
+import { Download, FolderOpen, History, Upload } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { basename } from '../../lib/path';
 import { BTN, BTN_DANGER, Group, Row } from './ui';
+import Spinner from '../common/Spinner';
 
 type BackupInfo = { token: string; folders: string[]; profiles: number; titles: number };
 const filters = [{ name: 'TruongFlix backup', extensions: ['truongflix-backup'] }];
@@ -100,7 +102,7 @@ export default function BackupSettings({ restoreOnly = false }: { restoreOnly?: 
       {candidate && (
         <>
           <Row
-            label={candidate.path.split(/[\\/]/).pop() || 'Selected backup'}
+            label={basename(candidate.path) || 'Selected backup'}
             description={`${candidate.profiles} ${candidate.profiles === 1 ? 'profile' : 'profiles'} · ${candidate.titles} library ${candidate.titles === 1 ? 'title' : 'titles'}`}
           >
             <button type="button" className={BTN} disabled={busy} onClick={() => setCandidate(null)}>Cancel</button>
@@ -117,7 +119,7 @@ export default function BackupSettings({ restoreOnly = false }: { restoreOnly?: 
           ))}
           <Row label="Apply backup">
             <button type="button" className={BTN_DANGER} disabled={busy} onClick={() => void restore()}>
-              {busy && <Loader2 className="h-4 w-4 animate-spin" />} Restore and restart
+              {busy && <Spinner className="h-4 w-4" tone="inherit" />} Restore and restart
             </button>
           </Row>
         </>

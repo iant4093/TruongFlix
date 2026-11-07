@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { AlertTriangle, Check, FolderOpen, Gamepad2, Loader2 } from 'lucide-react';
 import { Switch } from '../../components/settings/ui';
-import { formatBytes } from '../../services/torrents';
+import { formatBytes } from '../../lib/format';
+import { errorMessage } from '../../lib/errors';
+import { basename } from '../../lib/path';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import {
   buildOptions,
@@ -90,7 +92,7 @@ export default function InstallDialog({ game, onClose }: { game: LibraryGame; on
         setChoices(mergePrevious({ ...defaults, afterInstall: [] }, game.choices, options));
         setLoaded({ info, totalRamGb: typeof totalRamGb === 'number' ? totalRamGb : 16 });
       } catch (e) {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setLoadError(errorMessage(e));
       }
     })();
     return () => {
@@ -150,8 +152,7 @@ export default function InstallDialog({ game, onClose }: { game: LibraryGame; on
     const picked = await pickFolder('Choose the install folder', choices.installDir);
     if (!picked) return;
     const leaf = folderName(info.appName || game.title);
-    const last = picked.split(/[\\/]/).filter(Boolean).pop() ?? '';
-    update({ installDir: lower(last) === lower(leaf) ? picked : joinPath(picked, leaf) });
+    update({ installDir: lower(basename(picked)) === lower(leaf) ? picked : joinPath(picked, leaf) });
   };
 
   const toggleTask = (task: TaskOption, on: boolean, all: TaskOption[]) => {
@@ -185,9 +186,9 @@ export default function InstallDialog({ game, onClose }: { game: LibraryGame; on
         useGamesStore.setState((s) => ({ games: s.games.map((g) => (g.id === game.id ? { ...g, deleteInstaller } : g)) }));
       }
     } catch (e) {
-      toast(String(e), 'error');
+      toast(errorMessage(e), 'error');
     }
-    void installGame(game.id, final, info).catch((e) => toast(String(e instanceof Error ? e.message : e), 'error'));
+    void installGame(game.id, final, info).catch((e) => toast(errorMessage(e), 'error'));
     onClose();
   };
 

@@ -1,10 +1,12 @@
-import { useCallback } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { Clock } from 'lucide-react';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { formatExpiryRemaining, torrentForItem } from '../../services/torrents';
+import { formatExpiryRemaining } from '../../services/torrents';
+import { useItemTorrent } from './useItemTorrent';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
+import ProgressBar from '../common/ProgressBar';
 import { useHoverIntent } from './MediaCard';
 import { Slider, useItemsPerRow } from './MediaRow';
 
@@ -33,9 +35,9 @@ function RankNumber({ rank }: { rank: number }) {
   );
 }
 
-function Top10Card({ item, rank }: { item: MediaItem; rank: number }) {
+const Top10Card = memo(function Top10Card({ item, rank }: { item: MediaItem; rank: number }) {
   const openDetail = useLibraryStore((s) => s.openDetail);
-  const torrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
+  const torrent = useItemTorrent(item);
   const build = useCallback(() => ({ item }), [item]);
   const hover = useHoverIntent(build);
   const isDownloading = Boolean(torrent && !torrent.finished);
@@ -68,31 +70,23 @@ function Top10Card({ item, rank }: { item: MediaItem; rank: number }) {
           </span>
         )}
         {isDownloading && (
-          <div className="absolute inset-x-0 bottom-0 h-1.5 bg-black/80">
-            <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${pct}%` }} />
-          </div>
+          <ProgressBar value={pct / 100} size="regular" tone="download" track="overlay" animated className="pointer-events-none absolute inset-x-0 bottom-0" />
         )}
       </div>
     </div>
   );
-}
+});
 
 interface Props {
   title: string;
   items: MediaItem[];
 }
 
-export default function Top10Row({ title, items }: Props) {
+export default memo(function Top10Row({ title, items }: Props) {
   const perPage = useItemsPerRow();
-  const top = items.slice(0, 10);
+  const top = useMemo(() => items.slice(0, 10), [items]);
+  const itemKey = useCallback((i: number) => top[i].key, [top]);
+  const renderItem = useCallback((i: number) => <Top10Card item={top[i]} rank={i + 1} />, [top]);
   if (!top.length) return null;
-  return (
-    <Slider
-      title={title}
-      count={top.length}
-      perPage={Math.max(2, perPage - 1)}
-      itemKey={(i) => top[i].key}
-      renderItem={(i) => <Top10Card item={top[i]} rank={i + 1} />}
-    />
-  );
-}
+  return <Slider title={title} count={top.length} perPage={Math.max(2, perPage - 1)} itemKey={itemKey} renderItem={renderItem} />;
+});

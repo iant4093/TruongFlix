@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
-import { DatabaseZap, FilePen, HeartPulse, Loader2, RefreshCw, Trash2 } from 'lucide-react';
+import { DatabaseZap, FilePen, HeartPulse, RefreshCw, Trash2 } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { runScan } from '../../services/scanner';
 import { clearLibrary } from '../../services/db';
@@ -10,6 +10,7 @@ import { FolderList } from '../common/SetupControls';
 import { Block, BTN, BTN_DANGER, BTN_PRIMARY, Group, INPUT, Page, Row, StatusText, ToggleRow } from './ui';
 import { closeSettingsAnd } from './nav';
 import BackupSettings from './BackupSettings';
+import Spinner from '../common/Spinner';
 
 export default function LibraryPage() {
   const settings = useLibraryStore((s) => s.settings);
@@ -172,7 +173,7 @@ function NetworkShares() {
                 disabled={busy != null}
                 className={BTN}
               >
-                {busy === dir && <Loader2 className="h-4 w-4 animate-spin" />}
+                {busy === dir && <Spinner className="h-4 w-4" tone="inherit" />}
                 {s.mac ? 'Wake & connect' : 'Connect'}
               </button>
             )}

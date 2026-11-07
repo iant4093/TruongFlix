@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
   Check,
@@ -9,20 +8,17 @@ import {
   Film,
   FolderOpen,
   HardDriveDownload,
-  Loader2,
   Magnet,
   Play,
   Search,
   Sparkles,
   Star,
   Tv,
-  X,
 } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import type { InspectTorrentRes, MediaKind, TorrentMode } from '../../types/media';
 import {
   fileToBase64TorrentSource,
-  formatBytes,
   formatHoursLabel,
   initiateTorrent,
   inspectTorrent,
@@ -33,7 +29,11 @@ import {
 import { searchTitles, type SearchResult } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import { Switch } from '../settings/ui';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import Dialog, { DialogIcon } from '../common/Dialog';
+import Spinner from '../common/Spinner';
+import { formatBytes } from '../../lib/format';
+import { errorMessage } from '../../lib/errors';
+import { basename } from '../../lib/path';
 
 const CACHE_PRESETS: { hours: number; label: string }[] = [
   { hours: 6, label: '6 hours' },
@@ -89,14 +89,7 @@ export default function AddTorrentModal() {
   const submittingRef = useRef(false);
   const sourceRevision = useRef(0);
   const [revision, setRevision] = useState(0);
-  const dialogRef = useRef<HTMLDivElement>(null);
   const sourceInputRef = useRef<HTMLInputElement>(null);
-  const { onBackdropMouseDown } = useModalDialog(dialogRef, {
-    active: !!modal?.open,
-    priority: 160,
-    initialFocus: sourceInputRef,
-    onClose: () => { if (!submittingRef.current) close(); },
-  });
 
   const changeSource = useCallback((value: string, label: string | null = null) => {
     setRevision(++sourceRevision.current);
@@ -206,7 +199,7 @@ export default function AddTorrentModal() {
       } catch (e) {
         if (isCurrent()) {
           setInspection(null);
-          setInspectError(String(e instanceof Error ? e.message : e));
+          setInspectError(errorMessage(e));
         }
       } finally {
         if (isCurrent()) {
@@ -257,10 +250,10 @@ export default function AddTorrentModal() {
     const picked = await openDialog({
       multiple: false,
       title: 'Open .torrent file',
-      filters: [{ name: 'BitTorrent File', extensions: ['torrent'] }],
+      filters: [{ name: 'BitTorrent file', extensions: ['torrent'] }],
     });
     if (typeof picked === 'string' && picked && startedAt === sourceRevision.current && !submittingRef.current) {
-      changeSource(picked, picked.split(/[\\/]/).pop() ?? picked);
+      changeSource(picked, basename(picked));
     }
   };
 
@@ -353,7 +346,7 @@ export default function AddTorrentModal() {
       });
       if (sourceRevision.current === revision) close();
     } catch (e) {
-      toast(`Could not start torrent: ${String(e instanceof Error ? e.message : e)}`, 'error');
+      toast(`Could not start torrent: ${errorMessage(e)}`, 'error');
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -363,14 +356,59 @@ export default function AddTorrentModal() {
   const effectiveKind: MediaKind = match?.kind ?? fallbackKind;
   const folderOptions = settings.media_directories;
 
+  const footer = (
+    <>
+      <button type="button" onClick={close} disabled={submitting} className="nf-btn-ghost h-10 px-4 text-sm">
+        Cancel
+      </button>
+      {mode === 'stream' ? (
+        <>
+          <button
+            type="button"
+            disabled={!canSubmit}
+            onClick={() => void submit(false)}
+            className="nf-btn-ghost h-10 px-4 text-sm disabled:opacity-40"
+          >
+            <Download className="h-4 w-4" />
+            Pre-cache ({formatHoursLabel(cacheHours)})
+          </button>
+          <button
+            type="button"
+            disabled={!canSubmit}
+            onClick={() => void submit(true)}
+            className="nf-btn-red h-10 px-5 text-sm font-semibold disabled:opacity-40"
+          >
+            {submitting ? <Spinner className="h-4 w-4" tone="inherit" /> : <Play className="h-4 w-4 fill-current" />}
+            Stream now
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          disabled={!canSubmit || !destFolder}
+          onClick={() => void submit(false)}
+          className="nf-btn-red h-10 px-5 text-sm font-semibold disabled:opacity-40"
+        >
+          {submitting ? <Spinner className="h-4 w-4" tone="inherit" /> : <Download className="h-4 w-4" />}
+          Start download
+        </button>
+      )}
+    </>
+  );
+
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      onMouseDown={onBackdropMouseDown}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={async (e) => {
+    <Dialog
+      onClose={() => { if (!submittingRef.current) close(); }}
+      priority={160}
+      size="md"
+      divided
+      initialFocus={sourceInputRef}
+      closeDisabled={submitting}
+      bodyClassName="min-h-0 flex-1 overflow-y-auto"
+      icon={<DialogIcon><Magnet className="h-5 w-5" /></DialogIcon>}
+      title="Stream or download a torrent"
+      description={<span className="text-xs">Paste a magnet link, drop a .torrent file, or browse from disk</span>}
+      backdropProps={{ onDragOver: (e) => e.preventDefault(), onDrop: async (e) => {
         e.preventDefault();
         const f = Array.from(e.dataTransfer.files).find((x) => x.name.toLowerCase().endsWith('.torrent'));
         if (!f || submittingRef.current) return;
@@ -380,48 +418,15 @@ export default function AddTorrentModal() {
           const encoded = await fileToBase64TorrentSource(f);
           if (sourceRevision.current === startedAt) changeSource(encoded, f.name);
         } catch (e) {
-          if (sourceRevision.current === startedAt) setInspectError(String(e));
+          if (sourceRevision.current === startedAt) setInspectError(errorMessage(e));
         }
-      }}
-      className="fixed inset-0 z-[160] flex items-start justify-center overflow-y-auto bg-black/75 px-4 py-8 backdrop-blur-xs"
+      } }}
+      footer={footer}
     >
-      <motion.div
-        initial={{ opacity: 0, y: 20, scale: 0.97 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 20, scale: 0.97 }}
-        transition={{ duration: 0.2 }}
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        tabIndex={-1}
-        aria-label="Add Torrent or Magnet"
-        className="w-full max-w-2xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl ring-1 ring-white/10"
-      >
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-nf-red/15 text-nf-red">
-              <Magnet className="h-5 w-5" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold">Stream or Download Torrent</h2>
-              <p className="text-xs text-nf-secondary">Paste a magnet link, drop a .torrent file, or browse from disk</p>
-            </div>
-          </div>
-          <button
-            onClick={close}
-            disabled={submitting}
-            aria-label="Close"
-            className="rounded-full p-1.5 text-white/70 hover:bg-white/10 hover:text-white"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <fieldset disabled={submitting} className="max-h-[78vh] min-w-0 space-y-5 overflow-y-auto px-6 py-5">
+        <fieldset disabled={submitting} className="min-w-0 space-y-5 px-6 py-5">
           {/* Source Input */}
           <div className="space-y-2">
-            <label htmlFor="torrent-source" className="block text-xs font-semibold uppercase tracking-wider text-nf-muted">Torrent Source</label>
+            <label htmlFor="torrent-source" className="block text-xs font-semibold uppercase tracking-wider text-nf-muted">Torrent source</label>
             <div className="flex gap-2">
               <input
                 ref={sourceInputRef}
@@ -433,12 +438,12 @@ export default function AddTorrentModal() {
               />
               <button type="button" onClick={pickTorrentFile} className="nf-btn-ghost h-11 shrink-0 px-3.5 text-sm">
                 <FileUp className="h-4 w-4" />
-                .torrent File
+                .torrent file
               </button>
             </div>
             {inspecting && (
               <div className="flex items-center gap-2 text-xs text-nf-secondary">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-nf-red" /> Reading torrent metadata…
+                <Spinner className="h-3.5 w-3.5" /> Reading torrent metadata…
               </div>
             )}
             {inspectError && <p className="text-xs text-nf-red">{inspectError}</p>}
@@ -446,7 +451,7 @@ export default function AddTorrentModal() {
 
           {/* Mode Selector: Stream vs Download */}
           <div className="space-y-2">
-            <label className="block text-xs font-semibold uppercase tracking-wider text-nf-muted">Transfer Mode</label>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-nf-muted">Transfer mode</label>
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
@@ -459,7 +464,7 @@ export default function AddTorrentModal() {
               >
                 <div className="flex w-full items-center justify-between">
                   <span className="flex items-center gap-2 font-semibold text-white">
-                    <Play className="h-4 w-4 fill-current text-nf-red" /> Stream Mode
+                    <Play className="h-4 w-4 fill-current text-nf-red" /> Stream
                   </span>
                   {mode === 'stream' && <Check className="h-4 w-4 text-nf-red" />}
                 </div>
@@ -479,7 +484,7 @@ export default function AddTorrentModal() {
               >
                 <div className="flex w-full items-center justify-between">
                   <span className="flex items-center gap-2 font-semibold text-white">
-                    <HardDriveDownload className="h-4 w-4 text-nf-red" /> Download Mode
+                    <HardDriveDownload className="h-4 w-4 text-nf-red" /> Download
                   </span>
                   {mode === 'download' && <Check className="h-4 w-4 text-nf-red" />}
                 </div>
@@ -495,11 +500,11 @@ export default function AddTorrentModal() {
             <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-sm font-semibold">
-                  <Clock className="h-4 w-4 text-amber-400" />
-                  Keep Stream Cache For
+                  <Clock className="h-4 w-4 text-nf-warn" />
+                  Keep stream cache for
                 </div>
                 <span className="text-xs text-nf-secondary">
-                  Poster & info page show a live countdown before auto-cleanup
+                  The poster and info page show a countdown before cleanup
                 </span>
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -518,7 +523,7 @@ export default function AddTorrentModal() {
                   </button>
                 ))}
                 <div className="ml-auto flex items-center gap-1.5 text-xs text-nf-secondary">
-                  <span>Custom (hrs):</span>
+                  <span>Custom (hours):</span>
                   <input
                     type="number"
                     min={1}
@@ -535,12 +540,12 @@ export default function AddTorrentModal() {
               <div className="flex items-center justify-between gap-2">
                 <span className="flex items-center gap-2 text-sm font-semibold">
                   <FolderOpen className="h-4 w-4 text-nf-secondary" />
-                  Download Library Location
+                  Library folder
                 </span>
                 {autoFolderReason && !folderTouched.current && (
                   <span className="flex items-center gap-1 rounded-full bg-nf-green/15 px-2.5 py-0.5 text-[11px] font-semibold text-nf-green">
                     <Sparkles className="h-3 w-3" />
-                    Auto-selected for {autoFolderReason === 'tv' ? 'TV Shows' : 'Movies'}
+                    Auto-selected for {autoFolderReason === 'tv' ? 'TV shows' : 'movies'}
                   </span>
                 )}
               </div>
@@ -549,7 +554,7 @@ export default function AddTorrentModal() {
                 <div className="space-y-1.5">
                   {folderOptions.map((dir) => {
                     const selected = destFolder === dir;
-                    const leaf = dir.split(/[\\/]/).filter(Boolean).pop() ?? dir;
+                    const leaf = basename(dir);
                     return (
                       <button
                         key={dir}
@@ -579,7 +584,7 @@ export default function AddTorrentModal() {
 
               <div className="pt-1">
                 <button type="button" onClick={browseCustomFolder} className="nf-btn-ghost h-8 px-3 py-0 text-xs">
-                  <FolderOpen className="h-3.5 w-3.5" /> Browse Another Folder…
+                  <FolderOpen className="h-3.5 w-3.5" /> Choose another folder…
                 </button>
               </div>
             </div>
@@ -589,7 +594,7 @@ export default function AddTorrentModal() {
           {inspected && (
             <div className="space-y-3 rounded-lg border border-white/10 bg-white/[0.03] p-4">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold uppercase tracking-wider text-nf-muted">Library Metadata Match</span>
+                <span className="text-xs font-semibold uppercase tracking-wider text-nf-muted">Library match</span>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -597,14 +602,14 @@ export default function AddTorrentModal() {
                     disabled={matching}
                     className="text-xs font-semibold text-white underline underline-offset-2 hover:text-nf-secondary"
                   >
-                    {searchOpen ? 'Hide Manual Search' : match ? 'Change Match' : 'Find Match Manually'}
+                    {searchOpen ? 'Hide search' : match ? 'Change match' : 'Find match manually'}
                   </button>
                 </div>
               </div>
 
               {matching ? (
                 <div className="flex items-center gap-2.5 py-3 text-xs text-nf-secondary">
-                  <Loader2 className="h-4 w-4 animate-spin text-nf-red" /> Matching “{inspected.name}” against TMDB…
+                  <Spinner className="h-4 w-4" /> Matching “{inspected.name}” against TMDB…
                 </div>
               ) : match ? (
                 <div className="flex items-start gap-3.5">
@@ -617,10 +622,10 @@ export default function AddTorrentModal() {
                       {match.year && <span className="text-xs text-nf-secondary">({match.year})</span>}
                       <span className="inline-flex items-center gap-1 rounded bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-white">
                         {match.kind === 'tv' ? <Tv className="h-3 w-3" /> : <Film className="h-3 w-3" />}
-                        {match.kind === 'tv' ? 'TV Series' : 'Movie'}
+                        {match.kind === 'tv' ? 'TV series' : 'Movie'}
                       </span>
                       <span className="rounded bg-nf-green/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-nf-green">
-                        {matchOrigin === 'manual' ? 'Manual Match' : 'Auto-Matched'}
+                        {matchOrigin === 'manual' ? 'Manual match' : 'Auto-matched'}
                       </span>
                     </div>
                     <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-nf-secondary">
@@ -633,7 +638,7 @@ export default function AddTorrentModal() {
                   <div>
                     <span className="font-semibold text-white">{fallbackTitle || inspected.name}</span>
                     <span className="ml-2 text-nf-muted">
-                      ({effectiveKind === 'tv' ? 'Unmatched TV Show' : 'Unmatched Movie'})
+                      ({effectiveKind === 'tv' ? 'Unmatched TV show' : 'Unmatched movie'})
                     </span>
                   </div>
                   <div className="flex rounded border border-white/20 p-0.5">
@@ -646,7 +651,7 @@ export default function AddTorrentModal() {
                           effectiveKind === k ? 'bg-white text-black' : 'text-nf-secondary hover:text-white'
                         }`}
                       >
-                        {k === 'movie' ? 'Movie' : 'TV Show'}
+                        {k === 'movie' ? 'Movie' : 'TV show'}
                       </button>
                     ))}
                   </div>
@@ -660,15 +665,17 @@ export default function AddTorrentModal() {
                     <div className="relative flex-1">
                       <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-nf-muted" />
                       <input
+                        aria-label="Search TMDB"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search TMDB title manually…"
+                        placeholder="Search TMDB…"
                         className="h-9 w-full rounded border border-white/20 bg-black/40 pl-9 pr-3 text-xs text-white outline-none focus:border-white/50"
                       />
                     </div>
                     <input
                       value={searchYear}
                       onChange={(e) => setSearchYear(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                      aria-label="Year"
                       placeholder="Year"
                       className="h-9 w-20 rounded border border-white/20 bg-black/40 px-2 text-center text-xs text-white outline-none focus:border-white/50"
                     />
@@ -691,7 +698,7 @@ export default function AddTorrentModal() {
                   <div className="max-h-48 space-y-1 overflow-y-auto pr-1">
                     {searching && (
                       <div className="flex justify-center py-4">
-                        <Loader2 className="h-4 w-4 animate-spin text-nf-red" />
+                        <Spinner className="h-4 w-4" />
                       </div>
                     )}
                     {!searching &&
@@ -714,14 +721,14 @@ export default function AddTorrentModal() {
                             </div>
                             <div className="flex items-center gap-1 text-[11px] text-nf-muted">
                               <Star className="h-2.5 w-2.5 fill-current" />
-                              {r.voteAverage ? r.voteAverage.toFixed(1) : '–'} · {r.kind === 'tv' ? 'TV Series' : 'Movie'}
+                              {r.voteAverage ? r.voteAverage.toFixed(1) : '–'} · {r.kind === 'tv' ? 'TV series' : 'Movie'}
                             </div>
                           </div>
                         </button>
                       ))}
                     {!searching && searchQuery.trim() && !searchResults.length && (
                       <p className="py-3 text-center text-xs text-nf-muted">
-                        {settings.tmdb_api_key ? 'No TMDB matches found. Try another title or keep unmatched.' : 'Configure your TMDB API key in Settings › Ratings & Data to search.'}
+                        {settings.tmdb_api_key ? 'No TMDB matches found. Try another title or keep unmatched.' : 'Configure your TMDB API key in Settings › Ratings & data to search.'}
                       </p>
                     )}
                   </div>
@@ -749,11 +756,11 @@ export default function AddTorrentModal() {
                 <span className="font-semibold uppercase tracking-wider text-nf-muted">
                   {inspected.metadata_ready
                     ? `Files (${inspected.files.length}) · ${formatBytes(inspected.total_bytes)}`
-                    : 'Magnet Metadata'}
+                    : 'Magnet metadata'}
                 </span>
                 {resolvingFiles && (
                   <span className="flex items-center gap-1.5 text-nf-secondary">
-                    <Loader2 className="h-3 w-3 animate-spin text-nf-red" /> Discovering file list from peers…
+                    <Spinner className="h-3 w-3" /> Discovering file list from peers…
                   </span>
                 )}
               </div>
@@ -770,7 +777,7 @@ export default function AddTorrentModal() {
                           type="checkbox"
                           checked={selectedFiles.has(f.index)}
                           onChange={() => toggleFile(f.index)}
-                          className="accent-[#e50914]"
+                          className="accent-nf-red"
                         />
                         <span className={`truncate ${f.is_video ? 'text-white' : 'text-nf-muted'}`}>{f.relative_path}</span>
                       </span>
@@ -791,7 +798,7 @@ export default function AddTorrentModal() {
             </div>
           )}
 
-          {/* Prominent Seeding / Hit-and-Run Toggle */}
+          {/* Seeding toggle */}
           <div className="flex items-center justify-between gap-4 rounded-lg border border-white/15 bg-black/35 px-4 py-3.5">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-white">
@@ -810,46 +817,6 @@ export default function AddTorrentModal() {
             />
           </div>
         </fieldset>
-
-        {/* Footer CTA */}
-        <div className="flex items-center justify-end gap-2.5 border-t border-white/10 bg-black/30 px-6 py-4">
-          <button type="button" onClick={close} disabled={submitting} className="nf-btn-ghost h-10 px-4 text-sm">
-            Cancel
-          </button>
-          {mode === 'stream' ? (
-            <>
-              <button
-                type="button"
-                disabled={!canSubmit}
-                onClick={() => void submit(false)}
-                className="nf-btn-ghost h-10 px-4 text-sm disabled:opacity-40"
-              >
-                <Download className="h-4 w-4" />
-                Pre-Cache ({formatHoursLabel(cacheHours)})
-              </button>
-              <button
-                type="button"
-                disabled={!canSubmit}
-                onClick={() => void submit(true)}
-                className="nf-btn-red h-10 px-5 text-sm font-semibold disabled:opacity-40"
-              >
-                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-                Stream Now
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              disabled={!canSubmit || !destFolder}
-              onClick={() => void submit(false)}
-              className="nf-btn-red h-10 px-5 text-sm font-semibold disabled:opacity-40"
-            >
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              Start Download
-            </button>
-          )}
-        </div>
-      </motion.div>
-    </motion.div>
+    </Dialog>
   );
 }

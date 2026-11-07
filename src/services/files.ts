@@ -4,11 +4,12 @@ import { epLabel } from '../store/selectors';
 import type { EpisodeRow, FileMove, MediaItem, TrashRow, TrashSnapshot } from '../types/media';
 import * as db from './db';
 import { removeTorrent } from './torrents';
+import { IS_MAC, IS_WINDOWS } from '../lib/platform';
+import { errorMessage } from '../lib/errors';
 
 export const TRASH_RETENTION_DAYS = 30;
 
-const UA = navigator.userAgent;
-export const FILE_MANAGER_NAME = UA.includes('Mac') ? 'Finder' : UA.includes('Windows') ? 'File Explorer' : 'File Manager';
+export const FILE_MANAGER_NAME = IS_MAC ? 'Finder' : IS_WINDOWS ? 'File Explorer' : 'file manager';
 
 const VIDEO_RE = /\.(mkv|mp4|m4v|avi|mov|webm|ts)$/i;
 
@@ -20,13 +21,6 @@ export function rootFor(path: string, roots: string[]): string {
     if ((path.startsWith(root + '/') || path.startsWith(root + '\\')) && root.length > best.length) best = root;
   }
   return best;
-}
-
-export function formatBytes(bytes: number): string {
-  if (!bytes) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  return `${(bytes / 1024 ** i).toFixed(i >= 3 ? 1 : 0)} ${units[i]}`;
 }
 
 export function revealInFileManager(path: string) {
@@ -116,14 +110,14 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
     const ok = await store.confirm({
       title: `Remove transfers for “${label}”?`,
       message: 'This will cancel the matching transfers and delete all files in those transfers, including any other episodes they contain.',
-      confirmLabel: 'Remove Transfers',
+      confirmLabel: 'Remove transfers',
       danger: true,
     });
     if (!ok) return false;
     try {
       for (const t of transientTorrents) await removeTorrent(t.infoHash, true);
     } catch (e) {
-      store.toast(`Could not delete “${label}”: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      store.toast(`Could not delete “${label}”: ${errorMessage(e)}`, 'error');
       return false;
     }
     store.toast(`Removed transfers for “${label}”`, 'info');
@@ -142,7 +136,7 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
           : 'The episode file and its subtitles';
   const ok = await store.confirm({
     title: `Delete “${label}”?`,
-    message: `${what} will be moved to Recently Deleted in Settings. You can restore it for ${TRASH_RETENTION_DAYS} days before it’s permanently deleted.`,
+    message: `${what} will be moved to Recently deleted in Settings. You can restore it for ${TRASH_RETENTION_DAYS} days before it’s permanently deleted.`,
     confirmLabel: 'Delete',
     danger: true,
   });
@@ -190,7 +184,7 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
   } finally {
     await store.reload();
   }
-  store.toast(`Deleted “${label}” · Restore it from Settings › Recently Deleted`, 'success');
+  store.toast(`Deleted “${label}” · Restore it from Settings › Recently deleted`, 'success');
   return true;
 }
 

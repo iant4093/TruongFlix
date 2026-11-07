@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Loader2, RotateCw, ShieldCheck, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, RotateCw, ShieldCheck, X } from 'lucide-react';
 import { browseSource, type SourceBrowserSession } from '../../services/browse';
 import type { CatalogDetail } from '../../types/browse';
 import useSourcePane from '../../hooks/useSourcePane';
 import { useModalDialog } from '../../hooks/useModalDialog';
+import { errorMessage } from '../../lib/errors';
+import IconButton from '../common/IconButton';
+import { ErrorBanner, LoadingState } from '../common/States';
 
 /** Trusted navigation stays above an isolated native source view in the library window. */
 export default function SourceBrowser({ item, sourceUrl, onBack, onSelected }: {
@@ -29,12 +32,12 @@ export default function SourceBrowser({ item, sourceUrl, onBack, onSelected }: {
       onClosed: () => { if (active && !controller.signal.aborted) { setSession(null); setError('The source browser closed. Try opening it again.'); } },
       onError: (message) => { if (active) setError(message); },
     }).then((opened) => { if (active) setSession(opened); else opened.close(); })
-      .catch((reason) => { if (active && !controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); });
+      .catch((reason) => { if (active && !controller.signal.aborted) setError(errorMessage(reason)); });
     return () => { active = false; controller.abort(); };
   }, [item, sourceUrl, attempt]);
   const control = (action: 'back' | 'forward' | 'reload') => {
     setError('');
-    void session?.control(action).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    void session?.control(action).catch((reason) => setError(errorMessage(reason)));
   };
   const message = error || pane.error;
   return <div ref={root} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Browse torrents for ${item.title}`} className="fixed inset-0 z-[110] flex flex-col bg-nf-bg outline-none">
@@ -46,11 +49,11 @@ export default function SourceBrowser({ item, sourceUrl, onBack, onSelected }: {
         {([{ action: 'back', label: 'Back one page', Icon: ArrowLeft }, { action: 'forward', label: 'Forward one page', Icon: ArrowRight }, { action: 'reload', label: 'Reload source', Icon: RotateCw }] as const).map(({ action, label, Icon }) =>
           <button key={action} aria-label={label} title={label} disabled={!session} onClick={() => control(action)} className="rounded p-2.5 text-white/70 hover:bg-white/10 disabled:opacity-30"><Icon className="h-4 w-4" /></button>)}
       </nav>
-      <button aria-label="Close torrent browser" title="Close torrent browser" onClick={onBack} className="rounded p-2.5 hover:bg-white/10"><X className="h-5 w-5" /></button>
+      <IconButton aria-label="Close torrent browser" onClick={onBack} variant="plain"><X className="h-5 w-5" /></IconButton>
     </header>
-    {message && <div role="alert" className="flex shrink-0 items-center justify-between gap-4 border-b border-white/10 bg-[#252020] px-5 py-3 text-sm text-red-200"><span>{message}</span><button className="nf-btn-ghost shrink-0 text-sm" onClick={() => { if (error) setAttempt((value) => value + 1); else pane.retry(); }}>Retry</button></div>}
-    <div ref={slot} className="mb-2 min-h-0 flex-1 bg-[#181818]">
-      {!session && !message && <p role="status" className="flex items-center justify-center gap-3 py-20 text-sm text-white/60"><Loader2 className="h-5 w-5 animate-spin" />Opening your source…</p>}
+    {message && <ErrorBanner className="shrink-0 rounded-none border-x-0 border-t-0 px-5" onRetry={() => { if (error) setAttempt((value) => value + 1); else pane.retry(); }}>{message}</ErrorBanner>}
+    <div ref={slot} className="mb-2 min-h-0 flex-1 bg-nf-surface">
+      {!session && !message && <LoadingState inline label="Opening your source…" className="justify-center py-20 text-sm" />}
     </div>
   </div>;
 }

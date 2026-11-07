@@ -62,26 +62,26 @@ function Mini({ session }: { session: PlaybackSession }) {
               {prompt === 'still-watching' ? 'Continue' : 'Resume'}
             </button>
           )}
-          <button type="button" className={btn} title="Stop" onClick={() => void closeBuiltin()}>
+          <button type="button" className={btn} aria-label="Stop" title="Stop" onClick={() => void closeBuiltin()}>
             <X className="h-5 w-5" />
           </button>
         </div>
       ) : (
         <div className="flex items-center gap-1 px-2" style={{ height: MINI.bar - 3 }} onClickCapture={noteUserActivity}>
-          <button type="button" className={btn} title={state?.paused ? 'Play' : 'Pause'} onClick={() => void playerCommand('cycle', 'pause')}>
+          <button type="button" className={btn} aria-label={state?.paused ? 'Play' : 'Pause'} title={state?.paused ? 'Play' : 'Pause'} onClick={() => void playerCommand('cycle', 'pause')}>
             {state?.paused ? <Play className="h-5 w-5 fill-white" strokeWidth={0} /> : <Pause className="h-5 w-5 fill-white" strokeWidth={0} />}
           </button>
-          <button type="button" className={btn} title={live ? 'Go live' : 'Back 10 seconds'} onClick={() => void (live ? goLive() : playerCommand('seek', -10, 'relative'))}>
+          <button type="button" className={btn} aria-label={live ? 'Go live' : 'Back 10 seconds'} title={live ? 'Go live' : 'Back 10 seconds'} onClick={() => void (live ? goLive() : playerCommand('seek', -10, 'relative'))}>
             <RotateCcw className="h-[18px] w-[18px]" />
           </button>
           <div className="min-w-0 flex-1 px-2 leading-tight">
             <div className="truncate text-sm font-semibold">{live && <span className="mr-2 text-[10px] text-red-400">LIVE</span>}{session.title}</div>
             {session.subtitle && <div className="truncate text-xs text-nf-muted">{session.subtitle}</div>}
           </div>
-          <button type="button" className={btn} title="Expand" onClick={() => void exitMini()}>
+          <button type="button" className={btn} aria-label="Expand" title="Expand" onClick={() => void exitMini()}>
             <Maximize2 className="h-[18px] w-[18px]" />
           </button>
-          <button type="button" className={btn} title="Stop" onClick={() => void closeBuiltin()}>
+          <button type="button" className={btn} aria-label="Stop" title="Stop" onClick={() => void closeBuiltin()}>
             <X className="h-5 w-5" />
           </button>
         </div>

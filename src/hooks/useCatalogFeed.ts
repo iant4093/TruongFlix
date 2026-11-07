@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCatalog, type CatalogList, type SearchResult } from '../services/tmdb';
+import { errorMessage } from '../lib/errors';
 
 type Page = Awaited<ReturnType<typeof getCatalog>>;
 const cache = new Map<string, Page & { time: number }>();
@@ -31,7 +32,7 @@ export default function useCatalogFeed(kind: 'movie' | 'tv', list: CatalogList, 
     } catch (e) {
       if (cursor.current !== current) return;
       current.failedPage = page;
-      setFeed((f) => ({ ...f, loading: false, error: e instanceof Error ? e.message : String(e) }));
+      setFeed((f) => ({ ...f, loading: false, error: errorMessage(e) }));
     } finally { if (cursor.current === current) current.pending = false; }
   }, [kind, list, query, apiKey, scope, allowed]);
   useEffect(() => {

@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { motion } from 'framer-motion';
+import { useEffect, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, X } from 'lucide-react';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import { FolderOpen } from 'lucide-react';
+import Dialog from '../../components/common/Dialog';
+import { basename } from '../../lib/path';
+
+export { DialogIcon } from '../../components/common/Dialog';
 
 /** Free bytes on the drive holding `path` (null while unknown). */
 export function useDiskFree(path: string): number | null {
@@ -66,43 +68,20 @@ export function GameDialog({ title, subtitle, art, onClose, footer, children, wi
   children: ReactNode;
   wide?: boolean;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const { onBackdropMouseDown } = useModalDialog(ref, { onClose, priority: 100 });
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.2 }}
-      onMouseDown={onBackdropMouseDown}
-      className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/75 px-4 py-8 backdrop-blur-xs"
+    <Dialog
+      onClose={onClose}
+      priority={100}
+      size={wide ? 'lg' : 'md'}
+      title={<span className="block truncate">{title}</span>}
+      description={subtitle ? <p className="truncate text-xs">{subtitle}</p> : undefined}
+      icon={art}
+      footer={footer ?? undefined}
+      divided
+      bodyClassName="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5"
     >
-      <motion.div
-        ref={ref}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        tabIndex={-1}
-        initial={{ opacity: 0, y: 20, scale: 0.97 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.2 }}
-        className={`my-auto w-full ${wide ? 'max-w-3xl' : 'max-w-2xl'} overflow-hidden rounded-xl bg-nf-surface shadow-2xl outline-none ring-1 ring-white/10`}
-      >
-        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-4">
-          <div className="flex min-w-0 items-center gap-3.5">
-            {art}
-            <div className="min-w-0">
-              <h2 className="truncate text-xl font-bold">{title}</h2>
-              {subtitle && <p className="truncate text-xs text-nf-secondary">{subtitle}</p>}
-            </div>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close dialog" className="shrink-0 rounded-full p-1.5 text-white/70 hover:bg-white/10 hover:text-white">
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        <div className="max-h-[72vh] min-w-0 overflow-y-auto px-6 py-5">{children}</div>
-        {footer && <div className="flex items-center justify-end gap-2.5 border-t border-white/10 bg-black/30 px-6 py-4">{footer}</div>}
-      </motion.div>
-    </motion.div>
+      {children}
+    </Dialog>
   );
 }
 
@@ -114,7 +93,7 @@ export function FolderChoice({ path, empty, buttonLabel, onChange, testId }: {
   onChange: () => void;
   testId?: string;
 }) {
-  const leaf = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  const leaf = basename(path);
   return (
     <div className="flex items-center gap-3">
       <div className="min-w-0 flex-1" title={path || undefined} data-testid={testId}>
@@ -128,9 +107,4 @@ export function FolderChoice({ path, empty, buttonLabel, onChange, testId }: {
       </button>
     </div>
   );
-}
-
-/** Icon tile used in dialog headers. */
-export function DialogIcon({ children }: { children: ReactNode }) {
-  return <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-nf-red/15 text-nf-red">{children}</div>;
 }

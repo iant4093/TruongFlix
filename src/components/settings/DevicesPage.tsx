@@ -10,9 +10,10 @@ import {
   remoteSessions, signOutRemote, TAILSCALE_DOWNLOAD, tailscaleServe, tailscaleStatus,
   type RemoteSession, type TailscaleStatus,
 } from '../../services/tailscale';
+import { IS_MAC } from '../../lib/platform';
+import { errorMessage } from '../../lib/errors';
 import { Block, BTN, BTN_PRIMARY, Group, INPUT, Page, Row, StatusText, Switch, ToggleRow } from './ui';
 
-const IS_MAC = navigator.userAgent.includes('Mac');
 
 function Qr({ text }: { text: string }) {
   const svg = useMemo(() => {
@@ -55,7 +56,7 @@ export default function DevicesPage() {
         }
       })
       .catch((e) => {
-        if (alive) setEncoderErr(e instanceof Error ? e.message : String(e));
+        if (alive) setEncoderErr(errorMessage(e));
       });
     return () => {
       alive = false;
@@ -214,7 +215,7 @@ function AwayFromHome({ port }: { port: number }) {
       setStatus(res.status);
       setApproval(res.approvalUrl);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }

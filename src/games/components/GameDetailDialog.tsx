@@ -2,11 +2,17 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, FileCog, FolderOpen, Loader2, Pause, Play, RotateCcw, Trash2, X,
+  AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, FileCog, FolderOpen, Pause, Play, RotateCcw, Trash2, X,
 } from 'lucide-react';
 import { useModalDialog } from '../../hooks/useModalDialog';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { formatBytes, formatEta, formatSpeed, pauseTorrent, resumeTorrent } from '../../services/torrents';
+import { formatEta, pauseTorrent, resumeTorrent } from '../../services/torrents';
+import { formatBytes, formatSpeed } from '../../lib/format';
+import { errorMessage } from '../../lib/errors';
+import Dialog from '../../components/common/Dialog';
+import IconButton from '../../components/common/IconButton';
+import ProgressBar from '../../components/common/ProgressBar';
+import Spinner from '../../components/common/Spinner';
 import { revealInFileManager } from '../../services/files';
 import { BTN, BTN_DANGER } from '../../components/settings/ui';
 import { deleteInstallerNow, removeGame, setGameExe, uninstallGame, useGamesStore } from '../jobs';
@@ -46,8 +52,8 @@ function Lightbox({ shots, index, onIndex, onClose }: { shots: Shot[]; index: nu
       className="fixed inset-0 z-[130] flex items-center justify-center bg-black/90 p-8 backdrop-blur-xs" onMouseDown={onBackdropMouseDown}>
       <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Screenshot ${index + 1} of ${shots.length}`} className="relative outline-none"
         onKeyDown={(e) => { if (e.key === 'ArrowRight') step(1); if (e.key === 'ArrowLeft') step(-1); }}>
-        {src ? <img src={src} alt="" className="max-h-[85vh] max-w-[90vw] rounded-md shadow-2xl" /> : <Loader2 className="h-8 w-8 animate-spin text-white/60" />}
-        <button onClick={onClose} aria-label="Close screenshot" className="absolute -right-3 -top-3 flex h-9 w-9 items-center justify-center rounded-full bg-nf-surface hover:bg-[#2a2a2a]"><X className="h-5 w-5" /></button>
+        {src ? <img src={src} alt="" className="max-h-[85vh] max-w-[90vw] rounded-md shadow-2xl" /> : <Spinner tone="muted" className="h-8 w-8" label="Loading screenshot" />}
+        <IconButton onClick={onClose} aria-label="Close screenshot" variant="surface" className="absolute -right-3 -top-3"><X className="h-5 w-5" /></IconButton>
         {shots.length > 1 && <>
           <button aria-label="Previous screenshot" onClick={() => step(-1)} className="nf-circle-btn fixed left-6 top-1/2 h-11 w-11 -translate-y-1/2"><ChevronLeft className="h-5 w-5" /></button>
           <button aria-label="Next screenshot" onClick={() => step(1)} className="nf-circle-btn fixed right-6 top-1/2 h-11 w-11 -translate-y-1/2"><ChevronRight className="h-5 w-5" /></button>
@@ -77,17 +83,15 @@ function StatusPanels({ game }: { game: LibraryGame }) {
 
   if (downloading && torrent) {
     panels.push(
-      <div key="download" className="space-y-2.5 rounded-lg border border-sky-400/25 bg-sky-500/[0.07] px-4 py-3">
+      <div key="download" className="space-y-2.5 rounded-lg border border-nf-download/25 bg-nf-download/[0.07] px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs tabular-nums">
-          <span className="inline-flex items-center gap-1.5 font-semibold text-sky-300"><Download className="h-3.5 w-3.5" />{gameStatusLabel(game, job, torrent)}</span>
+          <span className="inline-flex items-center gap-1.5 font-semibold text-nf-download-text"><Download className="h-3.5 w-3.5" />{gameStatusLabel(game, job, torrent)}</span>
           <span className="text-white/80">{formatBytes(torrent.progressBytes)} of {formatBytes(torrent.totalBytes)}</span>
         </div>
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-          <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${Math.max(2, torrent.progressPct)}%` }} />
-        </div>
+        <ProgressBar value={torrent.progressPct / 100} min={0.02} size="regular" tone="download" rounded animated label="Download progress" />
         <div className="flex items-center justify-between gap-3 text-xs tabular-nums">
           <span className="text-nf-secondary">
-            {torrent.paused ? 'Paused' : <><span className="text-sky-200">↓ {formatSpeed(torrent.downloadSpeedBps)}</span> · {torrent.peersLive} peers · {formatEta(torrent.etaSecs)} left</>}
+            {torrent.paused ? 'Paused' : <><span className="text-nf-download-text">↓ {formatSpeed(torrent.downloadSpeedBps)}</span> · {torrent.peersLive} peers · {formatEta(torrent.etaSecs)} left</>}
           </span>
           <button className="nf-btn-ghost h-7 px-2.5 py-0 text-xs" disabled={busy}
             onClick={() => void run(() => (torrent.paused ? resumeTorrent(torrent.infoHash) : pauseTorrent(torrent.infoHash)))}>
@@ -101,14 +105,12 @@ function StatusPanels({ game }: { game: LibraryGame }) {
     panels.push(
       <div key="job" role="status" className="space-y-2.5 rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
         <div className="flex items-center justify-between gap-4 text-xs tabular-nums">
-          <span className="inline-flex items-center gap-1.5 font-semibold"><Loader2 className="h-3.5 w-3.5 animate-spin text-nf-red" />{gameStatusLabel(game, job, torrent)}</span>
+          <span className="inline-flex items-center gap-1.5 font-semibold"><Spinner className="h-3.5 w-3.5" />{gameStatusLabel(game, job, torrent)}</span>
           {job.status && <span className="min-w-0 truncate text-nf-secondary">{job.status}</span>}
         </div>
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-          {progress != null
-            ? <div className="h-full bg-nf-red transition-all duration-300" style={{ width: `${Math.max(2, progress)}%` }} />
-            : <div className="h-full w-1/3 animate-pulse bg-nf-red/70" />}
-        </div>
+        {progress != null
+          ? <ProgressBar value={progress / 100} min={0.02} size="regular" rounded animated label="Progress" />
+          : <div className="h-1.5 w-full overflow-hidden rounded-full bg-nf-track"><div className="h-full w-1/3 animate-pulse bg-nf-red/70" /></div>}
       </div>,
     );
   }
@@ -156,7 +158,7 @@ function Manage({ game, onRemoved, onReinstall }: { game: LibraryGame; onRemoved
       {installed && installer && <button className={BTN} disabled={busy} onClick={onReinstall}><RotateCcw className="h-4 w-4" />Reinstall</button>}
       {installer && <button className={BTN} disabled={busy} onClick={() => void confirmThen('Delete installer?', `The downloaded installer for “${game.title}” will be deleted and stop seeding.${installed ? ' The installed game is not affected.' : ''}`, 'Delete installer', () => deleteInstallerNow(game.id))}><Trash2 className="h-4 w-4" />Delete installer</button>}
       {installed && <button className={BTN_DANGER} disabled={busy || running} onClick={() => void confirmThen('Uninstall game?', `“${game.title}” will be uninstalled and its folder deleted, including saved games stored there.`, 'Uninstall', async () => { await uninstallGame(game.id); })}><Trash2 className="h-4 w-4" />Uninstall</button>}
-      {!installed && <button className={BTN_DANGER} disabled={busy} onClick={() => void confirmThen('Remove from library?', game.status === 'downloading' ? `The download of “${game.title}” will be cancelled and its files deleted.` : `“${game.title}” will be removed from your library${installer ? ' and its installer deleted' : ''}.`, 'Remove', async () => { await removeGame(game.id, true); onRemoved(); })}><Trash2 className="h-4 w-4" />Remove</button>}
+      {!installed && <button className={BTN_DANGER} disabled={busy} onClick={() => void confirmThen('Remove from library?', game.status === 'downloading' ? `The download of “${game.title}” will be canceled and its files deleted.` : `“${game.title}” will be removed from your library${installer ? ' and its installer deleted' : ''}.`, 'Remove', async () => { await removeGame(game.id, true); onRemoved(); })}><Trash2 className="h-4 w-4" />Remove</button>}
       {installed && <button className={BTN_DANGER} disabled={busy || running} onClick={() => void confirmThen('Remove from library?', `“${game.title}” stays installed on disk but is removed from TruongFlix.`, 'Remove', async () => { await removeGame(game.id, false); onRemoved(); })}>Remove from library</button>}
     </div>
   );
@@ -177,8 +179,6 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
   const [shot, setShot] = useState<number | null>(null);
   const [showAllFeatures, setShowAllFeatures] = useState(false);
   const [fullDescription, setFullDescription] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const { onBackdropMouseDown } = useModalDialog(ref, { onClose, active: !downloading && !installing && shot == null, priority: 60 });
   const detail = fetched ?? owned?.detail ?? null;
 
   useEffect(() => {
@@ -186,7 +186,7 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
     let active = true;
     fetchGame(origin, game.slug)
       .then((d) => { if (active) d ? setFetched(d) : setError('This game is no longer on the source.'); })
-      .catch((e) => { if (active) setError(e instanceof Error ? e.message : String(e)); });
+      .catch((e) => { if (active) setError(errorMessage(e)); });
     return () => { active = false; };
   }, [origin, game.slug, detail]);
 
@@ -204,7 +204,7 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
     running ? <span className="inline-flex items-center gap-1.5 font-semibold text-nf-green"><Play className="h-4 w-4 fill-current" strokeWidth={0} />Playing now</span>
       : owned.status === 'installed' && !job ? <span className="inline-flex items-center gap-1.5 font-semibold text-nf-green"><CheckCircle2 className="h-4 w-4" />Installed</span>
         : (owned.status === 'install_failed' || owned.status === 'verify_failed') && !job ? <span className="inline-flex items-center gap-1.5 font-semibold text-amber-300"><AlertTriangle className="h-4 w-4" />{gameStatusLabel(owned, job, torrent)}</span>
-          : <span className={`font-semibold ${job ? 'text-white' : 'text-sky-300'}`}>{gameStatusLabel(owned, job, torrent)}</span>
+          : <span className={`font-semibold ${job ? 'text-white' : 'text-nf-download-text'}`}>{gameStatusLabel(owned, job, torrent)}</span>
   );
 
   const about: [string, ReactNode][] = [];
@@ -221,25 +221,16 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
   if (owned && hasInstaller(owned) && owned.installerDir) about.push(['Installer', <span className="selectable break-all">{owned.installerDir}</span>]);
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
-      onMouseDown={onBackdropMouseDown}
-      className="fixed inset-0 z-[60] flex justify-center overflow-y-auto bg-black/70 px-4 pb-10 pt-8 backdrop-blur-xs"
-    >
-      <motion.div
-        ref={ref}
-        role="dialog"
-        aria-modal="true"
-        aria-label={info.title}
-        tabIndex={-1}
-        initial={{ opacity: 0, scale: 0.94, y: 30 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.94, y: 30 }}
-        transition={{ duration: 0.28, ease: [0.21, 0, 0.27, 1] }}
-        className="relative h-max w-full max-w-4xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl outline-none"
+    <>
+      <Dialog
+        onClose={onClose}
+        active={!downloading && !installing && shot == null}
+        priority={60}
+        size="xl"
+        align="top"
+        chrome="none"
+        label={info.title}
+        className="overflow-hidden"
       >
         <div className="relative aspect-video w-full overflow-hidden bg-[#232323]">
           {backdrop && <motion.img key={backdrop} src={backdrop} alt="" draggable={false} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }}
@@ -248,10 +239,9 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
           <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-nf-surface/10 to-transparent" />
           <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-transparent" />
 
-          <button onClick={onClose} aria-label="Close"
-            className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-nf-surface text-white hover:bg-[#2a2a2a]">
+          <IconButton onClick={onClose} aria-label="Close" variant="surface" className="absolute right-4 top-4 z-10">
             <X className="h-5 w-5" />
-          </button>
+          </IconButton>
 
           <div className="absolute bottom-[8%] left-12 right-12 flex flex-col gap-5">
             <div>
@@ -283,7 +273,7 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
                 {formatPlayTime(owned.playSeconds)}{owned.lastPlayed ? ` · Last played ${longDate(owned.lastPlayed)}` : ''}
               </p>
             )}
-            {loading && <p role="status" className="flex items-center gap-2 text-sm text-nf-secondary"><Loader2 className="h-4 w-4 animate-spin" />Loading details…</p>}
+            {loading && <p role="status" className="flex items-center gap-2 text-sm text-nf-secondary"><Spinner tone="inherit" className="h-4 w-4" />Loading details…</p>}
             {error && !owned && <p role="alert" className="text-sm text-red-300">{error}</p>}
             {description
               ? <div>
@@ -313,7 +303,7 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
 
         {features.length > 0 && (
           <section className="px-12 pb-8">
-            <h3 className="mb-4 text-2xl font-bold">Download Details</h3>
+            <h3 className="mb-4 text-2xl font-bold">Download details</h3>
             <ul className="selectable space-y-2 text-sm leading-relaxed text-[#d2d2d2]">
               {(showAllFeatures ? features : features.slice(0, 5)).map((f) => (
                 <li key={f} className="flex gap-3"><span aria-hidden="true" className="mt-2 h-1 w-1 shrink-0 rounded-full bg-nf-muted" />{f}</li>
@@ -334,11 +324,11 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
             {owned && !job && <Manage game={owned} onRemoved={onClose} onReinstall={() => setInstalling(owned)} />}
           </section>
         )}
-      </motion.div>
+      </Dialog>
 
       {downloading && detail && <DownloadDialog detail={detail} onClose={() => setDownloading(false)} onStarted={() => { onClose(); onOpenLibrary(); }} />}
       {installing && <InstallDialog game={installing} onClose={() => setInstalling(null)} />}
       {shot != null && shots[shot] && <Lightbox shots={shots} index={shot} onIndex={setShot} onClose={() => setShot(null)} />}
-    </motion.div>
+    </>
   );
 }

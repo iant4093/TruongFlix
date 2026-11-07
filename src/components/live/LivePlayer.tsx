@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronUp,
-  Loader2,
   Maximize,
   Pause,
   PictureInPicture2,
@@ -17,6 +16,7 @@ import {
 import type { LivePlayerSession } from '../../types/live';
 import type { AudioDevice } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import Spinner from '../common/Spinner';
 import {
   closeBuiltin,
   dismissPrompt,
@@ -185,7 +185,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
       </div>
       {blocked ? (
         <div key={prompt} role="dialog" aria-modal="true" aria-label="Playback paused" className="absolute inset-0 z-20 flex items-center justify-center bg-black/70">
-          <div className="rounded-lg bg-[#181818] p-8 text-center">
+          <div className="rounded-lg bg-nf-surface p-8 text-center">
             <h2 className="mb-4 text-2xl font-bold">
               {prompt === 'limit'
                 ? 'That’s all for today!'
@@ -207,7 +207,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
         </div>
       ) : interrupted ? (
         <div className="absolute inset-0 flex items-center justify-center bg-black/60">
-          <div className="max-w-md rounded-lg bg-[#181818]/95 p-8 text-center">
+          <div className="max-w-md rounded-lg bg-nf-surface/95 p-8 text-center">
             <RadioIcon />
             <h2 className="mt-4 text-xl font-bold">Channel interrupted</h2>
             <p className="mt-2 text-sm text-white/60">
@@ -237,7 +237,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
             aria-label="Buffering live stream"
             className="pointer-events-none absolute inset-0 flex items-center justify-center"
           >
-            <Loader2 className="h-12 w-12 animate-spin text-nf-red" />
+            <Spinner className="h-12 w-12" />
           </div>
         )
       )}
@@ -246,7 +246,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
         className={`group/live-chrome pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-[4%] pb-7 pt-20 transition-opacity ${blocked ? 'hidden' : chromeOpacity}`}
       >
         {!blocked && settings && (
-          <div className="pointer-events-auto ml-auto mb-5 w-96 max-w-full space-y-4 rounded-lg border border-white/15 bg-[#181818] p-5 shadow-xl">
+          <div className="pointer-events-auto ml-auto mb-5 w-96 max-w-full space-y-4 rounded-lg border border-white/15 bg-nf-surface p-5 shadow-xl">
             <div className="flex items-center justify-between font-bold">
               Live playback
               <button aria-label="Close playback settings" onClick={() => setSettings(false)}>
@@ -328,7 +328,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
               <input
                 type="range"
                 aria-label="Live buffer position"
-                className="h-1 flex-1 accent-[#e50914]"
+                className="h-1 flex-1 accent-nf-red"
                 min={range.start}
                 max={range.end}
                 step={0.5}

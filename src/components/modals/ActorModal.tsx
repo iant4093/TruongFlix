@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
-import { User, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence } from 'framer-motion';
+import { User } from 'lucide-react';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore, type ActorRef } from '../../store/useLibraryStore';
 import { getPerson, resize, type PersonInfo } from '../../services/tmdb';
 import { formatRuntime } from '../../store/selectors';
 import Artwork from '../common/Artwork';
 import MaturityRating from '../common/MaturityRating';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import Dialog from '../common/Dialog';
 
 /** Everything in your library featuring one cast or crew member. */
 export default function ActorModal() {
@@ -21,11 +21,6 @@ function ActorPage({ actor }: { actor: ActorRef }) {
   const openDetail = useLibraryStore((s) => s.openDetail);
   const [person, setPerson] = useState<PersonInfo | null>(null);
   const [bioOpen, setBioOpen] = useState(false);
-  const dialog = useRef<HTMLDivElement>(null);
-  const present = useIsPresent();
-  const { onBackdropMouseDown } = useModalDialog(dialog, {
-    onClose: () => openActor(null), active: present, priority: 70,
-  });
 
   useEffect(() => {
     let alive = true;
@@ -53,37 +48,10 @@ function ActorPage({ actor }: { actor: ActorRef }) {
     : null;
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
-      onMouseDown={onBackdropMouseDown}
-      className={`fixed inset-0 z-[70] flex justify-center overflow-y-auto bg-black/75 px-4 pb-10 pt-8 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
-    >
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 24 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 24 }}
-        transition={{ duration: 0.26, ease: [0.21, 0, 0.27, 1] }}
-        ref={dialog}
-        role="dialog"
-        tabIndex={-1}
-        aria-modal="true"
-        aria-hidden={!present || undefined}
-        aria-label={actor.name}
-        className="relative h-max w-full max-w-4xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl outline-none"
-      >
-        <button
-          onClick={() => openActor(null)}
-          aria-label="Close"
-          className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white hover:bg-[#2a2a2a]"
-        >
-          <X className="h-5 w-5" />
-        </button>
+    <Dialog onClose={() => openActor(null)} priority={70} size="xl" align="top" chrome="floating" label={actor.name} className="overflow-hidden">
 
-        <div className="flex gap-8 bg-gradient-to-b from-[#2b2b2b] to-nf-surface p-10 pb-6">
-          <div className="h-56 w-40 shrink-0 overflow-hidden rounded-md bg-[#333] shadow-xl">
+        <div className="flex gap-8 bg-gradient-to-b from-nf-raised to-nf-surface p-10 pb-6">
+          <div className="h-56 w-40 shrink-0 overflow-hidden rounded-md bg-nf-cardHover shadow-xl">
             {photo ? (
               <img src={photo} alt={actor.name} className="h-full w-full object-cover" />
             ) : (
@@ -101,7 +69,7 @@ function ActorPage({ actor }: { actor: ActorRef }) {
             </div>
             {person?.biography && (
               <div>
-                <p className={`text-[15px] leading-relaxed text-[#d2d2d2] ${bioOpen ? '' : 'line-clamp-5'}`}>{person.biography}</p>
+                <p className={`text-[15px] leading-relaxed text-nf-soft ${bioOpen ? '' : 'line-clamp-5'}`}>{person.biography}</p>
                 {person.biography.length > 420 && (
                   <button onClick={() => setBioOpen(!bioOpen)} className="mt-1 text-sm font-semibold text-white hover:underline">
                     {bioOpen ? 'Less' : 'More'}
@@ -125,7 +93,7 @@ function ActorPage({ actor }: { actor: ActorRef }) {
                     openActor(null);
                     openDetail(item.key);
                   }}
-                  className="overflow-hidden rounded-md bg-[#2f2f2f] text-left transition-colors hover:bg-[#383838]"
+                  className="overflow-hidden rounded-md bg-nf-card text-left transition-colors hover:bg-nf-cardHover"
                 >
                   <div className="relative aspect-video">
                     <Artwork src={resize(item.backdrop, 'w500')} alt={item.title} fallbackTitle={item.title} className="h-full w-full" />
@@ -148,7 +116,6 @@ function ActorPage({ actor }: { actor: ActorRef }) {
             <p className="text-nf-secondary">Nothing else with {actor.name} in your library yet.</p>
           )}
         </section>
-      </motion.div>
-    </motion.div>
+    </Dialog>
   );
 }

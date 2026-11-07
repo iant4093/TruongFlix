@@ -37,7 +37,7 @@ it('keeps focus and backdrop dismissal on the top dialog and restores each opene
   fireEvent.click(sourceButton);
   const inner = screen.getByRole('dialog', { name: 'Source settings' });
   const source = screen.getByRole('button', { name: 'Source' });
-  const close = inner.querySelector('button[aria-label="Close dialog"]');
+  const close = inner.querySelector('button[aria-label="Close"]');
   expect(document.activeElement).toBe(inner);
 
   fireEvent.mouseDown(outer.parentElement!);

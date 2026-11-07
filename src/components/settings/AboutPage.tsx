@@ -4,7 +4,7 @@ import type { EngineStatus } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { appVersion, availableUpdate, checkForUpdate, installUpdate, onUpdateChange, type AvailableUpdate } from '../../services/updates';
 import { engineStatus } from '../../services/player';
-import { formatBytes } from '../../services/files';
+import { formatBytes } from '../../lib/format';
 import { Block, BTN, BTN_PRIMARY, Group, Page, Row, StatusText, ToggleRow } from './ui';
 import { closeSettingsAnd } from './nav';
 

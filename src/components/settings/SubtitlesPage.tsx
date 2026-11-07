@@ -2,10 +2,11 @@ import { useState } from 'react';
 import type { SubtitleStyle } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { OpenSubtitlesFields, type SubtitleSettingsValue } from '../common/SetupControls';
-import { Loader2, RefreshCw } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { runAutoSubtitles } from '../../services/autosubs';
 import { languageName } from '../../services/subtitles';
 import { Block, BTN, BTN_PRIMARY, Group, Page, Row, Segmented, StatusText, ToggleRow } from './ui';
+import Spinner from '../common/Spinner';
 
 const PREVIEW_SIZE: Record<SubtitleStyle['size'], string> = { small: '13px', medium: '16px', large: '20px', xlarge: '25px' };
 const PREVIEW_COLOR: Record<SubtitleStyle['color'], string> = { white: '#fff', yellow: '#FFE600', cyan: '#3DE1FF', green: '#4CFF6B', magenta: '#FF5CF2' };
@@ -59,7 +60,7 @@ export default function SubtitlesPage() {
         <Row label="Size">
           <Segmented value={style.size} onChange={(size) => set({ size })} options={[['small', 'S'], ['medium', 'M'], ['large', 'L'], ['xlarge', 'XL']]} />
         </Row>
-        <Row label="Colour">
+        <Row label="Color">
           <Segmented
             value={style.color}
             onChange={(color) => set({ color })}
@@ -117,7 +118,7 @@ function AutoDownloads() {
   return (
     <Group
       title="Automatic downloads"
-      footer={`Works through the titles missing ${languageName(settings.subtitle_language || 'en')} subtitles (see Library Health), in-progress ones first, within OpenSubtitles’ daily allowance.`}
+      footer={`Works through the titles missing ${languageName(settings.subtitle_language || 'en')} subtitles (see Library health), in-progress ones first, within OpenSubtitles’ daily allowance.`}
     >
       <ToggleRow
         label="Download missing subtitles automatically"
@@ -147,7 +148,7 @@ function AutoDownloads() {
         }
       >
         <button onClick={() => void run()} disabled={busy || !enabled} className={BTN}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Run now
+          {busy ? <Spinner className="h-4 w-4" tone="inherit" /> : <RefreshCw className="h-4 w-4" />} Run now
         </button>
       </Row>
     </Group>

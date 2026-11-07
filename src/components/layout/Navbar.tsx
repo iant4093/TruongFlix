@@ -7,8 +7,8 @@ import { formatLeft, limitStatus } from '../../services/limits';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
 import { runScan } from '../../services/scanner';
 import { stopPlayback } from '../../services/player';
-import { formatSpeed, isActiveDownload } from '../../services/torrents';
-import { formatTimestamp } from '../../store/selectors';
+import { isActiveDownload } from '../../services/torrents';
+import { formatClock, formatSpeed } from '../../lib/format';
 
 const LINKS: { view: View; label: string }[] = [
   { view: 'home', label: 'Home' },
@@ -95,7 +95,7 @@ export default function Navbar() {
             aria-current={view === l.view && !search ? 'page' : undefined}
             onClick={() => setView(l.view)}
             className={`whitespace-nowrap transition-colors duration-300 ${
-              view === l.view && !search ? 'font-semibold text-white' : 'text-[#e5e5e5] hover:text-[#b3b3b3]'
+              view === l.view && !search ? 'font-semibold text-white' : 'text-nf-light hover:text-nf-dim'
             }`}
           >
             {l.label}
@@ -110,12 +110,12 @@ export default function Navbar() {
             <span className="hidden text-nf-secondary xl:inline">Playing in VLC</span>
             {playback.length > 0 && (
               <span className="hidden tabular-nums text-white/80 xl:inline">
-                {formatTimestamp(playback.time)} / {formatTimestamp(playback.length)}
+                {formatClock(playback.time)} / {formatClock(playback.length)}
               </span>
             )}
             <button
               onClick={() => stopPlayback()}
-              title="Stop playback"
+              aria-label="Stop playback" title="Stop playback"
               className="ml-1 rounded-full p-1 text-white/70 hover:bg-white/10 hover:text-white"
             >
               <Square className="h-3 w-3 fill-current" />
@@ -180,11 +180,11 @@ export default function Navbar() {
         <button
           onClick={() => runScan()}
           disabled={scanning}
-          title={scanning ? 'Scanning…' : 'Scan Library'}
-          className="flex items-center gap-1.5 text-sm text-[#e5e5e5] transition-colors hover:text-white disabled:cursor-wait"
+          title={scanning ? 'Scanning…' : 'Scan library'}
+          className="flex items-center gap-1.5 text-sm text-nf-light transition-colors hover:text-white disabled:cursor-wait"
         >
           <RefreshCw className={`h-5 w-5 ${scanning ? 'animate-spin text-nf-red' : ''}`} />
-          <span className="hidden xl:inline">{scanning ? 'Scanning…' : 'Scan Library'}</span>
+          <span className="hidden xl:inline">{scanning ? 'Scanning…' : 'Scan library'}</span>
         </button>
 
         <TorrentMenu />
@@ -196,7 +196,7 @@ export default function Navbar() {
           }}
           title="Settings"
           aria-label="Settings"
-          className="text-[#e5e5e5] transition-colors hover:text-white"
+          className="text-nf-light transition-colors hover:text-white"
         >
           <Settings className="h-5 w-5" />
         </button>
@@ -216,15 +216,15 @@ function TorrentMenu() {
   const downloading = activeDownloads.length > 0;
 
   return (
-    <div className="flex items-center gap-1.5 whitespace-nowrap text-sm text-[#e5e5e5]">
+    <div className="flex items-center gap-1.5 whitespace-nowrap text-sm text-nf-light">
       <button
         type="button"
         onClick={() => openAddTorrent()}
-        title="Add Magnet or .torrent"
-        aria-label="Add Magnet or .torrent"
+        title="Add magnet or .torrent"
+        aria-label="Add magnet or .torrent"
         className="flex items-center gap-1.5 transition-colors hover:text-white"
       >
-        <Magnet className={`h-5 w-5 ${downloading ? 'text-sky-400' : ''}`} />
+        <Magnet className={`h-5 w-5 ${downloading ? 'text-nf-download' : ''}`} />
         {!downloading && <span className="hidden xl:inline">Torrents</span>}
       </button>
       {downloading && (
@@ -235,7 +235,7 @@ function TorrentMenu() {
           aria-label="View torrent transfers"
           className="flex items-center gap-1.5 tabular-nums transition-colors hover:text-white"
         >
-          <span className="rounded-full bg-sky-500/20 px-1.5 py-[1px] text-[10px] font-bold text-sky-300">
+          <span className="rounded-full bg-nf-download/20 px-1.5 py-[1px] text-[10px] font-bold text-nf-download-text">
             {activeDownloads.length}
           </span>
           <span className="hidden xl:inline">
@@ -288,7 +288,7 @@ function ProfileMenu() {
 
   return (
     <div className="relative" onMouseEnter={show} onMouseLeave={hide}>
-      <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1.5" title={active.name}>
+      <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1.5" aria-label={active.name} title={active.name}>
         <ProfileAvatar color={active.color} maturity={active.maturity} size={32} />
         <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${open ? 'rotate-180' : ''}`} />
       </button>
@@ -315,7 +315,7 @@ function ProfileMenu() {
             </button>
             <div className="my-2 border-t border-white/15" />
             <button onClick={pick(() => setOverlay('history'))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
-              <History className="h-5 w-5 text-nf-secondary" /> Viewing Activity
+              <History className="h-5 w-5 text-nf-secondary" /> Viewing activity
             </button>
             <button onClick={pick(() => setOverlay('wrapped'))} className="flex w-full items-center gap-3 px-4 py-2 hover:underline">
               <BarChart3 className="h-5 w-5 text-nf-secondary" /> Your TruongFlix Wrapped

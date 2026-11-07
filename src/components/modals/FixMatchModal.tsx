@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { motion, useIsPresent } from 'framer-motion';
-import { Loader2, Search, Star, X } from 'lucide-react';
+import { Star } from 'lucide-react';
 import { selectItem, useLibraryStore } from '../../store/useLibraryStore';
 import { applyFixMatch, runImdbSync } from '../../services/scanner';
 import { searchTitles, type SearchResult } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
-import { useModalDialog } from '../../hooks/useModalDialog';
+import Dialog from '../common/Dialog';
+import SearchField from '../common/SearchField';
+import SegmentedControl from '../common/SegmentedControl';
+import Spinner from '../common/Spinner';
+import { LoadingState } from '../common/States';
+import { errorMessage } from '../../lib/errors';
 
 /** Manual TMDB override for files the parser/matcher got wrong. */
 export default function FixMatchModal() {
@@ -27,12 +31,7 @@ export default function FixMatchModal() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [applying, setApplying] = useState<number | null>(null);
-  const dialog = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
-  const present = useIsPresent();
-  const { onBackdropMouseDown } = useModalDialog(dialog, {
-    onClose: () => openFixMatch(null), active: present && !!item, priority: 70, initialFocus: searchInput,
-  });
 
   useEffect(() => {
     const q = query.trim();
@@ -51,7 +50,7 @@ export default function FixMatchModal() {
           setError(null);
         }
       } catch (e) {
-        if (!cancelled) setError(String(e instanceof Error ? e.message : e));
+        if (!cancelled) setError(errorMessage(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -76,47 +75,27 @@ export default function FixMatchModal() {
       if (detailKey) openDetail(newKey);
       void runImdbSync();
     } catch (e) {
-      toast(`Fix Match failed: ${String(e instanceof Error ? e.message : e)}`, 'error');
+      toast(`Fix match failed: ${errorMessage(e)}`, 'error');
     } finally {
       setApplying(null);
     }
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      onMouseDown={onBackdropMouseDown}
-      className={`fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/75 px-4 py-12 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
+    <Dialog
+      onClose={() => openFixMatch(null)}
+      priority={70}
+      size="md"
+      divided
+      initialFocus={searchInput}
+      title="Fix match"
+      description={<>
+        Currently matched as <span className="font-semibold text-white">{item.title}</span>
+        {item.year ? ` (${item.year})` : ''} · {item.kind === 'movie' ? 'Movie' : 'TV series'}
+      </>}
+      bodyClassName="flex min-h-0 flex-1 flex-col"
     >
-      <motion.div
-        initial={{ opacity: 0, y: 24, scale: 0.97 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 24, scale: 0.97 }}
-        transition={{ duration: 0.22 }}
-        ref={dialog}
-        role="dialog"
-        tabIndex={-1}
-        aria-modal="true"
-        aria-hidden={!present || undefined}
-        aria-label="Fix Match"
-        className="w-full max-w-2xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl outline-none"
-      >
-        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-7 py-5">
-          <div className="min-w-0">
-            <h2 className="text-2xl font-bold">Fix Match</h2>
-            <p className="mt-0.5 text-sm text-nf-secondary">
-              Currently matched as <span className="font-semibold text-white">{item.title}</span>
-              {item.year ? ` (${item.year})` : ''} · {item.kind === 'movie' ? 'Movie' : 'TV Series'}
-            </p>
-          </div>
-          <button onClick={() => openFixMatch(null)} aria-label="Close Fix Match" className="rounded-full p-1.5 text-white/70 hover:bg-white/10 hover:text-white">
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="space-y-4 px-7 py-5">
+        <div className="shrink-0 space-y-4 px-6 py-5">
           <div className="selectable max-h-24 overflow-y-auto rounded bg-black/40 px-3 py-2 font-mono text-[11px] leading-relaxed text-nf-secondary">
             {paths.slice(0, 6).map((p) => (
               <div key={p} className="break-all">
@@ -127,36 +106,28 @@ export default function FixMatchModal() {
           </div>
 
           <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-nf-muted" />
-              <input
-                ref={searchInput}
-                aria-label="Search TMDB"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search TMDB…"
-                className="nf-input pl-10"
-              />
-            </div>
+            <SearchField
+              className="flex-1"
+              inputRef={searchInput}
+              ariaLabel="Search TMDB"
+              value={query}
+              onChange={setQuery}
+              placeholder="Search TMDB…"
+            />
             <input
+              aria-label="Year"
               value={year}
               onChange={(e) => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))}
               placeholder="Year"
-              className="nf-input w-24 text-center"
+              className="w-20 rounded border border-white/25 bg-black/40 px-2 text-center text-sm text-white outline-none placeholder:text-white/40 focus:border-white/60"
             />
-            <div className="flex rounded border border-[#5a5a5a] p-1">
-              {(['movie', 'tv'] as const).map((k) => (
-                <button
-                  key={k}
-                  onClick={() => setKind(k)}
-                  className={`rounded-sm px-3 text-sm font-semibold transition-colors ${
-                    kind === k ? 'bg-white text-black' : 'text-nf-secondary hover:text-white'
-                  }`}
-                >
-                  {k === 'movie' ? 'Movie' : 'TV'}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              ariaLabel="Title type"
+              size="sm"
+              value={kind}
+              onChange={setKind}
+              options={[{ value: 'movie', label: 'Movie' }, { value: 'tv', label: 'TV' }]}
+            />
           </div>
           {kind !== item.kind && (
             <p className="text-xs text-nf-secondary">
@@ -167,12 +138,8 @@ export default function FixMatchModal() {
           )}
         </div>
 
-        <div className="max-h-[52vh] min-h-[160px] overflow-y-auto px-4 pb-5">
-          {loading && !results.length && (
-            <div className="flex justify-center py-10">
-              <Loader2 className="h-7 w-7 animate-spin text-nf-red" />
-            </div>
-          )}
+        <div className="min-h-[160px] flex-1 overflow-y-auto px-4 pb-5">
+          {loading && !results.length && <LoadingState />}
           {error && <p className="px-3 py-6 text-center text-sm text-nf-red">{error}</p>}
           {!loading && !error && query.trim() && !results.length && (
             <p className="px-3 py-10 text-center text-sm text-nf-secondary">No results. Try a different title, year, or type.</p>
@@ -192,7 +159,7 @@ export default function FixMatchModal() {
                   <Artwork src={r.poster} alt={r.title} className="h-full w-full" />
                   {applying === r.id && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/60">
-                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <Spinner tone="inherit" />
                     </div>
                   )}
                 </div>
@@ -212,7 +179,6 @@ export default function FixMatchModal() {
             );
           })}
         </div>
-      </motion.div>
-    </motion.div>
+    </Dialog>
   );
 }

@@ -1,3 +1,5 @@
+import { basename } from '../lib/path';
+
 export interface GameFile {
   index: number;
   relative_path: string;
@@ -22,11 +24,9 @@ const LANGUAGE_WORDS = new Set([
 
 const OPTIONAL_RE = /^((?:fg-)?(?:optional|selective)-)(.+)$/i;
 
-const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
-
 /** `fg-optional-bonus-content.part2.bin` → { key: 'fg-optional-bonus-content', item: 'bonus-content' }. */
 function optionalItem(path: string): { key: string; item: string } | null {
-  const m = baseName(path).toLowerCase().match(OPTIONAL_RE);
+  const m = basename(path).toLowerCase().match(OPTIONAL_RE);
   if (!m) return null;
   const item = m[2].replace(/\.[a-z0-9]+$/, '').replace(/[-._]part\d+$/, '');
   return item ? { key: m[1] + item, item } : null;
@@ -63,11 +63,11 @@ export function classifyFiles(files: GameFile[]): { required: GameFile[]; option
 
 export function setupFileIndex(files: GameFile[]): number | null {
   const exes = files
-    .filter((f) => /^setup.*\.exe$/i.test(baseName(f.relative_path)))
+    .filter((f) => /^setup.*\.exe$/i.test(basename(f.relative_path)))
     .sort((a, b) => a.relative_path.split(/[\\/]/).length - b.relative_path.split(/[\\/]/).length);
   const pick =
-    exes.find((f) => /^setup[-_ ]?fixed.*\.exe$/i.test(baseName(f.relative_path))) ??
-    exes.find((f) => baseName(f.relative_path).toLowerCase() === 'setup.exe') ??
+    exes.find((f) => /^setup[-_ ]?fixed.*\.exe$/i.test(basename(f.relative_path))) ??
+    exes.find((f) => basename(f.relative_path).toLowerCase() === 'setup.exe') ??
     exes[0];
   return pick ? pick.index : null;
 }

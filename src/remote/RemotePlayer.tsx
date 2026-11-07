@@ -22,7 +22,9 @@ import {
   X,
 } from 'lucide-react';
 import type { RemotePlayable, RemoteProfile, RemoteStream, RemoteSubStyle } from './types';
-import { api, fmtTime } from './api';
+import { api } from './api';
+import { formatClock } from '../lib/format';
+import { errorMessage } from '../lib/errors';
 import { isPlayerShortcut, playerControlTitles } from '../components/player/shortcuts';
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
@@ -198,7 +200,7 @@ export default function RemotePlayer({
       } catch (e) {
         if (mounted.current && seq === loadSeq.current) {
           setLoading(false);
-          setError(e instanceof Error ? e.message : String(e));
+          setError(errorMessage(e));
         }
         return null;
       }
@@ -808,7 +810,7 @@ export default function RemotePlayer({
                   }`}
                 >
                   <span className="truncate">{c.title || `Chapter ${idx + 1}`}</span>
-                  <span className="shrink-0 font-mono text-xs text-nf-muted">{fmtTime(c.time)}</span>
+                  <span className="shrink-0 font-mono text-xs text-nf-muted">{formatClock(c.time)}</span>
                 </button>
               ))}
             </div>
@@ -831,7 +833,7 @@ export default function RemotePlayer({
         <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-10 max-[539px]:px-3 ${chromePointer}`}>
           {/* Timeline scrubber with buffer bar & chapter ticks */}
           <div className="flex items-center gap-3">
-            <span className="w-12 text-right font-mono text-xs tabular-nums sm:w-14">{fmtTime(absolute)}</span>
+            <span className="w-12 text-right font-mono text-xs tabular-nums sm:w-14">{formatClock(absolute)}</span>
             <div className="group relative flex h-5 flex-1 items-center">
               <div className="relative h-1 w-full overflow-hidden rounded-full bg-white/25 transition-all group-hover:h-1.5">
                 <div className="absolute inset-y-0 left-0 bg-white/35" style={{ width: `${bufferedPct}%` }} />
@@ -863,7 +865,7 @@ export default function RemotePlayer({
               className="w-14 text-left font-mono text-xs tabular-nums text-nf-secondary hover:text-white"
               title="Toggle remaining time"
             >
-              {showRemaining ? `−${fmtTime(Math.max(0, duration - absolute))}` : fmtTime(duration)}
+              {showRemaining ? `−${formatClock(Math.max(0, duration - absolute))}` : formatClock(duration)}
             </button>
           </div>
 

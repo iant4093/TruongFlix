@@ -1,6 +1,7 @@
 import type { CastMember, MediaInfo } from '../../types/media';
 import { describeStreams, formatSize } from '../../services/mediainfo';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { IS_MAC } from '../../lib/platform';
 
 /** "Video / Audio / Subtitles / File" lines read from the actual file. */
 export function StreamInfo({ info, size }: { info: MediaInfo | null; size?: number | null }) {
@@ -32,8 +33,8 @@ export function StreamInfo({ info, size }: { info: MediaInfo | null; size?: numb
           {[formatSize(bytes), info.chapters.length > 1 ? `${info.chapters.length} chapters` : ''].filter(Boolean).join(' · ')}
         </p>
       )}
-      {info.dv_profile === 5 && navigator.userAgent.includes('Mac') && (
-        <p className="text-amber-400/90">Dolby Vision profile 5 — colours may look off in the built-in player on macOS.</p>
+      {info.dv_profile === 5 && IS_MAC && (
+        <p className="text-nf-warn">Dolby Vision profile 5 — colors may look off in the built-in player on macOS.</p>
       )}
     </>
   );

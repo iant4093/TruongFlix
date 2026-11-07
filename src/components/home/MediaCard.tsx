@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Clock, Download } from 'lucide-react';
 import type { ContinueEntry, MediaItem } from '../../types/media';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
-import { airDayLabel, epLabel, formatRemaining, formatTimestamp, newEpisodeSoon } from '../../store/selectors';
-import { formatEta, formatExpiryRemaining, formatSpeed, isActiveDownload, torrentForItem, torrentStatusLabel } from '../../services/torrents';
+import { airDayLabel, epLabel, formatRemaining, newEpisodeSoon } from '../../store/selectors';
+import { formatEta, formatExpiryRemaining, isActiveDownload, torrentStatusLabel } from '../../services/torrents';
+import { formatClock, formatSpeed } from '../../lib/format';
+import { useItemTorrent } from './useItemTorrent';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import ProgressBar from '../common/ProgressBar';
@@ -78,9 +80,11 @@ interface Props {
 }
 
 /** 16:9 boxart card used in every row and grid. */
-export default function MediaCard({ item, entry }: Props) {
+export default memo(MediaCard);
+
+function MediaCard({ item, entry }: Props) {
   const openDetail = useLibraryStore((s) => s.openDetail);
-  const torrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
+  const torrent = useItemTorrent(item);
   const [, setClockTick] = useState(0);
 
   useEffect(() => {
@@ -133,7 +137,7 @@ export default function MediaCard({ item, entry }: Props) {
         )}
 
         {isDownloading && torrent && (
-          <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-sky-300 ring-1 ring-white/15 backdrop-blur-xs">
+          <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-nf-download-text ring-1 ring-white/15 backdrop-blur-xs">
             <Download className="h-2.5 w-2.5" />
             {torrentStatusLabel(torrent)} · {torrent.progressPct.toFixed(0)}%
           </span>
@@ -154,9 +158,7 @@ export default function MediaCard({ item, entry }: Props) {
         )}
 
         {isDownloading && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1.5 bg-black/80">
-            <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${pct}%` }} />
-          </div>
+          <ProgressBar value={pct / 100} size="regular" tone="download" track="overlay" animated className="pointer-events-none absolute inset-x-0 bottom-0" />
         )}
 
         {!isDownloading && item.kind === 'tv' && newEpisodeSoon(item.nextEpisode) && (
@@ -171,18 +173,16 @@ export default function MediaCard({ item, entry }: Props) {
             <span className="truncate">{entry.episode ? epLabel(entry.episode) : 'Resume'}</span>
             <span className="shrink-0 tabular-nums">
               {entry.target.startTime > 0
-                ? formatRemaining(entry.remainingSeconds) || formatTimestamp(entry.target.startTime)
+                ? formatRemaining(entry.remainingSeconds) || formatClock(entry.target.startTime)
                 : 'Next Up'}
             </span>
           </div>
         </div>
       ) : isDownloading && torrent ? (
         <div className="mt-1.5 px-0.5">
-          <div className="h-[3px] w-full overflow-hidden rounded-sm bg-[#4d4d4d]">
-            <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${pct}%` }} />
-          </div>
+          <ProgressBar value={pct / 100} height={3} tone="download" animated className="rounded-sm" />
           <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-nf-secondary">
-            <span className="truncate text-sky-300">
+            <span className="truncate text-nf-download-text">
               {isActiveDownload(torrent) && torrent.downloadSpeedBps > 0
                 ? `↓ ${formatSpeed(torrent.downloadSpeedBps)}`
                 : torrentStatusLabel(torrent)}

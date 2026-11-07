@@ -18,7 +18,7 @@ export default function Artwork({ src, alt, className = '', fallbackTitle, eager
   if (!src || failed) {
     return (
       <div
-        className={`flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-[#2b2b2b] via-[#1c1c1c] to-[#101010] p-3 text-center ${className}`}
+        className={`flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-nf-raised via-[#1c1c1c] to-[#101010] p-3 text-center ${className}`}
       >
         <Film className="h-6 w-6 text-nf-muted" strokeWidth={1.5} />
         {fallbackTitle && (
@@ -36,7 +36,7 @@ export default function Artwork({ src, alt, className = '', fallbackTitle, eager
       decoding="async"
       onLoad={() => setLoaded(true)}
       onError={() => setFailed(true)}
-      className={`bg-[#232323] object-cover transition-opacity duration-500 ${loaded ? 'opacity-100' : 'opacity-0'} ${className}`}
+      className={`bg-nf-hover object-cover transition-opacity duration-500 ${loaded ? 'opacity-100' : 'opacity-0'} ${className}`}
     />
   );
 }

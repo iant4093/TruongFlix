@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Download, HardDrive, Loader2, RotateCw } from 'lucide-react';
 import { Switch } from '../../components/settings/ui';
-import { formatBytes, inspectTorrentFilesLive } from '../../services/torrents';
+import { inspectTorrentFilesLive } from '../../services/torrents';
+import { formatBytes } from '../../lib/format';
+import { errorMessage } from '../../lib/errors';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { classifyFiles, type GameFile, type OptionalGroup } from '../files';
 import { downloadGame, updateGameSettings, useGamesStore } from '../jobs';
@@ -67,7 +69,7 @@ export default function DownloadDialog({ detail, onClose, onStarted }: { detail:
       } catch (e) {
         if (!cancelled) {
           setFiles(null);
-          setListError(e instanceof Error ? e.message : String(e));
+          setListError(errorMessage(e));
         }
       } finally {
         if (!cancelled) setLoadingList(false);
@@ -134,7 +136,7 @@ export default function DownloadDialog({ detail, onClose, onStarted }: { detail:
       onStarted?.();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     } finally {
       setWorking(false);
     }

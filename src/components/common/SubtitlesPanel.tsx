@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Captions, Check, Download, Ear, Loader2, Search, ShieldCheck, Trash2, Zap } from 'lucide-react';
+import { Captions, Check, Download, Ear, Search, ShieldCheck, Trash2, Zap } from 'lucide-react';
 import type { SubtitleRow } from '../../types/media';
 import Dropdown from './Dropdown';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -17,6 +17,7 @@ import {
   type SubtitleResult,
   type SubtitleTarget,
 } from '../../services/subtitles';
+import Spinner from './Spinner';
 
 const LANGUAGE_OPTIONS = SUBTITLE_LANGUAGES.map((l) => ({ value: l.code, label: l.name }));
 
@@ -174,7 +175,7 @@ export default function SubtitlesPanel({ target }: { target: SubtitleTarget }) {
         <div className="flex items-center gap-2">
           <LanguageSelect value={language} onChange={setLanguage} />
           <button onClick={search} disabled={searching} className="nf-btn-ghost h-10 py-0">
-            {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+            {searching ? <Spinner className="h-4 w-4" tone="inherit" /> : <Search className="h-4 w-4" />}
             Find Subtitles
           </button>
         </div>
@@ -205,7 +206,7 @@ export default function SubtitlesPanel({ target }: { target: SubtitleTarget }) {
                   e.stopPropagation();
                   void choose(() => removeSubtitle(r));
                 }}
-                title={r.source === 'opensubtitles' ? 'Delete downloaded subtitle' : 'Remove from list (file is kept)'}
+                aria-label={r.source === 'opensubtitles' ? 'Delete downloaded subtitle' : 'Remove from list (file is kept)'} title={r.source === 'opensubtitles' ? 'Delete downloaded subtitle' : 'Remove from list (file is kept)'}
                 className="text-white/30 opacity-0 transition hover:text-nf-red group-hover:opacity-100"
               >
                 <Trash2 className="h-4 w-4" />
@@ -236,7 +237,7 @@ export default function SubtitlesPanel({ target }: { target: SubtitleTarget }) {
             {results.map((r) => {
               const have = rows.some((row) => row.opensubtitles_file_id === r.fileId);
               return (
-                <div key={r.fileId} className="flex items-center gap-3 rounded-md bg-[#2a2a2a] px-3 py-2.5">
+                <div key={r.fileId} className="flex items-center gap-3 rounded-md bg-nf-raised px-3 py-2.5">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       {r.hashMatch ? (
@@ -271,7 +272,7 @@ export default function SubtitlesPanel({ target }: { target: SubtitleTarget }) {
                     className="nf-btn-ghost shrink-0 py-1.5"
                   >
                     {downloading === r.fileId ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <Spinner className="h-4 w-4" tone="inherit" />
                     ) : have ? (
                       <Check className="h-4 w-4" />
                     ) : (

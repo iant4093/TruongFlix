@@ -76,7 +76,7 @@ it('opens a missing episode, compares that exact release scope and reopens the s
   fireEvent.click(saveButton);
   await waitFor(() => expect(saveButton.getAttribute('aria-pressed')).toBe('true'));
   expect(persisted[0]?.selection).toEqual({ season: 2, episode: 5 });
-  fireEvent.click(screen.getByRole('button', { name: 'Close dialog', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Close', exact: true }));
   fireEvent.click(screen.getByRole('button', { name: 'Saved in Browse' }));
   fireEvent.click(await screen.findByRole('button', { name: 'View Example' }));
   expect(screen.getByRole('button', { name: 'Choose episode or entire season' }).textContent).toContain('Episode 5');
