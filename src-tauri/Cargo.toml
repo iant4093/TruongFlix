@@ -1,6 +1,6 @@
 [package]
 name = "truongflix"
-version = "0.1.0"
+version = "2.0.0"
 description = "TruongFlix — a lightweight local media center"
 authors = ["Ian Truong"]
 edition = "2021"
