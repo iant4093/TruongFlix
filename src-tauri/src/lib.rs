@@ -2,6 +2,8 @@ mod audio;
 mod backup;
 mod cast;
 mod files;
+#[cfg(windows)]
+mod games;
 mod imdb;
 mod live;
 mod media;
@@ -74,6 +76,12 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The elevated game-installer helper is this same executable started with `--games-helper`.
+    #[cfg(windows)]
+    if let Some(code) = games::helper::run_from_args() {
+        std::process::exit(code);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             torrent::handle_cli_args(app, &argv);
@@ -186,6 +194,36 @@ pub fn run() {
             torrent::torrent_take_pending_links,
             torrent::torrent_check_os_handler,
             torrent::torrent_register_os_handler,
+            #[cfg(windows)]
+            games::games_source_get,
+            #[cfg(windows)]
+            games::games_cache_image,
+            #[cfg(windows)]
+            games::games_inspect_installer,
+            #[cfg(windows)]
+            games::games_install,
+            #[cfg(windows)]
+            games::games_uninstall,
+            #[cfg(windows)]
+            games::games_cancel,
+            #[cfg(windows)]
+            games::games_verify,
+            #[cfg(windows)]
+            games::games_launch,
+            #[cfg(windows)]
+            games::games_is_running,
+            #[cfg(windows)]
+            games::games_find_executables,
+            #[cfg(windows)]
+            games::games_disk_free,
+            #[cfg(windows)]
+            games::games_folder_size,
+            #[cfg(windows)]
+            games::games_delete_folder,
+            #[cfg(windows)]
+            games::games_known_folders,
+            #[cfg(windows)]
+            games::games_total_memory_gb,
         ])
         .build(app_context())
         .expect("error while building TruongFlix")

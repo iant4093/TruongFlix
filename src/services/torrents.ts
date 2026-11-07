@@ -97,7 +97,10 @@ export async function inspectTorrent(source: string): Promise<InspectTorrentRes>
   return invoke<InspectTorrentRes>('torrent_inspect', { source });
 }
 
-export async function inspectTorrentFilesLive(source: string, timeoutMs = 8000): Promise<InspectTorrentRes> {
+/** Magnet metadata can take well over 10 s to arrive through a VPN. */
+export const MAGNET_METADATA_TIMEOUT_MS = 20_000;
+
+export async function inspectTorrentFilesLive(source: string, timeoutMs = MAGNET_METADATA_TIMEOUT_MS): Promise<InspectTorrentRes> {
   return invoke<InspectTorrentRes>('torrent_inspect_files', { source, timeoutMs });
 }
 
@@ -465,7 +468,7 @@ export async function initiateTorrent(opts: InitiateTorrentOptions): Promise<Tor
   scheduleAdaptivePoll();
 
   const store = useLibraryStore.getState();
-  if (opts.playImmediately && !opts.abortSignal?.aborted) {
+  if (opts.playImmediately && opts.mode === 'stream' && !opts.abortSignal?.aborted) {
     if (status.files.length > 0) {
       await playTorrentByHash(status.info_hash);
     } else {
@@ -673,6 +676,13 @@ export async function playTorrentByHash(infoHash: string) {
   const store = useLibraryStore.getState();
   const t = store.torrents.find((x) => x.infoHash === hash);
   if (!t) return;
+  if (!t.finished && !canStreamTorrent(t)) {
+    const libItem =
+      (t.movieId != null ? store.items.find((i) => i.kind === 'movie' && i.id === t.movieId) : null) ??
+      (t.seriesId != null ? store.items.find((i) => i.kind === 'tv' && i.id === t.seriesId) : null);
+    store.toast(stillDownloadingMessage(libItem?.title ?? t.name), 'info');
+    return;
+  }
 
   if (t.movieId != null) {
     const item = store.items.find((i) => i.kind === 'movie' && i.id === t.movieId);
@@ -714,10 +724,16 @@ export async function playTorrentByHash(infoHash: string) {
  */
 export async function resolvePlayablePathOrStream(filePath: string): Promise<string> {
   if (filePath.startsWith('http://127.0.0.1:')) return filePath;
-  const { torrents } = useLibraryStore.getState();
-  const match = torrents.find((t) => t.filePaths.includes(filePath) || t.files.some((f) => f.full_path === filePath));
+  const store = useLibraryStore.getState();
+  const match = torrentForFile(filePath, store.torrents);
   if (!match) return filePath;
   if (match.finished && !match.inSession) return filePath;
+  if (!match.finished && !canStreamTorrent(match)) {
+    if (!downloadBlockingPlayback(filePath, [match])) return filePath;
+    const message = stillDownloadingMessage(match.name);
+    store.toast(message, 'info');
+    throw new Error(message);
+  }
   if (match.finished) {
     // Check if the completed file is directly reachable on disk; if so, direct file playback is fastest.
     const ok = await invoke<boolean[]>('check_paths', { paths: [filePath] }).catch(() => [false]);
@@ -764,6 +780,38 @@ export function torrentForEpisode(ep: EpisodeRow, torrents: TorrentItem[]): Torr
     torrents.find((t) => t.seriesId === ep.series_id && t.state === 'resolving') ??
     null
   );
+}
+
+/**
+ * Only transfers the user chose to stream may play before they finish. A stream promoted with
+ * "Keep" switches to download mode but stays streamable while its files are still in the stream cache.
+ */
+export function canStreamTorrent(t: TorrentItem): boolean {
+  if (t.finished) return false;
+  if (t.mode === 'stream') return true;
+  if (!t.savePath) return false;
+  return [...t.files.map((f) => f.full_path), ...t.filePaths].some((p) => !isUnder(p, t.savePath));
+}
+
+export function torrentForFile(filePath: string, torrents: TorrentItem[]): TorrentItem | null {
+  return torrents.find((t) => t.filePaths.includes(filePath) || t.files.some((f) => f.full_path === filePath)) ?? null;
+}
+
+/** The unfinished, non-streamable download still writing `filePath`, if any (a file it already completed may play). */
+export function downloadBlockingPlayback(filePath: string, torrents: TorrentItem[]): TorrentItem | null {
+  const t = torrentForFile(filePath, torrents);
+  if (!t || t.finished || canStreamTorrent(t)) return null;
+  const f = t.files.find((x) => x.full_path === filePath);
+  if (f && f.size > 0 && f.downloaded_bytes >= f.size) return null;
+  return t;
+}
+
+export function stillDownloadingMessage(title: string): string {
+  return `“${title}” is still downloading — it will be playable when the download finishes.`;
+}
+
+export function formatDownloadingLabel(pct: number): string {
+  return `Downloading ${pct.toFixed(0)}%`;
 }
 
 export function episodeFileProgress(ep: EpisodeRow, torrent: TorrentItem | null): { downloading: boolean; pct: number } | null {
@@ -904,6 +952,14 @@ async function reconcileMagnetFilesIfNeeded(rec: TorrentRecord, live: TorrentSta
   return ingested.filePaths;
 }
 
+const completionListeners = new Set<(torrent: TorrentItem) => void>();
+
+/** Called once when a torrent finishes downloading. Returns an unsubscribe function. */
+export function onTorrentCompleted(listener: (torrent: TorrentItem) => void): () => void {
+  completionListeners.add(listener);
+  return () => completionListeners.delete(listener);
+}
+
 export function pollTorrents(): Promise<TorrentItem[]> {
   if (pollInFlight) return pollInFlight;
   pollInFlight = (async () => {
@@ -919,6 +975,7 @@ export function pollTorrents(): Promise<TorrentItem[]> {
     const merged: TorrentItem[] = [];
     let needsLibraryReload = false;
     let triggerProbe = false;
+    const justCompleted: string[] = [];
 
     for (const rec of records) {
       const hash = rec.info_hash.toLowerCase();
@@ -935,7 +992,8 @@ export function pollTorrents(): Promise<TorrentItem[]> {
         filePaths = [];
       }
 
-      if (live && live.files.length > 0) {
+      const isGame = rec.purpose === 'game';
+      if (live && live.files.length > 0 && !isGame) {
         filePaths = await reconcileMagnetFilesIfNeeded(rec, live);
       }
 
@@ -955,13 +1013,16 @@ export function pollTorrents(): Promise<TorrentItem[]> {
           expires_at: expiresAt,
           total_bytes: live.total_bytes || rec.total_bytes,
         });
-        triggerProbe = true;
-        needsLibraryReload = true;
+        justCompleted.push(hash);
+        if (!isGame) {
+          triggerProbe = true;
+          needsLibraryReload = true;
+        }
       }
 
       // A promoted stream moves on a later poll if it is still being watched at completion.
       // Use persisted paths so a failed move can also be retried after its handle was removed.
-      if (completedAt && rec.mode === 'download' && savePath && filePaths.some((p) => !isUnder(p, savePath)) && !isPlayingTorrent(filePaths)) {
+      if (!isGame && completedAt && rec.mode === 'download' && savePath && filePaths.some((p) => !isUnder(p, savePath)) && !isPlayingTorrent(filePaths)) {
         try {
           await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' });
           const moves: FileMove[] = filePaths.map((from) => ({
@@ -1026,6 +1087,7 @@ export function pollTorrents(): Promise<TorrentItem[]> {
         name: live?.name || rec.name,
         source: rec.source,
         mode: rec.mode,
+        purpose: isGame ? 'game' : 'media',
         savePath,
         deleteOnComplete: rec.delete_on_complete === 1,
         cacheHours: rec.cache_hours,
@@ -1067,6 +1129,10 @@ export function pollTorrents(): Promise<TorrentItem[]> {
     useLibraryStore.getState().setTorrents(merged);
     if (needsLibraryReload) await useLibraryStore.getState().reload();
     if (triggerProbe) void startBackgroundAnalysis();
+    for (const hash of justCompleted) {
+      const item = merged.find((t) => t.infoHash === hash);
+      if (item) for (const listener of completionListeners) listener(item);
+    }
     return merged;
   })().finally(() => { pollInFlight = null; });
   return pollInFlight;

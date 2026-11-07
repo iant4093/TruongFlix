@@ -501,11 +501,15 @@ export interface TorrentStatus {
   files: TorrentFileStatus[];
 }
 
+/** 'game' torrents are installers managed by Games, kept out of the movie/TV library. */
+export type TorrentPurpose = 'media' | 'game';
+
 export interface TorrentRecord {
   info_hash: string;
   name: string;
   source: string;
   mode: TorrentMode;
+  purpose: TorrentPurpose;
   save_path: string;
   delete_on_complete: number;
   cache_hours: number | null;
@@ -526,6 +530,7 @@ export interface TorrentItem {
   name: string;
   source: string;
   mode: TorrentMode;
+  purpose: TorrentPurpose;
   savePath: string;
   deleteOnComplete: boolean;
   cacheHours: number | null;

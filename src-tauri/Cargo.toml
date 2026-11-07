@@ -41,6 +41,8 @@ tauri-plugin-process = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 librqbit = { version = "9", default-features = false, features = ["default-tls"] }
+# Same version librqbit uses; needed to size uTP packets for VPN tunnels.
+librqbit-utp = "=0.7.0"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 adblock = { version = "=0.13.5", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling", "content-blocking"] }
 
@@ -49,17 +51,30 @@ mdns-sd = "0.13"
 souvlaki = { version = "0.8", default-features = false }
 webview2-com = "=0.39.1"
 # Same version souvlaki uses, so it is only compiled once.
-windows = { version = "0.44", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com"] }
-# Borderless video window behind the transparent TruongFlix window (built-in player).
+windows = { version = "0.44", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage"] }
+# Borderless video window behind the transparent TruongFlix window (built-in player), and the
+# hidden game-installer automation.
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
   "Win32_System_RemoteDesktop",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
   "Win32_NetworkManagement_WNet",
+  "Win32_UI_Accessibility",
   "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# Games (Windows only): reads repack installers' options, and checks installed files.
+inno = "0.7"
+md-5 = "0.11"
 windows-webview = { version = "0.62", package = "windows", features = ["Win32_System_Com"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -84,3 +99,8 @@ strip = false
 [[example]]
 name = "source_browser_smoke"
 required-features = ["source-browser-smoke"]
+
+# Patched copies of two crates; each folder's PATCHES.md lists the changes.
+[patch.crates-io]
+librqbit = { path = "vendor/librqbit" }
+inno = { path = "vendor/inno" }

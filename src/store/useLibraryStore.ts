@@ -25,7 +25,7 @@ import type {
 import type { SearchResult } from '../services/tmdb';
 import { allowedForMaturity, buildItems, groupEpisodes } from './selectors';
 
-export type View = 'home' | 'tv' | 'movies' | 'mylist' | 'live' | 'browse';
+export type View = 'home' | 'tv' | 'movies' | 'mylist' | 'live' | 'browse' | 'games';
 
 export interface HoverState {
   item: MediaItem;

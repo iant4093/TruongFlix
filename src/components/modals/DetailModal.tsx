@@ -21,8 +21,11 @@ import {
 } from 'lucide-react';
 import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
 import {
+  canStreamTorrent,
+  downloadBlockingPlayback,
   episodeFileProgress,
   formatBytes,
+  formatDownloadingLabel,
   formatEta,
   formatExpiryRemaining,
   formatSpeed,
@@ -188,16 +191,19 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
     return () => window.clearInterval(id);
   }, [torrent?.expiresAt]);
 
+  const blockingDownload = useLibraryStore((s) => (target ? downloadBlockingPlayback(target.filePath, s.torrents) : null));
   const isDownloading = Boolean(torrent && !torrent.finished);
   const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
   const revealPath = item.kind === 'movie' ? (versionRow?.file_path ?? item.filePath) : (episodes[0]?.file_path ?? null);
-  const playLabel = isDownloading
-    ? target && target.startTime > 0
-      ? 'Resume Stream'
-      : 'Stream Now'
-    : target && target.startTime > 0
-      ? 'Resume'
-      : 'Play';
+  const playLabel = blockingDownload
+    ? formatDownloadingLabel(blockingDownload.progressPct)
+    : isDownloading && torrent && canStreamTorrent(torrent)
+      ? target && target.startTime > 0
+        ? 'Resume Stream'
+        : 'Stream Now'
+      : target && target.startTime > 0
+        ? 'Resume'
+        : 'Play';
   const epHint = target?.type === 'episode' && resumeEntry?.episode ? epLabel(resumeEntry.episode) : null;
 
   return (
@@ -248,8 +254,8 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             <h2 className="text-shadow max-w-[70%] text-5xl font-black uppercase leading-none tracking-tight">{item.title}</h2>
           )}
           <div className="flex items-center gap-2.5">
-            <button onClick={() => target && play(target)} disabled={!target} className="nf-btn-play px-8 text-lg disabled:opacity-50">
-              <Play className="h-6 w-6 fill-black" strokeWidth={0} />
+            <button onClick={() => target && play(target)} disabled={!target || !!blockingDownload} className="nf-btn-play px-8 text-lg disabled:opacity-50">
+              {blockingDownload ? <Download className="h-6 w-6" /> : <Play className="h-6 w-6 fill-black" strokeWidth={0} />}
               {playLabel}
               {epHint && <span className="text-base font-medium text-black/60">{epHint}</span>}
             </button>
@@ -260,7 +266,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
             >
               {item.myList ? <Check className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
             </button>
-            {target && (
+            {target && !blockingDownload && (
               <button
                 onClick={() => useLibraryStore.getState().setCastPicker({ target, start: target.startTime })}
                 title="Cast to a TV"
@@ -663,6 +669,8 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
           const dur = ep.duration_seconds || (ep.runtime ?? 0) * 60;
           const progress = !ep.watched && ep.progress_seconds > 0 && dur ? ep.progress_seconds / dur : ep.watched ? 1 : 0;
           const dlProg = episodeFileProgress(ep, seriesTorrent);
+          const dlLocked = !!dlProg && !!seriesTorrent && !canStreamTorrent(seriesTorrent);
+          const playAction = dlLocked ? `${epLabel(ep)} is downloading` : dlProg ? `Stream ${epLabel(ep)}` : `Play ${epLabel(ep)}`;
           return (
             <div
               key={ep.id}
@@ -674,20 +682,23 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
               <button
                 type="button"
                 onClick={() => playEpisode(ep, item)}
-                aria-label={dlProg ? `Stream ${epLabel(ep)}` : `Play ${epLabel(ep)}`}
-                title={dlProg ? `Stream ${epLabel(ep)}` : `Play ${epLabel(ep)}`}
-                className="group/thumb relative aspect-video w-[130px] shrink-0 overflow-hidden rounded"
+                disabled={dlLocked}
+                aria-label={playAction}
+                title={playAction}
+                className="group/thumb relative aspect-video w-[130px] shrink-0 overflow-hidden rounded disabled:cursor-default"
               >
                 <Artwork
                   src={ep.still_path ?? resize(item.backdrop, 'w300')}
                   alt={ep.title}
                   className={`h-full w-full ${dlProg ? 'opacity-50 grayscale' : ''}`}
                 />
-                <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 group-hover/thumb:bg-black/30">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-black/50 transition-transform group-hover/thumb:scale-110">
-                    <Play className="ml-0.5 h-4 w-4 fill-white" strokeWidth={0} />
-                  </span>
-                </div>
+                {!dlLocked && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 group-hover/thumb:bg-black/30">
+                    <span className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-black/50 transition-transform group-hover/thumb:scale-110">
+                      <Play className="ml-0.5 h-4 w-4 fill-white" strokeWidth={0} />
+                    </span>
+                  </div>
+                )}
                 {dlProg ? (
                   <div className="absolute inset-x-0 bottom-0 h-1.5 bg-black/80">
                     <div className="h-full bg-sky-400 transition-all duration-300" style={{ width: `${Math.max(4, dlProg.pct)}%` }} />
@@ -713,7 +724,7 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
                   <TechBadges tech={ep} showCodec={false} showAudio={false} />
                   {dlProg && (
                     <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-sky-300">
-                      Downloading {dlProg.pct.toFixed(0)}%
+                      {formatDownloadingLabel(dlProg.pct)}
                     </span>
                   )}
                   {ep.watched ? <span className="text-[11px] text-nf-muted">Watched</span> : null}

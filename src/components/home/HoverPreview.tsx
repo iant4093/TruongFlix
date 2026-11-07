@@ -1,12 +1,20 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, ChevronDown, Clock, HardDriveDownload, Play, Plus, Wrench } from 'lucide-react';
+import { Check, ChevronDown, Clock, Download, HardDriveDownload, Play, Plus, Wrench } from 'lucide-react';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
 import { formatRuntime, genreBuckets, playTargetFor } from '../../store/selectors';
 import type { MediaItem } from '../../types/media';
 import { cancelFrames, extractFrames } from '../../services/frames';
 import { parseMediaInfo } from '../../services/mediainfo';
-import { formatExpiryRemaining, formatSpeed, keepStreamPermanently, torrentForItem } from '../../services/torrents';
+import {
+  canStreamTorrent,
+  downloadBlockingPlayback,
+  formatDownloadingLabel,
+  formatExpiryRemaining,
+  formatSpeed,
+  keepStreamPermanently,
+  torrentForItem,
+} from '../../services/torrents';
 import MaturityRating from '../common/MaturityRating';
 import CriticScores from '../common/CriticScores';
 import { playItem } from '../../services/player';
@@ -103,6 +111,10 @@ function PreviewCard({ hover }: { hover: HoverState }) {
   const liveItem = useLibraryStore((s) => s.items.find((i) => i.key === hover.item.key));
   const item = liveItem ?? hover.item;
   const torrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
+  const blockingDownload = useLibraryStore((s) => {
+    const target = playTargetFor(item, s.episodesBySeries);
+    return target ? downloadBlockingPlayback(target.filePath, s.torrents) : null;
+  });
   const isDownloading = Boolean(torrent && !torrent.finished);
   const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
   const { rect } = hover;
@@ -208,10 +220,11 @@ function PreviewCard({ hover }: { hover: HoverState }) {
         <div className="flex items-center gap-2">
           <button
             onClick={() => playItem(item)}
-            title={isDownloading ? 'Stream Now' : 'Play'}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-white/80"
+            disabled={!!blockingDownload}
+            title={blockingDownload ? formatDownloadingLabel(blockingDownload.progressPct) : torrent && canStreamTorrent(torrent) ? 'Stream Now' : 'Play'}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-white/80 disabled:opacity-50"
           >
-            <Play className="ml-0.5 h-4 w-4 fill-black" strokeWidth={0} />
+            {blockingDownload ? <Download className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4 fill-black" strokeWidth={0} />}
           </button>
           <button onClick={() => toggleMyList(item)} title={item.myList ? 'Remove from My List' : 'Add to My List'} className="nf-circle-btn h-9 w-9">
             {item.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}

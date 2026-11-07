@@ -23,6 +23,7 @@ import { parseMediaInfo } from './mediainfo';
 import { ensureReachable } from './nas';
 import { blockedMessage, formatLeft, limitStatus } from './limits';
 import { subtitlesEnabled } from './subtitles';
+import { canStreamTorrent, downloadBlockingPlayback, stillDownloadingMessage, torrentForFile } from './torrents';
 
 interface ProgressPayload {
   media_type: PlayableType;
@@ -74,8 +75,16 @@ function mediaInfoFor(target: PlayTarget) {
   return parseMediaInfo(row?.media_info);
 }
 
+function refuseUnfinishedDownload(target: PlayTarget): boolean {
+  const store = useLibraryStore.getState();
+  if (!downloadBlockingPlayback(target.filePath, store.torrents)) return false;
+  store.toast(stillDownloadingMessage(target.label), 'info');
+  return true;
+}
+
 /** Plays a movie/episode in the built-in player when available, otherwise in VLC. */
 export async function play(target: PlayTarget) {
+  if (refuseUnfinishedDownload(target)) return;
   noteUserActivity(); // a title picked by hand starts a fresh "still watching" count
   const limit = await limitStatus(useLibraryStore.getState().activeProfile, pendingSeconds);
   if (limit.blocked) {
@@ -302,9 +311,13 @@ async function flushWatchTime() {
 async function resolvePlaybackSource(filePath: string): Promise<string> {
   if (filePath.startsWith('http://127.0.0.1:')) return filePath;
   const { torrents } = useLibraryStore.getState();
-  const match = torrents.find((t) => t.filePaths.includes(filePath) || t.files.some((f) => f.full_path === filePath));
+  const match = torrentForFile(filePath, torrents);
   if (!match) return filePath;
   if (match.finished && !match.inSession) return filePath;
+  if (!match.finished && !canStreamTorrent(match)) {
+    if (downloadBlockingPlayback(filePath, [match])) throw new Error(stillDownloadingMessage(match.name));
+    return filePath;
+  }
   if (match.finished) {
     const ok = await invoke<boolean[]>('check_paths', { paths: [filePath] }).catch(() => [false]);
     if (ok[0]) return filePath;
@@ -319,6 +332,7 @@ async function resolvePlaybackSource(filePath: string): Promise<string> {
 /** Launches external VLC, resuming from `startTime` seconds. */
 export async function playInVlc(target: PlayTarget) {
   const store = useLibraryStore.getState();
+  if (refuseUnfinishedDownload(target)) return;
   try {
     const [subtitlePath, sourcePath] = await Promise.all([subtitleFor(target), resolvePlaybackSource(target.filePath)]);
     await invoke('launch_vlc', {
@@ -406,6 +420,7 @@ async function saveBuiltinProgress() {
 /** Opens (or switches the running player to) a movie/episode inside the TruongFlix window. */
 export async function playBuiltin(target: PlayTarget) {
   const store = useLibraryStore.getState();
+  if (refuseUnfinishedDownload(target)) return;
   if (store.playerSession) {
     await saveBuiltinProgress();
     await flushWatchTime();

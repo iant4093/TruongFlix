@@ -1,3 +1,4 @@
 # Preserve upstream filter-list snapshots and keep vendored data out of language statistics.
 src-tauri/resources/source-filters/*.txt linguist-vendored
 src-tauri/resources/source-filters/easy*.txt -whitespace
+src-tauri/vendor/** linguist-vendored

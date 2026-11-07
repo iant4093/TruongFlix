@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useLibraryStore } from './store/useLibraryStore';
 import Navbar, { Wordmark } from './components/layout/Navbar';
@@ -23,6 +23,7 @@ import HistoryModal from './components/modals/HistoryModal';
 import RenameModal from './components/modals/RenameModal';
 import HealthModal from './components/modals/HealthModal';
 import AddTorrentModal from './components/torrents/AddTorrentModal';
+import GamesUnavailable from './components/games/GamesUnavailable';
 import { autoPurgeTrash } from './services/files';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -36,6 +37,9 @@ import { initCastEvents } from './services/cast';
 import { applyRemoteAccess, initRemoteApi } from './services/remoteapi';
 import { CastBar, CastPicker } from './components/cast/CastUI';
 import { reconnectOfflineShares, refreshShares } from './services/nas';
+
+// Windows-only; other builds compile this to null and drop the Games code.
+const GamesView = __GAMES__ ? lazy(() => import('./games/components/GamesView')) : null;
 
 export default function App() {
   const ready = useLibraryStore((s) => s.ready);
@@ -65,7 +69,9 @@ export default function App() {
       })
       .then(() => autoPurgeTrash().catch((e) => console.warn('[trash] auto-purge failed', e)))
       .then(async () => {
-        void initTorrentService().catch((e) => console.warn('[torrents]', e));
+        void initTorrentService()
+          .then(() => (__GAMES__ ? import('./games/jobs').then((m) => m.initGames()) : undefined))
+          .catch((e) => console.warn('[torrents]', e));
         void applyRemoteAccess().catch((e) => console.warn('[remote]', e));
         // Bring back NAS folders that dropped off while the app was closed, then note any shares.
         await reconnectOfflineShares().catch(() => []);
@@ -205,6 +211,8 @@ export default function App() {
         <main>
           {view === 'browse' ? (
             <Discover />
+          ) : view === 'games' ? (
+            GamesView ? <Suspense fallback={null}><GamesView /></Suspense> : <GamesUnavailable />
           ) : view === 'live' ? (
             <LiveTV />
           ) : search.trim() ? (

@@ -85,6 +85,15 @@ Library screenshots use the development preview with sample metadata and artwork
 - Source pages can change; manual browsing remains available when automatic matching fails
 - Available to unrestricted profiles. Downloads use your configured library folders; streams use the existing temporary torrent cache
 
+**Games** (Windows)
+
+- Browse a game source you add yourself in Games › Games settings: popular and newly added games as vertical posters, search, and game pages with screenshots, sizes and repack details. No source is configured by default
+- Downloads use the built-in torrent client with its seeding limits, with optional language and bonus files chosen before downloading
+- Installs run entirely inside TruongFlix with the installer's own window hidden and its music muted: every installer option (language, folder, components, tasks, shortcuts, "limit installer to 2 GB of RAM" and after-install steps) is shown in TruongFlix's install dialog. DirectX, Visual C++ and other system components are off by default
+- Install automatically when a download finishes, or review the options first; installed files are always verified against the repack's checksum list, and the installer is deleted afterwards (can be turned off)
+- Library with live download, install and verification progress, Play with play-time tracking, Open folder, Reinstall and silent Uninstall
+- Available to unrestricted profiles. On macOS, Games explains that it needs Windows; the Games code isn't included in Mac builds
+
 **Profiles**
 
 - "Who's watching?" screen with separate Continue Watching, My List and history for each person
@@ -219,10 +228,13 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 │   ├── components/         Library, player, profiles, modals, settings and shared UI
 │   ├── services/           Scanner, parser, TMDB, IMDb, subtitles, files, renaming, media analysis, player, updates, SQLite
 │   ├── store/              Zustand store and library selectors
+│   ├── games/              Games (Windows only): source parsing, installer options, library and install jobs, screens
 │   ├── remote/             Browser app served to phones, tablets and other computers on the home network
 │   └── dev/                Browser-preview mock of the Tauri backend (dev only)
 ├── src-tauri/              Rust backend
 │   ├── src/player/         libmpv bindings and macOS/Windows video surfaces
+│   ├── src/games/          Windows game installs: installer reading, hidden-wizard helper, verification, launching
+│   ├── vendor/             Patched librqbit (rarest-first downloads) and inno (installer conditions); see PATCHES.md
 │   ├── src/                Scanner, folder watcher, media analysis (probe, frames, intro detection), VLC, subtitles, files, IMDb,
 │   │                       media server and stream conversion (stream.rs), Chromecast/DLNA casting (cast.rs)
 │   └── examples/           Player smoke test

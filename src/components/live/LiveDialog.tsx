@@ -7,11 +7,13 @@ export default function Modal({
   onClose,
   children,
   active = true,
+  wide = false,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   active?: boolean;
+  wide?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const { onBackdropMouseDown } = useModalDialog(ref, { onClose, active, priority: 100 });
@@ -27,7 +29,7 @@ export default function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-white/10 bg-[#181818] p-6 shadow-2xl outline-none"
+        className={`max-h-[85vh] w-full ${wide ? 'max-w-3xl' : 'max-w-2xl'} overflow-y-auto rounded-lg border border-white/10 bg-[#181818] p-6 shadow-2xl outline-none`}
       >
         <div className="mb-6 flex items-center justify-between gap-4">
           <h2 className="text-xl font-bold">{title}</h2>

@@ -17,6 +17,7 @@ import {
 import { useLibraryStore } from '../../store/useLibraryStore';
 import type { OsHandlerStatus, TorrentItem, TorrentMode, TorrentState } from '../../types/media';
 import {
+  canStreamTorrent,
   checkOsHandlerStatus,
   formatBytes,
   formatEta,
@@ -367,17 +368,19 @@ export default function TorrentsPage() {
 
                 {/* Action buttons */}
                 <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSettingsOpen(false);
-                      void playTorrentByHash(t.infoHash);
-                    }}
-                    className="nf-btn-red h-8 px-3 py-0 text-xs"
-                  >
-                    <Play className="h-3.5 w-3.5 fill-current" />
-                    {t.finished ? 'Play' : 'Stream Now'}
-                  </button>
+                  {(t.finished || canStreamTorrent(t)) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSettingsOpen(false);
+                        void playTorrentByHash(t.infoHash);
+                      }}
+                      className="nf-btn-red h-8 px-3 py-0 text-xs"
+                    >
+                      <Play className="h-3.5 w-3.5 fill-current" />
+                      {t.finished ? 'Play' : 'Stream Now'}
+                    </button>
+                  )}
 
                   {t.inSession && !t.seedingStopped && (
                     t.paused ? (

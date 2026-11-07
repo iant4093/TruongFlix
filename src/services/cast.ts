@@ -9,6 +9,7 @@ import { durationOf, planStream, registerStream, releaseStream, streamUrl, type 
 import { resize } from './tmdb';
 import { ensureReachable } from './nas';
 import { blockedMessage, limitStatus } from './limits';
+import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
 
 export type { CastDevice, CastState } from '../types/media';
 
@@ -49,6 +50,7 @@ export async function castTo(device: CastDevice, target: PlayTarget, start = tar
   const store = useLibraryStore.getState();
   const limit = await limitStatus(store.activeProfile);
   if (limit.blocked) return store.toast(blockedMessage(store.activeProfile!, limit.blocked), 'error');
+  if (downloadBlockingPlayback(target.filePath, store.torrents)) return store.toast(stillDownloadingMessage(target.label), 'info');
   if (!(await ensureReachable(target.filePath))) return;
   const row = rowFor(target);
   if (!row) return store.toast('That file isn’t in the library anymore', 'error');

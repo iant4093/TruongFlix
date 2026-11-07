@@ -14,7 +14,7 @@ vi.mock('../src/services/db');
 vi.mock('../src/services/player', () => ({ play: vi.fn() }));
 vi.mock('../src/services/torrents', () => ({
   inspectTorrentFilesLive: vi.fn(), initiateTorrent: vi.fn(), pickDestinationFolder: () => '/Movies',
-  playTorrentByHash: vi.fn(), formatBytes: () => '1 GB',
+  playTorrentByHash: vi.fn(), formatBytes: () => '1 GB', canStreamTorrent: (t: { mode: string }) => t.mode === 'stream',
 }));
 const target: BrowseTarget = { imdbId: 'tt1234567', title: 'Example Film', year: 2024, kind: 'movie', quality: '1080p' };
 const item = { id: 5, kind: 'movie' as const, title: target.title, year: target.year, overview: '', poster: null, backdrop: null, voteAverage: 8 };

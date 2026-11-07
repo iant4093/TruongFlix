@@ -176,7 +176,7 @@ export default function AddTorrentModal() {
         if (res.is_magnet && !res.metadata_ready) {
           setResolvingFiles(true);
           try {
-            const liveRes = await inspectTorrentFilesLive(trimmedSource, 8500);
+            const liveRes = await inspectTorrentFilesLive(trimmedSource);
             if (!isCurrent()) return;
             if (liveRes.metadata_ready) {
               acceptFiles(liveRes);
@@ -349,7 +349,7 @@ export default function AddTorrentModal() {
         fallbackKind,
         fallbackTitle: fallbackTitle || inspected.name,
         fallbackYear,
-        playImmediately,
+        playImmediately: playImmediately && mode === 'stream',
       });
       if (sourceRevision.current === revision) close();
     } catch (e) {

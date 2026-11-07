@@ -8,7 +8,7 @@ import { episodeTarget, seriesPlayEpisode } from '../store/selectors';
 import { play } from './player';
 import { parseMediaInfo } from './mediainfo';
 import { advertisedQuality, check, type Release } from './browseSelection';
-import { formatBytes, initiateTorrent, inspectTorrentFilesLive, pickDestinationFolder, playTorrentByHash } from './torrents';
+import { canStreamTorrent, formatBytes, initiateTorrent, inspectTorrentFilesLive, pickDestinationFolder, playTorrentByHash } from './torrents';
 
 export const canceled = () => new DOMException('Canceled', 'AbortError');
 const abort = (signal: AbortSignal) => { if (signal.aborted) throw canceled(); };
@@ -300,7 +300,7 @@ export async function quickTorrent(opts: QuickOptions) {
         valid();
         if (!capture.magnet) continue;
         let inspected: InspectTorrentRes;
-        try { inspected = await abortable(inspectTorrentFilesLive(capture.magnet, 8000), signal); }
+        try { inspected = await abortable(inspectTorrentFilesLive(capture.magnet), signal); }
         catch { valid(); continue; }
         valid();
         if (inspected.metadata_ready) resolved++;
@@ -314,7 +314,9 @@ export async function quickTorrent(opts: QuickOptions) {
         const existing = useLibraryStore.getState().torrents.find((t) => t.infoHash.toLowerCase() === inspected.info_hash.toLowerCase());
         if (existing) {
           session.close();
-          if (opts.mode === 'stream') await playTorrentByHash(existing.infoHash);
+          if (opts.mode === 'stream' && !existing.finished && !canStreamTorrent(existing)) {
+            useLibraryStore.getState().toast(`“${opts.item.title}” is already downloading — it will be playable when the download finishes.`, 'info');
+          } else if (opts.mode === 'stream') await playTorrentByHash(existing.infoHash);
           else useLibraryStore.getState().toast('This release is already in your transfers.', 'info');
           return;
         }

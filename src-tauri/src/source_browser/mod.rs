@@ -191,7 +191,7 @@ fn valid_id(id: &str) -> bool {
         && id.starts_with("tt")
         && id[2..].bytes().all(|c| c.is_ascii_digit())
 }
-fn source_origin(raw: &str) -> Result<String, String> {
+pub(crate) fn source_origin(raw: &str) -> Result<String, String> {
     let url =
         tauri::Url::parse(raw.trim()).map_err(|_| "Enter the source website's HTTPS address")?;
     let host = url.host_str().unwrap_or_default().trim_end_matches('.');

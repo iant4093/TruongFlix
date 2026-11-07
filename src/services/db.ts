@@ -20,6 +20,7 @@ import type {
   SubtitleStyle,
   TechInfo,
   TorrentMode,
+  TorrentPurpose,
   TorrentRecord,
   TrashRow,
   TrashSnapshot,
@@ -282,6 +283,8 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['subs_auto_result', 'TEXT'],
   ],
 };
+
+ADDED_COLUMNS.torrents = [['purpose', "TEXT NOT NULL DEFAULT 'media'"]];
 
 // Profile limits (added after profiles shipped).
 ADDED_COLUMNS.profiles = [
@@ -1383,6 +1386,7 @@ export interface UpsertTorrentInput {
   total_bytes: number;
   completed_at?: string | null;
   seeding_stopped?: boolean;
+  purpose?: TorrentPurpose;
 }
 
 export async function listTorrentRecords(): Promise<TorrentRecord[]> {
@@ -1393,10 +1397,11 @@ export async function upsertTorrentRecord(t: UpsertTorrentInput) {
   await exec(
     `INSERT INTO torrents (
        info_hash, name, source, mode, save_path, delete_on_complete, cache_hours, expires_at,
-       media_kind, tmdb_id, series_id, movie_id, file_paths, total_bytes, completed_at, seeding_stopped
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       media_kind, tmdb_id, series_id, movie_id, file_paths, total_bytes, completed_at, seeding_stopped, purpose
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
      ON CONFLICT(info_hash) DO UPDATE SET
        name = excluded.name,
+       purpose = excluded.purpose,
        source = excluded.source,
        mode = excluded.mode,
        save_path = excluded.save_path,
@@ -1428,6 +1433,7 @@ export async function upsertTorrentRecord(t: UpsertTorrentInput) {
       t.total_bytes,
       t.completed_at ?? null,
       t.seeding_stopped ? 1 : 0,
+      t.purpose ?? 'media',
     ],
   );
 }

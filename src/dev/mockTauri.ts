@@ -5,6 +5,8 @@
  */
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
+import { handleGamesSql } from './mockGames';
+import { gameTorrentFiles, handleGamesCommand } from './mockGamesCommands';
 import type {
   CollectionPart,
   EpisodeRow,
@@ -630,6 +632,7 @@ function handleTorrentSql(q: string, values: unknown[]): unknown | undefined {
       total_bytes,
       completed_at,
       seeding_stopped,
+      purpose,
     ] = values as [
       string,
       string,
@@ -647,6 +650,7 @@ function handleTorrentSql(q: string, values: unknown[]): unknown | undefined {
       number,
       string | null,
       number,
+      TorrentRecord['purpose'] | undefined,
     ];
     const hash = String(info_hash).toLowerCase();
     const existing = torrentRecords.find((r) => r.info_hash === hash);
@@ -686,6 +690,7 @@ function handleTorrentSql(q: string, values: unknown[]): unknown | undefined {
         total_bytes,
         completed_at,
         seeding_stopped,
+        purpose: purpose ?? 'media',
         created_at: ts(0),
       });
     }
@@ -846,6 +851,8 @@ function handleLibrarySql(q: string, values: unknown[]): unknown | undefined {
 
 function handleExecute(query: string, values: unknown[]) {
   const q = query.replace(/\s+/g, ' ').trim();
+  const games = handleGamesSql(q, values);
+  if (games !== undefined) return games;
   const tor = handleTorrentSql(q, values);
   if (tor !== undefined) return tor;
   const prof = handleProfileSql(q, values);
@@ -882,6 +889,8 @@ function handleExecute(query: string, values: unknown[]) {
 
 function handleSelect(query: string, values: unknown[]) {
   const qNorm = query.replace(/\s+/g, ' ').trim();
+  const games = handleGamesSql(qNorm, values);
+  if (games !== undefined) return games;
   const tor = handleTorrentSql(qNorm, values);
   if (tor !== undefined) return tor;
   const prof = handleProfileSql(qNorm, values);
@@ -1139,6 +1148,10 @@ function inspectMockSource(source: string): InspectTorrentRes {
     : source.endsWith('.torrent')
       ? source.split(/[\\/]/).pop()!.replace(/\.torrent$/i, '')
       : 'Arrival.2016.2160p.UHD.BluRay.x265.mkv';
+  const game = gameTorrentFiles(source);
+  if (game) {
+    return { info_hash, name: game.name, is_magnet: true, metadata_ready: true, total_bytes: game.files.reduce((s, f) => s + f.size, 0), files: game.files, trackers: [] };
+  }
   const isTv = /\bS\d{1,2}E\d{1,2}\b|\bS\d{1,2}\b|\bSeason\b/i.test(name);
   const files = isTv
     ? [
@@ -1163,6 +1176,8 @@ export function installMocks() {
   mockIPC(
     (cmd, args) => {
       const a = (args ?? {}) as Record<string, unknown>;
+      const games = handleGamesCommand(cmd, a);
+      if (games !== undefined) return games;
       switch (cmd) {
         case 'backup_restore_result':
           return false;
@@ -1470,4 +1485,6 @@ export function installMocks() {
     },
     { shouldMockEvents: true },
   );
+  const internals = (window as unknown as { __TAURI_INTERNALS__: { convertFileSrc?: (p: string) => string } }).__TAURI_INTERNALS__;
+  internals.convertFileSrc ??= (path: string) => path;
 }

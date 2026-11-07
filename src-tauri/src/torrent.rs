@@ -6,17 +6,18 @@ use librqbit::api::TorrentIdOrHash;
 use librqbit::dht::{DhtPersistenceConfig, Id20};
 use librqbit::limits::LimitsConfig;
 use librqbit::{
-    torrent_from_bytes, AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig,
-    ListenerMode, ListenerOptions, Magnet, ManagedTorrent, Session, SessionOptions,
-    SessionPersistenceConfig, TorrentStatsState,
+    torrent_from_bytes, AddTorrent, AddTorrentOptions, AddTorrentResponse, ConnectionOptions,
+    DhtSessionConfig, ListenerMode, ListenerOptions, Magnet, ManagedTorrent,
+    PeerConnectionOptions, Session, SessionOptions, SessionPersistenceConfig, TorrentStatsState,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, SeekFrom};
 use std::net::SocketAddr;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -25,6 +26,33 @@ use tokio::net::{TcpListener, TcpStream};
 
 const SAMPLE_KEYWORDS: &[&str] = &["sample", "trailer", "featurette"];
 const SAMPLE_MAX_BYTES: u64 = 60 * 1024 * 1024;
+
+/// WireGuard tunnels carry 1420-byte packets (1280 on some providers). Larger uTP packets are
+/// fragmented or dropped inside a VPN, which stalls transfers.
+const UTP_LINK_MTU: usize = 1400;
+/// Well-known anycast DNS resolvers, used only to check that outgoing IPv6 connections work.
+const IPV6_PROBE_TARGETS: [&str; 2] = ["[2606:4700:4700::1111]:443", "[2001:4860:4860::8888]:443"];
+const NETWORK_RECHECK_INTERVAL: Duration = Duration::from_secs(120);
+/// VPN tunnels add latency and jitter, so give peers longer before treating them as dead, and send
+/// keep-alives often enough that the tunnel's NAT does not forget idle connections.
+const PEER_READ_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const PEER_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// VPNs commonly block IPv6. When outgoing IPv6 connections fail, peers would otherwise hold
+/// connection slots open on IPv6 addresses that can never connect.
+async fn ipv6_reachable() -> bool {
+    async fn probe(target: &str) -> bool {
+        let Ok(addr) = target.parse::<SocketAddr>() else {
+            return false;
+        };
+        matches!(
+            tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(addr)).await,
+            Ok(Ok(_))
+        )
+    }
+    let (a, b) = tokio::join!(probe(IPV6_PROBE_TARGETS[0]), probe(IPV6_PROBE_TARGETS[1]));
+    a || b
+}
 
 fn default_true() -> bool {
     true
@@ -258,6 +286,8 @@ pub struct TorrentManager {
     pending_magnets: Mutex<HashMap<String, PendingMagnet>>,
     pending_file_deletes: tokio::sync::Mutex<HashMap<String, TorrentFileDelete>>,
     stream_server: tokio::sync::OnceCell<(u16, String)>,
+    /// Whether the current session was started IPv4-only because IPv6 was unreachable.
+    ipv4_only: AtomicBool,
 }
 
 static MANAGER: OnceLock<Arc<TorrentManager>> = OnceLock::new();
@@ -272,7 +302,9 @@ fn global_manager(app: &AppHandle) -> Result<Arc<TorrentManager>, String> {
         .app_data_dir()
         .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
     let mgr = TorrentManager::new(app_data);
-    let _ = MANAGER.set(mgr.clone());
+    if MANAGER.set(mgr.clone()).is_ok() {
+        mgr.start_network_watch();
+    }
     Ok(MANAGER.get().cloned().unwrap_or(mgr))
 }
 
@@ -584,7 +616,92 @@ impl TorrentManager {
             pending_magnets: Mutex::new(HashMap::new()),
             pending_file_deletes: tokio::sync::Mutex::new(HashMap::new()),
             stream_server: tokio::sync::OnceCell::new(),
+            ipv4_only: AtomicBool::new(false),
         })
+    }
+
+    /// Restarts the session when IPv6 reachability changes, e.g. after connecting to a VPN.
+    fn start_network_watch(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(NETWORK_RECHECK_INTERVAL).await;
+                let Some(mgr) = weak.upgrade() else {
+                    return;
+                };
+                mgr.recheck_network().await;
+            }
+        });
+    }
+
+    async fn recheck_network(&self) {
+        if self.session.lock().await.is_none() {
+            return;
+        }
+        let ipv4_only = !ipv6_reachable().await;
+        if ipv4_only == self.ipv4_only.load(Ordering::Relaxed)
+            || !self.pending_magnets.lock().unwrap().is_empty()
+        {
+            return;
+        }
+        let old = self.session.lock().await.take();
+        if let Some(session) = old {
+            session.stop().await;
+        }
+        if let Err(e) = self.ensure_session().await {
+            eprintln!("[torrent] restart after network change failed: {e}");
+        }
+    }
+
+    fn session_options(
+        &self,
+        cfg: &TorrentEngineConfig,
+        listen_port: u16,
+        ipv4_only: bool,
+    ) -> SessionOptions {
+        let dht = cfg.enable_dht.then(|| DhtSessionConfig {
+            bootstrap_addrs: None,
+            port: None,
+            persistence: Some(DhtPersistenceConfig {
+                dump_interval: None,
+                config_filename: Some(self.app_data_dir.join("torrent-dht").join("dht.json")),
+            }),
+        });
+        SessionOptions {
+            dht,
+            disable_trackers: cfg.disable_trackers,
+            fastresume: true,
+            persistence: Some(SessionPersistenceConfig::Json {
+                folder: Some(self.app_data_dir.join("torrent-session")),
+            }),
+            listen: Some(ListenerOptions {
+                mode: ListenerMode::TcpAndUtp,
+                listen_addr: SocketAddr::from(([0, 0, 0, 0], listen_port)),
+                enable_upnp_port_forwarding: cfg.enable_upnp,
+                ipv4_only,
+                utp_opts: Some(librqbit_utp::SocketOpts {
+                    link_mtu: NonZeroUsize::new(UTP_LINK_MTU),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            connect: Some(ConnectionOptions {
+                peer_opts: Some(PeerConnectionOptions {
+                    read_write_timeout: Some(PEER_READ_WRITE_TIMEOUT),
+                    keep_alive_interval: Some(PEER_KEEP_ALIVE_INTERVAL),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ratelimits: LimitsConfig {
+                download_bps: kbps_to_bps(cfg.max_download_kbps),
+                upload_bps: kbps_to_bps(cfg.max_upload_kbps),
+            },
+            peer_limit: Some(if cfg.peer_limit == 0 { 128 } else { cfg.peer_limit }),
+            disable_local_service_discovery: !cfg.enable_lsd,
+            ipv4_only,
+            ..Default::default()
+        }
     }
 
     pub async fn stream_cache_root(&self) -> PathBuf {
@@ -604,96 +721,33 @@ impl TorrentManager {
 
         let cfg = self.config.read().await.clone();
         let default_dir = self.app_data_dir.join("downloads");
-        let session_dir = self.app_data_dir.join("torrent-session");
-        let dht_file = self.app_data_dir.join("torrent-dht").join("dht.json");
         let _ = std::fs::create_dir_all(&default_dir);
-        let _ = std::fs::create_dir_all(&session_dir);
-        if let Some(parent) = dht_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        let _ = std::fs::create_dir_all(self.app_data_dir.join("torrent-session"));
+        let _ = std::fs::create_dir_all(self.app_data_dir.join("torrent-dht"));
 
-        let dht = if cfg.enable_dht {
-            Some(DhtSessionConfig {
-                bootstrap_addrs: None,
-                port: None,
-                persistence: Some(DhtPersistenceConfig {
-                    dump_interval: None,
-                    config_filename: Some(dht_file),
-                }),
-            })
-        } else {
-            None
-        };
+        let ipv4_only = !ipv6_reachable().await;
+        self.ipv4_only.store(ipv4_only, Ordering::Relaxed);
 
-        let listen = Some(ListenerOptions {
-            mode: ListenerMode::TcpAndUtp,
-            listen_addr: SocketAddr::from(([0, 0, 0, 0], cfg.listen_port)),
-            enable_upnp_port_forwarding: cfg.enable_upnp,
-            ipv4_only: false,
-            ..Default::default()
-        });
-
-        let ratelimits = LimitsConfig {
-            download_bps: kbps_to_bps(cfg.max_download_kbps),
-            upload_bps: kbps_to_bps(cfg.max_upload_kbps),
-        };
-
-        let opts = SessionOptions {
-            dht,
-            disable_trackers: cfg.disable_trackers,
-            fastresume: true,
-            persistence: Some(SessionPersistenceConfig::Json {
-                folder: Some(session_dir),
-            }),
-            listen,
-            ratelimits,
-            peer_limit: Some(if cfg.peer_limit == 0 { 128 } else { cfg.peer_limit }),
-            disable_local_service_discovery: !cfg.enable_lsd,
-            ..Default::default()
-        };
-
+        let opts = self.session_options(&cfg, cfg.listen_port, ipv4_only);
         let session = match Session::new_with_opts(default_dir.clone(), opts).await {
             Ok(s) => s,
             Err(first_err) if cfg.listen_port != 0 => {
                 // Fall back to OS-assigned port if the user-configured port is already in use.
-                let fallback_opts = SessionOptions {
-                    dht: if cfg.enable_dht {
-                        Some(DhtSessionConfig {
-                            bootstrap_addrs: None,
-                            port: None,
-                            persistence: Some(DhtPersistenceConfig {
-                                dump_interval: None,
-                                config_filename: Some(
-                                    self.app_data_dir.join("torrent-dht").join("dht.json"),
-                                ),
-                            }),
-                        })
-                    } else {
-                        None
-                    },
-                    disable_trackers: cfg.disable_trackers,
-                    fastresume: true,
-                    persistence: Some(SessionPersistenceConfig::Json {
-                        folder: Some(self.app_data_dir.join("torrent-session")),
-                    }),
-                    listen: Some(ListenerOptions {
-                        mode: ListenerMode::TcpAndUtp,
-                        listen_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-                        enable_upnp_port_forwarding: cfg.enable_upnp,
-                        ipv4_only: false,
-                        ..Default::default()
-                    }),
-                    ratelimits,
-                    peer_limit: Some(if cfg.peer_limit == 0 { 128 } else { cfg.peer_limit }),
-                    disable_local_service_discovery: !cfg.enable_lsd,
-                    ..Default::default()
-                };
+                let fallback_opts = self.session_options(&cfg, 0, ipv4_only);
                 Session::new_with_opts(default_dir, fallback_opts)
                     .await
                     .map_err(|_| format!("Failed to start BitTorrent session: {first_err:#}"))?
             }
             Err(e) => return Err(format!("Failed to start BitTorrent session: {e:#}")),
         };
+
+        // Restored torrents start sequential; only streams (kept in the stream cache) stay that way.
+        let cache_root = self.stream_cache_root().await;
+        session.with_torrents(|torrents| {
+            for (_, handle) in torrents {
+                handle.set_sequential(handle.output_folder().starts_with(&cache_root));
+            }
+        });
 
         *guard = Some(session.clone());
         Ok(session)
@@ -1055,6 +1109,7 @@ impl TorrentManager {
             overwrite: true,
             output_folder: Some(target_dir_str.clone()),
             initial_peers,
+            sequential: Some(req.is_stream),
             ..Default::default()
         };
 

@@ -2,10 +2,13 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const host = process.env.TAURI_DEV_HOST;
+// Games are Windows-only; other builds leave the games code out entirely.
+const platform = process.env.TAURI_ENV_PLATFORM ?? (process.platform === 'win32' ? 'windows' : process.platform);
 
 // https://v2.tauri.app/start/frontend/vite/
 export default defineConfig({
   plugins: [react()],
+  define: { __GAMES__: JSON.stringify(platform === 'windows') },
   clearScreen: false,
   server: {
     port: 1420,

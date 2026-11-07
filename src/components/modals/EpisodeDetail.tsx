@@ -16,7 +16,9 @@ import {
 } from 'lucide-react';
 import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
 import {
+  canStreamTorrent,
   episodeFileProgress,
+  formatDownloadingLabel,
   formatExpiryRemaining,
   formatSpeed,
   keepStreamPermanently,
@@ -68,6 +70,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
   }, [torrent?.expiresAt]);
 
   const dlProg = episodeFileProgress(ep, torrent);
+  const dlLocked = dlProg && torrent && !canStreamTorrent(torrent) ? dlProg : null;
   const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
 
   const idx = episodes.findIndex((e) => e.id === ep.id);
@@ -137,11 +140,15 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
             <h2 className="text-shadow mt-1 max-w-[80%] text-4xl font-bold leading-tight">{ep.title}</h2>
           </div>
           <div className="mt-1 flex items-center gap-2.5">
-            <button onClick={() => play(target)} className="nf-btn-play px-8 text-lg">
-              <Play className="h-6 w-6 fill-black" strokeWidth={0} />
-              {dlProg ? (inProgress ? 'Resume Stream' : 'Stream Now') : inProgress ? 'Resume' : 'Play'}
+            <button onClick={() => play(target)} disabled={!!dlLocked} className="nf-btn-play px-8 text-lg disabled:opacity-50">
+              {dlLocked ? <Download className="h-6 w-6" /> : <Play className="h-6 w-6 fill-black" strokeWidth={0} />}
+              {dlLocked
+                ? formatDownloadingLabel(dlLocked.pct)
+                : dlProg
+                  ? inProgress ? 'Resume Stream' : 'Stream Now'
+                  : inProgress ? 'Resume' : 'Play'}
             </button>
-            {inProgress && (
+            {inProgress && !dlLocked && (
               <button
                 onClick={() => play({ ...target, startTime: 0 })}
                 title="Play from beginning"

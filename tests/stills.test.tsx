@@ -8,7 +8,7 @@ import { movie } from './fixtures';
 
 vi.mock('../src/services/frames', () => ({ extractFrames: vi.fn().mockResolvedValue(undefined), cancelFrames: vi.fn() }));
 vi.mock('../src/services/player', () => ({ playItem: vi.fn() }));
-vi.mock('../src/services/torrents', () => ({ torrentForItem: vi.fn().mockReturnValue(null), formatExpiryRemaining: vi.fn(), formatSpeed: vi.fn(), keepStreamPermanently: vi.fn() }));
+vi.mock('../src/services/torrents', () => ({ torrentForItem: vi.fn().mockReturnValue(null), downloadBlockingPlayback: () => null, canStreamTorrent: () => false, formatDownloadingLabel: vi.fn(), formatExpiryRemaining: vi.fn(), formatSpeed: vi.fn(), keepStreamPermanently: vi.fn() }));
 
 beforeEach(() => {
   vi.useFakeTimers();

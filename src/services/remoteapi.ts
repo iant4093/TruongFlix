@@ -21,6 +21,7 @@ import { parseMediaInfo, parseSegments } from './mediainfo';
 import { subtitleOptions } from './player';
 import { durationOf, planStream, probeStream, registerStream, releaseStream, streamUrl } from './streaming';
 import { languageName } from './subtitles';
+import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
 
 /**
  * Answers the browser app's `/api/…` requests (forwarded by the Rust media server) with the same
@@ -164,7 +165,8 @@ async function play(profile: Profile, type: 'movie' | 'episode', id: number, opt
   const row: MovieRow | EpisodeRow | undefined = type === 'movie' ? movies.find((m) => m.id === id) : episodes.find((e) => e.id === id);
   if (!row) throw new ApiError(404, 'Not found');
 
-  const { settings } = useLibraryStore.getState();
+  const { settings, torrents } = useLibraryStore.getState();
+  if (downloadBlockingPlayback(row.file_path, torrents)) throw new ApiError(409, stillDownloadingMessage(row.title));
   const probe = await probeStream(row.file_path).catch(() => null);
   const defaultAudio = probe?.audio.find((a) => a.selected) ?? probe?.audio.find((a) => a.default) ?? probe?.audio[0] ?? null;
   const chosenAid = opts.aid != null && opts.aid > 0 ? opts.aid : (defaultAudio?.id ?? null);

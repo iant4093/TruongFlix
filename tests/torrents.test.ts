@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import * as db from '../src/services/db';
-import { pollTorrents, reapExpiredStreams, removeTorrent } from '../src/services/torrents';
+import { play } from '../src/services/player';
+import { canStreamTorrent, playTorrentByHash, pollTorrents, reapExpiredStreams, removeTorrent, resolvePlayablePathOrStream } from '../src/services/torrents';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import type { PlayerSession, TorrentRecord, TorrentStatus } from '../src/types/media';
 import { movie, torrentRecord, torrentStatus } from './fixtures';
@@ -146,13 +147,62 @@ describe('deleting a torrent with its files', () => {
   });
 });
 
+describe('streaming only user-chosen streams', () => {
+  const downloading = () => torrentStatus({ finished: false, state: 'downloading', progress_pct: 42, progress_bytes: 110000,
+    files: [{ ...torrentStatus().files[0], downloaded_bytes: 110000 }] });
+
+  it.each([
+    ['an unfinished download', () => { live = [downloading()]; }, false],
+    ['an unfinished stream', () => { live = [downloading()]; record.mode = 'stream'; }, true],
+    ['a promoted stream still in the stream cache', () => { live = [downloading()]; record.save_path = '/Permanent/Sintel'; }, true],
+    ['a finished stream', () => { record.mode = 'stream'; }, false],
+    ['a finished download', () => {}, false],
+  ])('canStreamTorrent is correct for %s', async (_label, setup, expected) => {
+    setup();
+    const [item] = await pollTorrents();
+    expect(canStreamTorrent(item)).toBe(expected);
+  });
+
+  it('refuses to stream an unfinished download from its transfer', async () => {
+    live = [downloading()];
+    await pollTorrents();
+    await playTorrentByHash('abc123');
+    expect(play).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith('torrent_stream_url', expect.anything());
+    expect(useLibraryStore.getState().toasts.at(-1)?.message).toBe('“Sintel” is still downloading — it will be playable when the download finishes.');
+  });
+
+  it('refuses to resolve a stream URL for an unfinished download but still streams a promoted stream', async () => {
+    live = [downloading()];
+    await pollTorrents();
+    await expect(resolvePlayablePathOrStream(movie.file_path)).rejects.toThrow('still downloading');
+    expect(invoke).not.toHaveBeenCalledWith('torrent_stream_url', expect.anything());
+
+    record.save_path = '/Permanent/Sintel';
+    await pollTorrents();
+    await resolvePlayablePathOrStream(movie.file_path);
+    expect(invoke).toHaveBeenCalledWith('torrent_stream_url', { infoHash: 'abc123', fileIndex: 0 });
+  });
+
+  it('plays a file the download already completed directly from disk', async () => {
+    live = [downloading()];
+    live[0].files.push({ ...live[0].files[0], index: 1, name: 'Extra.mp4', full_path: '/Movies/Sintel/Extra.mp4', size: 100, downloaded_bytes: 0 });
+    await pollTorrents();
+    await expect(resolvePlayablePathOrStream(movie.file_path)).rejects.toThrow();
+    live[0].files[0].downloaded_bytes = live[0].files[0].size;
+    await pollTorrents();
+    await expect(resolvePlayablePathOrStream(movie.file_path)).resolves.toBe(movie.file_path);
+    expect(invoke).not.toHaveBeenCalledWith('torrent_stream_url', expect.anything());
+  });
+});
+
 describe('playing a selected season transfer', () => {
   it('starts an episode from that transfer rather than another season in the library', async () => {
     const { playTorrentByHash } = await import('../src/services/torrents');
     const { play } = await import('../src/services/player');
     const earlier = { id: 10, series_id: 9, season_number: 1, episode_number: 1, file_path: '/Shows/S01E01.mp4', watched: 0, progress_seconds: 0 };
     const selected = { id: 20, series_id: 9, season_number: 2, episode_number: 1, file_path: '/Shows/S02E01.mp4', watched: 0, progress_seconds: 0 };
-    useLibraryStore.setState({ torrents: [{ infoHash: 'season-pack', seriesId: 9, movieId: null, filePaths: [selected.file_path] }] as never,
+    useLibraryStore.setState({ torrents: [{ infoHash: 'season-pack', seriesId: 9, movieId: null, filePaths: [selected.file_path], finished: true }] as never,
       episodes: [earlier, selected] as never, episodesBySeries: new Map([[9, [earlier, selected]]]) as never,
       items: [{ kind: 'tv', id: 9, title: 'Example', key: 'tv-9' }] as never });
     await playTorrentByHash('season-pack');
