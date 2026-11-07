@@ -89,8 +89,8 @@ function movie(
   };
 }
 
-const cast = (...names: string[]) =>
-  JSON.stringify([...names.map((n, i) => ({ id: 1000 + n.length * 31 + i, name: n })), { id: 525, name: 'Christopher Nolan', job: 'Director' }]);
+const cast = (director: string, ...names: string[]) =>
+  JSON.stringify([...names.map((n, i) => ({ id: 1000 + n.length * 31 + i, name: n })), { id: 500 + director.length, name: director, job: 'Director' }]);
 
 const mediaInfo = (w: number, h: number, gamma: string, dv: number | null, chapters: { title: string; time: number }[] = []): string =>
   JSON.stringify({
@@ -114,7 +114,7 @@ const movies: MovieRow[] = [
     runtime: 136,
     vote_average: 8.2,
     genres: '["Action","Science Fiction"]',
-    cast_crew: cast('Keanu Reeves', 'Laurence Fishburne', 'Carrie-Anne Moss', 'Hugo Weaving', 'Joe Pantoliano'),
+    cast_crew: cast('Lana Wachowski', 'Keanu Reeves', 'Laurence Fishburne', 'Carrie-Anne Moss', 'Hugo Weaving', 'Joe Pantoliano'),
     ...tech('4K', 'Dolby Vision', 'HEVC', 'Lossless Audio, 5.1'),
     certification: 'R',
     rt_score: 83,
@@ -142,7 +142,7 @@ const movies: MovieRow[] = [
     runtime: 167,
     vote_average: 8.1,
     genres: '["Science Fiction","Adventure"]',
-    cast_crew: cast('Timothée Chalamet', 'Zendaya', 'Rebecca Ferguson', 'Javier Bardem'),
+    cast_crew: cast('Denis Villeneuve', 'Timothée Chalamet', 'Zendaya', 'Rebecca Ferguson', 'Javier Bardem'),
     ...tech('4K', 'HDR10', 'HEVC', 'Atmos, 5.1'),
     certification: 'PG-13',
     collection_id: 726871,
@@ -166,7 +166,7 @@ const movies: MovieRow[] = [
     runtime: 155,
     vote_average: 7.8,
     genres: '["Science Fiction","Adventure"]',
-    cast_crew: cast('Timothée Chalamet', 'Rebecca Ferguson', 'Oscar Isaac', 'Zendaya'),
+    cast_crew: cast('Denis Villeneuve', 'Timothée Chalamet', 'Rebecca Ferguson', 'Oscar Isaac', 'Zendaya'),
     ...tech('4K', 'HDR10', 'HEVC', 'Atmos, 5.1'),
     certification: 'PG-13',
     collection_id: 726871,
@@ -182,7 +182,7 @@ const movies: MovieRow[] = [
     runtime: 181,
     vote_average: 8.1,
     genres: '["Drama","History"]',
-    cast_crew: cast('Cillian Murphy', 'Emily Blunt', 'Matt Damon', 'Robert Downey Jr.'),
+    cast_crew: cast('Christopher Nolan', 'Cillian Murphy', 'Emily Blunt', 'Matt Damon', 'Robert Downey Jr.'),
     ...tech('HD', null, 'H.264', 'Lossless Audio, 5.1'),
     certification: 'R',
     media_info: JSON.stringify({ ...JSON.parse(mediaInfo(1920, 1080, 'bt.1886', null)), duration: 10860, tail_ok: false, subs: [] }),
@@ -196,7 +196,7 @@ const movies: MovieRow[] = [
     runtime: 169,
     vote_average: 8.5,
     genres: '["Adventure","Drama","Science Fiction"]',
-    cast_crew: cast('Matthew McConaughey', 'Anne Hathaway', 'Jessica Chastain', 'Michael Caine'),
+    cast_crew: cast('Christopher Nolan', 'Matthew McConaughey', 'Anne Hathaway', 'Jessica Chastain', 'Michael Caine'),
     ...tech('4K', 'HDR10', 'HEVC', 'Atmos'),
   }),
   movie('Blade Runner 2049', 335984, 2017, ['gNdLJU9TxrpGx4dkZidjys3fyy0.jpg', 'gajva2L0rPYkEWjzgFlBXCAVBE5.jpg', 'yAL84wOHAMRBbNI6YfHoV52yeyP.png'], {
@@ -208,7 +208,7 @@ const movies: MovieRow[] = [
     runtime: 164,
     vote_average: 7.6,
     genres: '["Science Fiction","Drama"]',
-    cast_crew: cast('Ryan Gosling', 'Harrison Ford', 'Ana de Armas'),
+    cast_crew: cast('Denis Villeneuve', 'Ryan Gosling', 'Harrison Ford', 'Ana de Armas'),
     certification: 'R',
   }),
   movie('Inception', 27205, 2010, ['8ZTVqvKDQ8emSGUEMjsS4yHAwrp.jpg', 'xlaY2zyzMfkhk0HSC5VUwzoZPU1.jpg', 'pVcoUkWWUwSXcJIEAeqlRa2q9KS.png'], {
@@ -220,7 +220,7 @@ const movies: MovieRow[] = [
     runtime: 148,
     vote_average: 8.4,
     genres: '["Action","Science Fiction","Adventure"]',
-    cast_crew: cast('Leonardo DiCaprio', 'Joseph Gordon-Levitt', 'Elliot Page', 'Tom Hardy'),
+    cast_crew: cast('Christopher Nolan', 'Leonardo DiCaprio', 'Joseph Gordon-Levitt', 'Elliot Page', 'Tom Hardy'),
     ...tech('HD', null, 'H.264', '5.1'),
     certification: 'PG-13',
     file_size: 1.2e9,
@@ -231,7 +231,7 @@ const movies: MovieRow[] = [
     runtime: 104,
     vote_average: 7.6,
     genres: '["Comedy","Family","Adventure"]',
-    cast_crew: cast('Ben Whishaw', 'Hugh Grant', 'Sally Hawkins'),
+    cast_crew: cast('Paul King', 'Ben Whishaw', 'Hugh Grant', 'Sally Hawkins'),
     ...tech('HD', null, 'H.264', '5.1'),
     certification: 'PG',
     created_at: ts(4),
