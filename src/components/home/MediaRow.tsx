@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { ContinueEntry, MediaItem } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -33,6 +33,8 @@ interface SliderProps {
 /** Netflix carousel: page-at-a-time sliding with hover chevrons and page indicators. */
 export function Slider({ title, count, perPage, renderItem, itemKey }: SliderProps) {
   const [start, setStart] = useState(0);
+  const track = useRef<HTMLDivElement>(null);
+  const focusPage = useRef(false);
   const setHover = useLibraryStore((s) => s.setHover);
   const pages = Math.max(1, Math.ceil(count / perPage));
   const maxStart = Math.max(0, count - perPage);
@@ -42,8 +44,15 @@ export function Slider({ title, count, perPage, renderItem, itemKey }: SliderPro
     if (start > maxStart) setStart(maxStart);
   }, [start, maxStart]);
 
-  const go = (dir: 1 | -1) => {
+  useLayoutEffect(() => {
+    if (!focusPage.current) return;
+    focusPage.current = false;
+    track.current?.children[start]?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+  }, [start]);
+
+  const go = (dir: 1 | -1, keyboard: boolean) => {
     setHover(null);
+    focusPage.current = keyboard;
     setStart((s) => (dir > 0 ? Math.min(s + perPage, maxStart) : Math.max(s - perPage, 0)));
   };
 
@@ -63,11 +72,12 @@ export function Slider({ title, count, perPage, renderItem, itemKey }: SliderPro
       <div className="relative">
         <div className="overflow-hidden px-[4%]">
           <div
+            ref={track}
             className="flex transition-transform duration-[750ms] ease-[cubic-bezier(0.5,0,0.1,1)]"
             style={{ transform: `translate3d(${-(start / perPage) * 100}%,0,0)` }}
           >
             {Array.from({ length: count }, (_, i) => (
-              <div key={itemKey(i)} className="shrink-0 px-[0.2vw]" style={{ width: `${100 / perPage}%` }}>
+              <div key={itemKey(i)} {...(i < start || i >= start + perPage ? { inert: '' } : {})} className="shrink-0 px-[0.2vw]" style={{ width: `${100 / perPage}%` }}>
                 {renderItem(i)}
               </div>
             ))}
@@ -76,18 +86,18 @@ export function Slider({ title, count, perPage, renderItem, itemKey }: SliderPro
 
         {start > 0 && (
           <button
-            onClick={() => go(-1)}
+            onClick={(event) => go(-1, event.detail === 0)}
             aria-label="Previous"
-            className="group/chev absolute bottom-0 left-0 top-0 z-20 flex w-[4%] items-center justify-center rounded-r bg-[rgba(20,20,20,0.5)] opacity-0 transition-opacity hover:bg-[rgba(20,20,20,0.7)] group-hover/row:opacity-100"
+            className="group/chev absolute bottom-0 left-0 top-0 z-20 flex w-[4%] items-center justify-center rounded-r bg-[rgba(20,20,20,0.5)] opacity-0 transition-opacity hover:bg-[rgba(20,20,20,0.7)] focus-visible:opacity-100 group-hover/row:opacity-100"
           >
             <ChevronLeft className="h-9 w-9 transition-transform group-hover/chev:scale-125" />
           </button>
         )}
         {start < maxStart && (
           <button
-            onClick={() => go(1)}
+            onClick={(event) => go(1, event.detail === 0)}
             aria-label="Next"
-            className="group/chev absolute bottom-0 right-0 top-0 z-20 flex w-[4%] items-center justify-center rounded-l bg-[rgba(20,20,20,0.5)] opacity-0 transition-opacity hover:bg-[rgba(20,20,20,0.7)] group-hover/row:opacity-100"
+            className="group/chev absolute bottom-0 right-0 top-0 z-20 flex w-[4%] items-center justify-center rounded-l bg-[rgba(20,20,20,0.5)] opacity-0 transition-opacity hover:bg-[rgba(20,20,20,0.7)] focus-visible:opacity-100 group-hover/row:opacity-100"
           >
             <ChevronRight className="h-9 w-9 transition-transform group-hover/chev:scale-125" />
           </button>

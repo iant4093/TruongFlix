@@ -93,6 +93,7 @@ export function Segmented<T extends string | number>({ value, options, onChange 
       {options.map(([v, label]) => (
         <button
           key={String(v)}
+          aria-pressed={value === v}
           type="button"
           onClick={() => onChange(v)}
           className={`rounded border px-2.5 py-1 text-xs transition-colors ${

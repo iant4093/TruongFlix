@@ -53,6 +53,7 @@ import { parseMediaInfo, parseSegments } from '../../services/mediainfo';
 import { setSegments } from '../../services/db';
 import { cancelFrames, coarseToFine, extractFrames } from '../../services/frames';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { isPlayerShortcut, playerControlTitles } from './shortcuts';
 
 const HIDE_AFTER_MS = 3000;
 const NEXT_EPISODE_WINDOW_S = 30;
@@ -317,7 +318,7 @@ function VolumeControl({ volume, muted }: { volume: number; muted: boolean }) {
 
   return (
     <div className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => !dragging.current && setOpen(false)}>
-      <ControlButton label={muted ? 'Unmute (M)' : 'Mute (M)'} onClick={() => void playerCommand('cycle', 'mute')}>
+      <ControlButton label={muted ? playerControlTitles.unmute : playerControlTitles.mute} onClick={() => void playerCommand('cycle', 'mute')}>
         <Icon className="h-8 w-8" />
       </ControlButton>
       <AnimatePresence>
@@ -687,6 +688,9 @@ function PlayerPrompt({ session }: { session: PlayerSession }) {
       {prompt && (
         <motion.div
           key={prompt}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Playback paused"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -731,6 +735,7 @@ function PlayerPrompt({ session }: { session: PlayerSession }) {
               )}
               <button
                 type="button"
+                autoFocus={locked}
                 onClick={() => void closeBuiltin()}
                 className="rounded border border-white/40 px-6 py-3 text-lg font-semibold text-white hover:border-white"
               >
@@ -996,10 +1001,10 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
   // Keyboard shortcuts (captured so they never reach the library's handlers).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+      const { castPicker, playerPrompt } = useLibraryStore.getState();
+      if (castPicker || !isPlayerShortcut(e)) return;
       noteUserActivity();
-      if (useLibraryStore.getState().playerPrompt) {
+      if (playerPrompt) {
         if (e.key === 'Enter' || e.key === ' ') dismissPrompt();
         else if (e.key === 'Escape') void closeBuiltin();
         else return;
@@ -1046,6 +1051,10 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         case 'C':
           setPanel(panel === 'chapters' ? null : 'chapters');
           break;
+        case 'a':
+        case 'A':
+          setPanel(panel === 'tracks' ? null : 'tracks');
+          break;
         case 's':
         case 'S':
           if (skippable) skipTo(skippable);
@@ -1087,7 +1096,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         else togglePause();
       }}
       onDoubleClick={() => void toggleFullscreen().then(setFullscreen)}
-      className={`fixed inset-0 z-[200] select-none overflow-hidden text-white ${controlsShown || pausedIdle ? '' : 'cursor-none'}`}
+      className={`fixed inset-0 z-[200] select-none overflow-hidden text-white ${controlsShown || pausedIdle ? '' : 'cursor-none has-[:focus-visible]:cursor-auto'}`}
     >
       {/* Loading / buffering */}
       {loading && (
@@ -1144,16 +1153,15 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
       </AnimatePresence>
 
       {/* Chrome */}
-      <motion.div
-        animate={{ opacity: controlsShown ? 1 : 0 }}
-        transition={{ duration: controlsShown ? 0.15 : 0.5 }}
-        className={`absolute inset-0 ${controlsShown ? '' : 'pointer-events-none'}`}
+      <div
+        hidden={!!prompt}
+        className={`group/player-chrome pointer-events-none absolute inset-0 transition-opacity ${prompt ? 'hidden' : controlsShown ? 'opacity-100 duration-150' : 'opacity-0 duration-500 has-[:focus-visible]:opacity-100 has-[:focus-visible]:transition-none'}`}
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/80 to-transparent" />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-black/90 via-black/50 to-transparent" />
 
         {/* Top bar */}
-        <div className="absolute inset-x-0 top-0 flex items-center justify-between px-6 pt-5">
+        <div className={`absolute inset-x-0 top-0 flex items-center justify-between px-6 pt-5 ${controlsShown ? 'pointer-events-auto' : 'group-has-[:focus-visible]/player-chrome:pointer-events-auto'}`}>
           <ControlButton label="Back to browse (Esc)" onClick={() => void closeBuiltin()}>
             <ArrowLeft className="h-9 w-9" />
           </ControlButton>
@@ -1196,7 +1204,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
 
         {/* Bottom controls */}
         <div
-          className="absolute inset-x-0 bottom-0 px-6 pb-5"
+          className={`absolute inset-x-0 bottom-0 px-6 pb-5 ${controlsShown ? 'pointer-events-auto' : 'group-has-[:focus-visible]/player-chrome:pointer-events-auto'}`}
           onMouseEnter={() => (overControls.current = true)}
           onMouseLeave={() => (overControls.current = false)}
           onClick={(e) => e.stopPropagation()}
@@ -1208,13 +1216,13 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
 
           <div className="flex items-center">
             <div className="flex items-center gap-4">
-              <ControlButton label={state?.paused ? 'Play (Space)' : 'Pause (Space)'} onClick={togglePause}>
+              <ControlButton label={state?.paused ? playerControlTitles.play : playerControlTitles.pause} onClick={togglePause}>
                 {state?.paused ? <Play className="h-9 w-9 fill-white" strokeWidth={0} /> : <Pause className="h-9 w-9 fill-white" strokeWidth={0} />}
               </ControlButton>
-              <ControlButton label="Back 10 seconds (←)" onClick={() => seekBy(-10)}>
+              <ControlButton label={playerControlTitles.rewind} onClick={() => seekBy(-10)}>
                 <span className="h-9 w-9"><SkipTen /></span>
               </ControlButton>
-              <ControlButton label="Forward 10 seconds (→)" onClick={() => seekBy(10)}>
+              <ControlButton label={playerControlTitles.forward} onClick={() => seekBy(10)}>
                 <span className="h-9 w-9"><SkipTen forward /></span>
               </ControlButton>
               <VolumeControl volume={state?.volume ?? 100} muted={!!state?.muted} />
@@ -1236,7 +1244,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
                   <SkipForward className="h-8 w-8 fill-white" />
                 </ControlButton>
               )}
-              <ControlButton label="Audio & Subtitles" onClick={() => setPanel(panel === 'tracks' ? null : 'tracks')} active={panel === 'tracks'}>
+              <ControlButton label={playerControlTitles.tracks} onClick={() => setPanel(panel === 'tracks' ? null : 'tracks')} active={panel === 'tracks'}>
                 <MessageSquareText className="h-8 w-8" />
               </ControlButton>
               <ControlButton label="Playback Speed" onClick={() => setPanel(panel === 'speed' ? null : 'speed')} active={panel === 'speed'}>
@@ -1251,12 +1259,12 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
               <ControlButton label="Mini player (I) — keep browsing while you watch" onClick={() => void enterMini()}>
                 <PictureInPicture2 className="h-8 w-8" />
               </ControlButton>
-              <ControlButton label={fullscreen ? 'Exit full screen (F)' : 'Full screen (F)'} onClick={() => void toggleFullscreen().then(setFullscreen)}>
+              <ControlButton label={fullscreen ? playerControlTitles.exitFullscreen : playerControlTitles.fullscreen} onClick={() => void toggleFullscreen().then(setFullscreen)}>
                 {fullscreen ? <Minimize className="h-8 w-8" /> : <Maximize className="h-8 w-8" />}
               </ControlButton>
 
               <AnimatePresence>
-                {panel && (
+                {panel && !prompt && (
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -1279,7 +1287,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
             </div>
           </div>
         </div>
-      </motion.div>
+      </div>
 
       <PlayerPrompt session={session} />
 
@@ -1305,6 +1313,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
           <motion.button
             key={skippable.kind}
             type="button"
+            title={skippable.kind === 'intro' ? playerControlTitles.skipIntro : playerControlTitles.skipRecap}
             initial={{ opacity: 0, x: 30 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 30 }}

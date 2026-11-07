@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
 import { Delete, Lock, X } from 'lucide-react';
 import { useLibraryStore, type PinRequest } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 
 /** 4-digit PIN entry (keyboard or on-screen keypad). */
 export default function PinPrompt() {
@@ -13,6 +14,9 @@ function Pad({ request }: { request: PinRequest }) {
   const setRequest = useLibraryStore((s) => s.setPinRequest);
   const [pin, setPin] = useState('');
   const [wrong, setWrong] = useState(0);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  useModalDialog(dialog, { onClose: () => setRequest(null), active: present, priority: 195 });
 
   const type = (d: string) => {
     if (pin.length >= 4) return;
@@ -30,10 +34,10 @@ function Pad({ request }: { request: PinRequest }) {
   };
 
   useEffect(() => {
+    if (!present) return;
     const onKey = (e: KeyboardEvent) => {
       if (/^[0-9]$/.test(e.key)) type(e.key);
       else if (e.key === 'Backspace') setPin((p) => p.slice(0, -1));
-      else if (e.key === 'Escape') setRequest(null);
       else return;
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -47,7 +51,13 @@ function Pad({ request }: { request: PinRequest }) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[195] flex items-center justify-center bg-black/85 backdrop-blur-sm"
+      ref={dialog}
+      role="dialog"
+      tabIndex={-1}
+      aria-modal="true"
+      aria-hidden={!present || undefined}
+      aria-label={request.title}
+      className={`fixed inset-0 z-[195] flex items-center justify-center bg-black/85 backdrop-blur-sm outline-none ${present ? '' : 'pointer-events-none'}`}
     >
       <button onClick={() => setRequest(null)} aria-label="Cancel" className="absolute right-8 top-8 text-white/70 hover:text-white">
         <X className="h-8 w-8" />

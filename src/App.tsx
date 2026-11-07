@@ -125,7 +125,7 @@ export default function App() {
   // Escape closes the top-most overlay; global drag-and-drop opens .torrent files & magnet links.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
       const s = useLibraryStore.getState();
       if (s.addTorrentModal?.open) s.closeAddTorrent();
       else if (s.fixMatchKey) s.openFixMatch(null);
@@ -142,7 +142,8 @@ export default function App() {
       }
     };
     const onDrop = async (e: DragEvent) => {
-      if (useLibraryStore.getState().addTorrentModal?.open) return;
+      const s = useLibraryStore.getState();
+      if (!s.ready || s.addTorrentModal?.open) return;
       const file = Array.from(e.dataTransfer?.files ?? []).find((f) => f.name.toLowerCase().endsWith('.torrent'));
       if (file) {
         e.preventDefault();
@@ -159,7 +160,8 @@ export default function App() {
     let unlistenDrop: (() => void) | null = null;
     void listen<{ paths?: string[] }>('tauri://drag-drop', ({ payload }) => {
       const torrentPath = payload?.paths?.find((p) => p.toLowerCase().endsWith('.torrent'));
-      if (torrentPath) useLibraryStore.getState().openAddTorrent(torrentPath);
+      const s = useLibraryStore.getState();
+      if (torrentPath && s.ready) s.openAddTorrent(torrentPath);
     })
       .then((fn) => {
         unlistenDrop = fn;

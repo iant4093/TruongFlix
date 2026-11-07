@@ -7,7 +7,7 @@ import { formatLeft, limitStatus } from '../../services/limits';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
 import { runScan } from '../../services/scanner';
 import { stopPlayback } from '../../services/player';
-import { formatSpeed } from '../../services/torrents';
+import { formatSpeed, isActiveDownload } from '../../services/torrents';
 import { formatTimestamp } from '../../store/selectors';
 
 const LINKS: { view: View; label: string }[] = [
@@ -53,6 +53,7 @@ export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
@@ -72,6 +73,7 @@ export default function Navbar() {
   const closeSearch = () => {
     setSearch('');
     setSearchOpen(false);
+    searchButtonRef.current?.focus();
   };
 
   return (
@@ -85,10 +87,11 @@ export default function Navbar() {
         <Wordmark className="text-[1.9rem]" />
       </button>
 
-      <nav className="flex items-center gap-3 text-sm xl:gap-5">
+      <nav aria-label="Main navigation" className="flex items-center gap-3 text-sm xl:gap-5">
         {LINKS.map((l) => (
           <button
             key={l.view}
+            aria-current={view === l.view && !search ? 'page' : undefined}
             onClick={() => setView(l.view)}
             className={`whitespace-nowrap transition-colors duration-300 ${
               view === l.view && !search ? 'font-semibold text-white' : 'text-[#e5e5e5] hover:text-[#b3b3b3]'
@@ -99,13 +102,13 @@ export default function Navbar() {
         ))}
       </nav>
 
-      <div className="ml-auto flex items-center gap-5 text-white">
+      <div className="ml-auto flex shrink-0 items-center gap-3 pl-3 text-white xl:gap-5">
         {playback.active && (
           <div className="flex items-center gap-2 rounded-full border border-white/15 bg-black/50 py-1 pl-3 pr-1 text-xs">
             <span className="h-2 w-2 animate-pulse rounded-full bg-nf-red" />
-            <span className="text-nf-secondary">Playing in VLC</span>
+            <span className="hidden text-nf-secondary xl:inline">Playing in VLC</span>
             {playback.length > 0 && (
-              <span className="tabular-nums text-white/80">
+              <span className="hidden tabular-nums text-white/80 xl:inline">
                 {formatTimestamp(playback.time)} / {formatTimestamp(playback.length)}
               </span>
             )}
@@ -129,38 +132,40 @@ export default function Navbar() {
           >
             <Search className="h-5 w-5" />
           </button>
-        ) : <div
-          className={`flex items-center transition-all duration-300 ${
-            searchOpen ? 'border border-white bg-black/75' : 'border border-transparent'
-          }`}
-        >
+        ) : <div className="relative">
           <button
-            onClick={() => (searchOpen ? inputRef.current?.focus() : setSearchOpen(true))}
-            className="p-1.5"
+            ref={searchButtonRef}
+            type="button"
+            onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+            className={`rounded p-1.5 ${searchOpen ? 'bg-white/15' : ''}`}
             aria-label="Search"
+            aria-expanded={searchOpen}
+            aria-controls={searchOpen ? 'library-search' : undefined}
           >
             <Search className="h-5 w-5" />
           </button>
           <AnimatePresence initial={false}>
             {searchOpen && (
               <motion.div
-                initial={{ width: 0, opacity: 0 }}
-                animate={{ width: 260, opacity: 1 }}
-                exit={{ width: 0, opacity: 0 }}
-                transition={{ duration: 0.3, ease: 'easeInOut' }}
-                className="flex items-center overflow-hidden"
+                id="library-search"
+                initial={{ y: -4, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: -4, opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="absolute right-0 top-full mt-2 flex w-[min(290px,85vw)] items-center rounded border border-white/25 bg-nf-surface px-3 shadow-xl"
               >
                 <input
                   ref={inputRef}
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  onBlur={() => !search && setSearchOpen(false)}
-                  onKeyDown={(e) => e.key === 'Escape' && closeSearch()}
+                  aria-label="Search your library"
+                  onBlur={(e) => { if (!search && e.relatedTarget !== searchButtonRef.current) setSearchOpen(false); }}
+                  onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); closeSearch(); } }}
                   placeholder="Titles, people, genres"
-                  className="w-full bg-transparent py-1 pr-2 text-sm text-white placeholder:text-[#8c8c8c] outline-none"
+                  className="min-w-0 flex-1 bg-transparent py-2.5 pr-2 text-sm text-white placeholder:text-nf-muted outline-none"
                 />
                 {search && (
-                  <button onMouseDown={(e) => e.preventDefault()} onClick={closeSearch} className="pr-2">
+                  <button type="button" aria-label="Clear search" onClick={closeSearch} className="p-1">
                     <X className="h-4 w-4" />
                   </button>
                 )}
@@ -182,7 +187,10 @@ export default function Navbar() {
         <TorrentMenu />
 
         <button
-          onClick={() => guardAdult(() => openSettings(true))}
+          onClick={(event) => {
+            event.currentTarget.focus();
+            openSettings(true);
+          }}
           title="Settings"
           aria-label="Settings"
           className="text-[#e5e5e5] transition-colors hover:text-white"
@@ -200,7 +208,7 @@ function TorrentMenu() {
   const torrents = useLibraryStore((s) => s.torrents);
   const openAddTorrent = useLibraryStore((s) => s.openAddTorrent);
   const openSettings = useLibraryStore((s) => s.setSettingsOpen);
-  const activeDownloads = torrents.filter((t) => !t.finished && t.inSession && !t.paused && t.state !== 'error');
+  const activeDownloads = torrents.filter(isActiveDownload);
   const totalSpeed = activeDownloads.reduce((sum, t) => sum + (t.downloadSpeedBps || 0), 0);
   const downloading = activeDownloads.length > 0;
 
@@ -208,7 +216,7 @@ function TorrentMenu() {
     <div className="flex items-center gap-1.5 whitespace-nowrap text-sm text-[#e5e5e5]">
       <button
         type="button"
-        onClick={() => guardAdult(() => openAddTorrent())}
+        onClick={() => openAddTorrent()}
         title="Add Magnet or .torrent"
         aria-label="Add Magnet or .torrent"
         className="flex items-center gap-1.5 transition-colors hover:text-white"
@@ -219,7 +227,7 @@ function TorrentMenu() {
       {downloading && (
         <button
           type="button"
-          onClick={() => guardAdult(() => openSettings(true, 'torrents'))}
+          onClick={() => openSettings(true, 'torrents')}
           title="View torrent transfers"
           aria-label="View torrent transfers"
           className="flex items-center gap-1.5 tabular-nums transition-colors hover:text-white"

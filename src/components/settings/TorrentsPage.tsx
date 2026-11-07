@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -15,13 +15,14 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import type { OsHandlerStatus, TorrentItem, TorrentMode } from '../../types/media';
+import type { OsHandlerStatus, TorrentItem, TorrentMode, TorrentState } from '../../types/media';
 import {
   checkOsHandlerStatus,
   formatBytes,
   formatEta,
   formatExpiryRemaining,
   formatSpeed,
+  isActiveDownload,
   keepStreamPermanently,
   pauseAllTorrents,
   pauseTorrent,
@@ -32,6 +33,7 @@ import {
   resumeTorrent,
   setTorrentDeleteOnComplete,
   stopSeedingTorrent,
+  torrentStatusLabel,
 } from '../../services/torrents';
 import { FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
 import Dropdown from '../common/Dropdown';
@@ -61,34 +63,23 @@ const SEED_TIME_OPTIONS: [number, string][] = [
   [1440, '24h'],
 ];
 
-function stateBadge(t: TorrentItem): { label: string; cls: string } {
-  if (t.error) return { label: 'Error', cls: 'border-nf-red/40 bg-nf-red/15 text-red-300' };
-  switch (t.state) {
-    case 'resolving':
-      return { label: 'Fetching metadata', cls: 'border-amber-400/40 bg-amber-500/15 text-amber-200' };
-    case 'initializing':
-      return { label: 'Checking files', cls: 'border-sky-400/40 bg-sky-500/15 text-sky-200' };
-    case 'downloading':
-      return { label: 'Downloading', cls: 'border-sky-400/40 bg-sky-500/15 text-sky-200' };
-    case 'seeding':
-      return { label: 'Seeding', cls: 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200' };
-    case 'stopped_seeding':
-      return { label: 'Complete · Not seeding', cls: 'border-white/20 bg-white/10 text-nf-secondary' };
-    case 'completed':
-      return { label: 'Completed', cls: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200' };
-    case 'paused':
-      return { label: 'Paused', cls: 'border-white/20 bg-white/10 text-nf-secondary' };
-    default:
-      return { label: t.state, cls: 'border-white/20 bg-white/10 text-nf-secondary' };
-  }
-}
+const badgeStyles: Record<TorrentState, string> = {
+  resolving: 'border-amber-400/40 bg-amber-500/15 text-amber-200',
+  initializing: 'border-sky-400/40 bg-sky-500/15 text-sky-200',
+  downloading: 'border-sky-400/40 bg-sky-500/15 text-sky-200',
+  seeding: 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200',
+  stopped_seeding: 'border-white/20 bg-white/10 text-nf-secondary',
+  completed: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200',
+  paused: 'border-white/20 bg-white/10 text-nf-secondary',
+  error: 'border-nf-red/40 bg-nf-red/15 text-red-300',
+};
 
 export default function TorrentsPage() {
   const settings = useLibraryStore((s) => s.settings);
   const update = useLibraryStore((s) => s.updateSettings);
   const torrents = useLibraryStore((s) => s.torrents);
   const items = useLibraryStore((s) => s.items);
-  const openAddTorrent = useLibraryStore((s) => s.openAddTorrent);
+  const openAddTorrent = useLibraryStore((s) => s.openAddTorrentFromSettings);
   const openDetail = useLibraryStore((s) => s.openDetail);
   const setSettingsOpen = useLibraryStore((s) => s.setSettingsOpen);
   const confirm = useLibraryStore((s) => s.confirm);
@@ -97,6 +88,8 @@ export default function TorrentsPage() {
   const [filter, setFilter] = useState<TransferFilter>('all');
   const [osStatus, setOsStatus] = useState<OsHandlerStatus | null>(null);
   const [registeringOs, setRegisteringOs] = useState(false);
+  const activeActions = useRef(new Set<string>());
+  const [busyTransfers, setBusyTransfers] = useState<ReadonlySet<string>>(new Set());
   const [, setTick] = useState(0);
 
   // Refresh countdown labels every 30s
@@ -126,7 +119,7 @@ export default function TorrentsPage() {
 
   const filtered = useMemo(() => {
     return torrents.filter((t) => {
-      if (filter === 'downloading') return !t.finished && t.state !== 'error';
+      if (filter === 'downloading') return isActiveDownload(t);
       if (filter === 'streams') return t.mode === 'stream';
       if (filter === 'seeding') return t.state === 'seeding';
       if (filter === 'completed') return t.finished;
@@ -169,16 +162,32 @@ export default function TorrentsPage() {
     }
   };
 
+  const runTransferAction = async (t: TorrentItem, verb: string, run: () => Promise<void>) => {
+    if (activeActions.current.has(t.infoHash)) return;
+    activeActions.current.add(t.infoHash);
+    setBusyTransfers(new Set(activeActions.current));
+    try {
+      await run();
+    } catch (e) {
+      toast(`Could not ${verb} “${t.name}”: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      activeActions.current.delete(t.infoHash);
+      setBusyTransfers(new Set(activeActions.current));
+    }
+  };
+
   const handleDeleteWithFiles = async (t: TorrentItem) => {
     const ok = await confirm({
       title: 'Delete torrent & downloaded files?',
-      message: `This will remove “${t.name}” from TruongFlix and permanently delete its downloaded video files from disk.`,
+      message: `This will remove “${t.name}” and permanently delete its downloaded files. For an inactive download, delete its files from the Library.`,
       confirmLabel: 'Delete Files',
       danger: true,
     });
     if (!ok) return;
-    await removeTorrent(t.infoHash, true);
-    toast(`Deleted “${t.name}” and its files`, 'info');
+    await runTransferAction(t, 'delete', async () => {
+      await removeTorrent(t.infoHash, true);
+      toast(`Removed “${t.name}” and any downloaded files`, 'info');
+    });
   };
 
   return (
@@ -192,7 +201,7 @@ export default function TorrentsPage() {
         description="Active downloads, sequential streams, and completed transfers."
       >
         <Block className="flex flex-wrap items-center justify-between gap-3 bg-black/20">
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div role="group" aria-label="Filter transfers" className="flex flex-wrap items-center gap-1.5">
             {(
               [
                 ['all', `All (${torrents.length})`],
@@ -206,6 +215,7 @@ export default function TorrentsPage() {
                 key={id}
                 type="button"
                 onClick={() => setFilter(id)}
+                aria-pressed={filter === id}
                 className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                   filter === id ? 'bg-white text-black' : 'bg-white/5 text-nf-secondary hover:bg-white/10 hover:text-white'
                 }`}
@@ -258,7 +268,8 @@ export default function TorrentsPage() {
           </Block>
         ) : (
           filtered.map((t) => {
-            const badge = stateBadge(t);
+            const badgeStyle = badgeStyles[t.error ? 'error' : t.state];
+            const busy = busyTransfers.has(t.infoHash);
             const expiry = t.mode === 'stream' ? formatExpiryRemaining(t.expiresAt, false) : null;
             const revealTarget = t.filePaths[0] || t.savePath;
 
@@ -275,8 +286,8 @@ export default function TorrentsPage() {
                       >
                         {t.name}
                       </button>
-                      <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badge.cls}`}>
-                        {badge.label}
+                      <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeStyle}`}>
+                        {torrentStatusLabel(t)}
                       </span>
                       <span
                         className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
@@ -370,11 +381,11 @@ export default function TorrentsPage() {
 
                   {t.inSession && !t.seedingStopped && (
                     t.paused ? (
-                      <button type="button" onClick={() => void resumeTorrent(t.infoHash)} className="nf-btn-ghost h-8 px-2.5 py-0 text-xs">
+                      <button type="button" disabled={busy} onClick={() => void runTransferAction(t, 'resume', () => resumeTorrent(t.infoHash))} className="nf-btn-ghost h-8 px-2.5 py-0 text-xs">
                         <Play className="h-3.5 w-3.5" /> Resume
                       </button>
                     ) : (
-                      <button type="button" onClick={() => void pauseTorrent(t.infoHash)} className="nf-btn-ghost h-8 px-2.5 py-0 text-xs">
+                      <button type="button" disabled={busy} onClick={() => void runTransferAction(t, 'pause', () => pauseTorrent(t.infoHash))} className="nf-btn-ghost h-8 px-2.5 py-0 text-xs">
                         <Pause className="h-3.5 w-3.5" /> Pause
                       </button>
                     )
@@ -394,7 +405,8 @@ export default function TorrentsPage() {
                   {t.finished && t.inSession && !t.seedingStopped && (
                     <button
                       type="button"
-                      onClick={() => void stopSeedingTorrent(t.infoHash)}
+                      disabled={busy}
+                      onClick={() => void runTransferAction(t, 'stop seeding', () => stopSeedingTorrent(t.infoHash))}
                       className="nf-btn-ghost h-8 px-2.5 py-0 text-xs"
                       title="Remove from BitTorrent session and stop uploading while keeping downloaded files"
                     >
@@ -416,7 +428,8 @@ export default function TorrentsPage() {
                   <div className="ml-auto flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => void removeTorrent(t.infoHash, false)}
+                      disabled={busy}
+                      onClick={() => void runTransferAction(t, 'remove', () => removeTorrent(t.infoHash, false))}
                       className="nf-btn-ghost h-8 px-2.5 py-0 text-xs"
                       title="Remove transfer entry from this list without deleting files"
                     >
@@ -424,6 +437,7 @@ export default function TorrentsPage() {
                     </button>
                     <button
                       type="button"
+                      disabled={busy}
                       onClick={() => void handleDeleteWithFiles(t)}
                       className={`${BTN_DANGER} !h-8 !px-2.5 !text-xs`}
                       title="Remove torrent and delete downloaded files from disk"

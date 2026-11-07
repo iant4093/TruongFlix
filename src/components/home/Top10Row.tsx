@@ -48,9 +48,10 @@ function Top10Card({ item, rank }: { item: MediaItem; rank: number }) {
       onMouseEnter={hover.onMouseEnter}
       onMouseMove={hover.onMouseMove}
       onMouseLeave={hover.onMouseLeave}
-      onClick={() => openDetail(item.key)}
       className="relative flex aspect-[1.42] w-full cursor-pointer items-stretch"
     >
+      <button type="button" aria-label={`#${rank} View ${item.title}`} onClick={() => openDetail(item.key)}
+        className="absolute inset-0 z-20 rounded-sm focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white" />
       <div className="relative z-0 w-1/2">
         <RankNumber rank={rank} />
       </div>

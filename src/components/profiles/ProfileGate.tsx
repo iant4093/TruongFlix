@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
 import { Pencil, Plus } from 'lucide-react';
 import type { Maturity, Profile, ProfileInput } from '../../types/media';
 import { guardAdult, switchProfileGuarded } from '../../services/profilelock';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 import * as db from '../../services/db';
 import { MATURITY_LABEL } from '../../store/selectors';
 import ProfileAvatar from '../common/ProfileAvatar';
@@ -41,6 +42,17 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
   // Opened from the profile menu → "Done" closes; opened as "Who's watching?" → back to picking.
   const openedAs = useRef(mode);
   const managing = mode === 'manage';
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  const finishManaging = () => setGate(openedAs.current === 'manage' && active ? null : 'select');
+  useModalDialog(dialog, {
+    onClose: () => {
+      if (editing) setEditing(null);
+      else if (managing) finishManaging();
+    },
+    active: present,
+    priority: 150,
+  });
 
   return (
     <motion.div
@@ -48,7 +60,13 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, scale: 1.04 }}
       transition={{ duration: 0.3 }}
-      className="fixed inset-0 z-[150] overflow-y-auto bg-nf-bg px-[5%] pb-10 pt-24"
+      ref={dialog}
+      role="dialog"
+      tabIndex={-1}
+      aria-modal="true"
+      aria-hidden={!present || undefined}
+      aria-label={editing ? editing === 'new' ? 'Add Profile' : 'Edit Profile' : managing ? 'Manage Profiles' : 'Who’s watching?'}
+      className={`fixed inset-0 z-[150] overflow-y-auto bg-nf-bg px-[5%] pb-10 pt-24 outline-none ${present ? '' : 'pointer-events-none'}`}
     >
       <div className="absolute left-[4%] top-6">
         <Wordmark className="text-[2.2rem]" />
@@ -65,6 +83,7 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
                 {profiles.map((p) => (
                   <button
                     key={p.id}
+                    aria-current={!managing && p.id === active?.id ? true : undefined}
                     onClick={() => (managing ? setEditing(p) : switchProfileGuarded(p.id))}
                     className="group flex w-[clamp(84px,10vw,160px)] flex-col items-center gap-3"
                   >
@@ -96,7 +115,7 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
               </div>
               <div className="mt-14 flex gap-3">
                 {managing ? (
-                  <button onClick={() => setGate(openedAs.current === 'manage' && active ? null : 'select')} className="bg-white px-8 py-2 text-lg font-semibold text-black hover:bg-nf-red hover:text-white">
+                  <button onClick={finishManaging} className="bg-white px-8 py-2 text-lg font-semibold text-black hover:bg-nf-red hover:text-white">
                     Done
                   </button>
                 ) : (
@@ -176,6 +195,7 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
         <div className="min-w-0 flex-1 space-y-5 px-1">
           <input
             autoFocus
+            aria-label="Profile name"
             value={name}
             maxLength={24}
             onChange={(e) => setName(e.target.value)}
@@ -185,12 +205,13 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
           />
           <div>
             <div className="mb-2 text-sm text-nf-secondary">Colour</div>
-            <div className="flex flex-wrap gap-2 p-1">
+            <div role="group" aria-label="Profile colour" className="flex flex-wrap gap-2 p-1">
               {db.PROFILE_PALETTE.map((c) => (
                 <button
                   key={c}
                   onClick={() => setColor(c)}
                   aria-label={`Colour ${c}`}
+                  aria-pressed={c === color}
                   className={`h-8 w-8 shrink-0 rounded transition ${c === color ? 'ring-2 ring-white ring-offset-2 ring-offset-nf-bg' : 'opacity-80 hover:opacity-100'}`}
                   style={{ background: c }}
                 />
@@ -199,10 +220,11 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
           </div>
           <div>
             <div className="mb-2 text-sm text-nf-secondary">Maturity rating</div>
-            <div className="flex flex-wrap gap-2">
+            <div role="group" aria-label="Maturity rating" className="flex flex-wrap gap-2">
               {(['all', 'teen', 'kids'] as Maturity[]).map((m) => (
                 <button
                   key={m}
+                  aria-pressed={m === maturity}
                   onClick={() => setMaturity(m)}
                   className={`rounded border px-3 py-1.5 text-sm ${m === maturity ? 'border-white bg-white text-black' : 'border-white/30 text-nf-secondary hover:text-white'}`}
                 >
@@ -214,9 +236,9 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
           </div>
           <div>
             <div className="mb-2 text-sm text-nf-secondary">Daily viewing limit</div>
-            <div className="flex flex-wrap gap-2">
+            <div role="group" aria-label="Daily viewing limit" className="flex flex-wrap gap-2">
               {LIMITS.map(([m, label]) => (
-                <button key={m} onClick={() => setDailyLimit(m)} className={chip(dailyLimit === m)}>
+                <button key={m} aria-pressed={dailyLimit === m} onClick={() => setDailyLimit(m)} className={chip(dailyLimit === m)}>
                   {label}
                 </button>
               ))}
@@ -246,6 +268,9 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
             <div className="mb-2 text-sm text-nf-secondary">Profile lock</div>
             <div className="flex items-center gap-3">
               <input
+                type="password"
+                autoComplete="off"
+                aria-label="Profile PIN"
                 value={pin}
                 onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
                 inputMode="numeric"

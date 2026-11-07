@@ -154,6 +154,32 @@ it('reconnects Go Live after a long pause leaves the cached edge stale', async (
   );
 });
 
+it.each(['limit', 'bedtime'] as const)('blocks both buffered and stale Go Live while the %s prompt is shown', async (prompt) => {
+  await playLive(match);
+  vi.mocked(invoke).mockClear();
+  useLibraryStore.setState({ playerState: state, playerPrompt: prompt });
+  await goLive();
+  useLibraryStore.setState({ playerState: { ...state, cache_updated_at: Date.now() - 60_000 } });
+  await goLive();
+  expect(invoke).not.toHaveBeenCalledWith('player_command', expect.anything());
+  expect(invoke).not.toHaveBeenCalledWith('player_set', { name: 'pause', value: 'no' });
+  expect(invoke).not.toHaveBeenCalledWith('player_open', expect.anything());
+});
+
+it('keeps a channel paused when a viewing limit appears during a live-edge seek', async () => {
+  await playLive(match);
+  useLibraryStore.setState({ playerState: state });
+  let finishSeek!: () => void;
+  vi.mocked(invoke).mockImplementation(async (command) => command === 'player_command'
+    ? new Promise<void>((resolve) => { finishSeek = resolve; })
+    : undefined as never);
+  const goingLive = goLive();
+  useLibraryStore.setState({ playerPrompt: 'limit' });
+  finishSeek();
+  await goingLive;
+  expect(invoke).not.toHaveBeenCalledWith('player_set', { name: 'pause', value: 'no' });
+});
+
 it('does not clear a new channel when an earlier close finishes late', async () => {
   await playLive(match);
   let resolveClose!: () => void;

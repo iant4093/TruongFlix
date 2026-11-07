@@ -3,18 +3,19 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { invoke } from '@tauri-apps/api/core';
 import Discover from '../src/components/browse/Discover';
 import CatalogTitle from '../src/components/browse/CatalogTitle';
+import DetailModal from '../src/components/modals/DetailModal';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import * as tmdb from '../src/services/tmdb';
-import { listSavedBrowseTitles, setSavedBrowseTitle } from '../src/services/db';
+import { getSeasonCache, listSavedBrowseTitles, setSavedBrowseTitle } from '../src/services/db';
 import { browseSource, quickTorrent, searchTorrentReleases } from '../src/services/browse';
 import SourceBrowser from '../src/components/browse/SourceBrowser';
-import type { CatalogDetail } from '../src/types/browse';
+import type { CatalogDetail, SavedBrowseTitle } from '../src/types/browse';
 import type { MediaItem, Profile } from '../src/types/media';
 import { cachedCriticScores } from '../src/services/omdb';
 vi.mock('../src/services/omdb', () => ({ cachedCriticScores: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../src/services/db');
-vi.mock('../src/services/tmdb', () => ({ setApiKey: vi.fn(), getCatalog: vi.fn(), getCatalogDetail: vi.fn(), getCatalogSeason: vi.fn() }));
+vi.mock('../src/services/tmdb', () => ({ setApiKey: vi.fn(), getCatalog: vi.fn(), getCatalogDetail: vi.fn(), getCatalogSeason: vi.fn(), getSeasonEpisodes: vi.fn(async () => new Map()), resize: (src: string | null) => src }));
 vi.mock('../src/services/browse', () => ({ quickTorrent: vi.fn(), searchTorrentReleases: vi.fn(), browseSource: vi.fn(), cancelSourceBrowser: vi.fn(), validateSourceUrl: (s: string) => new URL(s).origin }));
 const item = { id: 1, kind: 'tv' as const, title: 'Example', year: 2024, overview: 'A series.', poster: null, backdrop: null, voteAverage: 8 };
 const detail: CatalogDetail = { ...item, imdbId: 'tt1234567', certification: 'TV-14', genres: [], runtime: null,
@@ -34,6 +35,90 @@ beforeEach(() => {
   })) });
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+const librarySeries = { ...item, id: 40, tmdbId: item.id, key: 'tv-40', cast: [], genres: [], versions: [],
+  imdbSeasons: {}, matched: true, tmdbSeasons: 2, tech: {} } as unknown as MediaItem;
+
+function LibraryGapFlow() {
+  const view = useLibraryStore((state) => state.view);
+  return view === 'browse' ? <Discover /> : <DetailModal />;
+}
+
+it('opens a missing episode, compares that exact release scope and reopens the saved selection', async () => {
+  vi.stubGlobal('scrollTo', vi.fn());
+  let persisted: SavedBrowseTitle[] = [];
+  vi.mocked(listSavedBrowseTitles).mockImplementation(async () => persisted);
+  vi.mocked(setSavedBrowseTitle).mockImplementation(async (_, title) => { persisted = [title]; });
+  vi.mocked(searchTorrentReleases).mockResolvedValue([]);
+  vi.mocked(getSeasonCache).mockResolvedValue([{ season_number: 2, fetched_at: '2024-01-01',
+    episodes: JSON.stringify([{ episode_number: 5, name: 'Missing episode', overview: '', air_date: '2024-01-01' }]) }]);
+  vi.mocked(tmdb.getCatalogDetail).mockResolvedValue({ ...detail, seasons: [
+    ...detail.seasons, { number: 2, name: 'Season 2', count: 5, airDate: '2024-01-01' },
+  ] });
+  vi.mocked(tmdb.getCatalogSeason).mockResolvedValue({ complete: true, episodes: [1, 5].map((episode_number) => ({
+    tmdb_episode_id: episode_number, season_number: 2, episode_number, title: `Episode ${episode_number}`,
+    overview: '', air_date: '2024-01-01', runtime: 40, still_path: null,
+  })) });
+  useLibraryStore.setState({ items: [librarySeries], detailKey: librarySeries.key });
+  render(<LibraryGapFlow />);
+  fireEvent.click(screen.getByRole('button', { name: 'Season' }));
+  fireEvent.click(screen.getByRole('option', { name: /Season 2/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /Find Season 2, Episode 5, Missing episode/ }));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Compare releases' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.getByRole('button', { name: 'Choose season' }).textContent).toContain('Season 2');
+  expect(screen.getByRole('button', { name: 'Choose episode or entire season' }).textContent).toContain('Episode 5');
+  fireEvent.click(screen.getByRole('button', { name: 'Compare releases' }));
+  fireEvent.click(screen.getByRole('button', { name: '4K' }));
+  expect(searchTorrentReleases).toHaveBeenCalledWith(expect.objectContaining({
+    target: expect.objectContaining({ kind: 'episode', season: 2, episode: 5, quality: '4K' }),
+  }));
+  const saveButton = screen.getByRole('button', { name: 'Save S02 · E05 to Browse' });
+  fireEvent.click(saveButton);
+  await waitFor(() => expect(saveButton.getAttribute('aria-pressed')).toBe('true'));
+  expect(persisted[0]?.selection).toEqual({ season: 2, episode: 5 });
+  fireEvent.click(screen.getByRole('button', { name: 'Close dialog', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Saved in Browse' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'View Example' }));
+  expect(screen.getByRole('button', { name: 'Choose episode or entire season' }).textContent).toContain('Episode 5');
+});
+
+it('uses the missing franchise movie’s TMDB ID rather than the open Library movie’s ID', async () => {
+  vi.stubGlobal('scrollTo', vi.fn());
+  const owned = { ...librarySeries, kind: 'movie', tmdbId: 10, title: 'First Film', collectionId: 12 };
+  const missing = { id: 11, kind: 'movie' as const, title: 'Second Film', year: 2024, releaseDate: '2024-01-01',
+    overview: '', poster: null, backdrop: null, voteAverage: 0 };
+  vi.mocked(tmdb.getCatalogDetail).mockResolvedValue({ ...detail, ...missing, seasons: [] });
+  useLibraryStore.setState({
+    detailKey: owned.key, items: [owned],
+    collections: [{ id: 12, name: 'Films', overview: null, poster_path: null, backdrop_path: null, fetched_at: null,
+      parts: JSON.stringify([{ tmdb_id: 10, title: owned.title }, { ...missing, tmdb_id: missing.id, release_date: missing.releaseDate }]) }],
+  });
+  render(<LibraryGapFlow />);
+  fireEvent.click(screen.getByRole('button', { name: 'Find Second Film in Browse' }));
+  await screen.findByRole('dialog', { name: 'Second Film' });
+  expect(tmdb.getCatalogDetail).toHaveBeenCalledWith(missing);
+});
+
+it('applies the parental PIN to direct Settings and magnet entry points', () => {
+  const adult = { id: 1, name: 'Adult', maturity: 'all', pin: '1234' } as Profile;
+  const child = { id: 2, name: 'Child', maturity: 'kids' } as Profile;
+  useLibraryStore.setState({ profiles: [adult, child], activeProfile: child });
+  useLibraryStore.getState().setSettingsOpen(true, 'library');
+  expect(useLibraryStore.getState().settingsOpen).toBe(false);
+  expect(useLibraryStore.getState().pinRequest?.check('0000')).toBe(false);
+  const approval = useLibraryStore.getState().pinRequest!;
+  expect(approval.check('1234')).toBe(true);
+  approval.then();
+  expect(useLibraryStore.getState().settingsOpen).toBe(true);
+
+  useLibraryStore.getState().openAddTorrent('magnet:?xt=urn:btih:test');
+  expect(useLibraryStore.getState().addTorrentModal).toBeNull();
+  const staleApproval = useLibraryStore.getState().pinRequest!;
+  useLibraryStore.setState({ activeProfile: adult });
+  staleApproval.then();
+  expect(useLibraryStore.getState().addTorrentModal).toBeNull();
+});
+
 it('requires an unrestricted profile before fetching discovery', () => {
   useLibraryStore.setState({ activeProfile: { id: 2, name: 'Child', maturity: 'kids' } as Profile });
   render(<Discover />);

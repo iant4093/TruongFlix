@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import { X } from 'lucide-react';
+import { useModalDialog } from '../../hooks/useModalDialog';
 
 export default function Modal({
   title,
@@ -13,44 +14,12 @@ export default function Modal({
   active?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!active) return;
-    const previous = document.activeElement as HTMLElement | null;
-    const old = document.documentElement.style.overflow;
-    document.documentElement.style.overflow = 'hidden';
-    ref.current?.focus();
-    const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      if (e.key === 'Tab') {
-        const elements = [
-          ...(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, textarea, [tabindex="0"]') ??
-            []),
-        ];
-        const first = elements[0],
-          last = elements.at(-1);
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first?.focus();
-        }
-      }
-    };
-    document.addEventListener('keydown', key);
-    return () => {
-      document.documentElement.style.overflow = old;
-      document.removeEventListener('keydown', key);
-      previous?.focus();
-    };
-  }, [active]);
+  const { onBackdropMouseDown } = useModalDialog(ref, { onClose, active, priority: 100 });
   if (!active) return null;
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-6"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      onMouseDown={onBackdropMouseDown}
     >
       <div
         ref={ref}

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import * as db from '../services/db';
 import { setApiKey } from '../services/tmdb';
+import { guardAdult } from '../services/profilelock';
+import type { BrowseEntry } from '../types/browse';
 import type {
   BuiltinPlayerState,
   CastState,
@@ -106,6 +108,7 @@ interface LibraryState {
 
   view: View;
   search: string;
+  browseEntry: BrowseEntry | null;
   detailKey: string | null;
   /** When set, the detail modal shows this episode's page instead of the series overview. */
   detailEpisodeId: number | null;
@@ -118,6 +121,7 @@ interface LibraryState {
   playback: PlaybackState;
   torrents: TorrentItem[];
   addTorrentModal: { open: boolean; initialSource?: string; catalogMatch?: SearchResult } | null;
+  pendingTorrentLink: string | null;
   toasts: Toast[];
   confirmRequest: ConfirmRequest | null;
 
@@ -139,6 +143,8 @@ interface LibraryState {
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
   setView: (v: View) => void;
   setSearch: (q: string) => void;
+  openBrowseEntry: (entry: BrowseEntry) => void;
+  clearBrowseEntry: () => void;
   openDetail: (key: string | null) => void;
   openEpisode: (id: number | null) => void;
   openFixMatch: (key: string | null) => void;
@@ -150,6 +156,7 @@ interface LibraryState {
   setPlayback: (patch: Partial<PlaybackState>) => void;
   setTorrents: (t: TorrentItem[]) => void;
   openAddTorrent: (initialSource?: string, catalogMatch?: SearchResult) => void;
+  openAddTorrentFromSettings: () => void;
   closeAddTorrent: () => void;
   patchProgress: (type: PlayableType, id: number, time: number, length: number) => void;
   toggleMyList: (item: MediaItem) => Promise<void>;
@@ -260,6 +267,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
   view: 'home',
   search: '',
+  browseEntry: null,
   detailKey: null,
   detailEpisodeId: null,
   fixMatchKey: null,
@@ -271,6 +279,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   playback: { active: false, type: null, id: null, time: 0, length: 0 },
   torrents: [],
   addTorrentModal: null,
+  pendingTorrentLink: null,
   toasts: [],
   confirmRequest: null,
 
@@ -347,12 +356,25 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     if (!profile) return;
     db.setActiveProfile(id);
     await db.saveSetting('active_profile', id);
-    set((s) => ({ activeProfile: profile, settings: { ...s.settings, active_profile: id }, profileGate: null, view: 'home', search: '', detailKey: null }));
+    set((s) => ({
+      activeProfile: profile, settings: { ...s.settings, active_profile: id }, profileGate: null,
+      view: 'home', search: '', detailKey: null, detailEpisodeId: null, browseEntry: null,
+      settingsOpen: false, addTorrentModal: null, pinRequest: null,
+    }));
     await get().reload();
     window.scrollTo({ top: 0 });
+    const pending = get().pendingTorrentLink;
+    if (pending) {
+      set({ pendingTorrentLink: null });
+      get().openAddTorrent(pending);
+    }
   },
 
-  setProfileGate: (profileGate) => set({ profileGate, hover: null }),
+  setProfileGate: (profileGate) => {
+    const pending = profileGate ? null : get().pendingTorrentLink;
+    set({ profileGate, hover: null, ...(pending ? { pendingTorrentLink: null } : {}) });
+    if (pending) get().openAddTorrent(pending);
+  },
   openActor: (actor) => set({ actor, hover: null }),
   setOverlay: (overlay) => set({ overlay, hover: null }),
   setPlayerMini: (playerMini) => set({ playerMini, hover: null }),
@@ -373,20 +395,39 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
 
   setView: (view) => {
-    set({ view, search: '', hover: null });
+    set({ view, search: '', hover: null, browseEntry: null });
     window.scrollTo({ top: 0 });
   },
   setSearch: (search) => set({ search, hover: null }),
+  openBrowseEntry: (browseEntry) => {
+    if (get().activeProfile?.maturity !== 'all' || get().profileGate) return;
+    set({ view: 'browse', search: '', hover: null, detailKey: null, detailEpisodeId: null, browseEntry });
+    window.scrollTo({ top: 0 });
+  },
+  clearBrowseEntry: () => set({ browseEntry: null }),
   openDetail: (detailKey) => set({ detailKey, detailEpisodeId: null, hover: null }),
   openEpisode: (detailEpisodeId) => set({ detailEpisodeId, hover: null }),
   openFixMatch: (fixMatchKey) => set({ fixMatchKey, hover: null }),
-  setSettingsOpen: (settingsOpen, tab) => set((s) => ({ settingsOpen, hover: null, settingsTab: tab ?? s.settingsTab })),
+  setSettingsOpen: (settingsOpen, tab) => {
+    const apply = () => set((s) => ({ settingsOpen, hover: null, settingsTab: tab ?? s.settingsTab }));
+    if (settingsOpen && !get().settingsOpen) guardAdult(apply, { atGate: !!get().profileGate });
+    else apply();
+  },
   setOnboardingOpen: (onboardingOpen) => set({ onboardingOpen }),
   setHover: (hover) => set({ hover }),
   setScan: (patch) => set((s) => ({ scan: { ...s.scan, ...patch } })),
   setPlayback: (patch) => set((s) => ({ playback: { ...s.playback, ...patch } })),
   setTorrents: (torrents) => set({ torrents }),
-  openAddTorrent: (initialSource, catalogMatch) => set({ addTorrentModal: { open: true, initialSource, catalogMatch }, hover: null }),
+  openAddTorrent: (initialSource, catalogMatch) => {
+    if (get().profileGate) {
+      if (initialSource) set({ pendingTorrentLink: initialSource });
+      return;
+    }
+    guardAdult(() => set({ addTorrentModal: { open: true, initialSource, catalogMatch }, hover: null }));
+  },
+  openAddTorrentFromSettings: () => {
+    if (get().settingsOpen) set({ addTorrentModal: { open: true }, hover: null });
+  },
   closeAddTorrent: () => set({ addTorrentModal: null }),
 
   /** Live in-memory progress update while VLC is playing (DB is written by the player service). */

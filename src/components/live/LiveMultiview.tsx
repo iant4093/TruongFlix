@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { ArrowLeft, Loader2, Maximize, Pause, Play, RefreshCw, Volume2, VolumeX } from 'lucide-react';
+import { ArrowLeft, Loader2, Maximize, Pause, Play, RefreshCw, SquarePlay, Volume2, VolumeX } from 'lucide-react';
 import type { LivePlayerSession } from '../../types/live';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { useLiveStore } from '../../services/live';
@@ -16,6 +16,7 @@ import {
   type MultiviewLayout,
 } from '../../services/player';
 import { button } from './ui';
+import { isPlayerShortcut } from '../player/shortcuts';
 
 function box(node: HTMLDivElement) {
   const rect = node.getBoundingClientRect();
@@ -118,21 +119,24 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
   };
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
+      if (!isPlayerShortcut(event)) return;
       if (event.code === 'Escape') {
         event.preventDefault();
         event.stopImmediatePropagation();
         void back();
+        return;
       }
-      if (event.target instanceof HTMLElement && event.target.closest('input,button,textarea')) return;
-      if (event.code === 'Space' && !prompt) {
+      if (prompt) return;
+      if (event.code === 'Space') {
         event.preventDefault();
         void playerSet('pause', primary?.paused ? 'no' : 'yes');
       }
       if (event.code === 'KeyF') void toggleFullscreen();
+      if (event.code === 'KeyM') void playerSet('mute', primary?.muted ? 'no' : 'yes');
     };
     window.addEventListener('keydown', handleKey, true);
     return () => window.removeEventListener('keydown', handleKey, true);
-  }, [primary?.paused, prompt]);
+  }, [primary?.paused, primary?.muted, prompt]);
 
   const chooseAudio = async (target: 'left' | 'right') => {
     if (changingAudio || target === audio) return;
@@ -158,9 +162,9 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
   return (
     <section className="fixed inset-0 z-[110] flex min-h-0 flex-col text-white" aria-label="Live TV multiview">
       <header className="flex items-center gap-4 border-b border-white/10 bg-[#141414] px-[4%] py-4">
-        <button className={button} onClick={() => void closeBuiltin()} aria-label="Back to Live TV"><ArrowLeft className="h-5 w-5" /></button>
+        <button className={button} disabled={!!prompt} onClick={() => void closeBuiltin()} aria-label="Back to Live TV"><ArrowLeft className="h-5 w-5" /></button>
         <h1 className="flex-1 text-xl font-bold">Live TV multiview</h1>
-        <button className={button} onClick={() => void toggleFullscreen()} aria-label="Toggle fullscreen"><Maximize className="h-5 w-5" /></button>
+        <button className={button} disabled={!!prompt} onClick={() => void toggleFullscreen()} aria-label="Toggle fullscreen" title="Toggle fullscreen (F)"><Maximize className="h-5 w-5" /></button>
       </header>
       <div className="grid min-h-0 flex-1 grid-cols-2">
         {[
@@ -193,7 +197,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
                     disabled={switching || !!prompt}
                     onClick={() => void switchPlayer(() => watchLivePane(session, isRight))}
                   >
-                    <Maximize className="h-4 w-4" />
+                    <SquarePlay className="h-4 w-4" />
                   </button>
                 </div>
               </div>
@@ -225,22 +229,42 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
         <button
           className={button}
           disabled={!!prompt}
+          title={primary?.paused ? 'Resume both (Space)' : 'Pause both (Space)'}
           onClick={() => void playerSet('pause', primary?.paused ? 'no' : 'yes')}
         >
           {primary?.paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
           {primary?.paused ? 'Resume both' : 'Pause both'}
         </button>
-        <span className="text-xs text-nf-secondary">Audio: {audio === 'left' ? session.title : session.multiview.title}</span>
+        <button
+          className={button}
+          disabled={!!prompt}
+          aria-label={primary?.muted ? 'Unmute multiview' : 'Mute multiview'}
+          title={primary?.muted ? 'Unmute (M)' : 'Mute (M)'}
+          onClick={() => void playerSet('mute', primary?.muted ? 'no' : 'yes')}
+        >
+          {primary?.muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+        </button>
+        <input
+          type="range"
+          aria-label="Multiview volume"
+          min={0}
+          max={100}
+          value={primary?.volume ?? 100}
+          disabled={!!prompt}
+          onChange={(event) => void playerSet('volume', event.target.value)}
+          className="w-20 accent-white"
+        />
+        <span className="min-w-0 truncate text-xs text-nf-secondary">Audio: {audio === 'left' ? session.title : session.multiview.title}</span>
       </footer>
       {prompt && (
-        <div role="dialog" aria-modal="true" aria-label="Playback paused" className="absolute inset-0 flex items-center justify-center bg-black/75">
+        <div key={prompt} role="dialog" aria-modal="true" aria-label="Playback paused" className="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
           <div className="rounded-lg bg-[#181818] p-8 text-center">
             <h2 className="mb-5 text-xl font-bold">
               {prompt === 'limit' ? 'That’s all for today!' : prompt === 'bedtime' ? 'It’s bedtime' : 'Playback paused'}
             </h2>
             <div className="flex justify-center gap-3">
-              {prompt !== 'limit' && prompt !== 'bedtime' && <button className="nf-btn-red" onClick={dismissPrompt}>Resume</button>}
-              <button className={button} onClick={() => void closeBuiltin()}>Back to Live TV</button>
+              {prompt !== 'limit' && prompt !== 'bedtime' && <button className="nf-btn-red" autoFocus onClick={dismissPrompt}>Resume</button>}
+              <button className={button} autoFocus={prompt === 'limit' || prompt === 'bedtime'} onClick={() => void closeBuiltin()}>Back to Live TV</button>
             </div>
           </div>
         </div>

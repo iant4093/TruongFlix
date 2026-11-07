@@ -75,6 +75,7 @@
 }
 .nf-menu-enter { animation: nf-menu-enter 0.15s ease-out; }
 .nf-dialog-enter { animation: nf-dialog-enter 0.2s ease-out; }
+html.nf-modal-open { overflow-y: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .nf-menu-enter, .nf-dialog-enter { animation: none; }
 }

@@ -18,7 +18,6 @@ struct Secondary {
     window: isize,
     stop: Arc<AtomicBool>,
     primary_audio: String,
-    primary_mute: String,
 }
 
 static SECONDARY: Mutex<Option<Secondary>> = Mutex::new(None);
@@ -139,7 +138,7 @@ pub async fn player_multiview_open(
         ] {
             api.set_property(handle, name, value)?;
         }
-        for name in ["audio-device", "volume", "pause", "af", "audio-delay"] {
+        for name in ["audio-device", "volume", "mute", "pause", "af", "audio-delay"] {
             if let Some(value) = api.get_property(primary, name) {
                 let _ = api.set_property(handle, name, &value);
             }
@@ -185,10 +184,6 @@ pub async fn player_multiview_open(
         destroy_window(&app, video_window);
         return Err(error.to_string());
     }
-    let primary_mute = api
-        .get_property(primary, "mute")
-        .unwrap_or_else(|| "no".into());
-    let _ = api.set_property(primary, "mute", "no");
     *SECONDARY.lock().unwrap() = Some(Secondary {
         handle: address,
         primary: primary as usize,
@@ -199,7 +194,6 @@ pub async fn player_multiview_open(
             .get_property(primary, "aid")
             .filter(|aid| aid != "no")
             .unwrap_or_else(|| "auto".into()),
-        primary_mute,
     });
     Ok(())
 }
@@ -275,7 +269,6 @@ pub(super) fn stop(app: &AppHandle, primary: Option<usize>) {
         let _ = api.set_property(secondary.handle as *mut _, "aid", "no");
         if let Some(primary) = primary.filter(|handle| *handle == secondary.primary) {
             let _ = api.set_property(primary as *mut _, "aid", &secondary.primary_audio);
-            let _ = api.set_property(primary as *mut _, "mute", &secondary.primary_mute);
         }
     }
     #[cfg(windows)]
@@ -315,7 +308,6 @@ pub async fn player_multiview_audio(load_id: String, secondary: bool) -> Result<
     } else {
         api.set_property(second, "aid", "no")?;
         api.set_property(primary, "aid", &other.primary_audio)?;
-        api.set_property(primary, "mute", "no")?;
     }
     Ok(())
 }
@@ -323,7 +315,7 @@ pub async fn player_multiview_audio(load_id: String, secondary: bool) -> Result<
 pub(super) fn mirror(api: &mpv::Api, name: &str, value: &str) {
     if matches!(
         name,
-        "pause" | "volume" | "audio-device" | "audio-delay" | "af"
+        "pause" | "volume" | "mute" | "audio-device" | "audio-delay" | "af"
     ) {
         if let Some(secondary) = SECONDARY.lock().unwrap().as_ref() {
             let _ = api.set_property(secondary.handle as *mut _, name, value);

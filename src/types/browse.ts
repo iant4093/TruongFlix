@@ -2,6 +2,18 @@ import type { SearchResult } from '../services/tmdb';
 import type { CastMember } from './media';
 import type { EpisodeMetadata } from '../services/db';
 
+export interface BrowseEpisodeSelection {
+  season: number;
+  episode: number;
+}
+
+export interface BrowseEntry {
+  item: SearchResult;
+  episode?: BrowseEpisodeSelection;
+}
+
+export type SavedBrowseTitle = SearchResult & { selection?: BrowseEpisodeSelection };
+
 export interface CatalogDetail extends SearchResult {
   imdbId: string;
   certification: string;

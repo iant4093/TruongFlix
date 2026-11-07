@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
@@ -33,6 +33,7 @@ import {
 import { searchTitles, type SearchResult } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import { Switch } from '../settings/ui';
+import { useModalDialog } from '../../hooks/useModalDialog';
 
 const CACHE_PRESETS: { hours: number; label: string }[] = [
   { hours: 6, label: '6 hours' },
@@ -58,7 +59,8 @@ export default function AddTorrentModal() {
   const [inspecting, setInspecting] = useState(false);
   const [resolvingFiles, setResolvingFiles] = useState(false);
   const [inspectError, setInspectError] = useState<string | null>(null);
-  const [inspected, setInspected] = useState<InspectTorrentRes | null>(null);
+  const [inspection, setInspection] = useState<{ revision: number; result: InspectTorrentRes } | null>(null);
+  const [reviewedRevision, setReviewedRevision] = useState<number | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set());
 
   // Smart metadata matching state
@@ -71,7 +73,8 @@ export default function AddTorrentModal() {
 
   // Destination folder state
   const [destFolder, setDestFolder] = useState<string>(settings.media_directories[0] ?? '');
-  const [folderTouched, setFolderTouched] = useState(false);
+  const folderTouched = useRef(false);
+  const matchTouched = useRef(false);
   const [autoFolderReason, setAutoFolderReason] = useState<'movie' | 'tv' | null>(null);
 
   // Inline manual TMDB search state
@@ -83,126 +86,149 @@ export default function AddTorrentModal() {
   const [searching, setSearching] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
-  const inspectSeq = useRef(0);
+  const submittingRef = useRef(false);
+  const sourceRevision = useRef(0);
+  const [revision, setRevision] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const sourceInputRef = useRef<HTMLInputElement>(null);
+  const { onBackdropMouseDown } = useModalDialog(dialogRef, {
+    active: !!modal?.open,
+    priority: 160,
+    initialFocus: sourceInputRef,
+    onClose: () => { if (!submittingRef.current) close(); },
+  });
 
-  // Sync if opened with a new deep-link / .torrent path while already mounted
+  const changeSource = useCallback((value: string, label: string | null = null) => {
+    setRevision(++sourceRevision.current);
+    setSource(value);
+    setSourceLabel(label);
+    folderTouched.current = false;
+    matchTouched.current = false;
+  }, []);
+
+  // Sync when another link opens while the modal is already visible.
+  useLayoutEffect(() => {
+    if (modal?.open) changeSource(modal.initialSource ?? '');
+  }, [modal, changeSource]);
+
+  const trimmedSource = source.trim();
+  const catalogMatch = trimmedSource === modal?.initialSource?.trim() ? modal?.catalogMatch : undefined;
+  const inspected = inspection?.revision === revision ? inspection.result : null;
+
   useEffect(() => {
-    if (modal?.initialSource !== undefined) {
-      setSource(modal.initialSource);
-      setSourceLabel(null);
-      setFolderTouched(false);
-    }
-  }, [modal?.initialSource]);
+    setInspecting(false);
+    setResolvingFiles(false);
+    setInspectError(null);
+    setMatching(false);
+    setMatch(null);
+    setMatchOrigin('auto');
+    setFallbackKind('movie');
+    setFallbackTitle('');
+    setFallbackYear(null);
+    setAutoFolderReason(null);
+    setDestFolder(useLibraryStore.getState().settings.media_directories[0] ?? '');
+    setSearchOpen(false);
+    setSearchResults([]);
+    setSearching(false);
+    if (!trimmedSource || !modal?.open) return;
 
-  // Inspect source + run TMDB auto-matching + auto-pick destination folder
-  useEffect(() => {
-    const trimmed = source.trim();
-    if (!trimmed) {
-      setInspected(null);
-      setInspectError(null);
-      setMatch(null);
-      setResolvingFiles(false);
-      return;
-    }
-
-    const seq = ++inspectSeq.current;
-    const debounceMs = trimmed.startsWith('magnet:') || trimmed.startsWith('base64:') || trimmed.endsWith('.torrent') ? 60 : 350;
-
+    let cancelled = false;
+    const isCurrent = () => !cancelled && sourceRevision.current === revision;
+    const acceptFiles = (result: InspectTorrentRes) => {
+      setInspection({ revision, result });
+      const videos = result.files.filter((f) => f.is_video);
+      setSelectedFiles(new Set((videos.length ? videos : result.files).map((f) => f.index)));
+    };
+    const applyDestination = (folder: string | null, kind: MediaKind) => {
+      if (folderTouched.current || !folder) return;
+      setDestFolder(folder);
+      setAutoFolderReason(kind);
+    };
+    const debounceMs = /^(magnet:|base64:)|\.torrent$/i.test(trimmedSource) ? 60 : 350;
     const timer = window.setTimeout(async () => {
       setInspecting(true);
-      setInspectError(null);
       try {
-        const res = await inspectTorrent(trimmed);
-        if (inspectSeq.current !== seq) return;
-        setInspected(res);
-
-        const defaultIdx = new Set<number>(
-          res.files.some((f) => f.is_video) ? res.files.filter((f) => f.is_video).map((f) => f.index) : res.files.map((f) => f.index),
-        );
-        setSelectedFiles(defaultIdx);
-
+        const res = await inspectTorrent(trimmedSource);
+        if (!isCurrent()) return;
+        acceptFiles(res);
+        setInspecting(false);
         setMatching(true);
-        const proposal = modal?.catalogMatch ? {
-          detectedKind: modal.catalogMatch.kind, parsedTitle: modal.catalogMatch.title, parsedYear: modal.catalogMatch.year,
-          match: modal.catalogMatch, candidates: [modal.catalogMatch], recommendedFolder: pickDestinationFolder(modal.catalogMatch.kind),
+
+        const proposal = catalogMatch ? {
+          detectedKind: catalogMatch.kind, parsedTitle: catalogMatch.title, parsedYear: catalogMatch.year,
+          match: catalogMatch, candidates: [catalogMatch], recommendedFolder: pickDestinationFolder(catalogMatch.kind),
         } : await matchTorrentMetadata(res.name, res.files);
-        if (inspectSeq.current !== seq) return;
+        if (!isCurrent()) return;
 
         setFallbackKind(proposal.detectedKind);
         setFallbackTitle(proposal.parsedTitle);
         setFallbackYear(proposal.parsedYear);
         setMatch(proposal.match);
-        setMatchOrigin(proposal.match ? (modal?.catalogMatch ? 'manual' : 'auto') : 'none');
+        setMatchOrigin(proposal.match ? (catalogMatch ? 'manual' : 'auto') : 'none');
         setSearchKind(proposal.detectedKind);
         setSearchQuery(proposal.parsedTitle);
         setSearchYear(proposal.parsedYear ? String(proposal.parsedYear) : '');
         setSearchResults(proposal.candidates);
-        if (!proposal.match) setSearchOpen(true);
-
-        if (!folderTouched && proposal.recommendedFolder) {
-          setDestFolder(proposal.recommendedFolder);
-          setAutoFolderReason(proposal.detectedKind);
-        }
+        setSearchOpen(!proposal.match);
+        applyDestination(proposal.recommendedFolder, proposal.detectedKind);
         setMatching(false);
 
-        // If magnet metadata isn't cached yet, try resolving file list in background (non-blocking)
         if (res.is_magnet && !res.metadata_ready) {
           setResolvingFiles(true);
-          inspectTorrentFilesLive(trimmed, 8500)
-            .then(async (liveRes) => {
-              if (inspectSeq.current !== seq || !liveRes.metadata_ready) return;
-              setInspected(liveRes);
-              setSelectedFiles(
-                new Set(
-                  liveRes.files.some((f) => f.is_video)
-                    ? liveRes.files.filter((f) => f.is_video).map((f) => f.index)
-                    : liveRes.files.map((f) => f.index),
-                ),
-              );
-              // Re-run matcher with exact video filenames if user hasn't manually picked a match
-              const refined = modal?.catalogMatch ? {
-                detectedKind: modal.catalogMatch.kind, parsedTitle: modal.catalogMatch.title, parsedYear: modal.catalogMatch.year,
-                match: modal.catalogMatch, recommendedFolder: pickDestinationFolder(modal.catalogMatch.kind),
-              } : await matchTorrentMetadata(liveRes.name, liveRes.files);
-              if (inspectSeq.current !== seq) return;
-              setFallbackKind(refined.detectedKind);
-              setFallbackTitle(refined.parsedTitle);
-              setFallbackYear(refined.parsedYear);
-              setMatch((prev) => prev ?? refined.match);
-              if (!folderTouched && refined.recommendedFolder) {
-                setDestFolder(refined.recommendedFolder);
-                setAutoFolderReason(refined.detectedKind);
+          try {
+            const liveRes = await inspectTorrentFilesLive(trimmedSource, 8500);
+            if (!isCurrent()) return;
+            if (liveRes.metadata_ready) {
+              acceptFiles(liveRes);
+              if (!catalogMatch && !matchTouched.current) {
+                const refined = await matchTorrentMetadata(liveRes.name, liveRes.files);
+                if (!isCurrent()) return;
+                if (!matchTouched.current) {
+                  setFallbackKind(refined.detectedKind);
+                  setFallbackTitle(refined.parsedTitle);
+                  setFallbackYear(refined.parsedYear);
+                  if (!proposal.match && refined.match) {
+                    setMatch(refined.match);
+                    setMatchOrigin('auto');
+                    setSearchOpen(false);
+                  }
+                  applyDestination(refined.recommendedFolder, refined.detectedKind);
+                }
               }
-            })
-            .catch(() => {})
-            .finally(() => {
-              if (inspectSeq.current === seq) setResolvingFiles(false);
-            });
-        } else {
-          setResolvingFiles(false);
+            }
+          } catch {
+            // A magnet can still start when its file list could not be fetched.
+          } finally {
+            if (isCurrent()) setResolvingFiles(false);
+          }
         }
+        if (isCurrent()) setReviewedRevision(revision);
       } catch (e) {
-        if (inspectSeq.current === seq) {
-          setInspected(null);
+        if (isCurrent()) {
+          setInspection(null);
           setInspectError(String(e instanceof Error ? e.message : e));
         }
       } finally {
-        if (inspectSeq.current === seq) {
+        if (isCurrent()) {
           setInspecting(false);
           setMatching(false);
         }
       }
     }, debounceMs);
 
-    return () => window.clearTimeout(timer);
-  }, [source]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [trimmedSource, revision, catalogMatch, modal?.open]);
 
   // Interactive manual TMDB search inside modal
   useEffect(() => {
-    if (!searchOpen) return;
+    if (!searchOpen || !inspected) return;
     const q = searchQuery.trim();
     if (!q || !settings.tmdb_api_key) {
       setSearchResults([]);
+      setSearching(false);
       return;
     }
     let cancelled = false;
@@ -222,45 +248,47 @@ export default function AddTorrentModal() {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [searchOpen, searchKind, searchQuery, searchYear, settings.tmdb_api_key]);
+  }, [searchOpen, searchKind, searchQuery, searchYear, settings.tmdb_api_key, revision, inspected]);
 
   if (!modal?.open) return null;
 
   const pickTorrentFile = async () => {
+    const startedAt = sourceRevision.current;
     const picked = await openDialog({
       multiple: false,
       title: 'Open .torrent file',
       filters: [{ name: 'BitTorrent File', extensions: ['torrent'] }],
     });
-    if (typeof picked === 'string' && picked) {
-      setSourceLabel(picked.split(/[\\/]/).pop() ?? picked);
-      setSource(picked);
-      setFolderTouched(false);
+    if (typeof picked === 'string' && picked && startedAt === sourceRevision.current && !submittingRef.current) {
+      changeSource(picked, picked.split(/[\\/]/).pop() ?? picked);
     }
   };
 
   const browseCustomFolder = async () => {
+    const startedAt = sourceRevision.current;
     const picked = await openDialog({
       directory: true,
       multiple: false,
       title: 'Choose download library folder',
     });
-    if (typeof picked === 'string' && picked) {
+    if (typeof picked === 'string' && picked && startedAt === sourceRevision.current && !submittingRef.current) {
       if (!settings.media_directories.includes(picked)) {
         await updateSettings({ media_directories: [...settings.media_directories, picked] });
       }
+      if (startedAt !== sourceRevision.current || submittingRef.current) return;
       setDestFolder(picked);
-      setFolderTouched(true);
+      folderTouched.current = true;
       setAutoFolderReason(null);
     }
   };
 
   const chooseManualMatch = (r: SearchResult) => {
+    matchTouched.current = true;
     setMatch(r);
     setMatchOrigin('manual');
     setFallbackKind(r.kind);
     setSearchOpen(false);
-    if (!folderTouched) {
+    if (!folderTouched.current) {
       const rec = pickDestinationFolder(r.kind, settings);
       if (rec) {
         setDestFolder(rec);
@@ -270,11 +298,12 @@ export default function AddTorrentModal() {
   };
 
   const clearMatch = (kindChoice: MediaKind) => {
+    matchTouched.current = true;
     setMatch(null);
     setMatchOrigin('none');
     setFallbackKind(kindChoice);
     setSearchOpen(false);
-    if (!folderTouched) {
+    if (!folderTouched.current) {
       const rec = pickDestinationFolder(kindChoice, settings);
       if (rec) {
         setDestFolder(rec);
@@ -292,20 +321,24 @@ export default function AddTorrentModal() {
     });
   };
 
+  const noSelectedFiles = !!inspected?.metadata_ready && selectedFiles.size === 0;
+  const canSubmit = !!inspected && reviewedRevision === revision && !noSelectedFiles && !submitting;
+
   const submit = async (playImmediately: boolean) => {
-    if (!inspected) return;
+    if (!inspected || !canSubmit || submittingRef.current || sourceRevision.current !== revision) return;
     if (mode === 'download' && !destFolder) {
       toast('Choose a destination library folder first.', 'error');
       return;
     }
+    submittingRef.current = true;
     setSubmitting(true);
     try {
       const allSelected = inspected.files.length > 0 && selectedFiles.size === inspected.files.length;
       const onlyFiles =
-        inspected.files.length > 0 && !allSelected && selectedFiles.size > 0 ? [...selectedFiles].sort((a, b) => a - b) : undefined;
+        inspected.metadata_ready && !allSelected ? [...selectedFiles].sort((a, b) => a - b) : undefined;
 
       await initiateTorrent({
-        source: source.trim(),
+        source: trimmedSource,
         name: inspected.name,
         mode,
         destinationRoot: destFolder,
@@ -318,10 +351,11 @@ export default function AddTorrentModal() {
         fallbackYear,
         playImmediately,
       });
-      close();
+      if (sourceRevision.current === revision) close();
     } catch (e) {
       toast(`Could not start torrent: ${String(e instanceof Error ? e.message : e)}`, 'error');
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -334,25 +368,32 @@ export default function AddTorrentModal() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      onMouseDown={(e) => e.target === e.currentTarget && !submitting && close()}
+      onMouseDown={onBackdropMouseDown}
       onDragOver={(e) => e.preventDefault()}
       onDrop={async (e) => {
         e.preventDefault();
         const f = Array.from(e.dataTransfer.files).find((x) => x.name.toLowerCase().endsWith('.torrent'));
-        if (f) {
-          setSourceLabel(f.name);
-          setSource(await fileToBase64TorrentSource(f));
-          setFolderTouched(false);
+        if (!f || submittingRef.current) return;
+        changeSource('');
+        const startedAt = sourceRevision.current;
+        try {
+          const encoded = await fileToBase64TorrentSource(f);
+          if (sourceRevision.current === startedAt) changeSource(encoded, f.name);
+        } catch (e) {
+          if (sourceRevision.current === startedAt) setInspectError(String(e));
         }
       }}
-      className="fixed inset-0 z-[72] flex items-start justify-center overflow-y-auto bg-black/75 px-4 py-8 backdrop-blur-xs"
+      className="fixed inset-0 z-[160] flex items-start justify-center overflow-y-auto bg-black/75 px-4 py-8 backdrop-blur-xs"
     >
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 20, scale: 0.97 }}
         transition={{ duration: 0.2 }}
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
         aria-label="Add Torrent or Magnet"
         className="w-full max-w-2xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl ring-1 ring-white/10"
       >
@@ -369,6 +410,7 @@ export default function AddTorrentModal() {
           </div>
           <button
             onClick={close}
+            disabled={submitting}
             aria-label="Close"
             className="rounded-full p-1.5 text-white/70 hover:bg-white/10 hover:text-white"
           >
@@ -376,19 +418,16 @@ export default function AddTorrentModal() {
           </button>
         </div>
 
-        <div className="max-h-[78vh] space-y-5 overflow-y-auto px-6 py-5">
+        <fieldset disabled={submitting} className="max-h-[78vh] min-w-0 space-y-5 overflow-y-auto px-6 py-5">
           {/* Source Input */}
           <div className="space-y-2">
-            <label className="block text-xs font-semibold uppercase tracking-wider text-nf-muted">Torrent Source</label>
+            <label htmlFor="torrent-source" className="block text-xs font-semibold uppercase tracking-wider text-nf-muted">Torrent Source</label>
             <div className="flex gap-2">
               <input
-                autoFocus={!source}
+                ref={sourceInputRef}
+                id="torrent-source"
                 value={source.startsWith('base64:') ? `[Loaded file] ${sourceLabel ?? 'torrent'}` : source}
-                onChange={(e) => {
-                  setSourceLabel(null);
-                  setSource(e.target.value);
-                  setFolderTouched(false);
-                }}
+                onChange={(e) => changeSource(e.target.value)}
                 placeholder="magnet:?xt=urn:btih:… or https://…/file.torrent"
                 className="nf-input flex-1 text-sm"
               />
@@ -498,7 +537,7 @@ export default function AddTorrentModal() {
                   <FolderOpen className="h-4 w-4 text-nf-secondary" />
                   Download Library Location
                 </span>
-                {autoFolderReason && !folderTouched && (
+                {autoFolderReason && !folderTouched.current && (
                   <span className="flex items-center gap-1 rounded-full bg-nf-green/15 px-2.5 py-0.5 text-[11px] font-semibold text-nf-green">
                     <Sparkles className="h-3 w-3" />
                     Auto-selected for {autoFolderReason === 'tv' ? 'TV Shows' : 'Movies'}
@@ -517,7 +556,7 @@ export default function AddTorrentModal() {
                         type="button"
                         onClick={() => {
                           setDestFolder(dir);
-                          setFolderTouched(true);
+                          folderTouched.current = true;
                         }}
                         className={`flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-xs transition-colors ${
                           selected
@@ -555,6 +594,7 @@ export default function AddTorrentModal() {
                   <button
                     type="button"
                     onClick={() => setSearchOpen((o) => !o)}
+                    disabled={matching}
                     className="text-xs font-semibold text-white underline underline-offset-2 hover:text-nf-secondary"
                   >
                     {searchOpen ? 'Hide Manual Search' : match ? 'Change Match' : 'Find Match Manually'}
@@ -681,7 +721,7 @@ export default function AddTorrentModal() {
                       ))}
                     {!searching && searchQuery.trim() && !searchResults.length && (
                       <p className="py-3 text-center text-xs text-nf-muted">
-                        {settings.tmdb_api_key ? 'No TMDB matches found. Try another title or keep unmatched.' : 'Configure your TMDB API key in Settings › Library to search.'}
+                        {settings.tmdb_api_key ? 'No TMDB matches found. Try another title or keep unmatched.' : 'Configure your TMDB API key in Settings › Ratings & Data to search.'}
                       </p>
                     )}
                   </div>
@@ -738,10 +778,15 @@ export default function AddTorrentModal() {
                     </label>
                   ))}
                 </div>
-              ) : (
+              ) : inspected.metadata_ready ? (
+                <p className="mt-1.5 text-xs text-nf-secondary">This torrent contains no files.</p>
+              ) : !resolvingFiles && reviewedRevision === revision ? (
                 <p className="mt-1.5 text-xs text-nf-secondary">
-                  {inspected.name} · Video files will be fetched from BitTorrent peers automatically as soon as you start.
+                  The file list is unavailable. Starting this torrent will download all files.
                 </p>
+              ) : null}
+              {noSelectedFiles && inspected.files.length > 0 && (
+                <p className="mt-1.5 text-xs text-nf-secondary">Select at least one file to continue.</p>
               )}
             </div>
           )}
@@ -764,7 +809,7 @@ export default function AddTorrentModal() {
               label="Remove torrent after download completes"
             />
           </div>
-        </div>
+        </fieldset>
 
         {/* Footer CTA */}
         <div className="flex items-center justify-end gap-2.5 border-t border-white/10 bg-black/30 px-6 py-4">
@@ -775,7 +820,7 @@ export default function AddTorrentModal() {
             <>
               <button
                 type="button"
-                disabled={!inspected || submitting}
+                disabled={!canSubmit}
                 onClick={() => void submit(false)}
                 className="nf-btn-ghost h-10 px-4 text-sm disabled:opacity-40"
               >
@@ -784,7 +829,7 @@ export default function AddTorrentModal() {
               </button>
               <button
                 type="button"
-                disabled={!inspected || submitting}
+                disabled={!canSubmit}
                 onClick={() => void submit(true)}
                 className="nf-btn-red h-10 px-5 text-sm font-semibold disabled:opacity-40"
               >
@@ -795,7 +840,7 @@ export default function AddTorrentModal() {
           ) : (
             <button
               type="button"
-              disabled={!inspected || submitting || !destFolder}
+              disabled={!canSubmit || !destFolder}
               onClick={() => void submit(false)}
               className="nf-btn-red h-10 px-5 text-sm font-semibold disabled:opacity-40"
             >

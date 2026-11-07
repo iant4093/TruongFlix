@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import * as db from '../src/services/db';
-import { pollTorrents, reapExpiredStreams } from '../src/services/torrents';
+import { pollTorrents, reapExpiredStreams, removeTorrent } from '../src/services/torrents';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import type { PlayerSession, TorrentRecord, TorrentStatus } from '../src/types/media';
 import { movie, torrentRecord, torrentStatus } from './fixtures';
@@ -129,6 +129,20 @@ describe('torrent history retention', () => {
     await reapExpiredStreams();
     expect(db.deleteTorrentRecord).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleting a torrent with its files', () => {
+  it('keeps the library and transfer record after a native failure, then removes both on retry', async () => {
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw new Error('Disk is read only'); });
+
+    await expect(removeTorrent(record.info_hash, true)).rejects.toThrow('Disk is read only');
+    expect(db.deleteMediaPaths).not.toHaveBeenCalled();
+    expect(db.deleteTorrentRecord).not.toHaveBeenCalled();
+
+    await removeTorrent(record.info_hash, true);
+    expect(db.deleteMediaPaths).toHaveBeenCalledWith([movie.file_path], [movie.file_path]);
+    expect(db.deleteTorrentRecord).toHaveBeenCalledWith(record.info_hash);
   });
 });
 

@@ -1,7 +1,8 @@
 import { useEffect, useRef, type ComponentType } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useIsPresent } from 'framer-motion';
 import { Captions, Home, Info, Library, Magnet, MonitorSmartphone, PlayCircle, Star, Trash2, Users, Volume2, X, type LucideIcon } from 'lucide-react';
 import { useLibraryStore, type SettingsTab } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 import LibraryPage from './LibraryPage';
 import TorrentsPage from './TorrentsPage';
 import PlaybackPage from './PlaybackPage';
@@ -37,6 +38,11 @@ export default function SettingsDialog() {
     (s) => s.torrents.filter((t) => !t.finished && t.inSession && !t.paused && t.state !== 'error').length,
   );
   const scroller = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  const { onBackdropMouseDown } = useModalDialog(dialog, {
+    onClose: () => setOpen(false), active: present, priority: 66,
+  });
   const current = PAGES.find((p) => p.id === tab) ?? PAGES[0];
   const Current = current.page;
 
@@ -50,23 +56,28 @@ export default function SettingsDialog() {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
-      onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}
-      className="fixed inset-0 z-[66] flex items-center justify-center bg-black/70 p-6 backdrop-blur-xs"
+      onMouseDown={onBackdropMouseDown}
+      className={`fixed inset-0 z-[66] flex items-center justify-center bg-black/70 p-6 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
     >
       <motion.div
         initial={{ opacity: 0, scale: 0.97, y: 12 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.97, y: 12 }}
         transition={{ duration: 0.22, ease: [0.21, 0, 0.27, 1] }}
+        ref={dialog}
+        tabIndex={-1}
         role="dialog"
+        aria-modal="true"
+        aria-hidden={!present || undefined}
         aria-label="Settings"
-        className="flex h-[min(800px,92vh)] w-[min(1060px,96vw)] overflow-hidden rounded-xl bg-nf-surface shadow-2xl ring-1 ring-white/10"
+        className="flex h-[min(800px,92vh)] w-[min(1060px,96vw)] overflow-hidden rounded-xl bg-nf-surface shadow-2xl outline-none ring-1 ring-white/10"
       >
         <nav className="flex w-56 shrink-0 flex-col border-r border-white/10 bg-black/25 p-3">
           <h1 className="px-3 pb-4 pt-2 text-xl font-bold">Settings</h1>
           {PAGES.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
+              aria-current={id === current.id ? 'page' : undefined}
               onClick={() => setOpen(true, id)}
               className={`flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors ${
                 id === current.id ? 'bg-white/10 font-semibold text-white' : 'text-nf-secondary hover:bg-white/5 hover:text-white'

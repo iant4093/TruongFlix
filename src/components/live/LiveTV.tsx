@@ -319,10 +319,12 @@ export default function LiveTV() {
         </section>
       )}
       <div className="mb-7 flex flex-wrap items-center gap-3 border-b border-white/10 pb-5">
-        <div className="mr-3 flex rounded bg-white/5 p-1">
+        <div className="mr-3 flex rounded bg-white/5 p-1" role="group" aria-label="Live TV view">
           {(['sports', 'channels'] as const).map((value) => (
             <button
               key={value}
+              type="button"
+              aria-pressed={tab === value}
               className={`rounded px-5 py-2 text-sm font-semibold ${tab === value ? 'bg-white text-black' : 'text-nf-secondary hover:text-white'}`}
               onClick={() => setTab(value)}
             >
@@ -441,7 +443,7 @@ export default function LiveTV() {
                         <EventCard
                           key={event.id}
                           event={event}
-                          matches={eventMatches(event, playlists, false, state.preferences.matches)}
+                          matches={eventMatches(event, playlists, state.preferences.showUnavailable, state.preferences.matches)}
                           onOpen={() => openEvent(event)}
                         />
                       ))}

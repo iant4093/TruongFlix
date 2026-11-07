@@ -1,5 +1,5 @@
 import Database from '@tauri-apps/plugin-sql';
-import type { SearchResult } from './tmdb';
+import type { SavedBrowseTitle } from '../types/browse';
 import type {
   CollectionPart,
   CollectionRow,
@@ -232,6 +232,7 @@ const SCHEMA = [
 
 /** Columns added after the first release; created on startup if an older database lacks them. */
 const ADDED_COLUMNS: Record<string, [string, string][]> = {
+  browse_saved: [['season_number', 'INTEGER'], ['episode_number', 'INTEGER']],
   movies: [
     ['imdb_id', 'TEXT'], // NULL = not looked up yet, '' = TMDB has no IMDb id
     ['imdb_rating', 'REAL'],
@@ -528,24 +529,29 @@ export const nextProfileColor = (used: string[]) => PROFILE_COLORS.find((c) => !
 export const PROFILE_PALETTE = PROFILE_COLORS;
 
 export async function listSavedBrowseTitles(profileId: number) {
-  return select<SearchResult[]>(
+  const rows = await select<(SavedBrowseTitle & { season: number | null; episode: number | null })[]>(
     `SELECT tmdb_id AS id, kind, title, year, overview, poster, backdrop,
-       vote_average AS voteAverage, release_date AS releaseDate
+       vote_average AS voteAverage, release_date AS releaseDate, season_number AS season, episode_number AS episode
      FROM browse_saved WHERE profile_id = $1 ORDER BY saved_at DESC, rowid DESC`,
     [profileId],
   );
+  return rows.map(({ season, episode, ...item }) => season != null && episode != null
+    ? { ...item, selection: { season, episode } }
+    : item);
 }
 
-export async function setSavedBrowseTitle(profileId: number, item: SearchResult, saved: boolean) {
+export async function setSavedBrowseTitle(profileId: number, item: SavedBrowseTitle, saved: boolean) {
   if (!saved) {
     await exec('DELETE FROM browse_saved WHERE profile_id = $1 AND kind = $2 AND tmdb_id = $3', [profileId, item.kind, item.id]);
     return;
   }
   await exec(
-    `INSERT INTO browse_saved (profile_id, kind, tmdb_id, title, year, overview, poster, backdrop, vote_average, release_date, saved_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-     ON CONFLICT(profile_id, kind, tmdb_id) DO NOTHING`,
-    [profileId, item.kind, item.id, item.title, item.year, item.overview, item.poster, item.backdrop, item.voteAverage, item.releaseDate ?? null, Date.now()],
+    `INSERT INTO browse_saved (profile_id, kind, tmdb_id, title, year, overview, poster, backdrop, vote_average, release_date, saved_at, season_number, episode_number)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+     ON CONFLICT(profile_id, kind, tmdb_id) DO UPDATE SET
+       season_number = excluded.season_number, episode_number = excluded.episode_number, saved_at = excluded.saved_at
+     WHERE excluded.episode_number IS NOT NULL`,
+    [profileId, item.kind, item.id, item.title, item.year, item.overview, item.poster, item.backdrop, item.voteAverage, item.releaseDate ?? null, Date.now(), item.selection?.season ?? null, item.selection?.episode ?? null],
   );
 }
 

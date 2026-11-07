@@ -4,7 +4,7 @@ import type { MediaItem } from '../../types/media';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
 import { continueWatching, genreBuckets, seededShuffle } from '../../store/selectors';
 import { runScan } from '../../services/scanner';
-import { torrentForItem } from '../../services/torrents';
+import { isActiveDownload, torrentForItem } from '../../services/torrents';
 import HeroBillboard from './HeroBillboard';
 import MediaCard from './MediaCard';
 import MediaRow, { useItemsPerRow, type RowEntry } from './MediaRow';
@@ -82,7 +82,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
 
     const downloading = items.filter((i) => {
       const t = torrentForItem(i, torrents);
-      return Boolean(t && !t.finished);
+      return !!t && isActiveDownload(t);
     });
     if (downloading.length > 0) {
       out.push({ title: 'Downloading Now', entries: wrap(downloading) });
@@ -94,7 +94,7 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
 
     const score = (i: MediaItem) => (imdbEnabled && i.imdbRating != null ? i.imdbRating : i.voteAverage);
     const rated = items.filter((i) => i.matched && score(i) > 0).sort((a, b) => score(b) - score(a));
-    const usesImdb = imdbEnabled && rated.slice(0, 10).some((i) => i.imdbRating != null);
+    const usesImdb = imdbEnabled && rated.slice(0, 10).every((i) => i.imdbRating != null);
     if (rated.length >= 3) {
       out.push({
         title:

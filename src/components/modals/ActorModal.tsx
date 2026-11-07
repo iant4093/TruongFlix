@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
 import { User, X } from 'lucide-react';
 import type { MediaItem } from '../../types/media';
 import { useLibraryStore, type ActorRef } from '../../store/useLibraryStore';
@@ -7,6 +7,7 @@ import { getPerson, resize, type PersonInfo } from '../../services/tmdb';
 import { formatRuntime } from '../../store/selectors';
 import Artwork from '../common/Artwork';
 import MaturityRating from '../common/MaturityRating';
+import { useModalDialog } from '../../hooks/useModalDialog';
 
 /** Everything in your library featuring one cast or crew member. */
 export default function ActorModal() {
@@ -20,6 +21,11 @@ function ActorPage({ actor }: { actor: ActorRef }) {
   const openDetail = useLibraryStore((s) => s.openDetail);
   const [person, setPerson] = useState<PersonInfo | null>(null);
   const [bioOpen, setBioOpen] = useState(false);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  const { onBackdropMouseDown } = useModalDialog(dialog, {
+    onClose: () => openActor(null), active: present, priority: 70,
+  });
 
   useEffect(() => {
     let alive = true;
@@ -52,15 +58,21 @@ function ActorPage({ actor }: { actor: ActorRef }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      onMouseDown={(e) => e.target === e.currentTarget && openActor(null)}
-      className="fixed inset-0 z-[70] flex justify-center overflow-y-auto bg-black/75 px-4 pb-10 pt-8 backdrop-blur-xs"
+      onMouseDown={onBackdropMouseDown}
+      className={`fixed inset-0 z-[70] flex justify-center overflow-y-auto bg-black/75 px-4 pb-10 pt-8 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
     >
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 24 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 24 }}
         transition={{ duration: 0.26, ease: [0.21, 0, 0.27, 1] }}
-        className="relative h-max w-full max-w-4xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl"
+        ref={dialog}
+        role="dialog"
+        tabIndex={-1}
+        aria-modal="true"
+        aria-hidden={!present || undefined}
+        aria-label={actor.name}
+        className="relative h-max w-full max-w-4xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl outline-none"
       >
         <button
           onClick={() => openActor(null)}

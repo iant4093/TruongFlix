@@ -1,7 +1,8 @@
-import { useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useRef, useState } from 'react';
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 import { runScan } from '../../services/scanner';
 import {
   FolderList,
@@ -35,6 +36,9 @@ export default function OnboardingModal() {
   });
   const [saving, setSaving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  useModalDialog(dialog, { onClose: () => setRestoreOpen(false), active: present, priority: 80 });
 
   const idx = STEPS.indexOf(step);
   const next = () => setStep(STEPS[Math.min(idx + 1, STEPS.length - 1)]);
@@ -61,7 +65,7 @@ export default function OnboardingModal() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-[#141414] p-6"
+      className={`fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-[#141414] p-6 ${present ? '' : 'pointer-events-none'}`}
     >
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(229,9,20,0.22),transparent_60%),radial-gradient(ellipse_at_bottom_left,rgba(229,9,20,0.10),transparent_55%)]" />
       <div className="absolute left-[4%] top-6">
@@ -70,7 +74,13 @@ export default function OnboardingModal() {
 
       <motion.div
         layout
-        className={`relative w-full max-w-[560px] rounded-lg border border-white/5 bg-black/75 px-12 py-11 shadow-2xl backdrop-blur ${restoreOpen ? 'max-h-[calc(100vh-3rem)] overflow-y-auto' : ''}`}
+        ref={dialog}
+        role="dialog"
+        tabIndex={-1}
+        aria-modal="true"
+        aria-hidden={!present || undefined}
+        aria-label={restoreOpen ? 'Restore a backup' : 'Set up TruongFlix'}
+        className={`relative w-full max-w-[560px] rounded-lg border border-white/5 bg-black/75 px-12 py-11 shadow-2xl outline-none backdrop-blur ${restoreOpen ? 'max-h-[calc(100vh-3rem)] overflow-y-auto' : ''}`}
       >
         <AnimatePresence mode="wait">
           <motion.div
@@ -91,8 +101,8 @@ export default function OnboardingModal() {
               <div className="space-y-5 text-center">
                 <h1 className="text-[2.6rem] font-black leading-tight">Your movies. Your shows. One screen.</h1>
                 <p className="text-lg text-nf-secondary">
-                  TruongFlix turns the video files on your drives into a beautiful streaming-style library — and plays
-                  everything in VLC with full 4K, HDR and Dolby Vision support.
+                  Organize the video files on your drives into a streaming-style library and watch them in the built-in
+                  player with support for 4K and HDR.
                 </p>
                 <button onClick={next} className="nf-btn-red mt-2 w-full py-3.5 text-xl">
                   Get Started <ChevronRight className="h-6 w-6" />
@@ -125,8 +135,7 @@ export default function OnboardingModal() {
               <div className="space-y-5">
                 <StepHeader n={2} title="Set up playback" />
                 <p className="text-nf-secondary">
-                  TruongFlix plays everything in its built-in player. VLC is optional — it’s used as a fallback for
-                  the rare file the built-in player can’t handle.
+                  TruongFlix uses its built-in player by default. You can set up VLC as an optional fallback.
                 </p>
                 <VlcSetup value={vlcPath} onChange={setVlcPath} />
               </div>
@@ -137,8 +146,7 @@ export default function OnboardingModal() {
                 <StepHeader n={3} title="Subtitles" optional />
                 <p className="text-nf-secondary">
                   Add an OpenSubtitles API key to search and download subtitles from any movie or episode page.
-                  They load automatically when VLC starts. Don’t need subtitles? Skip this — you can add a key later
-                  in Settings.
+                  You can skip this step and add a key later in Settings.
                 </p>
                 <OpenSubtitlesFields value={subs} onChange={(patch) => setSubs((s) => ({ ...s, ...patch }))} />
               </div>

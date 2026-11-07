@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useIsPresent } from 'framer-motion';
 import { Loader2, Search, Star, X } from 'lucide-react';
 import { selectItem, useLibraryStore } from '../../store/useLibraryStore';
 import { applyFixMatch, runImdbSync } from '../../services/scanner';
 import { searchTitles, type SearchResult } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
+import { useModalDialog } from '../../hooks/useModalDialog';
 
 /** Manual TMDB override for files the parser/matcher got wrong. */
 export default function FixMatchModal() {
@@ -26,6 +27,12 @@ export default function FixMatchModal() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [applying, setApplying] = useState<number | null>(null);
+  const dialog = useRef<HTMLDivElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const present = useIsPresent();
+  const { onBackdropMouseDown } = useModalDialog(dialog, {
+    onClose: () => openFixMatch(null), active: present && !!item, priority: 70, initialFocus: searchInput,
+  });
 
   useEffect(() => {
     const q = query.trim();
@@ -80,15 +87,21 @@ export default function FixMatchModal() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      onMouseDown={(e) => e.target === e.currentTarget && openFixMatch(null)}
-      className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/75 px-4 py-12 backdrop-blur-xs"
+      onMouseDown={onBackdropMouseDown}
+      className={`fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/75 px-4 py-12 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
     >
       <motion.div
         initial={{ opacity: 0, y: 24, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 24, scale: 0.97 }}
         transition={{ duration: 0.22 }}
-        className="w-full max-w-2xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl"
+        ref={dialog}
+        role="dialog"
+        tabIndex={-1}
+        aria-modal="true"
+        aria-hidden={!present || undefined}
+        aria-label="Fix Match"
+        className="w-full max-w-2xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl outline-none"
       >
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-7 py-5">
           <div className="min-w-0">
@@ -98,7 +111,7 @@ export default function FixMatchModal() {
               {item.year ? ` (${item.year})` : ''} · {item.kind === 'movie' ? 'Movie' : 'TV Series'}
             </p>
           </div>
-          <button onClick={() => openFixMatch(null)} className="rounded-full p-1.5 text-white/70 hover:bg-white/10 hover:text-white">
+          <button onClick={() => openFixMatch(null)} aria-label="Close Fix Match" className="rounded-full p-1.5 text-white/70 hover:bg-white/10 hover:text-white">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -117,7 +130,8 @@ export default function FixMatchModal() {
             <div className="relative flex-1">
               <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-nf-muted" />
               <input
-                autoFocus
+                ref={searchInput}
+                aria-label="Search TMDB"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search TMDB…"

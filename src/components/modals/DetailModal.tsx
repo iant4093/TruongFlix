@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Clock,
   Download,
+  ArrowUpRight,
   FolderOpen,
   HardDriveDownload,
   Pause,
@@ -25,6 +26,7 @@ import {
   formatEta,
   formatExpiryRemaining,
   formatSpeed,
+  isActiveDownload,
   keepStreamPermanently,
   pauseTorrent,
   removeTorrent,
@@ -32,6 +34,7 @@ import {
   setTorrentDeleteOnComplete,
   stopSeedingTorrent,
   torrentForItem,
+  torrentStatusLabel,
 } from '../../services/torrents';
 import EpisodeDetail from './EpisodeDetail';
 import SubtitlesPanel from '../common/SubtitlesPanel';
@@ -61,12 +64,14 @@ import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import ProgressBar from '../common/ProgressBar';
 import TechBadges from '../common/TechBadges';
+import { useModalDialog } from '../../hooks/useModalDialog';
 
 export default function DetailModal() {
   const detailKey = useLibraryStore((s) => s.detailKey);
   const liveItem = useLibraryStore(selectItem(detailKey));
   const openDetail = useLibraryStore((s) => s.openDetail);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const lastItem = useRef<MediaItem | null>(null);
   if (liveItem) lastItem.current = liveItem;
   // Keep rendering the last item while the modal plays its exit animation.
@@ -74,6 +79,11 @@ export default function DetailModal() {
 
   const episodeId = useLibraryStore((s) => s.detailEpisodeId);
   const openEpisode = useLibraryStore((s) => s.openEpisode);
+  const { onBackdropMouseDown } = useModalDialog(dialogRef, {
+    onClose: () => openDetail(null),
+    onEscape: () => episodeId != null ? openEpisode(null) : openDetail(null),
+    active: !!detailKey && !!liveItem, priority: 60,
+  });
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const episodes = item?.kind === 'tv' ? (episodesBySeries.get(item.id) ?? []) : [];
   const episode = episodeId != null ? (episodes.find((e) => e.id === episodeId) ?? null) : null;
@@ -86,7 +96,7 @@ export default function DetailModal() {
   }, [episode?.id]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: 0 });
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [detailKey, episodeId]);
 
   useEffect(() => {
@@ -106,11 +116,15 @@ export default function DetailModal() {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      onMouseDown={(e) => e.target === e.currentTarget && openDetail(null)}
+      onMouseDown={onBackdropMouseDown}
       className="fixed inset-0 z-[60] flex justify-center overflow-y-auto bg-black/70 px-4 pb-10 pt-8 backdrop-blur-xs"
     >
       <motion.div
-        key={item.key}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={episode?.title ?? item.title}
+        tabIndex={-1}
         initial={{ opacity: 0, scale: 0.94, y: 30 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.94, y: 30 }}
@@ -118,7 +132,7 @@ export default function DetailModal() {
         className="relative h-max w-full max-w-4xl overflow-hidden rounded-xl bg-nf-surface shadow-2xl"
       >
         <motion.div
-          key={episode ? `ep-${episode.id}` : 'series'}
+          key={episode ? `ep-${episode.id}` : item.key}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.2 }}
@@ -310,8 +324,12 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                 <button
                   type="button"
                   onClick={async () => {
-                    await removeTorrent(torrent.infoHash, true);
-                    openDetail(null);
+                    try {
+                      await removeTorrent(torrent.infoHash, true);
+                      openDetail(null);
+                    } catch (error) {
+                      useLibraryStore.getState().toast(String(error), 'error');
+                    }
                   }}
                   className="nf-btn-ghost h-8 px-2.5 py-0 text-xs"
                 >
@@ -327,19 +345,15 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                 <div className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-2 tabular-nums">
                   <span className="inline-flex items-center gap-1.5 font-semibold text-sky-300">
                     <Download className="h-3.5 w-3.5" />
-                    {torrent.state === 'resolving'
-                      ? 'Fetching torrent metadata from peers…'
-                      : torrent.paused
-                        ? 'Download paused'
-                        : 'Downloading via BitTorrent'}
+                    {torrentStatusLabel(torrent)}
                   </span>
                   <span className="whitespace-nowrap text-right text-white/80">
                     {torrent.progressPct.toFixed(1)}% ({formatBytes(torrent.progressBytes)} /{' '}
                     {torrent.totalBytes > 0 ? formatBytes(torrent.totalBytes) : '—'})
                   </span>
-                  <span className="text-sky-200">↓ {formatSpeed(torrent.paused ? 0 : torrent.downloadSpeedBps)}</span>
+                  <span className="text-sky-200">↓ {formatSpeed(isActiveDownload(torrent) ? torrent.downloadSpeedBps : 0)}</span>
                   <span className="whitespace-nowrap text-right text-nf-secondary">
-                    Peers {torrent.peersLive} · ETA {formatEta(torrent.etaSecs)}
+                    Peers {torrent.peersLive} · ETA {formatEta(isActiveDownload(torrent) ? torrent.etaSecs : null)}
                   </span>
                 </div>
 
@@ -353,7 +367,8 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                     />
                     Stop seeding on complete
                   </label>
-                  {torrent.paused ? (
+                  {torrent.error && <p className="text-red-300">{torrent.error}</p>}
+                  {torrent.inSession && (torrent.paused ? (
                     <button
                       type="button"
                       onClick={() => void resumeTorrent(torrent.infoHash)}
@@ -369,7 +384,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                     >
                       <Pause className="h-3 w-3" /> Pause
                     </button>
-                  )}
+                  ))}
                 </div>
               </div>
 
@@ -556,6 +571,8 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
   }, [episodes, item.tmdbSeasons]);
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const openEpisode = useLibraryStore((s) => s.openEpisode);
+  const openBrowseEntry = useLibraryStore((s) => s.openBrowseEntry);
+  const canBrowse = useLibraryStore((s) => s.activeProfile?.maturity === 'all' && !s.profileGate);
   const imdbEnabled = useLibraryStore((s) => s.settings.imdb_enabled);
   const seriesTorrent = useLibraryStore((s) => torrentForItem(item, s.torrents));
   const initialSeason = useMemo(() => {
@@ -612,8 +629,16 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
           if (row.kind === 'missing') {
             const info = row.info;
             const upcoming = !info.air_date || info.air_date > today;
+            const tmdbId = item.tmdbId;
             return (
-              <div key={`missing-${info.episode_number}`} className="flex w-full items-center gap-5 border-b border-[#404040] px-6 py-6 last:border-b-0">
+              <div key={`missing-${info.episode_number}`} className="group relative flex w-full items-center gap-5 rounded-md border-b border-[#404040] px-6 py-6 last:border-b-0 has-[button]:hover:bg-[#282828]">
+                {canBrowse && tmdbId && <button type="button"
+                  aria-label={`Find Season ${season}, Episode ${info.episode_number}, ${info.name} in Browse`}
+                  className="absolute inset-0 z-10 rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white"
+                  onClick={() => openBrowseEntry({
+                    item: { id: tmdbId, kind: 'tv', title: item.title, year: item.year, overview: item.overview, poster: item.poster, backdrop: item.backdrop, voteAverage: item.voteAverage },
+                    episode: { season, episode: info.episode_number },
+                  })} />}
                 <span className="w-6 shrink-0 text-center text-2xl text-[#6d6d6d]">{info.episode_number}</span>
                 <div className="relative aspect-video w-[130px] shrink-0 overflow-hidden rounded bg-[#2a2a2a]">
                   {info.still_path && <Artwork src={info.still_path} alt={info.name} className="h-full w-full opacity-30 grayscale" />}
@@ -628,7 +653,9 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
                     {upcoming ? (info.air_date ? `Coming ${airDayLabel(info.air_date)}` : 'Coming soon') : 'Not in your library'}
                   </div>
                 </div>
-                <span className="w-6 shrink-0" />
+                {canBrowse && tmdbId && <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-nf-secondary group-hover:text-white">
+                  Find in Browse <ArrowUpRight className="h-4 w-4" />
+                </span>}
               </div>
             );
           }
@@ -639,19 +666,15 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
           return (
             <div
               key={ep.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => openEpisode(ep.id)}
-              onKeyDown={(e) => e.key === 'Enter' && openEpisode(ep.id)}
-              title="Episode details"
-              className="group flex w-full cursor-pointer items-center gap-5 rounded-md border-b border-[#404040] px-6 py-6 text-left transition-colors last:border-b-0 hover:bg-[#333]"
+              className="group relative flex w-full cursor-pointer items-center gap-5 rounded-md border-b border-[#404040] px-6 py-6 text-left transition-colors last:border-b-0 hover:bg-[#333]"
             >
+              <button type="button" aria-label={`Episode details for ${ep.title}`} onClick={() => openEpisode(ep.id)}
+                className="absolute inset-0 rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white" />
               <span className="w-6 shrink-0 text-center text-2xl text-[#d2d2d2]">{ep.episode_number}</span>
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  playEpisode(ep, item);
-                }}
+                type="button"
+                onClick={() => playEpisode(ep, item)}
+                aria-label={dlProg ? `Stream ${epLabel(ep)}` : `Play ${epLabel(ep)}`}
                 title={dlProg ? `Stream ${epLabel(ep)}` : `Play ${epLabel(ep)}`}
                 className="group/thumb relative aspect-video w-[130px] shrink-0 overflow-hidden rounded"
               >
@@ -660,7 +683,7 @@ function EpisodeSelector({ item, episodes, season: chosenSeason, onSeasonChange 
                   alt={ep.title}
                   className={`h-full w-full ${dlProg ? 'opacity-50 grayscale' : ''}`}
                 />
-                <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition group-hover:opacity-100 group-hover/thumb:bg-black/30">
+                <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 group-hover/thumb:bg-black/30">
                   <span className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-black/50 transition-transform group-hover/thumb:scale-110">
                     <Play className="ml-0.5 h-4 w-4 fill-white" strokeWidth={0} />
                   </span>
@@ -710,6 +733,8 @@ function CollectionSection({ item }: { item: MediaItem }) {
   const collection = useLibraryStore((s) => s.collections.find((c) => c.id === item.collectionId));
   const items = useLibraryStore((s) => s.items);
   const openDetail = useLibraryStore((s) => s.openDetail);
+  const openBrowseEntry = useLibraryStore((s) => s.openBrowseEntry);
+  const canBrowse = useLibraryStore((s) => s.activeProfile?.maturity === 'all' && !s.profileGate);
   const parts = useMemo<CollectionPart[]>(() => {
     try {
       return collection?.parts ? (JSON.parse(collection.parts) as CollectionPart[]) : [];
@@ -729,17 +754,25 @@ function CollectionSection({ item }: { item: MediaItem }) {
           const owned = items.find((x) => x.kind === 'movie' && x.tmdbId === part.tmdb_id);
           const current = owned?.key === item.key;
           const upcoming = !part.release_date || part.release_date > today;
+          const browse = !owned && canBrowse && !!part.tmdb_id;
           return (
             <button
               key={part.tmdb_id}
               type="button"
-              disabled={!owned || current}
-              onClick={() => owned && openDetail(owned.key)}
-              className={`group text-left ${owned ? '' : 'cursor-default'}`}
+              disabled={current || (!owned && !browse)}
+              aria-label={browse ? `Find ${part.title} in Browse` : undefined}
+              onClick={() => {
+                if (owned) openDetail(owned.key);
+                else if (browse) openBrowseEntry({ item: {
+                  id: part.tmdb_id, kind: 'movie', title: part.title, year: part.year, releaseDate: part.release_date,
+                  overview: part.overview, poster: part.poster, backdrop: part.backdrop, voteAverage: 0,
+                } });
+              }}
+              className="group rounded-md text-left disabled:cursor-default"
             >
               <div
                 className={`relative aspect-[2/3] overflow-hidden rounded-md bg-[#2f2f2f] ${
-                  current ? 'ring-2 ring-white' : owned ? 'transition group-hover:ring-2 group-hover:ring-white/60' : ''
+                  current ? 'ring-2 ring-white' : owned || browse ? 'transition group-hover:ring-2 group-hover:ring-white/60' : ''
                 }`}
               >
                 <Artwork
@@ -757,6 +790,9 @@ function CollectionSection({ item }: { item: MediaItem }) {
               </div>
               <div className={`mt-2 truncate text-sm font-semibold ${owned ? '' : 'text-nf-muted'}`}>{part.title}</div>
               <div className="text-xs text-nf-muted">{part.year ?? 'TBA'}</div>
+              {browse && <span className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-nf-secondary group-hover:text-white">
+                Find in Browse <ArrowUpRight className="h-3.5 w-3.5" />
+              </span>}
             </button>
           );
         })}
@@ -843,9 +879,10 @@ function MoreLikeThis({ item }: { item: MediaItem }) {
         {similar.map((s) => (
           <div
             key={s.key}
-            onClick={() => openDetail(s.key)}
-            className="cursor-pointer overflow-hidden rounded-md bg-[#2f2f2f] transition-colors hover:bg-[#383838]"
+            className="relative cursor-pointer overflow-hidden rounded-md bg-[#2f2f2f] transition-colors hover:bg-[#383838]"
           >
+            <button type="button" aria-label={`View ${s.title}`} onClick={() => openDetail(s.key)}
+              className="absolute inset-0 z-10 rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white" />
             <div className="relative aspect-video">
               <Artwork src={resize(s.backdrop, 'w500')} alt={s.title} fallbackTitle={s.title} className="h-full w-full" />
               <span className="absolute right-2 top-2 text-sm font-semibold text-shadow">
@@ -868,11 +905,11 @@ function MoreLikeThis({ item }: { item: MediaItem }) {
                   </div>
                 </div>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleMyList(s);
-                  }}
-                  className="nf-circle-btn h-9 w-9"
+                  type="button"
+                  aria-label={`Save ${s.title} to My List`}
+                  aria-pressed={s.myList}
+                  onClick={() => void toggleMyList(s)}
+                  className="nf-circle-btn relative z-20 h-9 w-9"
                 >
                   {s.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                 </button>

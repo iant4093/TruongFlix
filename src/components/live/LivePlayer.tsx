@@ -34,6 +34,7 @@ import {
 import { useLiveStore } from '../../services/live';
 import { languageName } from '../../services/subtitles';
 import Dropdown from '../common/Dropdown';
+import { isPlayerShortcut, playerControlTitles } from '../player/shortcuts';
 import LiveMultiview from './LiveMultiview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
@@ -113,6 +114,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
   useEffect(() => {
     if (mini) return;
     const key = (event: KeyboardEvent) => {
+      if (!isPlayerShortcut(event)) return;
       if (event.code === 'Escape') {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -126,7 +128,6 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
             });
         return;
       }
-      if ((event.target as HTMLElement).closest('input,button,textarea,[role="listbox"]')) return;
       reveal();
       if (blocked) return;
       if (event.code === 'Space') {
@@ -156,17 +157,20 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
     return () => window.removeEventListener('keydown', key);
   }, [blocked, settings, mini]);
   const show = visible || settings || state?.paused || blocked || interrupted || buffering;
+  const chromeOpacity = show ? 'opacity-100' : 'opacity-0 has-[:focus-visible]:opacity-100 has-[:focus-visible]:transition-none';
+  const chromePointer = show ? 'pointer-events-auto' : 'group-has-[:focus-visible]/live-chrome:pointer-events-auto';
   const audio = tracks.filter((t) => t.type === 'audio');
   const subs = tracks.filter((t) => t.type === 'sub');
   if (mini) return null;
   return (
     <div
-      className={`fixed inset-0 z-[110] text-white ${show ? '' : 'cursor-none'}`}
+      className={`fixed inset-0 z-[110] text-white ${show ? '' : 'cursor-none has-[:focus-visible]:cursor-auto'}`}
       onMouseMove={reveal}
       onClick={reveal}
     >
       <div
-        className={`absolute inset-x-0 top-0 z-10 flex items-center gap-5 bg-gradient-to-b from-black/85 to-transparent px-[4%] pb-16 pt-6 transition-opacity ${show ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        hidden={blocked}
+        className={`absolute inset-x-0 top-0 z-10 items-center gap-5 bg-gradient-to-b from-black/85 to-transparent px-[4%] pb-16 pt-6 transition-opacity ${blocked ? 'hidden' : 'flex'} ${chromeOpacity} ${show ? '' : 'pointer-events-none has-[:focus-visible]:pointer-events-auto'}`}
       >
         <button className={control} aria-label="Back to Live TV" onClick={() => void closeBuiltin()}>
           <ArrowLeft />
@@ -180,7 +184,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
         </div>
       </div>
       {blocked ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+        <div key={prompt} role="dialog" aria-modal="true" aria-label="Playback paused" className="absolute inset-0 z-20 flex items-center justify-center bg-black/70">
           <div className="rounded-lg bg-[#181818] p-8 text-center">
             <h2 className="mb-4 text-2xl font-bold">
               {prompt === 'limit'
@@ -191,11 +195,11 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
             </h2>
             <div className="flex justify-center gap-3">
               {prompt !== 'limit' && prompt !== 'bedtime' && (
-                <button className="nf-btn-red" onClick={dismissPrompt}>
+                <button className="nf-btn-red" autoFocus onClick={dismissPrompt}>
                   Resume
                 </button>
               )}
-              <button className="nf-btn-ghost" onClick={() => void closeBuiltin()}>
+              <button className="nf-btn-ghost" autoFocus={prompt === 'limit' || prompt === 'bedtime'} onClick={() => void closeBuiltin()}>
                 Back to Live TV
               </button>
             </div>
@@ -238,9 +242,10 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
         )
       )}
       <div
-        className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-[4%] pb-7 pt-20 transition-opacity ${show ? 'opacity-100' : 'opacity-0'}`}
+        hidden={blocked}
+        className={`group/live-chrome pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-[4%] pb-7 pt-20 transition-opacity ${blocked ? 'hidden' : chromeOpacity}`}
       >
-        {settings && (
+        {!blocked && settings && (
           <div className="pointer-events-auto ml-auto mb-5 w-96 max-w-full space-y-4 rounded-lg border border-white/15 bg-[#181818] p-5 shadow-xl">
             <div className="flex items-center justify-between font-bold">
               Live playback
@@ -310,7 +315,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
             </p>
           </div>
         )}
-        <div className={`mb-4 flex items-center gap-4 ${show ? 'pointer-events-auto' : ''}`}>
+        <div className={`mb-4 flex items-center gap-4 ${chromePointer}`}>
           <button
             className={`shrink-0 text-xs font-bold tracking-wide ${fresh && !state?.paused && behind < 5 ? 'text-red-400' : 'text-white'}`}
             onClick={() => void goLive()}
@@ -343,11 +348,12 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
             <span className="text-xs text-white/40">Live stream · Rewind becomes available when buffered</span>
           )}
         </div>
-        <div className={`flex items-center gap-3 ${show ? 'pointer-events-auto' : ''}`}>
+        <div className={`flex items-center gap-3 ${chromePointer}`}>
           <button
             className={control}
             disabled={blocked}
             aria-label={state?.paused ? 'Resume live TV' : 'Pause live TV'}
+            title={state?.paused ? playerControlTitles.play : playerControlTitles.pause}
             onClick={() => void playerCommand('cycle', 'pause')}
           >
             {state?.paused ? <Play className="fill-current" /> : <Pause className="fill-current" />}
@@ -356,6 +362,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
             className={control}
             disabled={blocked || !range}
             aria-label="Rewind live TV 10 seconds"
+            title={playerControlTitles.rewind}
             onClick={() => void seekLive(-10)}
           >
             <span className="text-sm font-bold">−10</span>
@@ -364,11 +371,12 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
             className={control}
             disabled={blocked || !range}
             aria-label="Forward live TV 10 seconds"
+            title={playerControlTitles.forward}
             onClick={() => void seekLive(10)}
           >
             <span className="text-sm font-bold">+10</span>
           </button>
-          <button className={control} aria-label="Mute live TV" onClick={() => void playerCommand('cycle', 'mute')}>
+          <button className={control} aria-label={state?.muted ? 'Unmute live TV' : 'Mute live TV'} title={state?.muted ? playerControlTitles.unmute : playerControlTitles.mute} onClick={() => void playerCommand('cycle', 'mute')}>
             {state?.muted ? <VolumeX /> : <Volume2 />}
           </button>
           <input
@@ -398,7 +406,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
           <button className={control} aria-label="Live mini-player" onClick={() => void enterMini()}>
             <PictureInPicture2 />
           </button>
-          <button className={control} aria-label="Toggle live fullscreen" onClick={() => void toggleFullscreen()}>
+          <button className={control} aria-label="Toggle live fullscreen" title="Toggle fullscreen (F)" onClick={() => void toggleFullscreen()}>
             <Maximize />
           </button>
         </div>

@@ -2,11 +2,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import PlayerScreen from '../src/components/player/PlayerScreen';
 import { useLibraryStore } from '../src/store/useLibraryStore';
-import { autoAdvance, closeBuiltin, retuneLive } from '../src/services/player';
+import { autoAdvance, closeBuiltin, dismissPrompt, retuneLive } from '../src/services/player';
 import type { BuiltinPlayerState, PlayerSession } from '../src/types/media';
 import { useLiveStore } from '../src/services/live';
 
-vi.mock('../src/services/player', () => ({ autoAdvance: vi.fn(), closeBuiltin: vi.fn(), retuneLive: vi.fn(), stopForSleep: () => false }));
+vi.mock('../src/services/player', () => ({
+  autoAdvance: vi.fn(), closeBuiltin: vi.fn(), dismissPrompt: vi.fn(), noteUserActivity: vi.fn(),
+  retuneLive: vi.fn(), stopForSleep: () => false,
+}));
 vi.mock('../src/services/frames', () => ({ cancelFrames: vi.fn(), extractFrames: vi.fn(), coarseToFine: () => [] }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ isFullscreen: async () => false }) }));
 const session: PlayerSession = {
@@ -97,4 +100,30 @@ it.each([false, true])('allows Back and Escape while a live stream is buffering 
   expect(screen.getByRole('heading', { name: 'Channel interrupted' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Back to Live TV' }));
   expect(closeBuiltin).toHaveBeenCalledTimes(3);
+});
+
+it('hides live transport controls and focuses the safe action during a viewing limit', () => {
+  useLibraryStore.setState({
+    playerMini: false,
+    playerPrompt: 'limit',
+    playerSession: { loadId: 'live', target: { type: 'live', id: 'channel', playlistId: 'source', label: 'Live' }, title: 'Live', subtitle: null, itemKey: null, overview: null, logo: null, next: null, nextLabel: null },
+  });
+  render(<PlayerScreen />);
+  expect(screen.queryByRole('button', { name: 'Go live' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Live playback settings' })).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Back to Live TV' }));
+});
+
+it('lets a focused VOD prompt button receive Space without resuming playback', () => {
+  useLibraryStore.setState({
+    playerMini: false,
+    playerPrompt: 'sleep-ended',
+    playerState: { loaded: true, paused: true, eof: false, time: 50, duration: 100 } as BuiltinPlayerState,
+  });
+  render(<PlayerScreen />);
+  const back = screen.getByRole('button', { name: 'Back to Browse', exact: true });
+  back.focus();
+  expect(fireEvent.keyDown(back, { key: ' ', code: 'Space' })).toBe(true);
+  expect(dismissPrompt).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Play (Space)' })).toBeNull();
 });

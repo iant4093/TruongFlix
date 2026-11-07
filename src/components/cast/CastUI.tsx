@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
 import { Cast, Loader2, Pause, Play, RefreshCw, RotateCcw, RotateCw, Tv, X } from 'lucide-react';
 import type { PlayTarget } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 import { castControl, castSeek, castTo, discoverDevices, stopCasting, type CastDevice } from '../../services/cast';
 import { formatTimestamp } from '../../store/selectors';
 
@@ -18,6 +19,11 @@ export function CastPicker() {
 function Picker({ picker }: { picker: { target: PlayTarget; start: number } }) {
   const setPicker = useLibraryStore((s) => s.setCastPicker);
   const [devices, setDevices] = useState<CastDevice[] | null>(null);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  const { onBackdropMouseDown } = useModalDialog(dialog, {
+    onClose: () => setPicker(null), active: present, priority: 230,
+  });
   const search = () => {
     setDevices(null);
     void discoverDevices().then(setDevices).catch(() => setDevices([]));
@@ -29,10 +35,20 @@ function Picker({ picker }: { picker: { target: PlayTarget; start: number } }) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      onMouseDown={(e) => e.target === e.currentTarget && setPicker(null)}
-      className="fixed inset-0 z-[230] flex items-center justify-center bg-black/70 p-6 backdrop-blur-xs"
+      onMouseDown={onBackdropMouseDown}
+      className={`fixed inset-0 z-[230] flex items-center justify-center bg-black/70 p-6 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
     >
-      <motion.div initial={{ scale: 0.96, y: 10 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-md rounded-xl bg-nf-surface p-6 shadow-2xl ring-1 ring-white/10">
+      <motion.div
+        ref={dialog}
+        role="dialog"
+        tabIndex={-1}
+        aria-modal="true"
+        aria-hidden={!present || undefined}
+        aria-label="Cast to a TV"
+        initial={{ scale: 0.96, y: 10 }}
+        animate={{ scale: 1, y: 0 }}
+        className="w-full max-w-md rounded-xl bg-nf-surface p-6 shadow-2xl outline-none ring-1 ring-white/10"
+      >
         <div className="mb-1 flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-xl font-bold">
             <Cast className="h-5 w-5" /> Cast to a TV

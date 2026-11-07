@@ -6,10 +6,12 @@
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
 import type {
+  CollectionPart,
   EpisodeRow,
   InspectTorrentRes,
   MediaInfo,
   MovieRow,
+  SeasonEpisodeInfo,
   SeriesRow,
   SubtitleRow,
   TorrentRecord,
@@ -456,18 +458,20 @@ function seasonCache(tmdbId: number) {
 }
 
 const renameBatches: { id: number; created_at: string; label: string; moves: string; roots: string; undone: number }[] = [];
-const savedBrowseTitles = new Map<number, import('../services/tmdb').SearchResult[]>();
+const savedBrowseTitles = new Map<number, (import('../services/tmdb').SearchResult & { season: number | null; episode: number | null })[]>();
 
 function handleProfileSql(q: string, values: unknown[]): unknown | undefined {
   if (q.startsWith('SELECT tmdb_id AS id, kind, title') && q.includes('FROM browse_saved')) {
     return savedBrowseTitles.get(values[0] as number) ?? [];
   }
   if (q.startsWith('INSERT INTO browse_saved')) {
-    const [profile, kind, id, title, year, overview, poster, backdrop, voteAverage, releaseDate] = values as
-      [number, 'movie' | 'tv', number, string, number | null, string, string | null, string | null, number, string | null];
+    const [profile, kind, id, title, year, overview, poster, backdrop, voteAverage, releaseDate, , season, episode] = values as
+      [number, 'movie' | 'tv', number, string, number | null, string, string | null, string | null, number, string | null, number, number | null, number | null];
     const entries = savedBrowseTitles.get(profile) ?? [];
-    if (entries.some((item) => item.id === id && item.kind === kind)) return [0, 0];
-    savedBrowseTitles.set(profile, [{ kind, id, title, year, overview, poster, backdrop, voteAverage, releaseDate }, ...entries]);
+    const existing = entries.find((item) => item.id === id && item.kind === kind);
+    if (existing && episode == null) return [0, 0];
+    const item = existing ?? { kind, id, title, year, overview, poster, backdrop, voteAverage, releaseDate };
+    savedBrowseTitles.set(profile, [{ ...item, season, episode }, ...entries.filter((entry) => entry !== existing)]);
     return [1, 0];
   }
   if (q.startsWith('DELETE FROM browse_saved')) {
@@ -1026,6 +1030,12 @@ function mockOmdb() {
       }
       if (p.startsWith('/movie/')) {
         const id = Number(p.split('/')[2]) || 329865;
+        const part = collections.flatMap((collection) => JSON.parse(collection.parts) as CollectionPart[])
+          .find((entry) => entry.tmdb_id === id);
+        if (part) return jsonRes({
+          id, title: part.title, release_date: part.release_date, overview: part.overview,
+          imdb_id: movies.find((movie) => movie.tmdb_id === id)?.imdb_id || `tt${String(id).padStart(7, '0')}`,
+        });
         return jsonRes({
           id,
           title: id === 329865 ? 'Arrival' : 'Interstellar',
@@ -1047,7 +1057,14 @@ function mockOmdb() {
         });
       }
       if (/^\/tv\/\d+\/season\/\d+$/.test(p)) {
-        const seasonNum = Number(p.split('/')[4]) || 1;
+        const [, , id, , number] = p.split('/');
+        const seasonNum = Number(number);
+        const cached = seasonCache(Number(id)).find((entry) => entry.season_number === seasonNum);
+        if (cached) return jsonRes({
+          episodes: (JSON.parse(cached.episodes) as SeasonEpisodeInfo[]).map((episode) => ({
+            ...episode, id: Number(id) * 1000 + seasonNum * 100 + episode.episode_number, season_number: seasonNum,
+          })),
+        });
         return jsonRes({
           episodes: [1, 2, 3].map((epNum) => ({
             id: 50000 + seasonNum * 100 + epNum,
@@ -1063,6 +1080,15 @@ function mockOmdb() {
       }
       if (p.startsWith('/tv/')) {
         const id = Number(p.split('/')[2]) || 83867;
+        const show = series.find((entry) => entry.tmdb_id === id);
+        if (show) return jsonRes({
+          id, name: show.title, first_air_date: `${show.year}-01-01`, overview: show.overview,
+          vote_average: show.vote_average, external_ids: { imdb_id: show.imdb_id }, status: show.tmdb_status,
+          seasons: seasonCache(id).map((entry) => ({
+            season_number: entry.season_number, name: `Season ${entry.season_number}`,
+            episode_count: (JSON.parse(entry.episodes) as SeasonEpisodeInfo[]).length,
+          })),
+        });
         return jsonRes({
           id,
           name: 'Andor',
@@ -1402,7 +1428,10 @@ export function installMocks() {
             st.paused = false;
             st.state = st.finished ? 'seeding' : 'downloading';
             st.download_speed_bps = st.finished ? 0 : 18_500_000;
-          } else if (act === 'delete_keep_files' || act === 'delete_with_files') {
+          } else if (act === 'delete_keep_files' || act === 'delete_with_files' || act === 'remove_transfer') {
+            if (act === 'delete_with_files' && !st && !a.streamCachePath) {
+              throw new Error('This torrent is no longer active. Delete its downloaded files from the Library.');
+            }
             simTorrents.delete(hash);
           }
           return null;

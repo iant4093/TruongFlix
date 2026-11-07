@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { motion } from 'framer-motion';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { motion, useIsPresent } from 'framer-motion';
 import { AlertTriangle, ArrowUpCircle, Copy, FolderOpen, HardDrive, Loader2, MessageSquareText, Trash2, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 import { allFiles, buildHealthReport, findMissingSubtitles, type HealthFile } from '../../services/health';
 import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
 import { formatSize } from '../../services/mediainfo';
@@ -14,6 +15,11 @@ type Tab = 'overview' | 'duplicates' | 'problems' | 'upgrades' | 'subtitles';
 /** Library maintenance: disk use, duplicate copies, broken files, upgrade candidates, missing subtitles. */
 export default function HealthModal() {
   const setOverlay = useLibraryStore((s) => s.setOverlay);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  useModalDialog(dialog, {
+    onClose: () => setOverlay(null), active: present, priority: 140,
+  });
   const movies = useLibraryStore((s) => s.movies);
   const series = useLibraryStore((s) => s.series);
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
@@ -53,7 +59,13 @@ export default function HealthModal() {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      className="fixed inset-0 z-[140] overflow-y-auto bg-nf-bg"
+      ref={dialog}
+      role="dialog"
+      tabIndex={-1}
+      aria-modal="true"
+      aria-hidden={!present || undefined}
+      aria-label="Library Health"
+      className={`fixed inset-0 z-[140] overflow-y-auto bg-nf-bg outline-none ${present ? '' : 'pointer-events-none'}`}
     >
       <div className="mx-auto max-w-5xl px-8 pb-20 pt-10">
         <div className="mb-6 flex items-start gap-4">
@@ -79,6 +91,7 @@ export default function HealthModal() {
           {tabs.map((t) => (
             <button
               key={t.id}
+              aria-pressed={tab === t.id}
               onClick={() => setTab(t.id)}
               className={`flex items-center gap-2 rounded-full px-4 py-1.5 text-sm transition-colors ${
                 tab === t.id ? 'bg-white font-semibold text-black' : 'text-nf-secondary hover:bg-white/10 hover:text-white'

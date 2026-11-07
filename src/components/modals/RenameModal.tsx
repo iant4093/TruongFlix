@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, useIsPresent } from 'framer-motion';
 import { ArrowRight, FileVideo, RotateCcw, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 import * as db from '../../services/db';
 import { rootFor } from '../../services/files';
 import { applyRenames, planRenames, undoRename, type RenamePlanItem } from '../../services/rename';
@@ -14,6 +15,11 @@ const rel = (path: string, roots: string[]) => {
 /** Plex-style renaming with a full preview first, and undo for recent batches. */
 export default function RenameModal() {
   const setOverlay = useLibraryStore((s) => s.setOverlay);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  const { onBackdropMouseDown } = useModalDialog(dialog, {
+    onClose: () => setOverlay(null), active: present, priority: 140,
+  });
   const roots = useLibraryStore((s) => s.settings.media_directories);
   const libraryVersion = useLibraryStore((s) => s.libraryVersion);
   const toast = useLibraryStore((s) => s.toast);
@@ -78,10 +84,18 @@ export default function RenameModal() {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      onMouseDown={(e) => e.target === e.currentTarget && setOverlay(null)}
-      className="fixed inset-0 z-[140] flex justify-center overflow-y-auto bg-black/75 px-4 py-10 backdrop-blur-xs"
+      onMouseDown={onBackdropMouseDown}
+      className={`fixed inset-0 z-[140] flex justify-center overflow-y-auto bg-black/75 px-4 py-10 backdrop-blur-xs ${present ? '' : 'pointer-events-none'}`}
     >
-      <div className="relative h-max w-full max-w-4xl rounded-xl bg-nf-surface p-8 shadow-2xl">
+      <div
+        ref={dialog}
+        role="dialog"
+        tabIndex={-1}
+        aria-modal="true"
+        aria-hidden={!present || undefined}
+        aria-label="Rename Files"
+        className="relative h-max w-full max-w-4xl rounded-xl bg-nf-surface p-8 shadow-2xl outline-none"
+      >
         <button onClick={() => setOverlay(null)} aria-label="Close" className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full hover:bg-white/10">
           <X className="h-5 w-5" />
         </button>

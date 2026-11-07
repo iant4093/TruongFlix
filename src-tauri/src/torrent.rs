@@ -12,10 +12,10 @@ use librqbit::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::SeekFrom;
+use std::io::{ErrorKind, SeekFrom};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -169,7 +169,85 @@ struct PendingMagnet {
     output_folder: String,
     paused: bool,
     error: Option<String>,
-    abort_handle: tokio::task::AbortHandle,
+    task: tokio::task::JoinHandle<()>,
+}
+
+enum TorrentFileDelete {
+    StreamCache(PathBuf),
+    Download {
+        folder: PathBuf,
+        files: Vec<PathBuf>,
+    },
+}
+
+impl TorrentFileDelete {
+    async fn remove(&self) -> Result<(), String> {
+        match self {
+            Self::StreamCache(path) => match tokio::fs::remove_dir_all(path).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    let root = path.parent().unwrap();
+                    tokio::fs::metadata(root).await.map(|_| ()).map_err(|e| {
+                        format!(
+                            "Could not access stream cache folder '{}': {e}",
+                            root.display()
+                        )
+                    })
+                }
+                Err(e) => Err(format!(
+                    "Could not delete stream cache '{}': {e}",
+                    path.display()
+                )),
+            },
+            Self::Download { folder, files } => {
+                if files.is_empty() {
+                    return Ok(());
+                }
+                let root = tokio::fs::canonicalize(folder).await.map_err(|e| {
+                    format!(
+                        "Could not access download folder '{}': {e}",
+                        folder.display()
+                    )
+                })?;
+                let mut dirs = HashSet::new();
+                for relative in files {
+                    let path = root.join(relative);
+                    let parent = path.parent().unwrap_or(&root);
+                    let real_parent = match tokio::fs::canonicalize(parent).await {
+                        Ok(real_parent) if real_parent.starts_with(&root) => real_parent,
+                        Ok(_) => {
+                            return Err(format!(
+                                "File is outside the download folder: '{}'",
+                                path.display()
+                            ))
+                        }
+                        Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                        Err(e) => {
+                            return Err(format!("Could not access '{}': {e}", parent.display()))
+                        }
+                    };
+                    let path = real_parent.join(relative.file_name().unwrap());
+                    match tokio::fs::remove_file(&path).await {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == ErrorKind::NotFound => {}
+                        Err(e) => {
+                            return Err(format!("Could not delete '{}': {e}", path.display()))
+                        }
+                    }
+                    for dir in parent.ancestors().take_while(|dir| *dir != root) {
+                        dirs.insert(dir.to_path_buf());
+                    }
+                }
+                // Subdirectories may also hold other titles, so remove only empty directories.
+                let mut dirs: Vec<_> = dirs.into_iter().collect();
+                dirs.sort_unstable_by_key(|dir| std::cmp::Reverse(dir.components().count()));
+                for dir in dirs {
+                    let _ = tokio::fs::remove_dir(&dir).await;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 pub struct TorrentManager {
@@ -178,6 +256,7 @@ pub struct TorrentManager {
     session: tokio::sync::Mutex<Option<Arc<Session>>>,
     cached_torrent_bytes: Mutex<HashMap<String, Vec<u8>>>,
     pending_magnets: Mutex<HashMap<String, PendingMagnet>>,
+    pending_file_deletes: tokio::sync::Mutex<HashMap<String, TorrentFileDelete>>,
     stream_server: tokio::sync::OnceCell<(u16, String)>,
 }
 
@@ -503,6 +582,7 @@ impl TorrentManager {
             session: tokio::sync::Mutex::new(None),
             cached_torrent_bytes: Mutex::new(HashMap::new()),
             pending_magnets: Mutex::new(HashMap::new()),
+            pending_file_deletes: tokio::sync::Mutex::new(HashMap::new()),
             stream_server: tokio::sync::OnceCell::new(),
         })
     }
@@ -924,6 +1004,11 @@ impl TorrentManager {
         let info_hash = inspected.info_hash.clone();
         let id20 = Id20::from_str(&info_hash).map_err(|e| format!("Invalid info_hash: {e}"))?;
 
+        let deletions = self.pending_file_deletes.lock().await;
+        if deletions.contains_key(&info_hash) {
+            return Err("Retry deleting this torrent's remaining files, or remove the transfer while keeping its files, before adding it again.".into());
+        }
+
         let target_dir = if req.is_stream {
             self.stream_cache_root().await.join(&info_hash)
         } else {
@@ -1029,7 +1114,11 @@ impl TorrentManager {
         let source_owned = req.source.trim().to_string();
         let hash_clone = info_hash.clone();
 
-        let join = tokio::spawn(async move {
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            if start_rx.await.is_err() {
+                return;
+            }
             let res = session_clone
                 .add_torrent(AddTorrent::from_url(source_owned), Some(opts))
                 .await;
@@ -1081,9 +1170,10 @@ impl TorrentManager {
                 output_folder: target_dir_str.clone(),
                 paused: req.paused,
                 error: None,
-                abort_handle: join.abort_handle(),
+                task,
             },
         );
+        let _ = start_tx.send(());
 
         match tokio::time::timeout(Duration::from_millis(350), done_rx).await {
             Ok(Ok(Ok(status))) => Ok(status),
@@ -1167,36 +1257,105 @@ impl TorrentManager {
         out
     }
 
-    pub async fn action(&self, info_hash: &str, action: &str) -> Result<(), String> {
+    pub async fn action(
+        &self,
+        info_hash: &str,
+        action: &str,
+        stream_cache_path: Option<&Path>,
+    ) -> Result<(), String> {
         let clean_hash = info_hash.trim().to_ascii_lowercase();
+        let id20 = Id20::from_str(&clean_hash).map_err(|e| format!("Invalid torrent hash: {e}"))?;
 
-        // Check pending magnet cancellation first for delete actions.
-        if action == "delete_keep_files" || action == "delete_with_files" {
-            let removed_pending = self.pending_magnets.lock().unwrap().remove(&clean_hash);
-            if let Some(pm) = removed_pending {
-                pm.abort_handle.abort();
-                if action == "delete_with_files" {
-                    let _ = std::fs::remove_dir_all(&pm.output_folder);
+        if matches!(
+            action,
+            "delete_keep_files" | "delete_with_files" | "remove_transfer"
+        ) {
+            let mut deletions = self.pending_file_deletes.lock().await;
+            let pending = self.pending_magnets.lock().unwrap().remove(&clean_hash);
+            let cancelled_pending = pending.is_some();
+            if let Some(pending) = pending {
+                pending.task.abort();
+                let _ = pending.task.await;
+            }
+            let session = self.session.lock().await.clone();
+            let handle = session
+                .as_ref()
+                .and_then(|s| s.get(TorrentIdOrHash::Hash(id20)));
+
+            if action == "delete_with_files" && !deletions.contains_key(&clean_hash) {
+                let cache_dir = self.stream_cache_root().await.join(&clean_hash);
+                let plan = if let Some(handle) = handle.as_ref() {
+                    let folder = handle.output_folder().to_path_buf();
+                    if folder == cache_dir {
+                        TorrentFileDelete::StreamCache(cache_dir)
+                    } else {
+                        let selected = handle
+                            .only_files()
+                            .map(|files| files.into_iter().collect::<HashSet<_>>());
+                        let files = handle
+                            .with_metadata(|m| {
+                                m.file_infos
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(index, f)| {
+                                        !f.attrs.padding
+                                            && selected
+                                                .as_ref()
+                                                .is_none_or(|files| files.contains(index))
+                                    })
+                                    .map(|(_, f)| f.relative_filename.to_path_buf())
+                                    .collect::<Vec<_>>()
+                            })
+                            .map_err(|e| format!("Could not read torrent files: {e:#}"))?;
+                        if files.iter().any(|path| {
+                            path.as_os_str().is_empty()
+                                || path
+                                    .components()
+                                    .any(|part| !matches!(part, Component::Normal(_)))
+                        }) {
+                            return Err("The torrent contains an invalid file path.".into());
+                        }
+                        TorrentFileDelete::Download { folder, files }
+                    }
+                } else if stream_cache_path == Some(cache_dir.as_path()) {
+                    TorrentFileDelete::StreamCache(cache_dir)
+                } else if stream_cache_path.is_some() {
+                    return Err("This stream cache is outside the configured cache folder.".into());
+                } else if cancelled_pending {
+                    // A magnet without a torrent handle has no known download files.
+                    return Ok(());
+                } else {
+                    return Err("This torrent is no longer active. Delete its downloaded files from the Library.".into());
+                };
+                deletions.insert(clean_hash.clone(), plan);
+            }
+
+            if let (Some(session), Some(_)) = (session, handle) {
+                session
+                    .delete(TorrentIdOrHash::Hash(id20), false)
+                    .await
+                    .map_err(|e| format!("Could not stop torrent: {e:#}"))?;
+            }
+
+            if action == "delete_with_files" {
+                if let Some(plan) = deletions.get(&clean_hash) {
+                    plan.remove().await?;
                 }
             }
+            // Automatic seeding cleanup must leave failed file deletions available to retry.
+            if action != "delete_keep_files" {
+                deletions.remove(&clean_hash);
+            }
+            return Ok(());
         }
 
-        let id20 = match Id20::from_str(&clean_hash) {
-            Ok(id) => id,
-            Err(_) => return Ok(()),
-        };
-
-        let session = {
-            let g = self.session.lock().await;
-            match g.as_ref() {
-                Some(s) => s.clone(),
-                None => return Ok(()),
-            }
-        };
-
+        let session = self.session.lock().await.clone();
+        let handle = session
+            .as_ref()
+            .and_then(|s| s.get(TorrentIdOrHash::Hash(id20)));
         match action {
             "pause" => {
-                if let Some(h) = session.get(TorrentIdOrHash::Hash(id20)) {
+                if let (Some(session), Some(h)) = (session, handle) {
                     if !h.is_paused() {
                         session.pause(&h).await.map_err(|e| format!("{e:#}"))?;
                     }
@@ -1204,44 +1363,9 @@ impl TorrentManager {
                 Ok(())
             }
             "resume" => {
-                if let Some(h) = session.get(TorrentIdOrHash::Hash(id20)) {
+                if let (Some(session), Some(h)) = (session, handle) {
                     if h.is_paused() {
                         session.unpause(&h).await.map_err(|e| format!("{e:#}"))?;
-                    }
-                }
-                Ok(())
-            }
-            "delete_keep_files" => {
-                if session.get(TorrentIdOrHash::Hash(id20)).is_some() {
-                    session
-                        .delete(TorrentIdOrHash::Hash(id20), false)
-                        .await
-                        .map_err(|e| format!("{e:#}"))?;
-                }
-                Ok(())
-            }
-            "delete_with_files" => {
-                let folder_opt = session
-                    .get(TorrentIdOrHash::Hash(id20))
-                    .map(|h| h.output_folder().to_path_buf());
-                if folder_opt.is_some() {
-                    session
-                        .delete(TorrentIdOrHash::Hash(id20), true)
-                        .await
-                        .map_err(|e| format!("{e:#}"))?;
-                }
-                let cache_root = self.stream_cache_root().await;
-                if let Some(folder) = folder_opt {
-                    if folder.starts_with(&cache_root) {
-                        let _ = std::fs::remove_dir_all(&folder);
-                    } else {
-                        // Remove torrent subfolder only if now empty.
-                        let _ = std::fs::remove_dir(&folder);
-                    }
-                } else {
-                    let stream_dir = cache_root.join(&clean_hash);
-                    if stream_dir.exists() {
-                        let _ = std::fs::remove_dir_all(&stream_dir);
                     }
                 }
                 Ok(())
@@ -1853,9 +1977,15 @@ pub async fn torrent_action(
     app: AppHandle,
     info_hash: String,
     action: String,
+    stream_cache_path: Option<String>,
 ) -> Result<(), String> {
     let mgr = global_manager(&app)?;
-    mgr.action(&info_hash, &action).await
+    mgr.action(
+        &info_hash,
+        &action,
+        stream_cache_path.as_deref().map(Path::new),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1946,6 +2076,55 @@ mod tests {
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[tokio::test]
+    async fn inactive_file_deletion_requires_a_managed_stream_cache() {
+        let root = temp_test_dir("inactive_deletion");
+        let mgr = TorrentManager::new(root.clone());
+        let hash = "cab507494d02ebb1178b38f2e9d7be299c86b862";
+        let cache_dir = mgr.stream_cache_root().await.join(hash);
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let file = cache_dir.join("video.mp4");
+        std::fs::write(&file, b"test").unwrap();
+
+        assert!(mgr.action(hash, "delete_with_files", None).await.is_err());
+        assert!(file.exists());
+        mgr.action(hash, "delete_with_files", Some(&cache_dir))
+            .await
+            .unwrap();
+        assert!(!cache_dir.exists());
+        mgr.action(hash, "delete_with_files", Some(&cache_dir))
+            .await
+            .unwrap();
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_file_deletion_can_retry_after_the_handle_is_gone() {
+        let root = temp_test_dir("file_deletion_retry");
+        let mgr = TorrentManager::new(root.clone());
+        let hash = "cab507494d02ebb1178b38f2e9d7be299c86b862";
+        let file = root.join("video.mp4");
+        std::fs::create_dir(&file).unwrap();
+        mgr.pending_file_deletes.lock().await.insert(
+            hash.into(),
+            TorrentFileDelete::Download {
+                folder: root.clone(),
+                files: vec!["video.mp4".into()],
+            },
+        );
+
+        assert!(mgr.action(hash, "delete_with_files", None).await.is_err());
+        assert!(mgr.pending_file_deletes.lock().await.contains_key(hash));
+        std::fs::remove_dir(&file).unwrap();
+        std::fs::write(&file, b"test").unwrap();
+        mgr.action(hash, "delete_with_files", None).await.unwrap();
+        assert!(!file.exists());
+        assert!(!mgr.pending_file_deletes.lock().await.contains_key(hash));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2098,7 +2277,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(finished, "torrent should finish downloading from local seeder");
+        assert!(
+            finished,
+            "torrent should finish downloading from local seeder"
+        );
 
         let downloaded_file = movies_library
             .join("Sintel (2010)")
@@ -2108,19 +2290,25 @@ mod tests {
 
         // Stop uploads without invalidating an in-progress viewer's URL. mpv seeks and
         // opens new byte ranges after completion, so the paused handle must keep serving.
-        mgr.action(&added.info_hash, "pause").await.unwrap();
+        mgr.action(&added.info_hash, "pause", None).await.unwrap();
         for (start, end) in [(4096, 5119), (payload.len() - 1024, payload.len() - 1)] {
-            let response = client.get(&stream_url)
+            let response = client
+                .get(&stream_url)
                 .header("Range", format!("bytes={start}-{end}"))
-                .send().await.unwrap();
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status().as_u16(), 206);
             assert_eq!(&response.bytes().await.unwrap()[..], &payload[start..=end]);
         }
-        assert!(mgr.list_torrents().await[0].paused, "range requests must not resume seeding");
+        assert!(
+            mgr.list_torrents().await[0].paused,
+            "range requests must not resume seeding"
+        );
 
         // 5. Verify `delete_keep_files` (hit-and-run / stop seeding on complete):
         // removes torrent from active session while keeping the downloaded media file intact!
-        mgr.action(&added.info_hash, "delete_keep_files")
+        mgr.action(&added.info_hash, "delete_keep_files", None)
             .await
             .unwrap();
         assert!(mgr.list_torrents().await.is_empty());
@@ -2153,10 +2341,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let cached_stream_file = PathBuf::from(&stream_added.output_folder)
-            .join("Sintel.2010.1080p.mp4");
+        let cached_stream_file =
+            PathBuf::from(&stream_added.output_folder).join("Sintel.2010.1080p.mp4");
         assert!(cached_stream_file.is_file());
-        mgr.action(&stream_added.info_hash, "delete_with_files")
+        mgr.action(&stream_added.info_hash, "delete_with_files", None)
             .await
             .unwrap();
         assert!(!cached_stream_file.exists());

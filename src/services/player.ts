@@ -492,6 +492,7 @@ function playingLive(state: BuiltinPlayerState | LiveMultiviewState | null) {
 /** Live sessions share the native renderer without library resume points or episode policy. */
 export async function playLive(match: ChannelMatch, event?: SportsEvent, channels?: ChannelMatch[], second?: LiveFeed) {
   const store = useLibraryStore.getState();
+  if (store.playerPrompt) return;
   const limit = await limitStatus(store.activeProfile, liveSeconds + pendingSeconds);
   if (limit.blocked) return store.toast(blockedMessage(store.activeProfile!, limit.blocked), 'error');
   if (store.activeProfile?.maturity !== 'all')
@@ -504,7 +505,8 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   await saveBuiltinProgress();
   await flushWatchTime();
   await flushLiveTime();
-  if (store.activeProfile?.id !== useLibraryStore.getState().activeProfile?.id) return;
+  const current = useLibraryStore.getState();
+  if (store.activeProfile?.id !== current.activeProfile?.id || current.playerPrompt) return;
   tick = null;
   liveTick = null;
   noteUserActivity();
@@ -604,8 +606,8 @@ export async function openLiveMultiviewPane(session: LivePlayerSession, paneId: 
 }
 
 export async function retuneLive(direction = 0) {
-  const session = useLibraryStore.getState().playerSession;
-  if (session?.target.type !== 'live') return;
+  const { playerSession: session, playerPrompt } = useLibraryStore.getState();
+  if (session?.target.type !== 'live' || playerPrompt) return;
   if ('multiview' in session && session.multiview) return;
   const target = session.target;
   const sources = useLiveStore.getState().playlists;
@@ -625,7 +627,8 @@ export async function retuneLive(direction = 0) {
 }
 
 export function seekLive(delta: number) {
-  const state = useLibraryStore.getState().playerState;
+  const { playerState: state, playerPrompt } = useLibraryStore.getState();
+  if (playerPrompt) return;
   const range = state?.seekable_ranges?.find((r) => state.time >= r.start - 1 && state.time <= r.end + 1);
   if (state && range)
     return playerCommand('seek', Math.max(range.start, Math.min(range.end, state.time + delta)), 'absolute+exact');
@@ -633,12 +636,13 @@ export function seekLive(delta: number) {
 
 /** Seek to the newest buffered media; reconnect when no usable buffer remains. */
 export async function goLive() {
-  const state = useLibraryStore.getState().playerState;
+  const { playerSession: session, playerState: state, playerPrompt } = useLibraryStore.getState();
+  if (session?.target.type !== 'live' || ('multiview' in session && session.multiview) || playerPrompt) return;
   const range = state?.seekable_ranges?.at(-1);
   const fresh = !state?.cache_updated_at || Date.now() - state.cache_updated_at < 15_000;
   if (state?.loaded && !state.eof && fresh && range && range.end > range.start + 1) {
     await playerCommand('seek', Math.max(range.start, range.end - 1), 'absolute+exact');
-    await playerSet('pause', 'no');
+    if (useLibraryStore.getState().playerSession?.loadId === session.loadId) await playerSet('pause', 'no');
   } else await retuneLive();
 }
 
@@ -736,11 +740,11 @@ export function stopForSleep() {
 
 async function pauseForPrompt(prompt: 'still-watching' | 'sleep-ended' | 'limit' | 'bedtime') {
   const store = useLibraryStore.getState();
+  store.setPlayerPrompt(prompt);
   if ((store.playerState && !store.playerState.paused && !store.playerState.eof) ||
       (store.playerSession && 'multiview' in store.playerSession && store.playerSession.multiview)) {
     await playerSet('pause', 'yes').catch(() => {});
   }
-  store.setPlayerPrompt(prompt);
 }
 
 /** "Continue Watching" / "Resume" on the prompt. */
@@ -885,10 +889,14 @@ export async function openCurrentInVlc() {
   await playInVlc(target);
 }
 
-export const playerCommand = (...args: (string | number)[]) =>
-  invoke('player_command', { args: args.map(String) }).catch((e) => console.warn('[player]', e));
-export const playerSet = (name: string, value: string | number) =>
-  invoke('player_set', { name, value: String(value) }).catch((e) => console.warn('[player]', e));
+export async function playerCommand(...args: (string | number)[]) {
+  if (useLibraryStore.getState().playerPrompt && (args[0] === 'seek' || (args[0] === 'cycle' && args[1] === 'pause'))) return;
+  return invoke('player_command', { args: args.map(String) }).catch((e) => console.warn('[player]', e));
+}
+export async function playerSet(name: string, value: string | number) {
+  if (name === 'pause' && value === 'no' && useLibraryStore.getState().playerPrompt) return;
+  return invoke('player_set', { name, value: String(value) }).catch((e) => console.warn('[player]', e));
+}
 
 // ---------------------------------------------------------------------------
 // Events

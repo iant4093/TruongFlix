@@ -3,7 +3,7 @@ import { Clock, Download } from 'lucide-react';
 import type { ContinueEntry, MediaItem } from '../../types/media';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
 import { airDayLabel, epLabel, formatRemaining, formatTimestamp, newEpisodeSoon } from '../../store/selectors';
-import { formatEta, formatExpiryRemaining, formatSpeed, torrentForItem } from '../../services/torrents';
+import { formatEta, formatExpiryRemaining, formatSpeed, isActiveDownload, torrentForItem, torrentStatusLabel } from '../../services/torrents';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import ProgressBar from '../common/ProgressBar';
@@ -112,10 +112,11 @@ export default function MediaCard({ item, entry }: Props) {
         onMouseEnter={hover.onMouseEnter}
         onMouseMove={hover.onMouseMove}
         onMouseLeave={hover.onMouseLeave}
-        onClick={() => openDetail(item.key)}
         data-torrent-downloading={isDownloading ? 'true' : undefined}
         className="relative aspect-video w-full cursor-pointer overflow-hidden rounded-sm bg-[#232323]"
       >
+        <button type="button" aria-label={`View ${item.title}`} onClick={() => openDetail(item.key)}
+          className="absolute inset-0 z-10 rounded-sm focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white" />
         <Artwork
           src={thumb}
           alt={item.title}
@@ -134,11 +135,7 @@ export default function MediaCard({ item, entry }: Props) {
         {isDownloading && torrent && (
           <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-sky-300 ring-1 ring-white/15 backdrop-blur-xs">
             <Download className="h-2.5 w-2.5" />
-            {torrent.state === 'resolving'
-              ? 'Connecting…'
-              : torrent.paused
-                ? `Paused ${torrent.progressPct.toFixed(0)}%`
-                : `${torrent.progressPct.toFixed(0)}%`}
+            {torrentStatusLabel(torrent)} · {torrent.progressPct.toFixed(0)}%
           </span>
         )}
 
@@ -186,16 +183,12 @@ export default function MediaCard({ item, entry }: Props) {
           </div>
           <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-nf-secondary">
             <span className="truncate text-sky-300">
-              {torrent.state === 'resolving'
-                ? 'Fetching metadata…'
-                : torrent.paused
-                  ? 'Paused'
-                  : torrent.downloadSpeedBps > 0
-                    ? `↓ ${formatSpeed(torrent.downloadSpeedBps)}`
-                    : 'Downloading…'}
+              {isActiveDownload(torrent) && torrent.downloadSpeedBps > 0
+                ? `↓ ${formatSpeed(torrent.downloadSpeedBps)}`
+                : torrentStatusLabel(torrent)}
             </span>
             <span className="shrink-0 tabular-nums">
-              {torrent.etaSecs != null && !torrent.paused ? formatEta(torrent.etaSecs) : `${torrent.progressPct.toFixed(0)}%`}
+              {torrent.etaSecs != null && isActiveDownload(torrent) ? formatEta(torrent.etaSecs) : `${torrent.progressPct.toFixed(0)}%`}
             </span>
           </div>
         </div>

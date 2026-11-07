@@ -4,7 +4,7 @@ import { Bookmark } from 'lucide-react';
 import { ChevronDown, Download, ListOrdered, Search, Loader2, Play, Star, UserRound } from 'lucide-react';
 import { getCatalogDetail, getCatalogSeason, type SearchResult } from '../../services/tmdb';
 import { cancelSourceBrowser, quickTorrent, searchTorrentReleases, type ReleaseSearchOptions } from '../../services/browse';
-import type { BrowseScope, BrowseTarget, CatalogDetail, CatalogSeason, SourceRelease } from '../../types/browse';
+import type { BrowseEpisodeSelection, BrowseScope, BrowseTarget, CatalogDetail, CatalogSeason, SourceRelease } from '../../types/browse';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import type { TorrentMode } from '../../types/media';
 import CatalogDialog from './CatalogDialog';
@@ -19,12 +19,13 @@ import MaturityRating from '../common/MaturityRating';
 import { formatRuntime } from '../../store/selectors';
 import useCatalogRatings from '../../hooks/useCatalogRatings';
 
-export default function CatalogTitle({ item, onClose, onSource, suspended = false, save }: {
+export default function CatalogTitle({ item, initialEpisode, onClose, onSource, suspended = false, save }: {
   item: SearchResult;
+  initialEpisode?: BrowseEpisodeSelection;
   onClose: () => void;
   onSource: () => void;
   suspended?: boolean;
-  save?: { saved: boolean; pending: boolean; onToggle: (item: SearchResult) => void };
+  save?: { isSaved: (selection?: BrowseEpisodeSelection) => boolean; pending: boolean; onToggle: (item: SearchResult, selection?: BrowseEpisodeSelection) => void };
 }) {
   const sourceUrl = useLibraryStore((s) => s.settings.browse_source_url);
   const library = useLibraryStore((s) => s.items);
@@ -33,10 +34,13 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   const { imdbRating, imdbVotes, rtScore, metacritic } = useCatalogRatings(detail?.imdbId, owned);
   const [error, setError] = useState('');
   const [detailError, setDetailError] = useState('');
-  const [season, setSeason] = useState(1);
-  const [seasonData, setSeasonData] = useState<CatalogSeason | null>(null);
+  const [pickedSeason, setPickedSeason] = useState<number | null>(initialEpisode?.season ?? null);
+  const season = pickedSeason ?? detail?.seasons[0]?.number ?? 1;
+  const [loadedSeason, setLoadedSeason] = useState<{ number: number; data: CatalogSeason } | null>(null);
+  const seasonData = loadedSeason?.number === season ? loadedSeason.data : null;
   const [seasonError, setSeasonError] = useState('');
-  const [episode, setEpisode] = useState<number | 'season'>(1);
+  const [pickedEpisode, setPickedEpisode] = useState<number | 'season' | null>(initialEpisode?.episode ?? null);
+  const episode = pickedEpisode ?? seasonData?.episodes[0]?.episode_number ?? 1;
   const [actionsOpen, setActionsOpen] = useState(false);
   const [progress, setProgress] = useState('');
   const [busy, setBusy] = useState(false);
@@ -57,21 +61,22 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   const [pickerOpen, setPickerOpen] = useState(false);
   const [releaseSearch, setReleaseSearch] = useState<{ key: string; quality: BrowseTarget['quality']; releases: SourceRelease[] | null } | null>(null);
   const pickerId = useId();
+  const menuId = useId();
   useEffect(() => {
     let alive = true;
     setDetailError('');
     void getCatalogDetail(item).then((d) => {
       if (!alive) return;
-      setDetail(d); setSeason(d.seasons[0]?.number ?? 1);
+      setDetail(d);
     }).catch((e) => { if (alive) setDetailError(String(e)); });
     return () => { alive = false; };
   }, [item.id, item.kind, retry]);
   useEffect(() => {
     if (!detail || detail.kind !== 'tv') return;
-    let alive = true; setSeasonData(null); setSeasonError('');
+    let alive = true; setLoadedSeason(null); setSeasonError('');
     void getCatalogSeason(detail, season).then((data) => {
       if (!alive) return;
-      setSeasonData(data); setEpisode(data.episodes[0]?.episode_number ?? 1);
+      setLoadedSeason({ number: season, data });
     }).catch((e) => { if (alive) setSeasonError(String(e)); });
     return () => { alive = false; };
   }, [detail, season, retry]);
@@ -117,8 +122,16 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
   const scope: BrowseScope = item.kind === 'movie' ? { kind: 'movie' } : episode === 'season'
     ? { kind: 'season', season, expected: seasonData?.episodes.map((e) => e.episode_number) ?? [], complete: seasonData?.complete ?? false }
     : { kind: 'episode', season, episode };
-  const ready = !!detail?.imdbId && (item.kind === 'movie' || !!seasonData?.episodes.length);
+  const episodeFound = seasonData?.episodes.some((entry) => entry.episode_number === episode);
+  const ready = !!detail?.imdbId && (item.kind === 'movie' || (scope.kind === 'season' ? !!seasonData?.episodes.length : !!episodeFound));
   const selection = scope.kind === 'movie' ? item.title : scope.kind === 'season' ? `Season ${season}` : `S${String(season).padStart(2, '0')} · E${String(episode).padStart(2, '0')}`;
+  const saveSelection = initialEpisode && scope.kind === 'episode' ? { season: scope.season, episode: scope.episode } : undefined;
+  const saved = save?.isSaved(saveSelection) ?? false;
+  const seasonOptions = (detail?.seasons ?? []).map((s) => ({ value: s.number, label: s.name || `Season ${s.number}`, hint: `${s.count} episodes` }));
+  if (initialEpisode && !seasonOptions.some((option) => option.value === initialEpisode.season)) {
+    const number = initialEpisode.season;
+    seasonOptions.unshift({ value: number, label: number === 0 ? 'Specials' : `Season ${number}`, hint: '' });
+  }
   const releaseKey = JSON.stringify([item.kind, item.id, detail?.imdbId, scope, sourceUrl]);
   const currentReleases = releaseSearch?.key === releaseKey ? releaseSearch : null;
   const runSource = async (task: (options: Pick<ReleaseSearchOptions, 'signal' | 'progress' | 'verification'>) => Promise<void>, fromPicker = false) => {
@@ -177,17 +190,18 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
       <div className="relative col-start-1 row-start-1 flex min-w-0 flex-col gap-5 px-6 pb-[4.5%] pt-16 md:px-12">
         {detail?.logo && !logoFailed ? <><h1 className="sr-only">{detail.title}</h1><img src={detail.logo} alt={detail.title} onError={() => setLogoFailed(true)} draggable={false} className="max-h-[110px] max-w-[45%] self-start object-contain object-left drop-shadow-[0_2px_10px_rgba(0,0,0,0.6)]" /></>
           : <h1 className="text-shadow max-w-[85%] break-words text-3xl font-black uppercase leading-none tracking-tight md:max-w-[70%] md:text-5xl">{detail?.title || item.title}</h1>}
-        {!!detail?.seasons.length && <fieldset disabled={busy} className="flex flex-wrap gap-2.5">
-          <Dropdown value={season} options={detail.seasons.map((s) => ({ value: s.number, label: s.name || `Season ${s.number}`, hint: `${s.count} episodes` }))} onChange={(value) => { if (value !== season) { setSeasonData(null); setSeason(value); } }} ariaLabel="Choose season" />
-          {seasonData && <Dropdown<number | 'season'> value={episode} options={[
-            { value: 'season', label: 'Entire season', hint: seasonData.complete ? `${seasonData.episodes.length} episodes` : 'Choose manually if the season is incomplete' },
-            ...seasonData.episodes.map((e) => ({ value: e.episode_number, label: `Episode ${e.episode_number}`, hint: e.title })),
-          ]} onChange={setEpisode} ariaLabel="Choose episode or entire season" />}
+        {!!seasonOptions.length && <fieldset disabled={busy} className="flex flex-wrap gap-2.5">
+          <Dropdown value={season} options={seasonOptions} onChange={(value) => { if (value !== season) { setSeasonError(''); setPickedSeason(value); setPickedEpisode(null); } }} ariaLabel="Choose season" />
+          {(seasonData || pickedEpisode != null) && <Dropdown<number | 'season'> value={episode} options={[
+            ...(seasonData ? [{ value: 'season' as const, label: 'Entire season', hint: seasonData.complete ? `${seasonData.episodes.length} episodes` : 'Choose manually if the season is incomplete' }] : []),
+            ...(!episodeFound && typeof pickedEpisode === 'number' ? [{ value: pickedEpisode, label: `Episode ${pickedEpisode}` }] : []),
+            ...(seasonData?.episodes.map((e) => ({ value: e.episode_number, label: `Episode ${e.episode_number}`, hint: e.title })) ?? []),
+          ]} onChange={setPickedEpisode} ariaLabel="Choose episode or entire season" />}
         </fieldset>}
         <div className="flex flex-wrap items-center gap-2.5">
           <div ref={actionRef} className="relative">
-            <button className="nf-btn-play px-4 disabled:opacity-50" aria-expanded={actionsOpen} aria-haspopup="menu" disabled={!ready || busy || (scope.kind === 'season' && !scope.complete)} onClick={() => setActionsOpen((v) => !v)}><Play className="h-5 w-5 shrink-0 fill-current" strokeWidth={0} />Quick stream / download<ChevronDown className="h-4 w-4 shrink-0" /></button>
-            {actionsOpen && menuPosition && createPortal(<div ref={menuRef} role="menu" aria-label="Quick torrent actions" style={menuPosition} className="fixed z-[250] w-64 overflow-y-auto overscroll-contain rounded-md border border-white/20 bg-[#252525] py-1 shadow-2xl">
+            <button className="nf-btn-play px-4 disabled:opacity-50" aria-expanded={actionsOpen} aria-controls={actionsOpen ? menuId : undefined} aria-haspopup="menu" disabled={!ready || busy || (scope.kind === 'season' && !scope.complete)} onClick={() => setActionsOpen((v) => !v)}><Play className="h-5 w-5 shrink-0 fill-current" strokeWidth={0} />Quick stream / download<ChevronDown className="h-4 w-4 shrink-0" /></button>
+            {actionsOpen && menuPosition && createPortal(<div id={menuId} ref={menuRef} role="menu" aria-label="Quick torrent actions" style={menuPosition} className="fixed z-[250] w-64 overflow-y-auto overscroll-contain rounded-md border border-white/20 bg-[#252525] py-1 shadow-2xl">
               {(['stream', 'download'] as const).flatMap((mode) => (['1080p', '4K'] as const).map((quality) => <button key={`${mode}:${quality}`} role="menuitem" className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-white/10 focus:bg-white/10" onClick={() => void run(mode, quality)}>{mode === 'stream' ? <Play className="h-4 w-4" /> : <Download className="h-4 w-4" />}{mode === 'stream' ? 'Stream' : 'Download'} {quality}</button>))}
             </div>, document.body)}
           </div>
@@ -196,10 +210,10 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
             onClick={() => { setError(''); setPickerOpen((open) => !open); }}><ListOrdered className="h-4 w-4" />Compare releases</button>
           <button className="nf-btn-info px-4 disabled:opacity-50" disabled={!detail?.imdbId || busy} onClick={manual}><Search className="h-4 w-4" />Browse torrents</button>
           {owned && <button className="nf-btn-ghost" onClick={() => { onClose(); useLibraryStore.getState().openDetail(owned.key); }}>In your library</button>}
-          {save && <button type="button" className="nf-btn-ghost disabled:opacity-50" aria-label="Save to Browse"
-            aria-pressed={save.saved} disabled={save.pending} onClick={() => save.onToggle(detail ?? item)}>
-            <Bookmark aria-hidden="true" className={`h-4 w-4 ${save.saved ? 'fill-current' : ''}`} />
-            {save.saved ? 'Saved in Browse' : 'Save to Browse'}
+          {save && <button type="button" className="nf-btn-ghost disabled:opacity-50" aria-label={saveSelection ? `Save ${selection} to Browse` : 'Save to Browse'}
+            aria-pressed={saved} disabled={save.pending} onClick={() => save.onToggle(detail ?? item, saveSelection)}>
+            <Bookmark aria-hidden="true" className={`h-4 w-4 ${saved ? 'fill-current' : ''}`} />
+            {saveSelection ? (saved ? `Saved ${selection}` : `Save ${selection}`) : (saved ? 'Saved in Browse' : 'Save to Browse')}
           </button>}
         </div>
       </div>
@@ -248,6 +262,7 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
         <h2 className="text-xl font-semibold">Episodes</h2>
         {!seasonData && !seasonError && <p role="status" className="mt-4 text-sm text-white/50">Loading episodes…</p>}
         {seasonError && <p role="alert" className="mt-4 text-sm text-red-300">{seasonError}<button className="ml-3 underline" onClick={() => setRetry((v) => v + 1)}>Retry</button></p>}
+        {seasonData && scope.kind === 'episode' && !episodeFound && pickedEpisode != null && <p className="mt-4 text-sm text-nf-secondary">Details for {selection} are unavailable. You can save this selection for later or choose another episode.</p>}
         {scope.kind === 'season' && !scope.complete && <p className="mt-4 text-sm leading-relaxed text-white/55">A complete season could not be confirmed. Choose an episode for a quick action, or select a pack manually with Browse torrents.</p>}
         {episode === 'season' && seasonData && <p className="mt-4 text-sm text-white/60">Season {season} · {seasonData.episodes.length} episodes{seasonData.complete ? ' · Complete season confirmed' : ''}</p>}
         {visibleEpisodes.length > 0 && (
@@ -257,11 +272,15 @@ export default function CatalogTitle({ item, onClose, onSource, suspended = fals
               return (
                 <li key={entry.episode_number} className="flex items-start gap-5 py-4 first:pt-0 last:pb-0">
                   {entry.still_path && <Artwork key={entry.still_path} src={entry.still_path} alt="" className="hidden aspect-video w-44 shrink-0 rounded-md md:block" />}
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <h3 className="break-words font-semibold">{entry.episode_number}. {entry.title}</h3>
                     {details && <p className="mt-1 text-xs text-white/40">{details}</p>}
                     {entry.overview && <p className="mt-3 break-words text-sm leading-relaxed text-white/65">{entry.overview}</p>}
                   </div>
+                  {episode === 'season' && <button type="button" disabled={busy} className="nf-btn-ghost shrink-0 text-sm"
+                    onClick={() => { setPickedEpisode(entry.episode_number); pickerButton.current?.focus(); }}>
+                    Select episode {entry.episode_number}
+                  </button>}
                 </li>
               );
             })}

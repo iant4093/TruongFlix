@@ -13,7 +13,7 @@ export default {
           green: '#46D369',
           text: '#FFFFFF',
           secondary: '#BCBCBC',
-          muted: '#777777',
+          muted: '#929292',
           border: '#404040',
         },
       },

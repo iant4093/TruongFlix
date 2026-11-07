@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import type { RemotePlayable, RemoteProfile, RemoteStream, RemoteSubStyle } from './types';
 import { api, fmtTime } from './api';
+import { isPlayerShortcut, playerControlTitles } from '../components/player/shortcuts';
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
 type Panel = 'tracks' | 'speed' | 'chapters' | null;
@@ -381,6 +382,11 @@ export default function RemotePlayer({
     const key = `${seg.kind}-${seg.start}`;
     return dismissedSeg === key ? null : { ...seg, key };
   }, [absolute, dismissedSeg, stream?.segments]);
+  const skipActive = useCallback(() => {
+    if (!activeSkip) return;
+    seekTo(activeSkip.end);
+    setDismissedSeg(activeSkip.key);
+  }, [activeSkip, seekTo]);
 
   const creditsSeg = useMemo(() => stream?.segments.find((s) => s.kind === 'credits') ?? null, [stream?.segments]);
   const inCredits = creditsSeg ? absolute >= creditsSeg.start : duration > 300 && absolute >= duration - 210;
@@ -411,7 +417,7 @@ export default function RemotePlayer({
   // Keyboard shortcuts (desktop / iPad keyboard).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (!isPlayerShortcut(e)) return;
       const k = e.key;
       if (k === ' ' || k === 'k' || k === 'K') {
         e.preventDefault();
@@ -442,7 +448,10 @@ export default function RemotePlayer({
         poke();
       } else if (k === 'f' || k === 'F') {
         fullscreen();
-      } else if (k === 's' || k === 'S') {
+      } else if ((k === 's' || k === 'S') && activeSkip && !ended && !error) {
+        e.preventDefault();
+        skipActive();
+      } else if (k === 'a' || k === 'A') {
         setPanel((p) => (p === 'tracks' ? null : 'tracks'));
         poke();
       } else if ((k === 'c' || k === 'C') && stream?.chapters.length) {
@@ -465,7 +474,7 @@ export default function RemotePlayer({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [absolute, exit, fullscreen, panel, playNext, poke, seekTo, stream?.chapters.length, stream?.next, toggle]);
+  }, [absolute, activeSkip, ended, error, exit, fullscreen, panel, playNext, poke, seekTo, skipActive, stream?.chapters.length, stream?.next, toggle]);
 
   const currentChapterIdx = useMemo(() => {
     if (!stream?.chapters.length) return -1;
@@ -497,7 +506,8 @@ export default function RemotePlayer({
         return;
       }
       if (side) lastTap.current = { at: now, side };
-      setControls((c) => !c);
+      if (controls) setControls(false);
+      else poke();
       return;
     }
     toggle();
@@ -506,9 +516,11 @@ export default function RemotePlayer({
   const progressPct = duration > 0 ? Math.min(100, (absolute / duration) * 100) : 0;
   const bufferedPct = duration > 0 ? Math.min(100, ((offset + bufferedEnd) / duration) * 100) : 0;
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+  const controlsShown = controls || paused || !!panel;
+  const chromePointer = controlsShown ? 'pointer-events-auto' : 'group-has-[:focus-visible]/player-chrome:pointer-events-auto';
 
   return (
-    <div ref={container} className="fixed inset-0 select-none bg-black text-white" onMouseMove={poke}>
+    <div ref={container} className="fixed inset-0 select-none bg-black text-white" onPointerMove={(event) => { if (event.pointerType === 'mouse') poke(); }}>
       <video
         ref={video}
         playsInline
@@ -598,12 +610,10 @@ export default function RemotePlayer({
 
       {/* Skip Intro / Skip Recap */}
       {activeSkip && !ended && !error && (
-        <div className="absolute bottom-28 right-4 z-20 flex items-center gap-2 sm:right-8">
+        <div className="absolute bottom-28 right-4 z-20 flex items-center gap-2 max-[539px]:bottom-[calc(9.75rem+env(safe-area-inset-bottom))] sm:right-8">
           <button
-            onClick={() => {
-              seekTo(activeSkip.end);
-              setDismissedSeg(activeSkip.key);
-            }}
+            onClick={skipActive}
+            title={activeSkip.kind === 'recap' ? playerControlTitles.skipRecap : playerControlTitles.skipIntro}
             className="rounded border border-white/80 bg-white px-5 py-2 text-sm font-bold text-black shadow-lg transition hover:bg-white/90 sm:text-base"
           >
             {activeSkip.kind === 'recap' ? 'Skip Recap' : 'Skip Intro'}
@@ -620,7 +630,7 @@ export default function RemotePlayer({
 
       {/* Next Episode countdown during credits */}
       {showNextPrompt && stream?.next && (
-        <div className="absolute bottom-28 right-4 z-20 flex flex-col gap-2 rounded-lg border border-white/15 bg-[#181818]/95 p-4 shadow-2xl backdrop-blur sm:right-8 sm:min-w-[280px]">
+        <div className="absolute bottom-28 right-4 z-20 flex flex-col gap-2 rounded-lg border border-white/15 bg-[#181818]/95 p-4 shadow-2xl backdrop-blur max-[539px]:bottom-[calc(9.75rem+env(safe-area-inset-bottom))] sm:right-8 sm:min-w-[280px]">
           <div className="text-xs uppercase tracking-wider text-nf-secondary">Up next{countdown != null ? ` in ${countdown}s` : ''}</div>
           <div className="truncate text-sm font-semibold sm:text-base">{stream.next.label}</div>
           <div className="mt-1 flex gap-2">
@@ -653,7 +663,7 @@ export default function RemotePlayer({
       {/* Audio & Subtitles / Speed / Chapters popovers */}
       {panel && stream && (
         <div
-          className="absolute inset-x-3 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-white/15 bg-[#181818]/95 p-4 shadow-2xl backdrop-blur sm:inset-x-auto sm:right-6 sm:w-[440px]"
+          className="absolute inset-x-3 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-white/15 bg-[#181818]/95 p-4 shadow-2xl backdrop-blur max-[539px]:bottom-[calc(8.75rem+env(safe-area-inset-bottom))] max-[539px]:max-h-[calc(100dvh-10rem-env(safe-area-inset-bottom))] max-[539px]:overflow-y-auto sm:inset-x-auto sm:right-6 sm:w-[440px]"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="mb-3 flex items-center justify-between border-b border-white/10 pb-2">
@@ -807,9 +817,9 @@ export default function RemotePlayer({
       )}
 
       {/* Top & bottom player chrome */}
-      <div className={`pointer-events-none absolute inset-0 transition-opacity duration-300 ${controls || paused || !!panel ? 'opacity-100' : 'opacity-0'}`}>
-        <div className="pointer-events-auto absolute inset-x-0 top-0 flex items-center gap-3 bg-gradient-to-b from-black/85 to-transparent px-4 pb-8 pt-[max(1rem,env(safe-area-inset-top))]">
-          <button onClick={() => void exit()} aria-label="Back" className="rounded-full p-1.5 hover:bg-white/10">
+      <div className={`group/player-chrome pointer-events-none absolute inset-0 transition-opacity duration-300 ${controlsShown ? 'opacity-100' : 'opacity-0 has-[:focus-visible]:opacity-100 has-[:focus-visible]:transition-none'}`}>
+        <div className={`absolute inset-x-0 top-0 flex items-center gap-3 bg-gradient-to-b from-black/85 to-transparent px-4 pb-8 pt-[max(1rem,env(safe-area-inset-top))] ${chromePointer}`}>
+          <button onClick={() => void exit()} aria-label="Back" title="Back (Esc)" className="rounded-full p-1.5 hover:bg-white/10">
             <ArrowLeft className="h-7 w-7" />
           </button>
           <div className="min-w-0 flex-1">
@@ -818,7 +828,7 @@ export default function RemotePlayer({
           </div>
         </div>
 
-        <div className="pointer-events-auto absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-10">
+        <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-10 max-[539px]:px-3 ${chromePointer}`}>
           {/* Timeline scrubber with buffer bar & chapter ticks */}
           <div className="flex items-center gap-3">
             <span className="w-12 text-right font-mono text-xs tabular-nums sm:w-14">{fmtTime(absolute)}</span>
@@ -858,15 +868,15 @@ export default function RemotePlayer({
           </div>
 
           {/* Transport & utility buttons */}
-          <div className="mt-2.5 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-3 sm:gap-5">
-              <button onClick={toggle} aria-label={paused ? 'Play' : 'Pause'} className="rounded-full p-1.5 hover:bg-white/10">
+          <div className="mt-2.5 flex items-center justify-between gap-2 max-[539px]:flex-col max-[539px]:items-stretch">
+            <div className="flex items-center gap-3 max-[539px]:justify-between max-[539px]:gap-1 sm:gap-5">
+              <button onClick={toggle} aria-label={paused ? 'Play' : 'Pause'} title={paused ? playerControlTitles.play : playerControlTitles.pause} className="rounded-full p-1.5 hover:bg-white/10">
                 {paused ? <Play className="h-7 w-7 fill-white" strokeWidth={0} /> : <Pause className="h-7 w-7 fill-white" strokeWidth={0} />}
               </button>
-              <button onClick={() => seekTo(absolute - 10)} aria-label="Back 10 seconds" className="rounded-full p-1.5 hover:bg-white/10">
+              <button onClick={() => seekTo(absolute - 10)} aria-label="Back 10 seconds" title={playerControlTitles.rewind} className="rounded-full p-1.5 hover:bg-white/10">
                 <RotateCcw className="h-6 w-6" />
               </button>
-              <button onClick={() => seekTo(absolute + 10)} aria-label="Forward 10 seconds" className="rounded-full p-1.5 hover:bg-white/10">
+              <button onClick={() => seekTo(absolute + 10)} aria-label="Forward 10 seconds" title={playerControlTitles.forward} className="rounded-full p-1.5 hover:bg-white/10">
                 <RotateCw className="h-6 w-6" />
               </button>
               {stream?.next && (
@@ -880,6 +890,7 @@ export default function RemotePlayer({
                     if (video.current) video.current.muted = !video.current.muted;
                   }}
                   aria-label={muted ? 'Unmute' : 'Mute'}
+                  title={muted ? playerControlTitles.unmute : playerControlTitles.mute}
                   className="rounded-full p-1.5 hover:bg-white/10"
                 >
                   <VolumeIcon className="h-6 w-6" />
@@ -903,12 +914,12 @@ export default function RemotePlayer({
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 sm:gap-3">
+            <div className="flex items-center gap-1.5 max-[539px]:justify-between sm:gap-3">
               {!!stream?.chapters.length && (
                 <button
                   onClick={() => setPanel((p) => (p === 'chapters' ? null : 'chapters'))}
                   aria-label="Chapters"
-                  title="Chapters (C)"
+                  title={playerControlTitles.chapters}
                   className={`rounded-full p-2 hover:bg-white/10 ${panel === 'chapters' ? 'bg-white/15' : ''}`}
                 >
                   <ListVideo className="h-5 w-5 sm:h-6 sm:w-6" />
@@ -926,7 +937,7 @@ export default function RemotePlayer({
               <button
                 onClick={() => setPanel((p) => (p === 'tracks' ? null : 'tracks'))}
                 aria-label="Audio & Subtitles"
-                title="Audio & Subtitles (S)"
+                title={playerControlTitles.tracks}
                 className={`relative rounded-full p-2 hover:bg-white/10 ${panel === 'tracks' ? 'bg-white/15' : ''}`}
               >
                 <MessageSquareText className="h-5 w-5 sm:h-6 sm:w-6" />
@@ -937,7 +948,7 @@ export default function RemotePlayer({
                   <PictureInPicture2 className="h-5 w-5 sm:h-6 sm:w-6" />
                 </button>
               )}
-              <button onClick={fullscreen} aria-label="Full screen" title="Full screen (F)" className="rounded-full p-2 hover:bg-white/10">
+              <button onClick={fullscreen} aria-label={isFullscreen ? 'Exit full screen' : 'Full screen'} title={isFullscreen ? playerControlTitles.exitFullscreen : playerControlTitles.fullscreen} className="rounded-full p-2 hover:bg-white/10">
                 {isFullscreen ? <Minimize className="h-5 w-5 sm:h-6 sm:w-6" /> : <Maximize className="h-5 w-5 sm:h-6 sm:w-6" />}
               </button>
             </div>

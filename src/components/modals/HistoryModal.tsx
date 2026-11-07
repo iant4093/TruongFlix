@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, useIsPresent } from 'framer-motion';
 import { Search, X } from 'lucide-react';
 import type { WatchLogRow } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 import { deleteWatchLogEntry, listWatchLog } from '../../services/db';
 import { formatDuration } from '../../services/wrapped';
 import ProfileAvatar from '../common/ProfileAvatar';
@@ -18,6 +19,11 @@ function label(r: WatchLogRow) {
 /** Netflix's "Viewing Activity": everything this profile watched, newest first. */
 export default function HistoryModal() {
   const setOverlay = useLibraryStore((s) => s.setOverlay);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  useModalDialog(dialog, {
+    onClose: () => setOverlay(null), active: present, priority: 140,
+  });
   const profile = useLibraryStore((s) => s.activeProfile);
   const items = useLibraryStore((s) => s.items);
   const openDetail = useLibraryStore((s) => s.openDetail);
@@ -55,7 +61,13 @@ export default function HistoryModal() {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      className="fixed inset-0 z-[140] overflow-y-auto bg-nf-bg"
+      ref={dialog}
+      role="dialog"
+      tabIndex={-1}
+      aria-modal="true"
+      aria-hidden={!present || undefined}
+      aria-label="Viewing Activity"
+      className={`fixed inset-0 z-[140] overflow-y-auto bg-nf-bg outline-none ${present ? '' : 'pointer-events-none'}`}
     >
       <div className="mx-auto max-w-4xl px-8 pb-20 pt-10">
         <div className="mb-8 flex items-center gap-4">
@@ -76,6 +88,7 @@ export default function HistoryModal() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search your history"
             placeholder="Search your history"
             className="w-full bg-transparent text-sm outline-none placeholder:text-nf-muted"
           />

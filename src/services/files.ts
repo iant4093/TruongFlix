@@ -3,6 +3,7 @@ import { useLibraryStore } from '../store/useLibraryStore';
 import { epLabel } from '../store/selectors';
 import type { EpisodeRow, FileMove, MediaItem, TrashRow, TrashSnapshot } from '../types/media';
 import * as db from './db';
+import { removeTorrent } from './torrents';
 
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -109,30 +110,23 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
   const matchingTorrents = store.torrents.filter(
     (t) => t.filePaths.some((p) => allPaths.has(p)) || t.files.some((f) => allPaths.has(f.full_path)),
   );
-  const transientTorrent = matchingTorrents.find((t) => t.mode === 'stream' || !t.finished);
+  const transientTorrents = matchingTorrents.filter((t) => t.mode === 'stream' || (t.inSession && !t.finished));
 
-  if (transientTorrent) {
+  if (transientTorrents.length) {
     const ok = await store.confirm({
-      title: `Remove “${label}”?`,
-      message:
-        transientTorrent.mode === 'stream'
-          ? `This will clear the temporary stream cache for “${label}” immediately.`
-          : `This will cancel the active download for “${label}” and delete any partial files.`,
-      confirmLabel: transientTorrent.mode === 'stream' ? 'Clear Stream' : 'Cancel & Delete',
+      title: `Remove transfers for “${label}”?`,
+      message: 'This will cancel the matching transfers and delete all files in those transfers, including any other episodes they contain.',
+      confirmLabel: 'Remove Transfers',
       danger: true,
     });
     if (!ok) return false;
-    for (const t of matchingTorrents) {
-      await invoke('torrent_action', { infoHash: t.infoHash, action: 'delete_with_files' }).catch(() => {});
-      await db.deleteTorrentRecord(t.infoHash);
+    try {
+      for (const t of transientTorrents) await removeTorrent(t.infoHash, true);
+    } catch (e) {
+      store.toast(`Could not delete “${label}”: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      return false;
     }
-    await db.removeLibraryRows(movieIds, episodeIds);
-    store.setTorrents(store.torrents.filter((t) => !matchingTorrents.some((m) => m.infoHash === t.infoHash)));
-    await store.reload();
-    store.toast(
-      transientTorrent.mode === 'stream' ? `Cleared stream cache for “${label}”` : `Cancelled download for “${label}”`,
-      'info',
-    );
+    store.toast(`Removed transfers for “${label}”`, 'info');
     return true;
   }
 

@@ -103,7 +103,9 @@ afterEach(() => {
 it('keeps unavailable channels reversible and saves channel favourites', async () => {
   render(<LiveTV />);
   await waitFor(() => expect(useLiveStore.getState().ready).toBe(true));
+  expect(screen.getByRole('button', { name: 'Sports', pressed: true })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Channels', exact: true }));
+  expect(screen.getByRole('button', { name: 'Channels', pressed: true })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Play Provider Seven' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Play Broken NBC' })).toBeNull();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Show unavailable' }));
@@ -112,6 +114,19 @@ it('keeps unavailable channels reversible and saves channel favourites', async (
   fireEvent.click(screen.getByRole('button', { name: 'Favourites', exact: true }));
   expect(screen.queryByRole('button', { name: 'Play Broken NBC' })).toBeNull();
   expect(useLiveStore.getState().preferences.favourites).toEqual(['one/custom']);
+});
+
+it('uses the same unavailable-feed preference for sports cards and the feed picker', async () => {
+  playlist.channels[1].tvgId = 'Fox.us@SD';
+  playlist.channels[1].name = 'Broken Fox';
+  render(<LiveTV />);
+  await screen.findByText('No available matching feed');
+  fireEvent.click(screen.getByRole('button', { name: 'Channels', exact: true }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Show unavailable' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sports', exact: true }));
+  const event = await screen.findByRole('button', { name: /49ers at Rams Fox 1 matching feed/ });
+  fireEvent.click(event);
+  expect(within(screen.getByRole('dialog')).getByText('Broken Fox')).toBeTruthy();
 });
 
 it('finds an event by team and saves an explicit mapping to a custom channel', async () => {
@@ -160,17 +175,26 @@ it('combines a game feed with a playlist channel without overwriting the sports 
 it('imports pasted source text through the native importer', async () => {
   render(<LiveTV />);
   await waitFor(() => expect(useLiveStore.getState().ready).toBe(true));
-  fireEvent.click(screen.getByRole('button', { name: 'Sources' }));
+  const sources = screen.getByRole('button', { name: 'Sources' });
+  sources.focus();
+  fireEvent.click(sources);
   fireEvent.change(screen.getByRole('textbox', { name: 'Playlist name' }), { target: { value: 'New source' } });
   fireEvent.change(screen.getByRole('textbox', { name: 'Playlist URL, stream URL or M3U text' }), {
     target: { value: '#EXTM3U\nhttps://example.org/live.m3u8' },
   });
-  vi.mocked(invoke).mockImplementation(async (command) =>
-    command === 'live_import' ? playlist.channels : (2 as never),
-  );
-  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Add playlist', exact: true }));
+  let finish!: (channels: LivePlaylist['channels']) => void;
+  const pending = new Promise<LivePlaylist['channels']>((resolve) => { finish = resolve; });
+  vi.mocked(invoke).mockImplementation(async (command) => command === 'live_import' ? pending : (2 as never));
+  const dialog = screen.getByRole('dialog', { name: 'Live TV sources' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Add playlist', exact: true }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('live_import', { input: '#EXTM3U\nhttps://example.org/live.m3u8' }));
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  expect(dialog.isConnected).toBe(true);
+  await act(async () => { finish(playlist.channels); });
   await waitFor(() => expect(useLiveStore.getState().playlists.some((p) => p.name === 'New source')).toBe(true));
-  expect(invoke).toHaveBeenCalledWith('live_import', { input: '#EXTM3U\nhttps://example.org/live.m3u8' });
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  expect(dialog.isConnected).toBe(false);
+  expect(document.activeElement).toBe(sources);
 });
 
 it('keeps unrated channels out of restricted profile views', () => {

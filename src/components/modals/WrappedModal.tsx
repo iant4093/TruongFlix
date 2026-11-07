@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { motion } from 'framer-motion';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { motion, useIsPresent } from 'framer-motion';
 import { Flame, Popcorn, Tv, X, Zap } from 'lucide-react';
 import type { WatchLogRow } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
+import { useModalDialog } from '../../hooks/useModalDialog';
 import { listWatchLog } from '../../services/db';
 import { computeWrapped, formatHours, logYears } from '../../services/wrapped';
 import Dropdown from '../common/Dropdown';
@@ -28,6 +29,11 @@ function Card({ children, className = '', delay = 0 }: { children: ReactNode; cl
 /** Yearly stats from the viewing history, Spotify-Wrapped style. */
 export default function WrappedModal() {
   const setOverlay = useLibraryStore((s) => s.setOverlay);
+  const dialog = useRef<HTMLDivElement>(null);
+  const present = useIsPresent();
+  useModalDialog(dialog, {
+    onClose: () => setOverlay(null), active: present, priority: 140,
+  });
   const profile = useLibraryStore((s) => s.activeProfile);
   const [log, setLog] = useState<WatchLogRow[] | null>(null);
   const [year, setYear] = useState(new Date().getFullYear());
@@ -50,7 +56,13 @@ export default function WrappedModal() {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.25 }}
-      className="fixed inset-0 z-[140] overflow-y-auto bg-[#0b0b0b]"
+      ref={dialog}
+      role="dialog"
+      tabIndex={-1}
+      aria-modal="true"
+      aria-hidden={!present || undefined}
+      aria-label="TruongFlix Wrapped"
+      className={`fixed inset-0 z-[140] overflow-y-auto bg-[#0b0b0b] outline-none ${present ? '' : 'pointer-events-none'}`}
     >
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_at_top,rgba(229,9,20,0.28),transparent_60%)]" />
       <div className="relative mx-auto max-w-5xl px-8 pb-20 pt-10">

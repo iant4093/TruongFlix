@@ -22,7 +22,7 @@ export function switchProfileGuarded(id: number) {
  * profile is active, or always at the profile screen, if any adult profile has a PIN.
  */
 export function guardAdult(action: () => void, opts: { atGate?: boolean } = {}) {
-  const { profiles, activeProfile, setPinRequest } = useLibraryStore.getState();
+  const { profiles, activeProfile, profileGate, setPinRequest } = useLibraryStore.getState();
   const adults = profiles.filter((p) => p.maturity === 'all' && p.pin);
   const needed = opts.atGate ? adults.length > 0 : adultPinRequired(profiles, activeProfile);
   if (!needed) return action();
@@ -30,6 +30,9 @@ export function guardAdult(action: () => void, opts: { atGate?: boolean } = {}) 
     title: 'Enter a parent’s PIN',
     subtitle: adults.length === 1 ? `${adults[0].name}’s profile PIN` : 'The PIN of any adult profile',
     check: (pin) => adults.some((p) => p.pin === pin),
-    then: action,
+    then: () => {
+      const current = useLibraryStore.getState();
+      if (current.activeProfile?.id === activeProfile?.id && current.profileGate === profileGate) action();
+    },
   });
 }

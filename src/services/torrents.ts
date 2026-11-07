@@ -534,31 +534,65 @@ export async function setTorrentDeleteOnComplete(infoHash: string, value: boolea
   await pollTorrents();
 }
 
+const transferStatusLabels: Record<TorrentState, string> = {
+  resolving: 'Fetching metadata',
+  initializing: 'Checking files',
+  downloading: 'Downloading',
+  seeding: 'Seeding',
+  paused: 'Paused',
+  completed: 'Completed',
+  stopped_seeding: 'Complete · Not seeding',
+  error: 'Error',
+};
+
+export function torrentStatusLabel(t: TorrentItem): string {
+  return transferStatusLabels[t.error ? 'error' : t.state];
+}
+
+export function isActiveDownload(t: TorrentItem): boolean {
+  return t.inSession && !t.finished && !t.paused && !t.error
+    && (t.state === 'resolving' || t.state === 'initializing' || t.state === 'downloading');
+}
+
+const removalsInProgress = new Set<string>();
+const failedFileRemovals = new Set<string>();
+
 export async function removeTorrent(infoHash: string, deleteFilesAndLibraryRows: boolean) {
   const hash = infoHash.toLowerCase();
-  const records = await db.listTorrentRecords();
-  const rec = records.find((r) => r.info_hash.toLowerCase() === hash);
+  if (removalsInProgress.has(hash)) throw new Error('This torrent is already being removed.');
+  removalsInProgress.add(hash);
 
-  await invoke('torrent_action', {
-    infoHash: hash,
-    action: deleteFilesAndLibraryRows ? 'delete_with_files' : 'delete_keep_files',
-  }).catch((e) => console.warn('[torrents] remove action warning', e));
+  try {
+    // Let any existing reconciliation finish before modifying the same library paths.
+    await pollInFlight?.catch(() => {});
+    const records = await db.listTorrentRecords();
+    const rec = records.find((r) => r.info_hash.toLowerCase() === hash);
+    const paths: string[] = rec && deleteFilesAndLibraryRows ? JSON.parse(rec.file_paths) : [];
+    if (deleteFilesAndLibraryRows && isPlayingTorrent(paths)) {
+      throw new Error('Stop playback before deleting this torrent’s files.');
+    }
 
-  if (deleteFilesAndLibraryRows && rec) {
-    let paths: string[] = [];
-    try {
-      paths = JSON.parse(rec.file_paths) as string[];
-    } catch {
-      paths = [];
-    }
-    if (paths.length) {
-      await db.deleteMediaPaths(paths, paths);
-    }
+    await invoke('torrent_action', {
+      infoHash: hash,
+      action: deleteFilesAndLibraryRows ? 'delete_with_files' : 'remove_transfer',
+      ...(deleteFilesAndLibraryRows && rec?.mode === 'stream' ? { streamCachePath: rec.save_path } : {}),
+    });
+
+    if (paths.length) await db.deleteMediaPaths(paths, paths);
+    await db.deleteTorrentRecord(hash);
+    await pollInFlight?.catch(() => {});
+    failedFileRemovals.delete(hash);
+    autoPlayQueue.delete(hash);
+    const store = useLibraryStore.getState();
+    store.setTorrents(store.torrents.filter((t) => t.infoHash !== hash));
+  } catch (e) {
+    if (deleteFilesAndLibraryRows) failedFileRemovals.add(hash);
+    throw e;
+  } finally {
+    removalsInProgress.delete(hash);
   }
 
-  await db.deleteTorrentRecord(hash);
-  await pollTorrents();
-  await useLibraryStore.getState().reload();
+  await Promise.allSettled([pollTorrents(), useLibraryStore.getState().reload()]);
 }
 
 export async function pauseAllTorrents() {
@@ -817,7 +851,7 @@ export function formatExpiryRemaining(expiresAt: string | null, compact = true):
 // Polling, Magnet Reconciler, Seeding Policy & Stream Cache Reaper
 // ---------------------------------------------------------------------------
 
-let pollInFlight = false;
+let pollInFlight: Promise<TorrentItem[]> | null = null;
 let pollTimer: number | null = null;
 let reaperTimer: number | null = null;
 const unlisteners: UnlistenFn[] = [];
@@ -870,10 +904,9 @@ async function reconcileMagnetFilesIfNeeded(rec: TorrentRecord, live: TorrentSta
   return ingested.filePaths;
 }
 
-export async function pollTorrents(): Promise<TorrentItem[]> {
-  if (pollInFlight) return useLibraryStore.getState().torrents;
-  pollInFlight = true;
-  try {
+export function pollTorrents(): Promise<TorrentItem[]> {
+  if (pollInFlight) return pollInFlight;
+  pollInFlight = (async () => {
     const [records, liveList] = await Promise.all([
       db.listTorrentRecords(),
       invoke<TorrentStatus[]>('torrent_list').catch(() => [] as TorrentStatus[]),
@@ -889,6 +922,11 @@ export async function pollTorrents(): Promise<TorrentItem[]> {
 
     for (const rec of records) {
       const hash = rec.info_hash.toLowerCase();
+      if (removalsInProgress.has(hash)) {
+        const previous = useLibraryStore.getState().torrents.find((t) => t.infoHash === hash);
+        if (previous) merged.push(previous);
+        continue;
+      }
       const live = liveMap.get(hash);
       let filePaths: string[] = [];
       try {
@@ -963,7 +1001,7 @@ export async function pollTorrents(): Promise<TorrentItem[]> {
       const historyDays = settings.torrent_history_days;
       const historyExpired = historyDays > 0 && completedAt != null && Date.now() - Date.parse(completedAt) >= historyDays * 864e5;
       const filesInLibrary = filePaths.every((p) => isUnder(p, savePath));
-      if (rec.mode === 'download' && historyExpired && filesInLibrary && (!live || (live.finished && seedingStopped)) && !isPlayingTorrent(filePaths)) {
+      if (rec.mode === 'download' && !failedFileRemovals.has(hash) && historyExpired && filesInLibrary && (!live || (live.finished && seedingStopped)) && !isPlayingTorrent(filePaths)) {
         await db.deleteTorrentRecord(hash);
         continue;
       }
@@ -1030,9 +1068,8 @@ export async function pollTorrents(): Promise<TorrentItem[]> {
     if (needsLibraryReload) await useLibraryStore.getState().reload();
     if (triggerProbe) void startBackgroundAnalysis();
     return merged;
-  } finally {
-    pollInFlight = false;
-  }
+  })().finally(() => { pollInFlight = null; });
+  return pollInFlight;
 }
 
 function scheduleAdaptivePoll() {
@@ -1070,8 +1107,13 @@ export async function reapExpiredStreams() {
     }
     if (isPlayingTorrent(paths)) continue; // never delete while actively watching!
 
-    await removeTorrent(r.info_hash, true);
-    store.toast(`Stream cache expired & cleared: “${r.name}”`, 'info');
+    if (removalsInProgress.has(r.info_hash.toLowerCase())) continue;
+    try {
+      await removeTorrent(r.info_hash, true);
+      store.toast(`Stream cache expired & cleared: “${r.name}”`, 'info');
+    } catch (e) {
+      console.warn('[torrents] stream cache cleanup failed; will retry', e);
+    }
   }
 }
 
