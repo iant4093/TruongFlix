@@ -72,6 +72,7 @@ export const popularPage = `<div class="jetpack_top_posts_widget"><h2 class="wid
 
 type Row = Record<string, unknown>;
 const library: Row[] = [];
+const sessions: Row[] = [];
 const gameSettings: Record<string, string> = {
   games_source_url: 'https://games.example',
   games_download_dir: 'D:\\Downloads\\Game Installers',
@@ -86,6 +87,15 @@ export function handleGamesSql(q: string, values: unknown[]): unknown | undefine
   if (q.startsWith('INSERT INTO settings') && String(values[0]).startsWith('games_')) {
     gameSettings[String(values[0])] = String(values[1]);
     return [1, 0];
+  }
+  if (q.includes('games_play_sessions')) {
+    if (q.includes('sqlite_master')) return [{ name: 'games_play_sessions' }];
+    if (q.startsWith('SELECT * FROM games_play_sessions')) return [...sessions].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+    if (q.startsWith('INSERT INTO games_play_sessions') && q.includes('VALUES')) {
+      const [game_id, slug, title, cover, started_at, seconds] = values;
+      sessions.push({ game_id, slug, title, cover, started_at, seconds, estimated: 0 });
+    }
+    return q.startsWith('SELECT') ? [] : [1, 0];
   }
   if (!q.includes('games_library')) return undefined;
   if (q.startsWith('CREATE')) return [0, 0];

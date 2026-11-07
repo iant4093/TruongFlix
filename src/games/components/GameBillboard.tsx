@@ -1,6 +1,10 @@
 import type { ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { BillboardMedia } from '../../components/home/BannerTrailer';
+import { BillboardSkeleton } from '../../components/common/Skeleton';
+import { FadeImage } from '../../components/common/Artwork';
+import { useSkipEntrance } from '../../lib/sectionMemory';
+import { billboardCopy } from '../../lib/motion';
 import type { GameDetail } from '../types';
 import { useCachedImage } from './GameCover';
 
@@ -51,15 +55,16 @@ export default function GameBillboard({ id, title, detail, cover, eyebrow, extra
   const shot = detail?.screenshots[0];
   const backdrop = useCachedImage(shot?.full ?? null, shot?.thumb);
   const coverSrc = useCachedImage(shot ? null : cover);
+  const skipEntrance = useSkipEntrance();
   return (
     <section aria-label={`Featured: ${title}`} className="nf-billboard">
-      {coverSrc && <img src={coverSrc} alt="" draggable={false} className="absolute inset-0 h-full w-full scale-110 object-cover opacity-50 blur-2xl" />}
+      {coverSrc && <div className="absolute inset-0 opacity-50"><FadeImage src={coverSrc} alt="" eager className="h-full w-full scale-110 blur-2xl" /></div>}
       <BillboardMedia title={title} backdrop={backdrop} />
       <motion.div
         key={id}
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.7, delay: 0.2 }}
+        variants={billboardCopy}
+        initial={skipEntrance ? false : 'initial'}
+        animate="animate"
         className="nf-billboard-copy"
       >
         {eyebrow}
@@ -74,23 +79,4 @@ export default function GameBillboard({ id, title, detail, cover, eyebrow, extra
 }
 
 /** Placeholder shown while the featured game loads, in the billboard's exact footprint. */
-export function GameBillboardSkeleton() {
-  return (
-    <section aria-hidden="true" className="nf-billboard bg-[radial-gradient(ellipse_at_top_left,rgba(255,255,255,0.06),transparent_60%)]">
-      <div className="nf-billboard-copy w-[40%]">
-        <div className="h-[clamp(2.2rem,4.6vw,4.5rem)] w-4/5 animate-pulse rounded bg-white/10" />
-        <div className="h-4 w-1/2 animate-pulse rounded bg-white/10" />
-        <div className="space-y-2">
-          <div className="h-4 w-full animate-pulse rounded bg-white/[0.07]" />
-          <div className="h-4 w-3/4 animate-pulse rounded bg-white/[0.07]" />
-        </div>
-        <div className="mt-1 flex gap-3">
-          <div className="h-12 w-40 animate-pulse rounded bg-white/15" />
-          <div className="h-12 w-44 animate-pulse rounded bg-white/10" />
-        </div>
-      </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[45%]"
-        style={{ background: 'linear-gradient(180deg, rgba(20,20,20,0) 0%, #141414 100%)' }} />
-    </section>
-  );
-}
+export const GameBillboardSkeleton = BillboardSkeleton;

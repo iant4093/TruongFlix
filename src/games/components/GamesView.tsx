@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AnimatePresence } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
+import { fade, spring } from '../../lib/motion';
+import { useSectionState } from '../../lib/sectionMemory';
+import { SkeletonStatus } from '../../components/common/Skeleton';
 import { FolderOpen, Gamepad2, Loader2, Search, Settings2, ShieldCheck, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { validateSourceUrl } from '../../services/browse';
@@ -16,6 +19,7 @@ import GameBrowse from './GameBrowse';
 import { GameBillboardSkeleton } from './GameBillboard';
 import GameDetailDialog from './GameDetailDialog';
 import GameLibrary from './GameLibrary';
+import { GameLibrarySkeleton, LibraryLayoutToggle } from './LibraryViews';
 import { GameRowSkeleton } from './GamePoster';
 import InstallDialog from './InstallDialog';
 
@@ -119,13 +123,19 @@ function SubNav({ tab, onTab, query, onQuery, searching, onSettings }: {
       <nav aria-label="Games" className="flex items-center gap-5 text-[15px]">
         {(['browse', 'library'] as const).map((t) => (
           <button key={t} aria-current={tab === t ? 'page' : undefined} onClick={() => onTab(t)}
-            className={`text-shadow flex items-center gap-1.5 whitespace-nowrap transition-colors duration-300 ${tab === t ? 'font-semibold text-white' : 'text-[#e5e5e5] hover:text-[#b3b3b3]'}`}>
-            {t === 'browse' ? 'Browse' : 'Library'}
+            className={`text-shadow relative flex items-center gap-1.5 whitespace-nowrap py-1 transition-colors duration-300 ${tab === t ? 'text-white' : 'text-[#e5e5e5] hover:text-[#b3b3b3]'}`}>
+            {/* Bold text is laid out for both states so switching never shifts the row. */}
+            <span className="grid">
+              <span aria-hidden="true" className="invisible col-start-1 row-start-1 font-semibold">{t === 'browse' ? 'Browse' : 'Library'}</span>
+              <span className={`col-start-1 row-start-1 ${tab === t ? 'font-semibold' : ''}`}>{t === 'browse' ? 'Browse' : 'Library'}</span>
+            </span>
             {t === 'library' && activeCount > 0 && <Badge tone="download" pill label={`${activeCount} in progress`}>{activeCount}</Badge>}
+            {tab === t && <motion.span aria-hidden="true" layoutId="games-tab" transition={spring.highlight} className="absolute inset-x-0 -bottom-0.5 h-0.5 rounded-full bg-nf-red" />}
           </button>
         ))}
       </nav>
       <div className="ml-auto flex items-center gap-3">
+        {tab === 'library' && <LibraryLayoutToggle />}
         <label className="flex h-9 w-[min(260px,32vw)] items-center gap-2 rounded border border-white/25 bg-black/60 px-3 transition-colors focus-within:border-white">
           {searching ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-nf-secondary" /> : <Search className="h-4 w-4 shrink-0 text-nf-secondary" />}
           <input aria-label="Search games" value={query} onChange={(e) => onQuery(e.target.value)}
@@ -147,8 +157,8 @@ export default function GamesView() {
   const profileGate = useLibraryStore((s) => s.profileGate);
   const ready = useGamesStore((s) => s.ready);
   const source = useGamesStore((s) => s.settings.sourceUrl);
-  const [tab, setTab] = useState<Tab>('browse');
-  const [query, setQuery] = useState('');
+  const [tab, setTab] = useSectionState<Tab>('tab', 'browse');
+  const [query, setQuery] = useSectionState('query', '');
   const [searching, setSearching] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selected, setSelected] = useState<GameCard | null>(null);
@@ -178,11 +188,22 @@ export default function GamesView() {
       <SubNav tab={tab} onTab={switchTab} query={query} onQuery={setQuery} searching={searching} onSettings={() => setSettingsOpen(true)} />
       {error && <ErrorBanner className="relative z-20 mx-[4%] mb-6 mt-[136px]">{error}</ErrorBanner>}
       {!ready && !error
-        ? <div role="status" aria-label="Loading games"><GameBillboardSkeleton /><div className="relative z-10 -mt-32"><GameRowSkeleton /><GameRowSkeleton /></div></div>
-        : ready && (tab === 'browse'
-          ? <GameBrowse origin={source} query={query} blocked={!!selected || !!downloading || !!installing || settingsOpen}
-            onOpenSettings={() => setSettingsOpen(true)} onSearching={setSearching} {...openers} />
-          : <GameLibrary query={query} onBrowse={() => switchTab('browse')} {...openers} />)}
+        ? <SkeletonStatus label="Loading games">
+          {tab === 'library' ? <GameLibrarySkeleton /> : <><GameBillboardSkeleton /><div className="relative z-10 -mt-32"><GameRowSkeleton /><GameRowSkeleton /></div></>}
+        </SkeletonStatus>
+        : ready && (
+          // The outgoing tab fades out over the incoming one instead of blanking the page.
+          <div className="relative">
+            <AnimatePresence mode="popLayout" initial={false}>
+              <motion.div key={tab} variants={fade} initial="initial" animate="animate" exit="exit" className="w-full">
+                {tab === 'browse'
+                  ? <GameBrowse origin={source} query={query} blocked={!!selected || !!downloading || !!installing || settingsOpen}
+                    onOpenSettings={() => setSettingsOpen(true)} onSearching={setSearching} {...openers} />
+                  : <GameLibrary query={query} onBrowse={() => switchTab('browse')} {...openers} />}
+              </motion.div>
+            </AnimatePresence>
+          </div>
+        )}
       <AnimatePresence>
         {selected && <GameDetailDialog key={selected.slug} origin={source} game={selected} onClose={() => setSelected(null)} onOpenLibrary={openLibrary} />}
       </AnimatePresence>

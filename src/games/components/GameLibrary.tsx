@@ -1,15 +1,18 @@
 import { useMemo } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { Gamepad2, Info, Search } from 'lucide-react';
+import { fade } from '../../lib/motion';
 import { useGamesStore } from '../jobs';
-import type { GameCard, LibraryGame } from '../types';
+import { arrangeLibrary, useLibraryView } from '../libraryView';
+import type { LibraryGame } from '../types';
 import { PrimaryAction, useOwnedGame } from './actions';
 import type { GameOpeners } from './GameBrowse';
 import GameBillboard from './GameBillboard';
 import { GameGrid, GameRow } from './GamePoster';
+import { LibraryCollection, libraryCard } from './LibraryViews';
 import { formatPlayTime, gameStatusLabel, isInstalled } from './status';
 
-export const libraryCard = (game: LibraryGame): GameCard =>
-  game.detail ?? { slug: game.slug, title: game.title, subtitle: game.subtitle, cover: game.cover, postId: null, date: null };
+export { libraryCard };
 
 const time = (value: string | null) => (value ? Date.parse(value) || 0 : 0);
 const newest = (key: 'lastPlayed' | 'installedAt' | 'createdAt') => (a: LibraryGame, b: LibraryGame) => time(b[key]) - time(a[key]);
@@ -63,6 +66,33 @@ function EmptyLibrary({ onBrowse }: { onBrowse: () => void }) {
 
 export default function GameLibrary({ query, onBrowse, ...openers }: GameOpeners & { query: string; onBrowse: () => void }) {
   const games = useGamesStore((s) => s.games);
+  const layout = useLibraryView((s) => s.layout);
+  if (!games.length && !query.trim()) return <EmptyLibrary onBrowse={onBrowse} />;
+  return (
+    // Switching layouts cross-fades instead of blanking the page.
+    <div className="relative">
+      <AnimatePresence mode="popLayout" initial={false}>
+        <motion.div key={layout} variants={fade} initial="initial" animate="animate" exit="exit" className="w-full">
+          {layout === 'rows'
+            ? <LibraryRows query={query} openers={openers} />
+            : <LibraryArranged layout={layout} query={query} openers={openers} />}
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function LibraryArranged({ layout, query, openers }: { layout: 'grid' | 'list'; query: string; openers: GameOpeners }) {
+  const games = useGamesStore((s) => s.games);
+  const jobs = useGamesStore((s) => s.jobs);
+  const sort = useLibraryView((s) => s.sort);
+  const filter = useLibraryView((s) => s.filter);
+  const shown = useMemo(() => arrangeLibrary(games, { sort, filter, query, busy: (id) => !!jobs[id] }), [games, jobs, sort, filter, query]);
+  return <LibraryCollection layout={layout} games={shown} total={games.length} query={query} openers={openers} />;
+}
+
+function LibraryRows({ query, openers }: { query: string; openers: GameOpeners }) {
+  const games = useGamesStore((s) => s.games);
   const jobs = useGamesStore((s) => s.jobs);
 
   const { featured, rows } = useMemo(() => {
@@ -88,19 +118,17 @@ export default function GameLibrary({ query, onBrowse, ...openers }: GameOpeners
       <section className="min-h-screen px-[4%] pb-16 pt-[148px]">
         <h2 className="mb-6 text-[clamp(1.4rem,2.2vw,2.2rem)] font-semibold">Results for “{query.trim()}” in your games</h2>
         {matches.length
-          ? <GameGrid games={matches.map(libraryCard)} onOpen={openers.onOpen} />
+          ? <GameGrid games={matches.map(libraryCard)} openers={openers} />
           : <p className="pt-10 text-center text-lg text-nf-secondary">No games in your library match “{query.trim()}”.</p>}
       </section>
     );
   }
 
-  if (!games.length) return <EmptyLibrary onBrowse={onBrowse} />;
-
   return (
     <div>
       {featured && <LibraryBillboard key={featured.id} game={featured} {...openers} />}
       <div className="relative z-10 flow-root -mt-32 pb-16">
-        {rows.map((row) => <GameRow key={row.title} title={row.title} games={row.games.map(libraryCard)} onOpen={openers.onOpen} />)}
+        {rows.map((row) => <GameRow key={row.title} title={row.title} games={row.games.map(libraryCard)} openers={openers} />)}
       </div>
     </div>
   );

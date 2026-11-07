@@ -105,6 +105,83 @@ export function computeWrapped(log: WatchLogRow[], year: number): WrappedStats {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Games (Windows): play sessions recorded on this PC
+// ---------------------------------------------------------------------------
+
+/** A recorded game session (mirrors the games library's PlaySession). */
+export interface GameSessionRow {
+  slug: string;
+  title: string;
+  cover: string | null;
+  startedAt: string;
+  seconds: number;
+  /** Rebuilt from older totals: counts towards the year, but its day and length aren't real. */
+  estimated: boolean;
+}
+
+export interface GameWrappedStats {
+  seconds: number;
+  sessions: number;
+  games: number;
+  topGames: { slug: string; title: string; cover: string | null; seconds: number; sessions: number }[];
+  longestSession: { title: string; cover: string | null; seconds: number; day: string } | null;
+  /** Day with the most play time, when it adds up to more than the longest session. */
+  busiestDay: { day: string; seconds: number } | null;
+}
+
+/** Local calendar day (YYYY-MM-DD) of an ISO time. */
+export function localDay(iso: string): string | null {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export const sessionYears = (sessions: GameSessionRow[]) =>
+  [...new Set(sessions.filter((s) => s.seconds > 0).map((s) => Number(localDay(s.startedAt)?.slice(0, 4))).filter((y) => y > 0))].sort((a, b) => b - a);
+
+/** Yearly game stats, or null when less than a minute was played that year. */
+export function computeGameWrapped(sessions: GameSessionRow[], year: number, top = 5): GameWrappedStats | null {
+  const games = new Map<string, GameWrappedStats['topGames'][number] & { last: string }>();
+  const perDay = new Map<string, number>();
+  let seconds = 0;
+  let count = 0;
+  let longest: GameWrappedStats['longestSession'] = null;
+
+  for (const s of sessions) {
+    const day = localDay(s.startedAt);
+    if (!day || !day.startsWith(`${year}-`) || !(s.seconds > 0)) continue;
+    seconds += s.seconds;
+    const g = games.get(s.slug) ?? { slug: s.slug, title: s.title, cover: s.cover, seconds: 0, sessions: 0, last: '' };
+    g.seconds += s.seconds;
+    // Title and cover follow the most recent session, in case the entry was re-added.
+    if (s.startedAt >= g.last) Object.assign(g, { title: s.title, cover: s.cover ?? g.cover, last: s.startedAt });
+    if (!s.estimated) {
+      g.sessions += 1;
+      count += 1;
+      perDay.set(day, (perDay.get(day) ?? 0) + s.seconds);
+      if (!longest || s.seconds > longest.seconds) longest = { title: s.title, cover: s.cover, seconds: s.seconds, day };
+    }
+    games.set(s.slug, g);
+  }
+  if (seconds < 60) return null;
+
+  const busiest = [...perDay.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  return {
+    seconds,
+    sessions: count,
+    games: games.size,
+    topGames: [...games.values()]
+      .sort((a, b) => b.seconds - a.seconds || a.title.localeCompare(b.title))
+      .slice(0, top)
+      .map((g) => ({ slug: g.slug, title: g.title, cover: g.cover, seconds: g.seconds, sessions: g.sessions })),
+    longestSession: longest,
+    // A day that was only its longest session would repeat that card.
+    busiestDay: busiest && busiest[1] > (longest?.seconds ?? 0) ? { day: busiest[0], seconds: busiest[1] } : null,
+  };
+}
+
 export function formatHours(seconds: number): string {
   const h = seconds / 3600;
   if (h >= 10) return `${Math.round(h).toLocaleString()}`;

@@ -6,9 +6,12 @@ import { fetchGame, fetchNewest, fetchPopular, searchGames } from '../source';
 import type { GameCard, GameDetail, GameRow as Row, LibraryGame } from '../types';
 import { PrimaryAction } from './actions';
 import GameBillboard, { GameBillboardSkeleton, Top10Badge } from './GameBillboard';
-import { GameGrid, GameRow, GameRowSkeleton } from './GamePoster';
+import { GameGrid, GameRow, GameRowSkeleton, POSTER_GRID } from './GamePoster';
+import { PosterGridSkeleton, SkeletonStatus } from '../../components/common/Skeleton';
 
 const ROTATE_MS = 12_000;
+const ROWS_FRESH_MS = 10 * 60_000;
+const rowCache = new Map<string, { rows: Row[]; time: number }>();
 const navButton = 'flex h-9 w-9 items-center justify-center rounded-full border border-white/40 bg-black/35 hover:bg-white/15';
 
 export interface GameOpeners {
@@ -109,7 +112,8 @@ export default function GameBrowse({ origin, query, blocked, onOpenSettings, onS
   onOpenSettings: () => void;
   onSearching: (searching: boolean) => void;
 }) {
-  const [rows, setRows] = useState<Row[] | null>(null);
+  const cached = rowCache.get(origin);
+  const [rows, setRows] = useState<Row[] | null>(cached?.rows ?? null);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [results, setResults] = useState<{ query: string; games: GameDetail[]; page: number; pages: number } | null>(null);
@@ -120,7 +124,13 @@ export default function GameBrowse({ origin, query, blocked, onOpenSettings, onS
   useEffect(() => {
     if (!origin) return;
     let active = true;
-    setRows(null);
+    // Coming back to Games shows the last rows at once; they refresh quietly after a while.
+    const saved = rowCache.get(origin);
+    if (saved && !reload && Date.now() - saved.time < ROWS_FRESH_MS) {
+      setRows(saved.rows);
+      return;
+    }
+    if (!saved) setRows(null);
     setError('');
     void Promise.allSettled([fetchPopular(origin), fetchNewest(origin, 1)]).then(([popular, newest]) => {
       if (!active) return;
@@ -130,7 +140,8 @@ export default function GameBrowse({ origin, query, blocked, onOpenSettings, onS
       if (!out.length) {
         const failure = [popular, newest].find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
         setError(failure ? errorMessage(failure.reason) : 'The game source returned no games.');
-      }
+        if (saved) return;
+      } else rowCache.set(origin, { rows: out, time: Date.now() });
       setRows(out);
     });
     return () => { active = false; };
@@ -175,8 +186,12 @@ export default function GameBrowse({ origin, query, blocked, onOpenSettings, onS
         </h2>
         {results && results.games.length === 0 && !searching
           ? <p className="pt-10 text-center text-lg text-nf-secondary">Your search for “{results.query}” did not match any games.</p>
-          : results && <GameGrid games={results.games} onOpen={openers.onOpen} />}
-        {(searching && !results) && <div role="status" className="flex justify-center gap-3 py-16 text-white/60"><Loader2 className="h-5 w-5 animate-spin" />Searching games…</div>}
+          : results && (
+            <div className={`transition-opacity duration-200 ${searching && results.query !== query.trim() ? 'opacity-50' : ''}`}>
+              <GameGrid games={results.games} openers={openers} />
+            </div>
+          )}
+        {!results && <SkeletonStatus label="Searching games…"><PosterGridSkeleton count={14} className={POSTER_GRID} /></SkeletonStatus>}
         {results && results.page < results.pages && (
           <div className="mt-10 flex justify-center">
             <button className="nf-btn-ghost" disabled={searching} onClick={() => void loadMore()}>{searching && <Loader2 className="h-4 w-4 animate-spin" />}Load more</button>
@@ -200,7 +215,7 @@ export default function GameBrowse({ origin, query, blocked, onOpenSettings, onS
         {error && <ErrorBar error={error} onRetry={retry} />}
         {rows === null
           ? <><GameRowSkeleton /><GameRowSkeleton /></>
-          : rows.map((row) => <GameRow key={row.title} title={rowTitle(row.title)} games={row.games} onOpen={openers.onOpen} />)}
+          : rows.map((row) => <GameRow key={row.title} title={rowTitle(row.title)} games={row.games} openers={openers} />)}
       </div>
     </div>
   );

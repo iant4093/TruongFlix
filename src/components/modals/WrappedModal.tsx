@@ -1,13 +1,24 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { Flame, Popcorn, Tv, Zap } from 'lucide-react';
+import { CalendarDays, Flame, Gamepad2, Popcorn, Timer, Tv, Zap } from 'lucide-react';
 import type { WatchLogRow } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { FullScreenOverlay, OverlayCloseButton } from '../common/Dialog';
 import { listWatchLog } from '../../services/db';
-import { computeWrapped, formatHours, logYears } from '../../services/wrapped';
+import { computeGameWrapped, computeWrapped, formatHours, logYears, sessionYears, type GameSessionRow, type GameWrappedStats } from '../../services/wrapped';
 import Dropdown from '../common/Dropdown';
 import ProfileAvatar from '../common/ProfileAvatar';
+
+// Game artwork comes through the games image cache; only Windows builds include games.
+const GameCover = __GAMES__ ? lazy(() => import('../../games/components/GameCover')) : null;
+
+/** Game sessions are recorded per PC, not per profile, so only profiles allowed to play games see them. */
+function loadGameSessions(): Promise<GameSessionRow[]> {
+  if (!__GAMES__) return Promise.resolve([]);
+  return import('../../games/library').then((m) => m.listPlaySessions()).catch(() => []);
+}
+
+const hoursLabel = (seconds: number) => `${formatHours(seconds)}${seconds >= 3600 ? ' hours' : ''}`;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -26,22 +37,117 @@ function Card({ children, className = '', delay = 0 }: { children: ReactNode; cl
   );
 }
 
+function GameArt({ cover, title, className }: { cover: string | null; title: string; className: string }) {
+  if (!GameCover) return <div className={`bg-white/10 ${className}`} />;
+  return (
+    <Suspense fallback={<div className={`bg-white/10 ${className}`} />}>
+      <GameCover url={cover} title={title} className={className} />
+    </Suspense>
+  );
+}
+
+/** Play time from games on this PC (Windows). */
+function GamesWrapped({ stats, year }: { stats: GameWrappedStats; year: number }) {
+  const [top, ...rest] = stats.topGames;
+  return (
+    <section aria-labelledby="wrapped-games" className="mt-12">
+      <div className="mb-5 flex items-baseline gap-3">
+        <h2 id="wrapped-games" className="flex items-center gap-2 text-2xl font-black"><Gamepad2 className="h-6 w-6" />Games</h2>
+        <span className="rounded border border-white/25 px-2 py-0.5 text-xs font-semibold uppercase tracking-widest text-nf-secondary">On this PC</span>
+      </div>
+      <div className="grid grid-cols-6 gap-5">
+        <Card delay={0.1} className="col-span-6 bg-gradient-to-br from-[#1f6f4a] via-[#124a33] to-[#06170f] ring-1 ring-white/10">
+          <div className="text-lg font-semibold text-white/80">In {year} you played</div>
+          <div className="mt-1 flex items-baseline gap-4">
+            <span className="text-[clamp(3.5rem,8vw,6.5rem)] font-black leading-none tracking-tight">{formatHours(stats.seconds)}</span>
+            <span className="text-3xl font-bold">{stats.seconds >= 3600 ? 'hours of games' : 'of games'}</span>
+          </div>
+          <div className="mt-3 text-lg text-white/85">
+            {stats.games} game{stats.games === 1 ? '' : 's'}
+            {stats.sessions > 0 && ` across ${stats.sessions} session${stats.sessions === 1 ? '' : 's'}`}.
+          </div>
+        </Card>
+
+        {top && (
+          <Card delay={0.18} className="col-span-6 bg-white/[0.06] ring-1 ring-white/10">
+            <h3 className="mb-5 text-sm uppercase tracking-widest text-nf-secondary">{rest.length ? 'Most played' : 'Your game of the year'}</h3>
+            <div className="flex gap-6">
+              <div className="relative w-52 shrink-0">
+                <GameArt cover={top.cover} title={top.title} className="aspect-[2/3] w-full rounded-lg shadow-xl" />
+                <span className="absolute left-2 top-1 text-5xl font-black text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]">1</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-3xl font-black leading-tight">{top.title}</div>
+                <div className="mt-2 text-nf-secondary">
+                  {hoursLabel(top.seconds)}{top.sessions > 0 && ` · ${top.sessions} session${top.sessions === 1 ? '' : 's'}`}
+                </div>
+                {rest.length > 0 && (
+                  <div className="mt-6 grid max-w-xl grid-cols-4 gap-4">
+                    {rest.map((g, i) => (
+                      <div key={g.slug} className="min-w-0">
+                        <div className="relative">
+                          <GameArt cover={g.cover} title={g.title} className="aspect-[2/3] w-full rounded-lg" />
+                          <span className="absolute left-2 top-1 text-3xl font-black text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]">{i + 2}</span>
+                        </div>
+                        <div className="mt-2 truncate text-sm font-semibold">{g.title}</div>
+                        <div className="text-xs text-nf-muted">{hoursLabel(g.seconds)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {stats.longestSession && (
+          <Card delay={0.26} className={`${stats.busiestDay ? 'col-span-3' : 'col-span-6'} bg-gradient-to-br from-[#8E44AD]/35 to-[#2E86DE]/10 ring-1 ring-white/10`}>
+            <div className="flex items-center gap-2 text-sm uppercase tracking-widest text-[#d7b8ff]"><Timer className="h-5 w-5" /> Longest session</div>
+            <div className="mt-3 text-6xl font-black">{hoursLabel(stats.longestSession.seconds)}</div>
+            <div className="mt-2 text-lg">
+              of <span className="font-bold">{stats.longestSession.title}</span> on {fmtDay(stats.longestSession.day)}
+            </div>
+          </Card>
+        )}
+
+        {stats.busiestDay && (
+          <Card delay={0.32} className={`${stats.longestSession ? 'col-span-3' : 'col-span-6'} bg-gradient-to-br from-[#F5B70A]/30 to-[#E67E22]/10 ring-1 ring-white/10`}>
+            <div className="flex items-center gap-2 text-sm uppercase tracking-widest text-nf-gold"><CalendarDays className="h-5 w-5" /> Biggest gaming day</div>
+            <div className="mt-3 text-6xl font-black">{fmtDay(stats.busiestDay.day)}</div>
+            <div className="mt-2 text-lg">{hoursLabel(stats.busiestDay.seconds)} played</div>
+          </Card>
+        )}
+      </div>
+    </section>
+  );
+}
+
 /** Yearly stats from the viewing history, Spotify-Wrapped style. */
 export default function WrappedModal() {
   const setOverlay = useLibraryStore((s) => s.setOverlay);
   const profile = useLibraryStore((s) => s.activeProfile);
   const [log, setLog] = useState<WatchLogRow[] | null>(null);
+  const [sessions, setSessions] = useState<GameSessionRow[]>([]);
   const [year, setYear] = useState(new Date().getFullYear());
+  const gamesAllowed = __GAMES__ && profile?.maturity === 'all';
 
   useEffect(() => {
     void listWatchLog().then(setLog);
   }, [profile?.id]);
 
+  useEffect(() => {
+    let active = true;
+    setSessions([]);
+    if (gamesAllowed) void loadGameSessions().then((s) => { if (active) setSessions(s); });
+    return () => { active = false; };
+  }, [gamesAllowed]);
+
   const years = useMemo(() => {
-    const ys = logYears(log ?? []);
+    const ys = [...new Set([...logYears(log ?? []), ...sessionYears(sessions)])].sort((a, b) => b - a);
     return ys.includes(year) ? ys : [year, ...ys];
-  }, [log, year]);
+  }, [log, sessions, year]);
   const stats = useMemo(() => (log ? computeWrapped(log, year) : null), [log, year]);
+  const gameStats = useMemo(() => (gamesAllowed ? computeGameWrapped(sessions, year) : null), [gamesAllowed, sessions, year]);
   const maxMonth = stats ? Math.max(1, ...stats.months) : 1;
   const topDay = stats ? stats.weekdays.indexOf(Math.max(...stats.weekdays)) : 0;
 
@@ -199,6 +305,8 @@ export default function WrappedModal() {
             )}
           </div>
         )}
+
+        {stats && gameStats && <GamesWrapped key={`games-${year}`} stats={gameStats} year={year} />}
       </div>
     </FullScreenOverlay>
   );

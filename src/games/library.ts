@@ -24,11 +24,49 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS games_library (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )`;
 
+/** One play session, kept even after the game leaves the library so yearly totals stay right. */
+const SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS games_play_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  game_id INTEGER,
+  slug TEXT NOT NULL,
+  title TEXT NOT NULL,
+  cover TEXT,
+  started_at TEXT NOT NULL,          -- ISO time the session started
+  seconds INTEGER NOT NULL,
+  estimated INTEGER NOT NULL DEFAULT 0 -- 1 = rebuilt from a game's total play time
+)`;
+
+type SqlDb = {
+  select<T>(query: string, values?: unknown[]): Promise<T>;
+  execute(query: string, values?: unknown[]): Promise<unknown>;
+};
+
+/**
+ * Creates the library tables. The sessions table was added later: when it is first created, play
+ * time recorded before it existed becomes one estimated session per game (dated its last play),
+ * so it still counts towards that year's totals.
+ */
+export async function migrateGamesDb(database: SqlDb) {
+  await database.execute(SCHEMA);
+  const existing = await database.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'games_play_sessions'");
+  await database.execute(SESSIONS_SCHEMA);
+  await database.execute('CREATE INDEX IF NOT EXISTS idx_games_play_sessions_started ON games_play_sessions(started_at)');
+  if (existing.length) return;
+  await database.execute(
+    `INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated)
+     SELECT id, slug, title, cover, last_played, play_seconds, 1 FROM games_library
+     WHERE play_seconds > 0 AND last_played IS NOT NULL`,
+  );
+}
+
 let ready: Promise<void> | null = null;
 
 async function db() {
   const database = await getDb();
-  if (!ready) ready = database.execute(SCHEMA).then(() => undefined);
+  if (!ready) {
+    ready = migrateGamesDb(database);
+    ready.catch(() => (ready = null));
+  }
   await ready;
   return database;
 }
@@ -169,6 +207,49 @@ export async function addPlayTime(id: number, seconds: number) {
     'UPDATE games_library SET play_seconds = play_seconds + $2, last_played = $3 WHERE id = $1',
     [id, Math.max(0, Math.round(seconds)), new Date().toISOString()],
   );
+}
+
+export interface PlaySession {
+  gameId: number | null;
+  slug: string;
+  title: string;
+  cover: string | null;
+  startedAt: string;
+  seconds: number;
+  /** Rebuilt from play time recorded before sessions were logged: its day isn't known exactly. */
+  estimated: boolean;
+}
+
+interface SessionRowDb {
+  game_id: number | null;
+  slug: string;
+  title: string;
+  cover: string | null;
+  started_at: string;
+  seconds: number;
+  estimated: number;
+}
+
+export async function recordPlaySession(game: Pick<LibraryGame, 'id' | 'slug' | 'title' | 'cover'>, seconds: number, endedAt = new Date()) {
+  const secs = Math.max(0, Math.round(seconds));
+  if (!secs) return;
+  await (await db()).execute(
+    'INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated) VALUES ($1,$2,$3,$4,$5,$6,0)',
+    [game.id, game.slug, game.title, game.cover, new Date(endedAt.getTime() - secs * 1000).toISOString(), secs],
+  );
+}
+
+export async function listPlaySessions(): Promise<PlaySession[]> {
+  const rows = await (await db()).select<SessionRowDb[]>('SELECT * FROM games_play_sessions ORDER BY started_at');
+  return rows.map((r) => ({
+    gameId: r.game_id,
+    slug: r.slug,
+    title: r.title,
+    cover: r.cover,
+    startedAt: r.started_at,
+    seconds: r.seconds,
+    estimated: r.estimated === 1,
+  }));
 }
 
 export async function deleteGame(id: number) {

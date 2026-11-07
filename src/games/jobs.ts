@@ -401,7 +401,11 @@ async function onSessionEnded(e: { gameId: string; seconds: number; error: strin
     return { running };
   });
   if (e.error) toast(e.error, 'error');
-  if (e.seconds > 0) await lib.addPlayTime(id, e.seconds);
+  const game = gameById(id);
+  if (e.seconds > 0) {
+    await lib.addPlayTime(id, e.seconds);
+    if (game) await lib.recordPlaySession(game, e.seconds).catch(() => {});
+  }
   await refresh();
 }
 
