@@ -95,7 +95,7 @@ fn visible_files(dir: &Path) -> Vec<PathBuf> {
 
 /// Maps each video in `dir` to its sidecars. A sidecar belongs to the video with the *longest*
 /// matching name prefix, so `Alien.Covenant.en.srt` goes with `Alien.Covenant.mkv`, not `Alien.mkv`.
-fn sidecars_by_video(dir: &Path) -> HashMap<PathBuf, Vec<PathBuf>> {
+fn sidecars_by_video(dir: &Path, deleting: Option<&HashSet<&PathBuf>>) -> HashMap<PathBuf, Vec<PathBuf>> {
     let files = visible_files(dir);
     let videos: Vec<(PathBuf, String)> = files
         .iter()
@@ -112,8 +112,14 @@ fn sidecars_by_video(dir: &Path) -> HashMap<PathBuf, Vec<PathBuf>> {
                     .is_some_and(|rest| rest.starts_with(['.', '-', '_', ' ']))
             })
             .max_by_key(|(_, stem)| stem.len());
-        if let Some((video, _)) = owner {
-            map.entry(video.clone()).or_default().push(f.clone());
+        if let Some((video, stem)) = owner {
+            // Copies with the same stem can share a subtitle. Keep it for any retained copy.
+            let shared_with_retained = deleting.is_some_and(|wanted| {
+                videos.iter().any(|(sibling, other_stem)| other_stem == stem && !wanted.contains(sibling))
+            });
+            if !shared_with_retained {
+                map.entry(video.clone()).or_default().push(f.clone());
+            }
         }
     }
     map
@@ -137,7 +143,7 @@ fn folder_name_for(video: &Path) -> Option<String> {
 }
 
 fn organize_root(root: &Path, out: &mut OrganizeResult) {
-    let sidecars = sidecars_by_video(root);
+    let sidecars = sidecars_by_video(root, None);
     for video in visible_files(root).into_iter().filter(|p| is_video(p)) {
         let Some(folder) = folder_name_for(&video) else { continue };
         let target_dir = root.join(&folder);
@@ -263,7 +269,7 @@ fn apply_moves_inner(moves: &[FileMove], with_sidecars: bool, roots: &[PathBuf])
         }
         // Collect sidecars before the video moves (they're matched by its old name).
         let sidecars = if with_sidecars {
-            src.parent().and_then(|p| sidecars_by_video(p).remove(src)).unwrap_or_default()
+            src.parent().and_then(|p| sidecars_by_video(p, None).remove(src)).unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -374,7 +380,7 @@ fn plan_trash(videos: &[PathBuf], root: &Path, files_only: bool) -> Vec<PathBuf>
             None => {
                 targets.push(video.clone());
                 if let Some(parent) = video.parent() {
-                    targets.extend(sidecars_by_video(parent).remove(video).unwrap_or_default());
+                    targets.extend(sidecars_by_video(parent, Some(&wanted)).remove(video).unwrap_or_default());
                 }
             }
         }
@@ -865,6 +871,23 @@ mod tests {
         assert_eq!(res.items.len(), 2);
         assert!(!selected.exists() && !selected_subtitle.exists());
         assert!(partial.exists() && partial_subtitle.exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn keeps_a_shared_subtitle_when_either_version_remains() {
+        let root = temp_root("shared-subtitle");
+        let first = root.join("Film.mkv");
+        let second = root.join("Film.mp4");
+        let subtitle = root.join("Film.en.srt");
+        for path in [&first, &second, &subtitle] {
+            touch(path, 10);
+        }
+
+        for path in [&first, &second] {
+            assert_eq!(plan_trash(std::slice::from_ref(path), &root, true), vec![path.clone()]);
+        }
+        assert!(plan_trash(&[first, second], &root, true).contains(&subtitle));
         fs::remove_dir_all(&root).unwrap();
     }
 }
