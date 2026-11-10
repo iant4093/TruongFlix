@@ -333,6 +333,7 @@ export default function LiveTV() {
         />
         <SearchField
           className="min-w-[220px] flex-1"
+          inputClassName="w-full scroll-mt-24"
           ariaLabel="Search live TV"
           placeholder={tab === 'sports' ? 'Search teams, events, broadcasters…' : 'Search channels…'}
           value={query}

@@ -5,6 +5,7 @@ use crate::scanner::{has_video_extension, is_hidden_name, is_hidden_or_system, i
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::Command;
 use tauri::{AppHandle, Manager};
 use walkdir::WalkDir;
@@ -348,13 +349,13 @@ fn videos_under(dir: &Path) -> Vec<PathBuf> {
 /// Decides what to move for a set of videos: the highest folder (below the media root) that
 /// contains nothing but these videos — e.g. a movie's folder or a whole show — otherwise
 /// just the video files plus their sidecars.
-fn plan_trash(videos: &[PathBuf], root: &Path) -> Vec<PathBuf> {
+fn plan_trash(videos: &[PathBuf], root: &Path, files_only: bool) -> Vec<PathBuf> {
     let wanted: HashSet<&PathBuf> = videos.iter().collect();
     let mut owned_cache: HashMap<PathBuf, bool> = HashMap::new();
     let mut targets = Vec::new();
     for video in videos {
         let mut best = None;
-        let mut cur = video.parent();
+        let mut cur = if files_only { None } else { video.parent() };
         while let Some(dir) = cur {
             if !strictly_inside(dir, root) {
                 break;
@@ -407,11 +408,11 @@ pub struct TrashResult {
     size_bytes: u64,
 }
 
-fn trash_paths(videos: &[PathBuf], root: &Path) -> Result<TrashResult, String> {
+fn trash_paths(videos: &[PathBuf], root: &Path, files_only: bool) -> Result<TrashResult, String> {
     let first = videos.first().ok_or("Nothing to delete")?;
     // Keep the trash on the same volume as the files so deleting is a rename, never a copy.
     let root = if strictly_inside(first, root) { root.to_path_buf() } else { first.parent().ok_or("Invalid path")?.to_path_buf() };
-    let targets = plan_trash(videos, &root);
+    let targets = plan_trash(videos, &root, files_only);
     let entry = root.join(TRASH_DIR).join(entry_name());
     let mut items = Vec::new();
     let mut size = 0;
@@ -445,7 +446,12 @@ fn trash_paths(videos: &[PathBuf], root: &Path) -> Result<TrashResult, String> {
 
 /// Moves a movie/episode/show's files into `<media root>/.truongflix-trash/<entry>/`.
 #[tauri::command]
-pub async fn trash_media(app: AppHandle, video_paths: Vec<String>, root: String) -> Result<TrashResult, String> {
+pub async fn trash_media(
+    app: AppHandle,
+    video_paths: Vec<String>,
+    root: String,
+    files_only: Option<bool>,
+) -> Result<TrashResult, String> {
     let managed = managed_roots(&app).await;
     tauri::async_runtime::spawn_blocking(move || {
         let allowed = resolve_roots(&managed);
@@ -455,7 +461,7 @@ pub async fn trash_media(app: AppHandle, video_paths: Vec<String>, root: String)
         }
         // Whole folders are only taken below a real library folder; otherwise just the files.
         let root_known = resolve(Path::new(&root)).is_some_and(|r| allowed.contains(&r));
-        trash_paths(&videos, Path::new(if root_known { root.as_str() } else { "" }))
+        trash_paths(&videos, Path::new(if root_known { root.as_str() } else { "" }), files_only.unwrap_or(false))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -545,18 +551,100 @@ pub async fn purge_trash(app: AppHandle, entry_dir: String) -> Result<(), String
         .map_err(|e| e.to_string())?
 }
 
+fn reveal_target(path: &Path) -> Result<(&Path, bool), String> {
+    if let Ok(info) = std::fs::metadata(path) {
+        return Ok((path, info.is_dir()));
+    }
+    let parent = path.parent().filter(|dir| dir.is_dir()).ok_or("Path not found")?;
+    Ok((parent, true))
+}
+
 /// Opens Finder / File Explorer with the file selected.
 #[tauri::command]
-pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
-    let p = Path::new(&path);
-    let target = if p.exists() { p } else { p.parent().filter(|d| d.exists()).ok_or("Path not found")? };
+pub async fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || reveal(Path::new(&path)))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn reveal(path: &Path) -> Result<(), String> {
+    let (target, _directory) = reveal_target(path)?;
+    #[cfg(windows)]
+    return reveal_in_explorer(target, _directory);
+
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg("-R").arg(target).spawn();
-    #[cfg(target_os = "windows")]
-    let result = Command::new(crate::windows_dir().join("explorer.exe")).arg(format!("/select,{}", target.display())).spawn();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let result = Command::new("xdg-open").arg(target.parent().unwrap_or(target)).spawn();
+    #[cfg(not(windows))]
     result.map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn explorer_path(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+
+    // The Shell expects ordinary DOS/UNC names. Only drop a verbatim prefix if the
+    // ordinary name still refers to the same item (trailing spaces and dots may differ).
+    let normal = match (path.components().next(), path.to_str()) {
+        (Some(Component::Prefix(prefix)), Some(text)) => match prefix.kind() {
+            Prefix::VerbatimDisk(_) => text.strip_prefix(r"\\?\").map(PathBuf::from),
+            Prefix::VerbatimUNC(..) => text.strip_prefix(r"\\?\UNC\").map(|rest| PathBuf::from(format!(r"\\{rest}"))),
+            _ => None,
+        },
+        _ => None,
+    };
+    normal.filter(|normal| same_file(path, normal)).unwrap_or_else(|| path.to_owned())
+}
+
+#[cfg(windows)]
+fn reveal_in_explorer(path: &Path, directory: bool) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    };
+    use windows_sys::Win32::UI::Shell::{SHOpenFolderAndSelectItems, SHParseDisplayName, ShellExecuteW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let path = std::path::absolute(path).map_err(|error| error.to_string())?;
+    let path = explorer_path(&path);
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+
+    // Use Shell items so spaces, commas, and Unicode never go through Explorer's switch parser.
+    unsafe {
+        let init = CoInitializeEx(null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
+        if init < 0 && init != RPC_E_CHANGED_MODE {
+            return Err(format!("Could not initialize File Explorer (0x{init:08X})"));
+        }
+        let result = if directory {
+            let status = ShellExecuteW(null_mut(), windows_sys::core::w!("explore"), wide.as_ptr(), null(), null(), SW_SHOWNORMAL);
+            if status as isize > 32 {
+                Ok(())
+            } else {
+                Err(format!("Could not open the folder in File Explorer (Windows error {})", status as isize))
+            }
+        } else {
+            let mut item = null_mut();
+            let parsed = SHParseDisplayName(wide.as_ptr(), null_mut(), &mut item, 0, null_mut());
+            if parsed < 0 || item.is_null() {
+                Err(format!("Could not locate the file in File Explorer (0x{parsed:08X})"))
+            } else {
+                let opened = SHOpenFolderAndSelectItems(item, 0, null(), 0);
+                CoTaskMemFree(item.cast());
+                if opened < 0 {
+                    Err(format!("Could not select the file in File Explorer (0x{opened:08X})"))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        if init >= 0 {
+            CoUninitialize();
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -580,6 +668,36 @@ mod tests {
 
     fn rel(root: &Path, p: &str) -> String {
         Path::new(p).strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/")
+    }
+
+    #[test]
+    fn reveals_media_file_or_opens_its_existing_folder() {
+        let root = temp_root("reveal");
+        let folder = root.join("Fiction, 日本語");
+        let file = folder.join("Film (2020).mkv");
+        touch(&file, 10);
+        assert_eq!(reveal_target(&file).unwrap(), (file.as_path(), false));
+        assert_eq!(reveal_target(&folder).unwrap(), (folder.as_path(), true));
+        assert_eq!(reveal_target(&folder.join("missing.mkv")).unwrap(), (folder.as_path(), true));
+        assert!(reveal_target(&folder.join("offline/missing.mkv")).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explorer_accepts_a_canonical_media_path_with_spaces_and_unicode() {
+        use std::path::{Component, Prefix};
+
+        let root = temp_root("explorer-path");
+        let file = root.join("Fiction, 日本語/Film (2020).mkv");
+        touch(&file, 10);
+        let shell_path = explorer_path(&fs::canonicalize(&file).unwrap());
+        assert!(same_file(&file, &shell_path));
+        assert!(matches!(
+            shell_path.components().next(),
+            Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::UNC(..))
+        ));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -667,19 +785,19 @@ mod tests {
 
         let movies_root = root.join("Movies");
         // A movie in its own folder: the whole folder goes.
-        assert_eq!(plan_trash(&[movie.clone()], &movies_root), [root.join("Movies/Dune (2021)")]);
+        assert_eq!(plan_trash(&[movie.clone()], &movies_root, false), [root.join("Movies/Dune (2021)")]);
         // One episode of several: just that file + its subtitle.
         let shows_root = root.join("Shows");
         assert_eq!(
-            plan_trash(&[e1.clone()], &shows_root),
+            plan_trash(&[e1.clone()], &shows_root, false),
             [root.join("Shows/Severance/Season 01/S01E01.en.srt"), e1.clone()]
         );
         // Every episode: the whole show folder.
-        assert_eq!(plan_trash(&[e1.clone(), e2.clone()], &shows_root), [root.join("Shows/Severance")]);
+        assert_eq!(plan_trash(&[e1.clone(), e2.clone()], &shows_root, false), [root.join("Shows/Severance")]);
         // Loose file in the root: file + its own sidecar only (not Loose.Movie.Two).
-        assert_eq!(plan_trash(&[loose.clone()], &root), [root.join("Loose.Movie.en.srt"), loose.clone()]);
+        assert_eq!(plan_trash(&[loose.clone()], &root, false), [root.join("Loose.Movie.en.srt"), loose.clone()]);
 
-        let res = trash_paths(&[e1.clone(), e2.clone()], &shows_root).unwrap();
+        let res = trash_paths(&[e1.clone(), e2.clone()], &shows_root, false).unwrap();
         assert!(!root.join("Shows/Severance").exists());
         assert!(res.entry_dir.contains(TRASH_DIR));
         assert_eq!(res.size_bytes, BIG * 2 + 10);
@@ -728,6 +846,25 @@ mod tests {
         let (ok, rejected) = checked_moves(moves, &allowed);
         assert_eq!(ok.len(), 1);
         assert_eq!(rejected.len(), 5);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn deleting_a_version_keeps_a_partial_copy_and_its_subtitle_in_the_same_folder() {
+        let root = temp_root("trash-version");
+        let selected = root.join("Film/Film.mkv");
+        let selected_subtitle = root.join("Film/Film.en.srt");
+        let partial = root.join("Film/Film.1080p.ts");
+        let partial_subtitle = root.join("Film/Film.1080p.en.srt");
+        touch(&selected, BIG);
+        touch(&selected_subtitle, 10);
+        touch(&partial, 10);
+        touch(&partial_subtitle, 10);
+
+        let res = trash_paths(&[selected.clone()], &root, true).unwrap();
+        assert_eq!(res.items.len(), 2);
+        assert!(!selected.exists() && !selected_subtitle.exists());
+        assert!(partial.exists() && partial_subtitle.exists());
         fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -44,7 +44,7 @@ function bestTech(rows: TechInfo[]): TechInfo {
 
 const techOf = (r: TechInfo): TechInfo => ({ resolution: r.resolution, video_codec: r.video_codec, hdr_format: r.hdr_format, audio_codec: r.audio_codec });
 
-function versionLabel(m: MovieRow): string {
+export function versionLabel(m: TechInfo & { file_size: number | null }): string {
   const res = m.resolution === 'HD' ? '1080p' : m.resolution;
   return [res ?? 'Unknown quality', m.hdr_format, m.video_codec, formatSize(m.file_size)].filter(Boolean).join(' · ');
 }
@@ -193,6 +193,11 @@ export function groupEpisodes(episodes: EpisodeRow[]): Map<number, EpisodeRow[]>
 }
 
 export const epLabel = (e: Pick<EpisodeRow, 'season_number' | 'episode_number'>) => `S${e.season_number}:E${e.episode_number}`;
+
+export function episodeVersions(episode: EpisodeRow, episodes: readonly EpisodeRow[]): EpisodeRow[] {
+  return episodes.filter((row) => row.series_id === episode.series_id
+    && row.season_number === episode.season_number && row.episode_number === episode.episode_number);
+}
 
 export function episodeTarget(e: EpisodeRow, series: { title: string }): PlayTarget {
   return {

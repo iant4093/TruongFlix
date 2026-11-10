@@ -16,7 +16,7 @@ const SIZES: Record<DialogSize, string> = {
   window: 'max-w-[1060px]',
 };
 
-type BackdropEvents = Pick<HTMLAttributes<HTMLDivElement>, 'onDragOver' | 'onDrop'> & { [data: `data-${string}`]: string | boolean };
+type BackdropEvents = Pick<HTMLAttributes<HTMLDivElement>, 'onDragOver' | 'onDrop' | 'onScroll'> & { [data: `data-${string}`]: string | boolean };
 
 interface DialogProps {
   onClose: () => void;

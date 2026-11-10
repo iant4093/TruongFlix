@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
+import { scrollBehavior } from './scroll';
 
 /**
  * Where you were in each top-level section (Home, TV, Browse, Games…): scroll position, row
@@ -62,38 +63,56 @@ const RESTORE_LIMIT_MS = 2000;
  */
 export function SectionMemory({ section, active = true, children }: { section: string; active?: boolean; children: ReactNode }) {
   const [value] = useState<Section>(() => ({ key: section, revisit: visited.has(section), mountedAt: performance.now() }));
-  const activeRef = useRef(active);
-  activeRef.current = active;
 
   useLayoutEffect(() => {
+    if (!active) return;
     visited.add(section);
     const target = scroll.get(section) ?? 0;
+    // Place the new section before its fade starts. If it grows after mounting, move only
+    // when more of the remembered position is reachable. Reaching the bottom can load another page.
+    window.scrollTo({ top: target, behavior: 'instant' });
     let frame = 0;
-    let done = false;
+    const initialPosition = window.scrollY;
+    let destination = initialPosition;
+    let waiting = Math.abs(initialPosition - target) >= 2;
     const started = performance.now();
     const stop = () => {
-      done = true;
+      waiting = false;
       cancelAnimationFrame(frame);
-      for (const type of USER_INPUT) window.removeEventListener(type, stop, true);
+      for (const type of USER_INPUT) window.removeEventListener(type, cancel, true);
+    };
+    const cancel = () => {
+      if (waiting && destination !== initialPosition && Math.abs(window.scrollY - destination) >= 2) {
+        window.scrollTo({ top: window.scrollY, behavior: 'instant' });
+      }
+      stop();
     };
     const attempt = () => {
-      if (done) return;
-      window.scrollTo({ top: target, behavior: 'instant' as ScrollBehavior });
+      if (!waiting) return;
+      const page = document.scrollingElement ?? document.documentElement;
+      const available = Math.max(0, page.scrollHeight - window.innerHeight);
+      const next = Math.min(target, available);
+      if (next > destination + 1) {
+        destination = next;
+        window.scrollTo({ top: destination, behavior: scrollBehavior() });
+      }
       if (Math.abs(window.scrollY - target) < 2 || performance.now() - started > RESTORE_LIMIT_MS) stop();
       else frame = requestAnimationFrame(attempt);
     };
-    for (const type of USER_INPUT) window.addEventListener(type, stop, { capture: true, passive: true });
-    attempt();
+    if (waiting) {
+      for (const type of USER_INPUT) window.addEventListener(type, cancel, { capture: true, passive: true });
+      frame = requestAnimationFrame(attempt);
+    }
 
     const record = () => {
-      if (activeRef.current && done) scroll.set(section, window.scrollY);
+      if (!waiting) scroll.set(section, window.scrollY);
     };
     window.addEventListener('scroll', record, { passive: true });
     return () => {
-      stop();
+      cancel();
       window.removeEventListener('scroll', record);
     };
-  }, [section]);
+  }, [section, active]);
 
   return <SectionContext.Provider value={value}>{children}</SectionContext.Provider>;
 }

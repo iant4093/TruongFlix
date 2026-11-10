@@ -9,6 +9,7 @@ import { runScan } from '../../services/scanner';
 import { stopPlayback } from '../../services/player';
 import { isActiveDownload } from '../../services/torrents';
 import { formatClock, formatSpeed } from '../../lib/format';
+import { focusAndReveal } from '../../lib/scroll';
 
 const LINKS: { view: View; label: string }[] = [
   { view: 'home', label: 'Home' },
@@ -125,14 +126,14 @@ export default function Navbar() {
         )}
 
         {view === 'browse' ? (
-          <button aria-label="Search Browse" className="p-1.5" onClick={() => document.querySelector<HTMLInputElement>('input[aria-label="Search titles to browse"]')?.focus()}><Search className="h-5 w-5" /></button>
+          <button aria-label="Search Browse" className="p-1.5" onClick={() => focusAndReveal(document.querySelector('input[aria-label="Search titles to browse"]'))}><Search className="h-5 w-5" /></button>
         ) : view === 'games' ? (
-          <button aria-label="Search games" className="p-1.5" onClick={() => document.querySelector<HTMLInputElement>('input[aria-label="Search games"]')?.focus()}><Search className="h-5 w-5" /></button>
+          <button aria-label="Search games" className="p-1.5" onClick={() => focusAndReveal(document.querySelector('input[aria-label="Search games"]'))}><Search className="h-5 w-5" /></button>
         ) : view === 'live' ? (
           <button
             aria-label="Search live TV"
             className="p-1.5"
-            onClick={() => document.querySelector<HTMLInputElement>('input[aria-label="Search live TV"]')?.focus()}
+            onClick={() => focusAndReveal(document.querySelector('input[aria-label="Search live TV"]'))}
           >
             <Search className="h-5 w-5" />
           </button>

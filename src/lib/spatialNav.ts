@@ -11,6 +11,8 @@
  * - `data-hover-card`   an expanded hover card; only reachable from the card under it.
  */
 
+import { scrollBehavior } from './scroll';
+
 export type Direction = 'up' | 'down' | 'left' | 'right';
 
 export interface Box {
@@ -340,26 +342,32 @@ function scrollable(el: HTMLElement) {
 /** Scroll just enough (vertically) to show `el`, below the fixed navbar on the page. */
 export function ensureVisible(el: HTMLElement) {
   if (el.closest('[data-hover-card]')) return;
-  const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  const behavior = scrollBehavior();
+  let { top, bottom } = el.getBoundingClientRect();
   for (let parent = el.parentElement; parent && parent !== document.body && parent !== document.documentElement; parent = parent.parentElement) {
     if (!scrollable(parent)) continue;
     const box = parent.getBoundingClientRect();
-    const r = el.getBoundingClientRect();
     const margin = Math.min(SCROLL_MARGIN, box.height / 6);
-    if (r.top < box.top + margin) parent.scrollTop -= box.top + margin - r.top;
-    else if (r.bottom > box.bottom - margin) parent.scrollTop += Math.min(r.bottom - box.bottom + margin, r.top - box.top - margin);
+    const delta = top < box.top + margin ? top - box.top - margin
+      : bottom > box.bottom - margin ? Math.min(bottom - box.bottom + margin, top - box.top - margin) : 0;
+    const previous = parent.scrollTop;
+    const destination = Math.max(0, Math.min(previous + delta, parent.scrollHeight - parent.clientHeight));
+    if (destination === previous) continue;
+    parent.scrollTo({ top: destination, behavior });
+    // Outer scrollers need the target's eventual position while the inner one animates.
+    top -= destination - previous;
+    bottom -= destination - previous;
   }
   if (scopeRoot() !== document.body || el.closest('[data-nav-fixed]')) return;
-  const r = el.getBoundingClientRect();
   // Keep a row's title in view along with its cards.
   const row = rowOf(el);
-  const top = row ? Math.min(r.top, row.getBoundingClientRect().top) : r.top;
+  if (row) top = Math.min(top, row.getBoundingClientRect().top);
   let delta = 0;
   if (top < NAV_INSET + 8) delta = top - NAV_INSET - SCROLL_MARGIN;
-  else if (r.bottom > window.innerHeight - SCROLL_MARGIN) delta = Math.min(r.bottom - window.innerHeight + SCROLL_MARGIN, top - NAV_INSET - 8);
+  else if (bottom > window.innerHeight - SCROLL_MARGIN) delta = Math.min(bottom - window.innerHeight + SCROLL_MARGIN, top - NAV_INSET - 8);
   // At the top of the page, show the billboard rather than stopping just under the navbar.
   if (delta && window.scrollY + delta < window.innerHeight * 0.35 && delta < 0) delta = -window.scrollY;
-  if (delta) window.scrollTo({ top: window.scrollY + delta, behavior: smooth ? 'smooth' : 'auto' });
+  if (delta) window.scrollTo({ top: window.scrollY + delta, behavior });
 }
 
 /** Should an arrow key on this element move focus, or does the element need it (text caret, sliders…)? */

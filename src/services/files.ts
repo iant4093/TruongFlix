@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useLibraryStore } from '../store/useLibraryStore';
-import { epLabel } from '../store/selectors';
-import type { EpisodeRow, FileMove, MediaItem, TrashRow, TrashSnapshot } from '../types/media';
+import { epLabel, episodeVersions, versionLabel } from '../store/selectors';
+import type { EpisodeRow, FileMove, MediaItem, TorrentItem, TrashRow, TrashSnapshot } from '../types/media';
 import * as db from './db';
 import { removeTorrent } from './torrents';
 import { IS_MAC, IS_WINDOWS } from '../lib/platform';
@@ -45,7 +45,7 @@ export async function organizeLooseFiles(roots: string[]): Promise<{ moved: numb
 export type DeleteTarget =
   | { kind: 'movie'; item: MediaItem; /** Only this copy (when there are several versions). */ versionId?: number }
   | { kind: 'tv'; item: MediaItem }
-  | { kind: 'episode'; episode: EpisodeRow; series: MediaItem };
+  | { kind: 'episode'; episode: EpisodeRow; series: MediaItem; allVersions?: boolean };
 
 interface TrashResult {
   entry_dir: string;
@@ -53,25 +53,30 @@ interface TrashResult {
   size_bytes: number;
 }
 
+function transferContainsPath(torrent: TorrentItem, path: string) {
+  return torrent.filePaths.includes(path) || torrent.files.some((file) => file.included && file.full_path === path)
+    || (torrent.mode === 'stream' && !!torrent.savePath && !!rootFor(path, [torrent.savePath]));
+}
+
 /** Asks for confirmation, then moves the files to the trash and removes them from the library. */
 export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
   const store = useLibraryStore.getState();
-  const { movies, episodesBySeries, settings, playback } = store;
+  const { movies, episodesBySeries, settings, playback, playerSession } = store;
 
-  let movieRows: { id: number; file_path: string }[] = [];
+  let movieRows: typeof movies = [];
   let episodeRows: EpisodeRow[] = [];
+  let retainedPaths: string[] = [];
   let seriesId: number | null = null;
   let label: string;
   let poster: string | null;
   if (target.kind === 'movie') {
     const { item } = target;
-    movieRows = target.versionId != null
-      ? movies.filter((m) => m.id === target.versionId)
-      : movies.filter((m) => m.id === item.id || (item.tmdbId != null && m.tmdb_id === item.tmdbId));
+    const copies = movies.filter((m) => m.id === item.id || (item.tmdbId != null && m.tmdb_id === item.tmdbId));
+    movieRows = target.versionId == null ? copies : copies.filter((m) => m.id === target.versionId);
     label = item.year ? `${item.title} (${item.year})` : item.title;
-    if (target.versionId != null) {
-      const v = item.versions.find((x) => x.id === target.versionId);
-      if (v) label += ` · ${v.label}`;
+    if (target.versionId != null && movieRows.length) {
+      retainedPaths = copies.filter((m) => m.id !== target.versionId).map((m) => m.file_path);
+      label += ` · ${versionLabel(movieRows[0])}`;
     }
     poster = item.poster;
   } else if (target.kind === 'tv') {
@@ -80,9 +85,14 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
     label = target.item.title;
     poster = target.item.poster;
   } else {
-    episodeRows = [target.episode];
+    const copies = episodeVersions(target.episode, episodesBySeries.get(target.episode.series_id) ?? []);
+    episodeRows = target.allVersions ? copies : copies.filter((episode) => episode.id === target.episode.id);
     seriesId = target.episode.series_id;
     label = `${target.series.title} · ${epLabel(target.episode)} · ${target.episode.title}`;
+    if (!target.allVersions && episodeRows.length && copies.length > 1) {
+      retainedPaths = copies.filter((episode) => episode.id !== target.episode.id).map((episode) => episode.file_path);
+      label += ` · ${versionLabel(episodeRows[0])}`;
+    }
     poster = target.episode.still_path ?? target.series.poster;
   }
 
@@ -91,81 +101,84 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
   const fileCount = movieIds.length + episodeIds.length;
   if (!fileCount) return false;
 
-  if (
-    playback.active &&
-    ((playback.type === 'movie' && movieIds.includes(playback.id ?? -1)) ||
-      (playback.type === 'episode' && episodeIds.includes(playback.id ?? -1)))
-  ) {
-    store.toast('Stop playback in VLC before deleting this title.', 'error');
+  const playing = [playback.active ? playback : null, playerSession?.target].some((media) =>
+    (media?.type === 'movie' && movieIds.includes(media.id ?? -1))
+    || (media?.type === 'episode' && episodeIds.includes(media.id ?? -1)));
+  if (playing) {
+    store.toast('Stop playback of the selected file before deleting it.', 'error');
     return false;
   }
 
-  const allPaths = new Set([...movieRows.map((m) => m.file_path), ...episodeRows.map((e) => e.file_path)]);
+  const allRows = [...movieRows.map((r) => ({ ...r, type: 'movie' as const })), ...episodeRows.map((r) => ({ ...r, type: 'episode' as const }))];
   const matchingTorrents = store.torrents.filter(
-    (t) => t.filePaths.some((p) => allPaths.has(p)) || t.files.some((f) => allPaths.has(f.full_path)),
+    (t) => allRows.some((row) => transferContainsPath(t, row.file_path)),
   );
   const transientTorrents = matchingTorrents.filter((t) => t.mode === 'stream' || (t.inSession && !t.finished));
-
-  if (transientTorrents.length) {
-    const ok = await store.confirm({
-      title: `Remove transfers for “${label}”?`,
-      message: 'This will cancel the matching transfers and delete all files in those transfers, including any other episodes they contain.',
-      confirmLabel: 'Remove transfers',
-      danger: true,
-    });
-    if (!ok) return false;
-    try {
-      for (const t of transientTorrents) await removeTorrent(t.infoHash, true);
-    } catch (e) {
-      store.toast(`Could not delete “${label}”: ${errorMessage(e)}`, 'error');
-      return false;
-    }
-    store.toast(`Removed transfers for “${label}”`, 'info');
-    return true;
+  const sharedTransfer = transientTorrents.find((t) => retainedPaths.some((path) => transferContainsPath(t, path)));
+  if (sharedTransfer) {
+    const action = sharedTransfer.mode === 'stream' ? 'Keep the stream in your library' : 'Wait for the download to finish';
+    store.toast(`These versions share a transfer. ${action} before deleting individual copies.`, 'error');
+    return false;
   }
+  const regularRows = allRows.filter((row) => !transientTorrents.some((t) => transferContainsPath(t, row.file_path)));
 
   const what =
     target.kind === 'tv'
-      ? `All ${fileCount} episode${fileCount === 1 ? '' : 's'} (and the show’s folder, if it only holds this show)`
+      ? `All ${fileCount} episode file${fileCount === 1 ? '' : 's'} (and the show’s folder, if it only holds this show)`
       : fileCount > 1
-        ? `All ${fileCount} versions of this movie`
-        : target.kind === 'movie' && target.versionId != null
-          ? 'This copy of the movie (its other versions stay)'
+        ? `All ${fileCount} versions of this ${target.kind}`
+        : retainedPaths.length
+          ? `This copy of the ${target.kind}`
           : target.kind === 'movie'
             ? 'The movie file (and its folder, if it only holds this movie)'
           : 'The episode file and its subtitles';
+  const trashMessage = `${what} will be moved to Recently deleted in Settings. You can restore it for ${TRASH_RETENTION_DAYS} days before it’s permanently deleted.`;
+  const transferMessage = 'Matching transfers will be canceled and their files permanently deleted, including any other episodes they contain.';
   const ok = await store.confirm({
     title: `Delete “${label}”?`,
-    message: `${what} will be moved to Recently deleted in Settings. You can restore it for ${TRASH_RETENTION_DAYS} days before it’s permanently deleted.`,
+    message: transientTorrents.length
+      ? `${transferMessage}${regularRows.length ? '\n\nThe remaining selected files will be moved to Recently deleted.' : ''}`
+      : trashMessage,
     confirmLabel: 'Delete',
     danger: true,
   });
   if (!ok) return false;
 
-  // Release any active seeding handles before moving files on disk (critical on Windows).
-  for (const t of matchingTorrents) {
-    await invoke('torrent_action', { infoHash: t.infoHash, action: 'delete_keep_files' }).catch(() => {});
-    await db.deleteTorrentRecord(t.infoHash);
-  }
-  if (matchingTorrents.length) {
-    store.setTorrents(store.torrents.filter((t) => !matchingTorrents.some((m) => m.infoHash === t.infoHash)));
-  }
-
   // Group by media folder so each trash entry stays on the same drive as its files.
-  const allRows = [...movieRows.map((r) => ({ ...r, type: 'movie' as const })), ...episodeRows.map((r) => ({ ...r, type: 'episode' as const }))];
   const groups = new Map<string, typeof allRows>();
-  for (const r of allRows) {
+  const filesOnly = target.kind === 'episode' || (target.kind === 'movie' && target.versionId != null);
+  for (const r of regularRows) {
     const root = rootFor(r.file_path, settings.media_directories);
     groups.set(root, [...(groups.get(root) ?? []), r]);
   }
 
-  let deleted = 0;
   try {
+    for (const torrent of transientTorrents) {
+      await removeTorrent(torrent.infoHash, true);
+      const rows = allRows.filter((row) => transferContainsPath(torrent, row.file_path));
+      await db.removeLibraryRows(
+        rows.filter((row) => row.type === 'movie').map((row) => row.id),
+        rows.filter((row) => row.type === 'episode').map((row) => row.id),
+      );
+    }
+    // Release any active seeding handles before moving files on disk (critical on Windows).
+    const completedTorrents = matchingTorrents.filter((t) => !transientTorrents.includes(t));
+    for (const torrent of completedTorrents) {
+      await invoke('torrent_action', { infoHash: torrent.infoHash, action: 'delete_keep_files' });
+      await db.deleteTorrentRecord(torrent.infoHash);
+    }
+    if (completedTorrents.length) {
+      const current = useLibraryStore.getState();
+      current.setTorrents(current.torrents.filter((t) => !completedTorrents.some((completed) => completed.infoHash === t.infoHash)));
+    }
+
     for (const [root, rows] of groups) {
       const gMovies = rows.filter((r) => r.type === 'movie').map((r) => r.id);
       const gEpisodes = rows.filter((r) => r.type === 'episode').map((r) => r.id);
       const snapshot = await db.snapshotFor(gMovies, gEpisodes, seriesId);
-      const res = await invoke<TrashResult>('trash_media', { videoPaths: rows.map((r) => r.file_path), root });
+      const res = await invoke<TrashResult>('trash_media', {
+        videoPaths: rows.map((r) => r.file_path), root, ...(filesOnly ? { filesOnly: true } : {}),
+      });
       await db.addTrash({
         label,
         kind: target.kind,
@@ -176,15 +189,16 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
         size_bytes: res.size_bytes,
       });
       await db.removeLibraryRows(gMovies, gEpisodes);
-      deleted++;
     }
   } catch (e) {
-    store.toast(String(e), 'error');
-    if (!deleted) return false;
+    store.toast(`Could not delete “${label}”: ${errorMessage(e)}`, 'error');
+    return false;
   } finally {
     await store.reload();
   }
-  store.toast(`Deleted “${label}” · Restore it from Settings › Recently deleted`, 'success');
+  store.toast(groups.size
+    ? `Deleted “${label}” · Restore files from Settings › Recently deleted`
+    : `Removed transfers for “${label}”`, 'success');
   return true;
 }
 

@@ -11,10 +11,10 @@ import {
   HardDriveDownload,
   Play,
   RotateCcw,
-  Trash2,
   X,
 } from 'lucide-react';
-import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
+import { FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
+import DeleteMediaButton from './DeleteMediaButton';
 import {
   canStreamTorrent,
   episodeFileProgress,
@@ -170,15 +170,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
             >
               <FolderOpen className="h-5 w-5" />
             </button>
-            <button
-              onClick={async () => {
-                if (await deleteMedia({ kind: 'episode', episode: ep, series })) openEpisode(null);
-              }}
-              aria-label="Delete episode" title="Delete episode"
-              className="nf-circle-btn h-11 w-11 hover:!border-nf-red hover:!bg-nf-red/20"
-            >
-              <Trash2 className="h-5 w-5" />
-            </button>
+            <DeleteMediaButton target={{ kind: 'episode', episode: ep, series }} episodes={episodes} onDeleted={() => openEpisode(null)} />
           </div>
         </div>
       </div>

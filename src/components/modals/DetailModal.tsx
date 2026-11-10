@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import Dialog from '../common/Dialog';
 import IconButton from '../common/IconButton';
@@ -20,11 +20,11 @@ import {
   Plus,
   Sparkles,
   Square,
-  Trash2,
   Wrench,
   X,
 } from 'lucide-react';
-import { deleteMedia, FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
+import { FILE_MANAGER_NAME, revealInFileManager } from '../../services/files';
+import DeleteMediaButton from './DeleteMediaButton';
 import {
   canStreamTorrent,
   downloadBlockingPlayback,
@@ -95,7 +95,7 @@ export default function DetailModal() {
     if (episode) setSeason(episode.season_number);
   }, [episode?.id]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [detailKey, episodeId]);
 
@@ -270,15 +270,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                 <FolderOpen className="h-4 w-4" />
               </button>
             )}
-            <button
-              onClick={async () => {
-                if (await deleteMedia({ kind: item.kind, item })) openDetail(null);
-              }}
-              aria-label={item.kind === 'tv' ? 'Delete show' : 'Delete movie'} title={item.kind === 'tv' ? 'Delete show' : 'Delete movie'}
-              className="nf-circle-btn h-11 w-11 hover:!border-nf-red hover:!bg-nf-red/20"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
+            <DeleteMediaButton target={{ kind: item.kind, item }} versionId={versionId} onDeleted={() => openDetail(null)} />
           </div>
         </div>
       </div>

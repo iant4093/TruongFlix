@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { fade, spring } from '../../lib/motion';
 import { useSectionState } from '../../lib/sectionMemory';
+import { scrollBehavior } from '../../lib/scroll';
 import { SkeletonStatus } from '../../components/common/Skeleton';
 import { FolderOpen, Gamepad2, Loader2, Search, Settings2, ShieldCheck, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -140,7 +141,7 @@ function SubNav({ tab, onTab, query, onQuery, searching, onSettings }: {
           {searching ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-nf-secondary" /> : <Search className="h-4 w-4 shrink-0 text-nf-secondary" />}
           <input aria-label="Search games" value={query} onChange={(e) => onQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape' && query) { e.stopPropagation(); onQuery(''); } }}
-            placeholder={tab === 'browse' ? 'Search games' : 'Search your games'} className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-nf-muted" />
+            placeholder={tab === 'browse' ? 'Search games' : 'Search your games'} className="min-w-0 flex-1 scroll-mt-24 bg-transparent text-sm text-white outline-none placeholder:text-nf-muted" />
           {query && <button type="button" aria-label="Clear search" onClick={() => onQuery('')} className="p-0.5 text-white/70 hover:text-white"><X className="h-4 w-4" /></button>}
         </label>
         <button onClick={onSettings} aria-label="Games settings" title="Games settings"
@@ -174,7 +175,7 @@ export default function GamesView() {
     setTab(next);
     setQuery('');
     setSearching(false);
-    window.scrollTo({ top: 0 });
+    window.scrollTo({ top: 0, behavior: scrollBehavior() });
   }, []);
   const openLibrary = useCallback(() => switchTab('library'), [switchTab]);
   const openers = { onOpen: setSelected, onDownload: setDownloading, onInstall: setInstalling };

@@ -2,6 +2,7 @@ import { useMemo, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowDown, Gamepad2, Info, LayoutGrid, List, Loader2, Pause, Play, RotateCcw, Rows3, X } from 'lucide-react';
 import { transition } from '../../lib/motion';
+import { scrollBehavior } from '../../lib/scroll';
 import { formatBytes } from '../../lib/format';
 import { pauseTorrent, resumeTorrent } from '../../services/torrents';
 import SegmentedControl from '../../components/common/SegmentedControl';
@@ -42,7 +43,7 @@ export function LibraryLayoutToggle() {
       ariaLabel="Library view"
       size="sm"
       value={layout}
-      onChange={(next) => { set({ layout: next }); window.scrollTo({ top: 0 }); }}
+      onChange={(next) => { set({ layout: next }); window.scrollTo({ top: 0, behavior: scrollBehavior() }); }}
       options={LAYOUTS.map((l) => ({ value: l.value, icon: l.icon, label: <span className="sr-only">{l.label}</span> }))}
     />
   );

@@ -3,6 +3,7 @@ import {
   EDGE_EVENT,
   arrowLeavesElement,
   configureSpatialNav,
+  ensureVisible,
   isInDirection,
   moveFocus,
   noteFocus,
@@ -49,6 +50,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   document.body.innerHTML = '';
+  vi.unstubAllGlobals();
 });
 
 describe('geometry', () => {
@@ -152,6 +154,30 @@ describe('DOM navigation', () => {
     // Rows below the dialog are outside its layer.
     expect(document.activeElement).toBe(b);
     expect(grid[1].includes(document.activeElement as HTMLButtonElement)).toBe(false);
+  });
+
+  it.each([
+    { reducedMotion: false, behavior: 'smooth' },
+    { reducedMotion: true, behavior: 'instant' },
+  ])('reveals a control in the inner dialog scroller with $behavior motion', ({ reducedMotion, behavior }) => {
+    vi.stubGlobal('matchMedia', () => ({ matches: reducedMotion }));
+    const dialog = place(document.createElement('div'), 100, 100, 500, 240);
+    const body = place(document.createElement('div'), 100, 150, 500, 120);
+    for (const [el, height] of [[dialog, 240], [body, 120]] as const) {
+      el.style.overflowY = 'auto';
+      Object.defineProperties(el, { clientHeight: { value: height }, scrollHeight: { value: height + 300 } });
+      el.scrollTo = vi.fn();
+    }
+    document.body.appendChild(dialog);
+    dialog.appendChild(body);
+    const control = button(body, 'Control below the fold', 100, 275, 100, 40);
+    configureSpatialNav({ scope: () => dialog });
+
+    ensureVisible(control);
+
+    expect(body.scrollTo).toHaveBeenCalledWith({ top: 65, behavior });
+    expect(dialog.scrollTo).not.toHaveBeenCalled();
+    expect(window.scrollTo).not.toHaveBeenCalled();
   });
 
   it('steps into an open hover card with Down and back with Up', () => {

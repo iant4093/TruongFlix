@@ -19,6 +19,7 @@ import MaturityRating from '../common/MaturityRating';
 import { formatRuntime } from '../../store/selectors';
 import useCatalogRatings from '../../hooks/useCatalogRatings';
 import { errorMessage } from '../../lib/errors';
+import { focusAndReveal, reveal } from '../../lib/scroll';
 import Spinner from '../common/Spinner';
 
 export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, onSource, suspended = false, save }: {
@@ -53,6 +54,8 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
   const active = useRef(true);
   const actionRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef<HTMLDivElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
   const pickerButton = useRef<HTMLButtonElement>(null);
   const cancelSearchButton = useRef<HTMLButtonElement>(null);
   const pickerTask = useRef(false);
@@ -86,8 +89,11 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
   }, [detail, season, retry]);
   useEffect(() => { active.current = true; return () => { active.current = false; controller.current?.abort(); cancelSourceBrowser(); }; }, []);
   useEffect(() => {
-    if ((busy || error || pickerOpen) && !verification) statusRef.current?.scrollIntoView?.({ block: pickerOpen ? 'start' : 'nearest' });
-  }, [busy, error, pickerOpen, verification]);
+    if (pickerOpen) reveal(pickerRef.current, 'start');
+  }, [pickerOpen]);
+  useEffect(() => {
+    if ((busy || error) && !verification) reveal(statusRef.current);
+  }, [busy, error, verification]);
   useLayoutEffect(() => {
     if (busy && pickerTask.current) cancelSearchButton.current?.focus({ preventScroll: true });
   }, [busy]);
@@ -108,7 +114,7 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
     const outside = (e: MouseEvent) => { if (!actionRef.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) setActionsOpen(false); };
     const close = () => setActionsOpen(false);
     const scroll = (e: Event) => { if (!menuRef.current?.contains(e.target as Node)) close(); };
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); setActionsOpen(false); actionRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup]')?.focus(); }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); setActionsOpen(false); actionRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup]')?.focus({ preventScroll: true }); }
       if (e.key === 'Tab') setActionsOpen(false);
       if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
         e.preventDefault(); e.stopImmediatePropagation();
@@ -138,6 +144,10 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
   }
   const releaseKey = JSON.stringify([item.kind, item.id, detail?.imdbId, scope, sourceUrl]);
   const currentReleases = releaseSearch?.key === releaseKey ? releaseSearch : null;
+  const results = currentReleases?.releases;
+  useEffect(() => {
+    if (results) reveal(resultsRef.current);
+  }, [results]);
   const runSource = async (task: (options: Pick<ReleaseSearchOptions, 'signal' | 'progress' | 'verification'>) => Promise<void>, fromPicker = false) => {
     if (controller.current) return;
     pickerTask.current = fromPicker;
@@ -231,6 +241,11 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
       </div>
     </div>
     <div className="px-6 pb-9 pt-2 md:px-12">
+      <div ref={pickerRef} className="scroll-mt-16">
+        {pickerOpen && ready && (scope.kind !== 'season' || scope.complete) && <ReleasePicker id={pickerId} selection={selection} busy={busy}
+          quality={currentReleases?.quality ?? null} releases={results ?? null} resultsRef={resultsRef}
+          onClose={() => { setPickerOpen(false); setError(''); focusAndReveal(pickerButton.current); }} onSearch={findReleases} onSelect={run} />}
+      </div>
       <div ref={statusRef} className="scroll-mt-16">
         {busy && <div role="status" className="mb-5 rounded-lg border border-white/15 bg-white/5 p-5">
           <p className="mb-2 text-xs font-semibold text-white/50">{selection}</p><div className="flex flex-wrap items-center justify-between gap-4"><p className="flex min-w-0 items-center gap-2 break-words text-sm"><Spinner className="h-4 w-4" tone="inherit" />{progress}</p>
@@ -238,9 +253,6 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
         </div>}
         {verification && <SourceVerification requestId={verification} />}
         {error && <p role="alert" className="mb-5 text-sm leading-relaxed text-red-300">{error}</p>}
-        {pickerOpen && ready && (scope.kind !== 'season' || scope.complete) && <ReleasePicker id={pickerId} selection={selection} busy={busy}
-          quality={currentReleases?.quality ?? null} releases={currentReleases?.releases ?? null}
-          onClose={() => { setPickerOpen(false); setError(''); pickerButton.current?.focus(); }} onSearch={findReleases} onSelect={run} />}
       </div>
       <div className="grid gap-6 md:grid-cols-[minmax(0,1.85fr)_minmax(0,1fr)] md:gap-8">
         <div className="min-w-0 space-y-4">
@@ -290,7 +302,7 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
                     {entry.overview && <p className="mt-3 break-words text-sm leading-relaxed text-white/65">{entry.overview}</p>}
                   </div>
                   {episode === 'season' && <button type="button" disabled={busy} className="nf-btn-ghost shrink-0 text-sm"
-                    onClick={() => { setPickedEpisode(entry.episode_number); pickerButton.current?.focus(); }}>
+                    onClick={() => { setPickedEpisode(entry.episode_number); focusAndReveal(pickerButton.current); }}>
                     Select episode {entry.episode_number}
                   </button>}
                 </li>

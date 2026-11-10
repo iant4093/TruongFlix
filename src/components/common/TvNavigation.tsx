@@ -3,10 +3,12 @@ import { useLibraryStore } from '../../store/useLibraryStore';
 import { topDialogRoot } from '../../hooks/useModalDialog';
 import { closeCardHoverCards } from './HoverCard';
 import { isTvActive, useTvMode } from '../../lib/tvMode';
+import { scrollBehavior } from '../../lib/scroll';
 import { startGamepadLoop, type PadAction } from '../../lib/gamepad';
 import {
   arrowLeavesElement,
   configureSpatialNav,
+  ensureVisible,
   initialTarget,
   isActivatable,
   isNavigable,
@@ -70,7 +72,7 @@ function goBack() {
   if (!(active instanceof HTMLElement) || !active.closest('[data-nav-fixed]')) {
     const current = nav.querySelector<HTMLElement>('[aria-current="page"]') ?? navigableIn(nav)[0];
     current?.focus({ preventScroll: true });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: scrollBehavior() });
     return;
   }
   const s = useLibraryStore.getState();
@@ -123,16 +125,15 @@ function secondaryAction() {
 /** Y: the current screen's search field. */
 function focusSearch() {
   const scope = topDialogRoot();
-  if (scope) {
-    navigableIn(scope).find((el) => el instanceof HTMLInputElement && (el.type === 'search' || /search/i.test(el.getAttribute('aria-label') ?? el.placeholder)))?.focus();
-    return;
-  }
-  const field = document.querySelector<HTMLInputElement>('#library-search input');
+  const field = scope
+    ? navigableIn(scope).find((el) => el instanceof HTMLInputElement && (el.type === 'search' || /search/i.test(el.getAttribute('aria-label') ?? el.placeholder)))
+    : document.querySelector<HTMLInputElement>('#library-search input');
   if (field) {
-    field.focus();
+    field.focus({ preventScroll: true });
+    ensureVisible(field);
     return;
   }
-  document.querySelector<HTMLElement>('header button[aria-label^="Search"]')?.click();
+  if (!scope) document.querySelector<HTMLElement>('header button[aria-label^="Search"]')?.click();
 }
 
 /** In the player the D-pad and buttons are transport controls, sent to the page so a focused button never eats them. */

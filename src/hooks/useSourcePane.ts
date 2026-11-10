@@ -1,5 +1,6 @@
 import { useEffect, useState, type RefObject } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { reveal } from '../lib/scroll';
 
 type Rect = { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number };
 
@@ -48,7 +49,7 @@ export default function useSourcePane(slot: RefObject<HTMLElement>, requestId: s
     window.addEventListener('resize', schedule);
     window.addEventListener('scroll', schedule, true);
     document.addEventListener('visibilitychange', measure);
-    if (scrollIntoView) element.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    if (scrollIntoView) reveal(element, 'center');
     measure();
     return () => {
       stopped = true; pending = undefined; cancelAnimationFrame(frame); observer.disconnect();

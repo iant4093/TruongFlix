@@ -186,6 +186,29 @@ it('moves focus into the picker and restores it after canceling and closing', as
   expect(document.activeElement).toBe(trigger);
 });
 
+it('smoothly reveals the new release results after the search finishes', async () => {
+  const release = { id: '18', imdbId: detail.imdbId, title: 'Example.S01E01.1080p.WEB', seeders: 42, size: '2 GB' };
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+  const scroll = vi.fn(function (this: HTMLElement, options: ScrollIntoViewOptions) {
+    return { target: this, options };
+  });
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+  try {
+    vi.mocked(searchTorrentReleases).mockResolvedValue([release]);
+    render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Choose episode or entire season' });
+    fireEvent.click(screen.getByRole('button', { name: 'Compare releases' }));
+    fireEvent.click(screen.getByRole('button', { name: '1080p' }));
+    const download = await screen.findByRole('button', { name: `Download ${release.title}` });
+    const revealed = scroll.mock.results.at(-1)?.value;
+    expect(revealed?.target.contains(download)).toBe(true);
+    expect(revealed?.options).toMatchObject({ behavior: 'smooth', block: 'nearest' });
+  } finally {
+    if (descriptor) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', descriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+  }
+});
+
 it('lists every episode for Entire season while keeping the quick action scoped to the pack', async () => {
   render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
   const picker = await screen.findByRole('button', { name: 'Choose episode or entire season' });
@@ -318,13 +341,16 @@ it('ignores critic results from the old key after the configuration changes', as
   expect(screen.getByTitle('Metacritic: 60/100')).toBeTruthy();
 });
 
-it('browses torrents inside the app and restores the selected episode on return', async () => {
+it('browses torrents inside the app and restores the selected episode and scroll position on return', async () => {
   const control = vi.fn().mockResolvedValue(undefined);
   vi.mocked(browseSource).mockResolvedValue({ requestId: 'manual-fixture', control, close: vi.fn() });
   render(<CatalogTitle item={item} onClose={vi.fn()} onSource={vi.fn()} />);
   await screen.findByRole('button', { name: 'Choose episode or entire season' });
   fireEvent.click(screen.getByRole('button', { name: 'Choose episode or entire season' }));
   fireEvent.click(screen.getByRole('option', { name: /Episode 2/ }));
+  const backdrop = screen.getByRole('dialog', { name: 'Example' }).closest<HTMLElement>('[data-catalog-scroll]')!;
+  backdrop.scrollTop = 260;
+  fireEvent.scroll(backdrop);
   fireEvent.click(screen.getByRole('button', { name: 'Browse torrents' }));
   await screen.findByRole('dialog', { name: 'Browse torrents for Example' });
   await waitFor(() => expect((screen.getByRole('button', { name: 'Reload source' }) as HTMLButtonElement).disabled).toBe(false));
@@ -334,6 +360,7 @@ it('browses torrents inside the app and restores the selected episode on return'
   fireEvent.click(screen.getByRole('button', { name: 'Back to title' }));
   expect(signal.aborted).toBe(true);
   expect(screen.getByRole('button', { name: 'Choose episode or entire season' }).textContent).toContain('Episode 2');
+  expect(screen.getByRole('dialog', { name: 'Example' }).closest<HTMLElement>('[data-catalog-scroll]')?.scrollTop).toBe(260);
   expect(screen.queryByRole('dialog', { name: 'Browse torrents for Example' })).toBeNull();
 });
 

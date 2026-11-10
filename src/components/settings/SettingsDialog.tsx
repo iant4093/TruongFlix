@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ComponentType } from 'react';
+import { useLayoutEffect, useRef, type ComponentType } from 'react';
 import { motion } from 'framer-motion';
 import { Captions, Home, Info, Library, Magnet, MonitorSmartphone, PlayCircle, Star, Trash2, Users, Volume2, type LucideIcon } from 'lucide-react';
 import { useLibraryStore, type SettingsTab } from '../../store/useLibraryStore';
@@ -42,8 +42,8 @@ export default function SettingsDialog() {
   const current = PAGES.find((p) => p.id === tab) ?? PAGES[0];
   const Current = current.page;
 
-  useEffect(() => {
-    scroller.current?.scrollTo({ top: 0 });
+  useLayoutEffect(() => {
+    if (scroller.current) scroller.current.scrollTop = 0;
   }, [tab]);
 
   return (

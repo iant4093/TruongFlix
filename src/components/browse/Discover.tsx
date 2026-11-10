@@ -187,7 +187,7 @@ function BrowseCatalog({ profileId }: { profileId: number }) {
             options={[{ value: 'movie', label: 'Movies' }, { value: 'tv', label: 'TV shows' }]} />
           <Dropdown value={list} options={lists} onChange={setList} ariaLabel="Browse list" />
         </>}
-        <SearchField className="ml-auto min-w-[220px]" inputClassName="w-60" ariaLabel="Search titles to browse" value={query} onChange={setQuery} placeholder={savedOnly ? 'Search saved titles' : kind === 'movie' ? 'Search movies' : 'Search TV shows'} />
+        <SearchField className="ml-auto min-w-[220px]" inputClassName="w-60 scroll-mt-24" ariaLabel="Search titles to browse" value={query} onChange={setQuery} placeholder={savedOnly ? 'Search saved titles' : kind === 'movie' ? 'Search movies' : 'Search TV shows'} />
       </div>}
       {visibleFeed && error && <div role="alert" className="mb-6 flex items-center gap-3 rounded border border-white/15 bg-white/5 p-4 text-sm text-white/70"><span>{!savedOnly && data.length ? (feed.page ? 'Could not load more titles. ' : 'Showing cached titles. ') : ''}{error}</span><button className="nf-btn-ghost ml-auto" onClick={savedOnly ? () => setSavedRetry((value) => value + 1) : feed.retry}><RefreshCw className="h-4 w-4" />Retry</button></div>}
       {firstLoad

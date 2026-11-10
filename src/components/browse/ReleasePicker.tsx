@@ -1,16 +1,17 @@
 import { Download, Play, X } from 'lucide-react';
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, type RefObject } from 'react';
 import type { BrowseTarget, SourceRelease } from '../../types/browse';
 import type { TorrentMode } from '../../types/media';
 
 type Quality = BrowseTarget['quality'];
 
-export default function ReleasePicker({ id, selection, busy, quality, releases, onClose, onSearch, onSelect }: {
+export default function ReleasePicker({ id, selection, busy, quality, releases, resultsRef, onClose, onSearch, onSelect }: {
   id: string;
   selection: string;
   busy: boolean;
   quality: Quality | null;
   releases: SourceRelease[] | null;
+  resultsRef: RefObject<HTMLDivElement>;
   onClose: () => void;
   onSearch: (quality: Quality) => void;
   onSelect: (mode: TorrentMode, quality: Quality, release: SourceRelease) => void;
@@ -47,23 +48,24 @@ export default function ReleasePicker({ id, selection, busy, quality, releases, 
       </div>
     </div>
     {quality == null && <p className="mt-4 text-sm text-nf-secondary">Choose 1080p or 4K to search your source.</p>}
-    {releases?.length === 0 && <p className="mt-4 text-sm text-nf-secondary">No seeded {quality} releases matched this selection.</p>}
-    {!!releases?.length && quality != null && <>
-      <p className="mt-4 text-xs text-nf-muted">Quality is advertised by the source. TruongFlix checks the selected files before starting.</p>
-      <ol className="mt-2 divide-y divide-white/10">
-        {releases.map((release) => <li key={release.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
-          <div className="min-w-0 flex-1 basis-56">
-            <p className="break-words text-sm font-semibold">{release.title}</p>
-            <p className="mt-1 text-xs text-nf-secondary">{release.seeders?.toLocaleString()} reported seeds{release.size && ` · ${release.size}`}</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="nf-btn-ghost text-sm disabled:opacity-50" disabled={busy}
-              aria-label={`Stream ${release.title}`} onClick={() => { focusQuality.current = true; onSelect('stream', quality, release); }}><Play className="h-4 w-4" />Stream</button>
-            <button type="button" className="nf-btn-ghost text-sm disabled:opacity-50" disabled={busy}
-              aria-label={`Download ${release.title}`} onClick={() => { focusQuality.current = true; onSelect('download', quality, release); }}><Download className="h-4 w-4" />Download</button>
-          </div>
-        </li>)}
-      </ol>
-    </>}
+    {releases && quality != null && <div ref={resultsRef} className="scroll-mt-16">
+      {releases.length === 0 ? <p className="mt-4 text-sm text-nf-secondary">No seeded {quality} releases matched this selection.</p> : <>
+        <p className="mt-4 text-xs text-nf-muted">Quality is advertised by the source. TruongFlix checks the selected files before starting.</p>
+        <ol className="mt-2 divide-y divide-white/10">
+          {releases.map((release) => <li key={release.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
+            <div className="min-w-0 flex-1 basis-56">
+              <p className="break-words text-sm font-semibold">{release.title}</p>
+              <p className="mt-1 text-xs text-nf-secondary">{release.seeders?.toLocaleString()} reported seeds{release.size && ` · ${release.size}`}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="nf-btn-ghost text-sm disabled:opacity-50" disabled={busy}
+                aria-label={`Stream ${release.title}`} onClick={() => { focusQuality.current = true; onSelect('stream', quality, release); }}><Play className="h-4 w-4" />Stream</button>
+              <button type="button" className="nf-btn-ghost text-sm disabled:opacity-50" disabled={busy}
+                aria-label={`Download ${release.title}`} onClick={() => { focusQuality.current = true; onSelect('download', quality, release); }}><Download className="h-4 w-4" />Download</button>
+            </div>
+          </li>)}
+        </ol>
+      </>}
+    </div>}
   </section>;
 }
