@@ -124,8 +124,11 @@ export function parseWebList(data: unknown): LiveChannel[] {
 }
 
 /** The web player link, styled to match TruongFlix's own player. */
-export function webPlayerUrl(url: string) {
+export function webPlayerUrl(url: string, { muted = false, compact = false } = {}) {
   const link = new URL(url);
+  // Multiview picks which channel is heard; small players get smaller controls.
+  if (muted) link.searchParams.set('muted', '1');
+  if (compact && !link.searchParams.has('scale')) link.searchParams.set('scale', '0.8');
   const style: Record<string, string> = {
     accent: 'e50914',
     bg: '000000',
