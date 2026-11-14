@@ -34,7 +34,7 @@ import { LiveArtwork } from './LiveArtwork';
 import EventCard from './LiveEventCard';
 import Sources from './LiveSources';
 import EventFeeds from './LiveEventFeeds';
-import { button, leagueLabel } from './ui';
+import { button, leagueLabel, sourceKind } from './ui';
 import SegmentedControl from '../common/SegmentedControl';
 import SearchField from '../common/SearchField';
 import { RestrictedProfileNotice } from '../common/States';
@@ -250,6 +250,10 @@ export default function LiveTV() {
     });
   const openEvent = (event: SportsEvent) => setSelectedEvent(event);
   const addFeed = (feed: LiveFeed) => {
+    if (feed.match.channel.web) {
+      toast('Web player channels can’t be shown in multiview.', 'info');
+      return;
+    }
     if (feeds.some((f) => sameLiveFeed(f.match, feed.match))) {
       toast('That channel is already selected for multiview.', 'info');
       return;
@@ -277,12 +281,12 @@ export default function LiveTV() {
               ...state.playlists.map((p) => ({
                 value: p.id,
                 label: p.name,
-                hint: `${p.channels.length.toLocaleString()} streams`,
+                hint: `${sourceKind(p)} · ${p.channels.length.toLocaleString()} channels`,
               })),
-              ...(state.playlists.length > 1 ? [{ value: 'all', label: 'All playlists' }] : []),
+              ...(state.playlists.length > 1 ? [{ value: 'all', label: 'All sources' }] : []),
             ]}
             onChange={(playlist) => void setLivePreferences({ playlist })}
-            ariaLabel="Playlist"
+            ariaLabel="Live TV source"
           />
           <button className={button} onClick={() => guardAdult(() => setSourcesOpen(true))}>
             <Settings2 className="h-4 w-4" /> Sources
@@ -417,10 +421,10 @@ export default function LiveTV() {
                   <div className="mb-7 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-white/10 bg-gradient-to-r from-nf-red/15 to-white/5 p-6">
                     <div>
                       <h2 className="text-lg font-bold">Bring your channels</h2>
-                      <p className="mt-1 text-sm text-nf-secondary">Add an M3U playlist to find streams for these events.</p>
+                      <p className="mt-1 text-sm text-nf-secondary">Add an M3U playlist or a web channel list to find streams for these events.</p>
                     </div>
                     <button className="nf-btn-red" onClick={() => setSourcesOpen(true)}>
-                      <Plus className="h-4 w-4" /> Add playlist
+                      <Plus className="h-4 w-4" /> Add source
                     </button>
                   </div>
                 )}
@@ -513,10 +517,20 @@ export default function LiveTV() {
                         >
                           <LiveArtwork url={match.channel.logo} className="h-12 w-16 rounded bg-black/25 p-1" />
                           <span className="min-w-0">
-                            <span className="block truncate text-sm font-bold">{match.channel.name}</span>
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="truncate text-sm font-bold">{match.channel.name}</span>
+                              {match.channel.web &&
+                                [match.channel.web.quality, match.channel.web.region].filter(Boolean).map((tag) => (
+                                  <span key={tag} className="shrink-0 rounded border border-white/25 px-1 text-[10px] font-semibold leading-4 text-white/70">
+                                    {tag}
+                                  </span>
+                                ))}
+                            </span>
                             <span className="mt-1 block truncate text-xs text-nf-muted">
-                              {match.playlist.name} ·{' '}
-                              {health?.state === 'verified'
+                              {match.playlist.name} · {match.channel.web ? 'Web player · ' : ''}
+                              {match.channel.web && health?.state !== 'unavailable' && health?.state !== 'verified'
+                                ? 'On the air'
+                                : health?.state === 'verified'
                                 ? 'Played successfully'
                                 : health?.state === 'reachable'
                                   ? 'Recently reachable'
@@ -538,7 +552,7 @@ export default function LiveTV() {
                             className={`h-4 w-4 ${state.preferences.favourites.includes(match.key) ? 'fill-yellow-400 text-yellow-400' : ''}`}
                           />
                         </button>
-                        {health?.state === 'unavailable' && (
+                        {health?.state === 'unavailable' && !match.channel.web && (
                           <button
                             title="Retry channel"
                             aria-label={`Retry ${match.channel.name}`}
@@ -554,8 +568,8 @@ export default function LiveTV() {
                 {state.ready && !channels.length && (
                   <div className="py-16 text-center text-nf-secondary">
                     {state.playlists.length
-                      ? 'No channels match your filters. Try Show unavailable or another playlist.'
-                      : 'Add a playlist to browse your channels.'}
+                      ? 'No channels match your filters. Try Show unavailable or another source.'
+                      : 'Add a source to browse your channels.'}
                   </div>
                 )}
                 {channels.length > count && (

@@ -36,12 +36,14 @@ import { languageName } from '../../services/subtitles';
 import Dropdown from '../common/Dropdown';
 import { isPlayerShortcut, playerControlTitles } from '../player/shortcuts';
 import LiveMultiview from './LiveMultiview';
+import LiveWebPlayer from './LiveWebPlayer';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const control =
   'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15 disabled:opacity-30';
 
 export default function LivePlayer({ session }: { session: LivePlayerSession }) {
+  if (session.web) return <LiveWebPlayer session={{ ...session, web: session.web }} />;
   if (session.multiview) {
     return <LiveMultiview key={session.loadId} session={{ ...session, multiview: session.multiview }} />;
   }
