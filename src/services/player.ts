@@ -928,6 +928,9 @@ export async function initPlayerEvents() {
     Promise.resolve(useLibraryStore.subscribe((state, previous) => {
       if (previous.playerSession?.target.type === 'live' && state.activeProfile?.id !== previous.activeProfile?.id) void closeBuiltin();
     })),
+    // Keep the screen from dimming and locking on its own while something plays.
+    Promise.resolve(useLibraryStore.subscribe(syncKeepAwake)),
+    Promise.resolve(useLiveStore.subscribe(syncKeepAwake)),
     listen<ProgressPayload>('vlc-progress', async ({ payload }) => {
       const store = useLibraryStore.getState();
       store.setPlayback({ active: true, type: payload.media_type, id: payload.media_id, time: payload.time, length: payload.length });
@@ -1032,4 +1035,24 @@ export async function initPlayerEvents() {
 export function disposePlayerEvents() {
   unlisteners.forEach((u) => u());
   unlisteners = [];
+  syncKeepAwake(false);
+}
+
+/** True while video plays in the built-in player, a multiview pane or VLC. */
+export function isPlayingVideo(): boolean {
+  const { playerSession: session, playerState: state, playback } = useLibraryStore.getState();
+  if (playback.active) return true;
+  if (!session) return false;
+  const playing = (s: BuiltinPlayerState | LiveMultiviewState | null) =>
+    !!s?.loaded && !s.paused && !('eof' in s ? s.eof : s.failed);
+  if (playing(state)) return true;
+  return 'multiview' in session && !!session.multiview && playing(useLiveStore.getState().multiviewState);
+}
+
+let keepingAwake = false;
+function syncKeepAwake(allow?: unknown) {
+  const awake = allow !== false && isPlayingVideo();
+  if (awake === keepingAwake) return;
+  keepingAwake = awake;
+  void invoke('keep_awake', { on: awake }).catch((e) => console.warn('[player] keep awake', e));
 }
