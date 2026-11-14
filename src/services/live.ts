@@ -38,6 +38,8 @@ interface LiveState {
   total: number;
   playbackError: string;
   multiviewState: LiveMultiviewState | null;
+  /** A web player channel was stopped (screen locked) and waits for Resume. */
+  webPaused: boolean;
   set: (patch: Partial<LiveState>) => void;
 }
 export const useLiveStore = create<LiveState>((set) => ({
@@ -50,6 +52,7 @@ export const useLiveStore = create<LiveState>((set) => ({
   total: 0,
   playbackError: '',
   multiviewState: null,
+  webPaused: false,
   set,
 }));
 
@@ -78,20 +81,89 @@ export async function setLivePreferences(patch: Partial<LivePreferences>) {
   useLiveStore.setState({ preferences });
   await writeLiveData(`profile:${state.profileId}`, preferences);
 }
-export async function importPlaylist(name: string, input: string, existing?: string) {
-  const channels = await invoke<LiveChannel[]>('live_import', { input });
+const text = (value: unknown, max = 200) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+const httpsUrl = (value: string, base?: string) => {
+  try {
+    const url = new URL(value, base);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : '';
+  } catch {
+    return '';
+  }
+};
+
+/**
+ * Reads a web channel list: `{ baseUrl?, channels: [{ id, name, url?, region?, quality?, sport?, live? }] }`.
+ * Each channel needs an HTTPS player link (its `url`, or `baseUrl` + `id`).
+ */
+export function parseWebList(data: unknown): LiveChannel[] {
+  const list = data as { baseUrl?: unknown; channels?: unknown };
+  if (!list || !Array.isArray(list.channels)) throw new Error('This address did not return a channel list with a "channels" array');
+  const base = httpsUrl(text(list.baseUrl, 2000)) || undefined;
+  const seen = new Set<string>();
+  const channels = list.channels.slice(0, 5000).flatMap((raw): LiveChannel[] => {
+    const entry = (raw ?? {}) as Record<string, unknown>;
+    const id = text(entry.id, 120);
+    const given = text(entry.url, 2000);
+    const url = given ? httpsUrl(given) : id && base ? httpsUrl(encodeURIComponent(id), base) : '';
+    const key = `web:${id || url}`;
+    if (!url || seen.has(key)) return [];
+    seen.add(key);
+    const region = text(entry.region, 40) || text(entry.flag, 8).toUpperCase();
+    return [{
+      id: key,
+      tvgId: '',
+      name: text(entry.name) || id || 'Channel',
+      logo: httpsUrl(text(entry.logo, 2000)),
+      group: text(entry.sport, 60) || text(entry.category, 60) || 'Channels',
+      transport: { url, referrer: '', userAgent: '' },
+      web: { url, region, quality: text(entry.quality, 20), live: entry.live !== false },
+    }];
+  });
+  if (!channels.length) throw new Error('This channel list has no channels with an HTTPS player link');
+  return channels;
+}
+
+/** The web player link, styled to match TruongFlix's own player. */
+export function webPlayerUrl(url: string) {
+  const link = new URL(url);
+  const style: Record<string, string> = {
+    accent: 'e50914',
+    bg: '000000',
+    radius: '4',
+    frame: '0',
+    brand: '0',
+    title: '0',
+    fullscreen: '0',
+    autoplay: '1',
+  };
+  for (const [key, value] of Object.entries(style)) if (!link.searchParams.has(key)) link.searchParams.set(key, value);
+  return link.href;
+}
+
+export async function importPlaylist(name: string, input: string, existing?: string, kind: 'm3u' | 'web' = 'm3u') {
+  const channels =
+    kind === 'web'
+      ? parseWebList(await invoke<unknown>('live_web_list', { url: input.trim() }))
+      : await invoke<LiveChannel[]>('live_import', { input });
   const state = useLiveStore.getState();
   const old = state.playlists.find((p) => p.id === existing);
   const health: Record<string, ChannelHealth> = {};
+  const now = Date.now();
   for (const channel of channels) {
     const previous = old?.channels.find((c) => c.id === channel.id);
-    if (previous && JSON.stringify(previous.transport) === JSON.stringify(channel.transport) && old?.health[channel.id])
+    if (channel.web) {
+      // Web lists say which channels are on air; there is no stream to check.
+      if (!channel.web.live)
+        health[channel.id] = { state: 'unavailable', reason: 'Off the air', checkedAt: now, retryAt: now, failures: 0 };
+      else if (old?.health[channel.id]?.state === 'verified') health[channel.id] = old.health[channel.id];
+    } else if (previous && JSON.stringify(previous.transport) === JSON.stringify(channel.transport) && old?.health[channel.id])
       health[channel.id] = old.health[channel.id];
   }
   const playlist: LivePlaylist = {
     id: existing || crypto.randomUUID(),
-    name: name.trim() || 'My playlist',
-    input,
+    ...(kind === 'web' && { kind }),
+    name: name.trim() || (kind === 'web' ? 'My channels' : 'My playlist'),
+    input: kind === 'web' ? input.trim() : input,
     channels,
     health,
     updatedAt: Date.now(),
@@ -359,7 +431,7 @@ export async function checkChannels(matches: ChannelMatch[], force = false) {
   if (ticket !== scan) return;
   const queue = [...new Map(matches.map((m) => [m.key, m])).values()].filter(
     ({ playlist, channel }) =>
-      force || !playlist.health[channel.id] || playlist.health[channel.id].retryAt <= Date.now(),
+      !channel.web && (force || !playlist.health[channel.id] || playlist.health[channel.id].retryAt <= Date.now()),
   );
   if (!queue.length) return;
   useLiveStore.setState({ checking: true, checked: 0, total: queue.length });

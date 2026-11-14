@@ -150,6 +150,7 @@ pub fn run() {
             live::live_check,
             live::live_sports,
             live::live_artwork,
+            live::live_web_list,
             trailer::trailer_resolve,
             update_feed_status,
             power::keep_awake,

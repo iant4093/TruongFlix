@@ -1,5 +1,8 @@
 import { LEAGUES } from '../../services/live';
-import type { SportsEvent } from '../../types/live';
+import type { LivePlaylist, SportsEvent } from '../../types/live';
+
+/** How a source is labeled next to its name. */
+export const sourceKind = (playlist: Pick<LivePlaylist, 'kind'>) => (playlist.kind === 'web' ? 'Web player' : 'M3U');
 
 export const button =
   'inline-flex items-center justify-center gap-2 rounded bg-white/10 px-4 py-2 text-sm font-semibold transition hover:bg-white/20 disabled:cursor-wait disabled:opacity-50';

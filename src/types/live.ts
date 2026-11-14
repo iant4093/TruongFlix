@@ -4,6 +4,14 @@ export interface LiveTransport {
   userAgent: string;
 }
 
+/** A channel from a web channel list: it plays in the list's own web player. */
+export interface WebChannelInfo {
+  url: string;
+  region: string;
+  quality: string;
+  live: boolean;
+}
+
 export interface LiveChannel {
   id: string;
   tvgId: string;
@@ -11,6 +19,7 @@ export interface LiveChannel {
   logo: string;
   group: string;
   transport: LiveTransport;
+  web?: WebChannelInfo;
 }
 
 export interface ChannelHealth {
@@ -23,6 +32,8 @@ export interface ChannelHealth {
 
 export interface LivePlaylist {
   id: string;
+  /** `web`: a JSON channel list whose channels play in a web player. Missing means M3U. */
+  kind?: 'm3u' | 'web';
   name: string;
   input: string;
   channels: LiveChannel[];
@@ -52,6 +63,8 @@ export interface SportsEvent {
 
 export interface LivePlayerSession {
   event?: SportsEvent;
+  /** Set when the channel plays in its source's web player instead of the native one. */
+  web?: { url: string; source: string };
   multiview?: {
     playlistId: string;
     id: string;

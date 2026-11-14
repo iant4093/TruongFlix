@@ -602,6 +602,26 @@ pub async fn live_sports(league: String, date: String) -> Result<serde_json::Val
     serde_json::from_slice(&data).map_err(|_| "Invalid sports schedule response".into())
 }
 
+/// Downloads a web channel list (JSON with a web player link per channel) the user added.
+#[tauri::command]
+pub async fn live_web_list(url: String) -> Result<serde_json::Value, String> {
+    let url = http_url(url.trim())?;
+    if url.scheme() != "https" {
+        return Err("Web channel lists must use an HTTPS address".into());
+    }
+    let response = client()?
+        .get(url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| "Could not download this channel list. Check your connection and the address.")?;
+    if !response.status().is_success() {
+        return Err(format!("Channel list returned HTTP {}", response.status().as_u16()));
+    }
+    let data = bytes(response, 4 * 1024 * 1024, false).await?;
+    serde_json::from_slice(&data).map_err(|_| "This address did not return a JSON channel list".into())
+}
+
 #[tauri::command]
 pub async fn live_artwork(app: tauri::AppHandle, url: String) -> Result<String, String> {
     static SLOTS: Semaphore = Semaphore::const_new(6);
