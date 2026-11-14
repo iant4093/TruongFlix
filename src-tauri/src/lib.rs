@@ -152,6 +152,7 @@ pub fn run() {
             live::live_artwork,
             trailer::trailer_resolve,
             update_feed_status,
+            power::keep_awake,
             cast::cast_discover,
             cast::cast_start,
             cast::cast_control,
