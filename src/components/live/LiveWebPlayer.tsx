@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import useIdle from '../../hooks/useIdle';
-import { ArrowLeft, ChevronDown, ChevronUp, Globe, Maximize, PictureInPicture2, Play, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, Globe, Maximize, PanelsTopLeft, PictureInPicture2, Play, RefreshCw } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { LivePlayerSession } from '../../types/live';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -9,6 +9,7 @@ import { closeBuiltin, dismissPrompt, enterMini, miniRect, retuneLive, tickWebLi
 import { isPlayerShortcut } from '../player/shortcuts';
 import Spinner from '../common/Spinner';
 import LiveWebFrame, { type WebFrameStatus } from './LiveWebFrame';
+import MultiviewPicker from './LiveMultiviewPicker';
 
 const control =
   'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition hover:bg-white/15 disabled:opacity-30';
@@ -25,6 +26,7 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
   const paused = useLiveStore((s) => s.webPaused);
   const [status, setStatus] = useState<WebFrameStatus>('loading');
   const [attempt, setAttempt] = useState(0);
+  const [picking, setPicking] = useState(false);
   const [rect, setRect] = useState(miniRect);
   const { active: visible, wake: reveal } = useIdle();
   const blocked = !!prompt;
@@ -48,6 +50,14 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
     const key = (event: KeyboardEvent) => {
       if (!isPlayerShortcut(event)) return;
       reveal();
+      if (picking) {
+        if (event.code === 'Escape') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          setPicking(false);
+        }
+        return;
+      }
       if (event.code === 'Escape') {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -70,8 +80,8 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [blocked, mini]);
-  const show = visible || blocked || paused || failed || status === 'loading';
+  }, [blocked, mini, picking]);
+  const show = visible || blocked || paused || picking || failed || status === 'loading';
   return (
     // In the mini player this layer sits above the mini player's frame (z-120) so the video shows.
     <div
@@ -129,6 +139,9 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
             <button className={control} aria-label="Reload channel" onClick={reload}>
               <RefreshCw />
             </button>
+            <button className={control} aria-label="Start multiview" title="Multiview: add channels" onClick={() => setPicking(true)}>
+              <PanelsTopLeft />
+            </button>
             <button className={control} aria-label="Live mini-player" title="Mini player (I)" onClick={() => void enterMini()}>
               <PictureInPicture2 />
             </button>
@@ -136,6 +149,7 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
               <Maximize />
             </button>
           </div>
+          {picking && !blocked && <MultiviewPicker session={session} onClose={() => setPicking(false)} />}
           {blocked ? (
             <div key={prompt} role="dialog" aria-modal="true" aria-label="Playback paused" className="absolute inset-0 z-20 flex items-center justify-center bg-black/70">
               <div className="rounded-lg bg-nf-surface p-8 text-center">
