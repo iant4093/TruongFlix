@@ -83,3 +83,72 @@ it('plays web channels in the web player instead of the native one', async () =>
   expect(screen.queryByTitle('ABC live')).toBeNull();
   expect(isPlayingVideo()).toBe(false);
 });
+
+const m3u = {
+  id: 'm3u',
+  name: 'My M3U',
+  input: 'x',
+  updatedAt: 0,
+  health: {},
+  channels: [{ id: 'espn', tvgId: '', name: 'ESPN', logo: '', group: 'Sports', transport: { url: 'https://cdn.example/espn.m3u8', referrer: '', userAgent: '' } }],
+};
+const nativeOpens = () => vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'player_open').map(([, a]) => (a as { filePath: string }).filePath);
+
+async function webSource() {
+  vi.mocked(invoke).mockImplementation(async (cmd) =>
+    cmd === 'live_web_list' ? list : cmd === 'player_status' ? { available: true } : undefined);
+  const source = await importPlaylist('My web TV', 'https://tv.example/embed/manifest.json', undefined, 'web');
+  useLiveStore.setState({ playlists: [source, m3u] });
+  useLibraryStore.setState({ activeProfile: { id: 1, maturity: 'all' } as never });
+  return source;
+}
+
+it('shows a web channel and an M3U channel together, with the native player on the M3U side', async () => {
+  const source = await webSource();
+  await playLive({ playlist: source, channel: source.channels[0], key: 'a' }, undefined, undefined, {
+    match: { playlist: m3u, channel: m3u.channels[0], key: 'b' },
+  });
+  const session = useLibraryStore.getState().playerSession as LivePlayerSession;
+  expect(session.web?.url).toBe('https://tv.example/embed/abc-one');
+  expect(session.multiview).toMatchObject({ title: 'ESPN' });
+  expect(session.multiview?.web).toBeUndefined();
+  expect(nativeOpens()).toEqual(['https://cdn.example/espn.m3u8']);
+
+  render(<LivePlayer session={session} />);
+  const frame = screen.getByTitle('ABC live') as HTMLIFrameElement;
+  expect(frame.src).not.toContain('muted=1');
+  expect(screen.getByText(/Web player/)).toBeTruthy();
+  expect(invoke).not.toHaveBeenCalledWith('player_multiview_open', expect.anything());
+});
+
+it('shows two web channels with only the chosen one heard and no native player', async () => {
+  const source = await webSource();
+  await playLive({ playlist: source, channel: source.channels[0], key: 'a' }, undefined, undefined, {
+    match: { playlist: source, channel: source.channels[1], key: 'b' },
+  });
+  const session = useLibraryStore.getState().playerSession as LivePlayerSession;
+  expect(session.multiview?.web?.url).toBe('https://tv.example/embed/from-base');
+  expect(nativeOpens()).toEqual([]);
+  render(<LivePlayer session={session} />);
+  expect((screen.getByTitle('ABC live') as HTMLIFrameElement).src).not.toContain('muted=1');
+  expect((screen.getByTitle('From base live') as HTMLIFrameElement).src).toContain('muted=1');
+  act(() => screen.getByLabelText('Listen to From base').click());
+  expect((screen.getByTitle('ABC live') as HTMLIFrameElement).src).toContain('muted=1');
+  expect((screen.getByTitle('From base live') as HTMLIFrameElement).src).not.toContain('muted=1');
+});
+
+it('keeps a web channel playing in the mini player', async () => {
+  const source = await webSource();
+  await playLive({ playlist: source, channel: source.channels[0], key: 'a' });
+  const session = useLibraryStore.getState().playerSession as LivePlayerSession;
+  render(<LivePlayer session={session} />);
+  const before = screen.getByTitle('ABC live');
+  await act(async () => {
+    const { enterMini } = await import('../src/services/player');
+    await enterMini();
+  });
+  expect(useLibraryStore.getState().playerMini).toBe(true);
+  expect(screen.getByTitle('ABC live')).toBe(before);
+  expect(before.className).toContain('fixed');
+  expect(invoke).not.toHaveBeenCalledWith('player_layout', expect.anything());
+});

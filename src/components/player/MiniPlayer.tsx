@@ -4,6 +4,7 @@ import { Maximize2, Pause, Play, RotateCcw, X } from 'lucide-react';
 import type { PlaybackSession } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { closeBuiltin, dismissPrompt, exitMini, goLive, MINI, miniRect, noteUserActivity, playerCommand } from '../../services/player';
+import { useLiveStore } from '../../services/live';
 
 /**
  * Mini-player: the native video floats in the bottom-right corner (above the page, click-through),
@@ -19,6 +20,7 @@ export default function MiniPlayer() {
 function Mini({ session }: { session: PlaybackSession }) {
   const state = useLibraryStore((s) => s.playerState);
   const prompt = useLibraryStore((s) => s.playerPrompt);
+  const webPaused = useLiveStore((s) => s.webPaused);
   const [rect, setRect] = useState(miniRect);
 
   useEffect(() => {
@@ -28,6 +30,10 @@ function Mini({ session }: { session: PlaybackSession }) {
   }, []);
 
   const live = session.target.type === 'live';
+  // Web channels draw their own frame over the video area and can only be stopped and restarted.
+  const web = live && 'web' in session && !!session.web;
+  const paused = web ? webPaused : state?.paused;
+  const togglePause = () => (web ? useLiveStore.setState({ webPaused: !webPaused }) : void playerCommand('cycle', 'pause'));
   const progress = !live && state?.duration ? state.time / state.duration : 0;
   const btn = 'flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15 hover:text-white';
 
@@ -68,12 +74,12 @@ function Mini({ session }: { session: PlaybackSession }) {
         </div>
       ) : (
         <div className="flex items-center gap-1 px-2" style={{ height: MINI.bar - 3 }} onClickCapture={noteUserActivity}>
-          <button type="button" className={btn} aria-label={state?.paused ? 'Play' : 'Pause'} title={state?.paused ? 'Play' : 'Pause'} onClick={() => void playerCommand('cycle', 'pause')}>
-            {state?.paused ? <Play className="h-5 w-5 fill-white" strokeWidth={0} /> : <Pause className="h-5 w-5 fill-white" strokeWidth={0} />}
+          <button type="button" className={btn} aria-label={paused ? 'Play' : 'Pause'} title={paused ? 'Play' : 'Pause'} onClick={togglePause}>
+            {paused ? <Play className="h-5 w-5 fill-white" strokeWidth={0} /> : <Pause className="h-5 w-5 fill-white" strokeWidth={0} />}
           </button>
-          <button type="button" className={btn} aria-label={live ? 'Go live' : 'Back 10 seconds'} title={live ? 'Go live' : 'Back 10 seconds'} onClick={() => void (live ? goLive() : playerCommand('seek', -10, 'relative'))}>
+          {!web && <button type="button" className={btn} aria-label={live ? 'Go live' : 'Back 10 seconds'} title={live ? 'Go live' : 'Back 10 seconds'} onClick={() => void (live ? goLive() : playerCommand('seek', -10, 'relative'))}>
             <RotateCcw className="h-[18px] w-[18px]" />
-          </button>
+          </button>}
           <div className="min-w-0 flex-1 px-2 leading-tight">
             <div className="truncate text-sm font-semibold">{live && <span className="mr-2 text-[10px] text-red-400">LIVE</span>}{session.title}</div>
             {session.subtitle && <div className="truncate text-xs text-nf-muted">{session.subtitle}</div>}

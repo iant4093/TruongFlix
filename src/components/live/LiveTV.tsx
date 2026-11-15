@@ -250,10 +250,6 @@ export default function LiveTV() {
     });
   const openEvent = (event: SportsEvent) => setSelectedEvent(event);
   const addFeed = (feed: LiveFeed) => {
-    if (feed.match.channel.web) {
-      toast('Web player channels can’t be shown in multiview.', 'info');
-      return;
-    }
     if (feeds.some((f) => sameLiveFeed(f.match, feed.match))) {
       toast('That channel is already selected for multiview.', 'info');
       return;

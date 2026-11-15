@@ -71,6 +71,7 @@ export interface LivePlayerSession {
     title: string;
     subtitle: string;
     event?: SportsEvent;
+    web?: { url: string; source: string };
   };
   channels?: { playlistId: string; id: string }[];
   loadId?: string;

@@ -6,6 +6,7 @@ import { episodeTarget, playTargetFor } from '../store/selectors';
 import { IS_MAC } from '../lib/platform';
 import type {
   AudioDevice,
+  PlaybackSession,
   BuiltinPlayerState,
   EngineStatus,
   EpisodeRow,
@@ -500,15 +501,26 @@ function countLiveTime(playing: boolean) {
   }
 }
 
-/** The live session when its channel plays in a web player. */
-function webSession() {
-  const session = useLibraryStore.getState().playerSession;
-  return session?.target.type === 'live' && 'web' in session && session.web ? (session as LivePlayerSession) : null;
+/** Whether a session's video (or one of its multiview panes) plays in the native player. */
+function usesNativePlayer(session: PlaybackSession | null) {
+  if (!session) return false;
+  if (session.target.type !== 'live') return true;
+  const live = session as LivePlayerSession;
+  return !live.web || (!!live.multiview && !live.multiview.web);
 }
 
-/** Called every second while a web player channel is on screen, for watch time and limits. */
+/** The live session when it (or one of its multiview panes) plays in a web player. */
+function webSession() {
+  const session = useLibraryStore.getState().playerSession;
+  if (session?.target.type !== 'live') return null;
+  const live = session as LivePlayerSession;
+  return live.web || live.multiview?.web ? live : null;
+}
+
+/** Called every second while only web players are on screen, for watch time and limits. */
 export function tickWebLive(playing: boolean) {
-  if (webSession()) countLiveTime(playing);
+  const session = useLibraryStore.getState().playerSession;
+  if (webSession() && !usesNativePlayer(session)) countLiveTime(playing);
 }
 
 function playingLive(state: BuiltinPlayerState | LiveMultiviewState | null) {
@@ -524,8 +536,10 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   if (store.activeProfile?.maturity !== 'all')
     return store.toast('Live channels have no verified age ratings. Switch to an unrestricted profile to watch.', 'info');
   const web = match.channel.web;
-  if (web && second) return store.toast('Web player channels can’t be shown in multiview.', 'info');
-  if (!web && !(await engineStatus()).available)
+  const secondWeb = second?.match.channel.web;
+  // The native player plays the first native channel; web channels draw their own video.
+  const nativeMatch = !web ? match : second && !secondWeb ? second.match : null;
+  if (nativeMatch && !(await engineStatus()).available)
     return store.toast(
       'Live TV needs the built-in player. Reinstall TruongFlix to restore its player engine.',
       'error',
@@ -551,6 +565,7 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
       title: second.match.channel.name,
       subtitle: second.event?.name ?? second.match.playlist.name,
       event: second.event,
+      ...(secondWeb && { web: { url: secondWeb.url, source: second.match.playlist.name } }),
     } }),
     channels: channels?.map((m) => ({ playlistId: m.playlist.id, id: m.channel.id })),
     loadId,
@@ -563,16 +578,15 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
     next: null,
     nextLabel: null,
   };
-  const native = !!store.playerSession && !webSession();
-  if (web) store.setPlayerMini(false);
+  const native = usesNativePlayer(store.playerSession);
   store.setPlayerSession(session);
   if (second) store.setPlayerMini(false);
   store.setPlayerState(null);
   store.setPlayerTracks([]);
   store.setPlayerChapters([]);
   store.setPlayerPrompt(null);
-  if (web) {
-    // The web player draws its own video, so the native one is shut down.
+  if (!nativeMatch) {
+    // Web players draw their own video, so the native one is shut down.
     stopOutputWatch();
     if (native) {
       const close = openQueue.catch(() => {}).then(async () => {
@@ -587,8 +601,8 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
     const { settings } = store;
     await queueOpen(generation, {
       loadId,
-      filePath: match.channel.transport.url,
-      liveSource: match.channel.transport,
+      filePath: nativeMatch.channel.transport.url,
+      liveSource: nativeMatch.channel.transport,
       startTime: 0,
       subtitlePath: null,
       audioLang: null,
@@ -615,8 +629,6 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
 export async function playLiveMultiview(first: LiveFeed, second: LiveFeed) {
   const left = findLiveChannel(first.match.playlist.id, first.match.channel.id);
   const right = findLiveChannel(second.match.playlist.id, second.match.channel.id);
-  if (left?.channel.web || right?.channel.web)
-    return useLibraryStore.getState().toast('Web player channels can’t be shown in multiview.', 'info');
   if (!left || !right || sameLiveFeed(left, right)) {
     return useLibraryStore.getState().toast('Choose two different available channels for multiview.', 'info');
   }
@@ -903,26 +915,31 @@ export function miniRect() {
 /** Shrinks playback into a corner so you can keep browsing. */
 export async function enterMini() {
   const store = useLibraryStore.getState();
-  if (!store.playerSession || store.playerMini || webSession()) return;
+  if (!store.playerSession || store.playerMini) return;
+  // Multiview needs the whole window.
+  if ('multiview' in store.playerSession && store.playerSession.multiview) return;
   if (enteredFullscreen || (await getCurrentWindow().isFullscreen())) {
     enteredFullscreen = false;
     await getCurrentWindow().setFullscreen(false);
     await new Promise((r) => setTimeout(r, 450)); // let the window settle before measuring
   }
   store.setPlayerMini(true);
-  await invoke('player_layout', { rect: miniRect() }).catch((e) => console.warn('[player]', e));
+  if (usesNativePlayer(store.playerSession))
+    await invoke('player_layout', { rect: miniRect() }).catch((e) => console.warn('[player]', e));
 }
 
 export async function exitMini() {
   const store = useLibraryStore.getState();
   if (!store.playerMini) return;
-  await invoke('player_layout', { rect: null }).catch((e) => console.warn('[player]', e));
+  if (usesNativePlayer(store.playerSession))
+    await invoke('player_layout', { rect: null }).catch((e) => console.warn('[player]', e));
   store.setPlayerMini(false);
 }
 
 /** Keeps the mini video aligned with its frame when the window resizes. */
 export function syncMiniLayout() {
-  if (useLibraryStore.getState().playerMini) void invoke('player_layout', { rect: miniRect() }).catch(() => {});
+  const { playerMini, playerSession } = useLibraryStore.getState();
+  if (playerMini && usesNativePlayer(playerSession)) void invoke('player_layout', { rect: miniRect() }).catch(() => {});
 }
 
 /** Hands the current item to external VLC at the same position. */
@@ -997,7 +1014,9 @@ export async function initPlayerEvents() {
       if (store.playerSession.target.type === 'live') {
         if (playingLive(payload)) {
           if (payload.time > 1 && useLiveStore.getState().playbackError) useLiveStore.setState({ playbackError: '' });
-          const target = store.playerSession.target;
+          // With a web channel first, the native player is showing the multiview's second channel.
+          const live = store.playerSession as LivePlayerSession;
+          const target = live.web && live.multiview ? live.multiview : live.target;
           const health = useLiveStore.getState().playlists.find((p) => p.id === target.playlistId)?.health[target.id];
           if (payload.time > 1 && health?.state !== 'verified') verifiedChannel(target.playlistId, target.id);
         }
@@ -1052,7 +1071,10 @@ export async function initPlayerEvents() {
       if (!store.settings.pause_on_lock) return;
       const why = payload.reason === 'lock' ? 'the screen locked' : payload.reason === 'sleep' ? 'the computer went to sleep' : 'the display went to sleep';
       if (webSession()) {
-        if (!useLiveStore.getState().webPaused) {
+        // Web players are stopped; a native pane beside them is paused too.
+        const pauseNative = usesNativePlayer(store.playerSession) && !store.playerState?.paused;
+        if (pauseNative) void playerSet('pause', 'yes');
+        if (!useLiveStore.getState().webPaused || pauseNative) {
           useLiveStore.setState({ webPaused: true });
           store.toast(`Paused because ${why}`, 'info');
         }
@@ -1079,7 +1101,8 @@ export function isPlayingVideo(): boolean {
   if (playback.active) return true;
   if (!session) return false;
   // A web player can't report pauses; it counts as playing while on screen.
-  if (webSession()) return !useLiveStore.getState().webPaused && !useLibraryStore.getState().playerPrompt;
+  if (webSession() && !useLiveStore.getState().webPaused && !useLibraryStore.getState().playerPrompt) return true;
+  if (!usesNativePlayer(session)) return false;
   const playing = (s: BuiltinPlayerState | LiveMultiviewState | null) =>
     !!s?.loaded && !s.paused && !('eof' in s ? s.eof : s.failed);
   if (playing(state)) return true;
