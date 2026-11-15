@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Settings2,
   Star,
-  X,
 } from 'lucide-react';
 import Dropdown from '../common/Dropdown';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -29,7 +28,8 @@ import {
   useLiveStore,
   type LiveFeed,
 } from '../../services/live';
-import { MULTIVIEW_MAX, MULTIVIEW_NATIVE_MAX, type SportsEvent } from '../../types/live';
+import { MULTIVIEW_MAX, type SportsEvent } from '../../types/live';
+import MultiviewTray, { multiviewBlock } from './LiveMultiviewTray';
 import { LiveArtwork } from './LiveArtwork';
 import EventCard from './LiveEventCard';
 import Sources from './LiveSources';
@@ -254,12 +254,9 @@ export default function LiveTV() {
       toast('That channel is already selected for multiview.', 'info');
       return;
     }
-    if (feeds.length >= MULTIVIEW_MAX) {
-      toast('Remove a channel before adding another one.', 'info');
-      return;
-    }
-    if (!feed.match.channel.web && feeds.filter((f) => !f.match.channel.web).length >= MULTIVIEW_NATIVE_MAX) {
-      toast('Multiview can show up to two M3U channels. Add web channels for the rest.', 'info');
+    const blocked = multiviewBlock(feeds, feed);
+    if (blocked) {
+      toast(blocked, 'info');
       return;
     }
     setFeeds((current) => [...current, feed].slice(0, MULTIVIEW_MAX));
@@ -297,35 +294,20 @@ export default function LiveTV() {
         </div>
       </div>
       {multiview && (
-        <section aria-label="Multiview selection" className="mb-6 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-nf-hover p-4">
-          <div className="mr-auto">
-            <h2 className="font-semibold">Watch up to four channels</h2>
-            <p className="text-sm text-nf-secondary">Add channels from Sports or Channels. Choose which one to hear during playback.</p>
-          </div>
-          {feeds.map(({ match, event }) => (
-            <button
-              key={match.key}
-              className={button}
-              aria-label={`Remove ${match.channel.name} from multiview`}
-              onClick={() => setFeeds((current) => current.filter((f) => f.match.key !== match.key))}
-            >
-              <span className="max-w-48 truncate">{event?.name ?? match.channel.name}</span>
-              <X className="h-4 w-4 shrink-0" />
-            </button>
-          ))}
-          <button
-            className="nf-btn-red"
-            disabled={feeds.length < 2 || openingMultiview}
-            onClick={async () => {
+        <div className="mb-6">
+          <MultiviewTray
+            feeds={feeds}
+            opening={openingMultiview}
+            onRemove={(key) => setFeeds((current) => current.filter((f) => f.match.key !== key))}
+            onClear={() => setFeeds([])}
+            onWatch={async () => {
               if (feeds.length < 2 || openingMultiview) return;
               setOpeningMultiview(true);
               try { await playLiveMultiview(feeds); }
               finally { setOpeningMultiview(false); }
             }}
-          >
-            <PanelsTopLeft className="h-4 w-4" /> Watch multiview
-          </button>
-        </section>
+          />
+        </div>
       )}
       <div className="mb-7 flex flex-wrap items-center gap-3 border-b border-white/10 pb-5">
         <SegmentedControl

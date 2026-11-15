@@ -232,7 +232,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
 
   return (
     <section
-      className={`fixed inset-0 z-[110] overflow-hidden text-white ${show ? '' : 'cursor-none'}`}
+      className={`fixed inset-0 z-[110] overflow-hidden text-white ${mainPane < 0 ? 'bg-black' : ''} ${show ? '' : 'cursor-none'}`}
       aria-label="Live TV multiview"
       onMouseMove={wake}
       onClick={wake}
@@ -245,7 +245,9 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
             <div
               key={`${pane.playlistId}/${pane.id}`}
               ref={(node) => { refs.current[index] = node; }}
-              className={`relative min-h-0 min-w-0 border-white/10 ${index % 2 === 0 ? 'border-r' : ''} ${grid && index < 2 ? 'border-b' : ''}`}
+              // The window is see-through where native video sits behind it, so web panes and the
+              // lines between panes must be painted solid or the desktop shows through.
+              className={`relative min-h-0 min-w-0 border-black ${pane.web ? 'bg-black' : ''} ${index % 2 === 0 ? 'border-r-2' : ''} ${grid && index < 2 ? 'border-b-2' : ''}`}
             >
               {pane.web && !prompt && !webPaused && (
                 <LiveWebFrame
@@ -288,6 +290,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
             </div>
           );
         })}
+        {panes.length === 3 && <div className="bg-black" aria-hidden />}
       </div>
       {/* Wakes the controls (and shows the cursor) on the first move over a web player. */}
       {!show && <div className="absolute inset-0 z-30 cursor-none" onMouseMove={wake} onMouseDown={wake} aria-hidden />}

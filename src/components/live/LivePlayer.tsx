@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronUp,
+  PanelsTopLeft,
   Maximize,
   Pause,
   PictureInPicture2,
@@ -37,6 +38,7 @@ import Dropdown from '../common/Dropdown';
 import { isPlayerShortcut, playerControlTitles } from '../player/shortcuts';
 import LiveMultiview from './LiveMultiview';
 import LiveWebPlayer from './LiveWebPlayer';
+import MultiviewPicker from './LiveMultiviewPicker';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const control =
@@ -59,6 +61,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
   const error = useLiveStore((s) => s.playbackError);
   const [visible, setVisible] = useState(true);
   const [settings, setSettings] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const output = useLibraryStore((s) => s.settings.audio_device);
   const [attempt, setAttempt] = useState(0);
@@ -117,6 +120,14 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
     if (mini) return;
     const key = (event: KeyboardEvent) => {
       if (!isPlayerShortcut(event)) return;
+      if (picking) {
+        if (event.code === 'Escape') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          setPicking(false);
+        }
+        return;
+      }
       if (event.code === 'Escape') {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -157,8 +168,8 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [blocked, settings, mini]);
-  const show = visible || settings || state?.paused || blocked || interrupted || buffering;
+  }, [blocked, settings, mini, picking]);
+  const show = visible || settings || picking || state?.paused || blocked || interrupted || buffering;
   const chromeOpacity = show ? 'opacity-100' : 'opacity-0 has-[:focus-visible]:opacity-100 has-[:focus-visible]:transition-none';
   const chromePointer = show ? 'pointer-events-auto' : 'group-has-[:focus-visible]/live-chrome:pointer-events-auto';
   const audio = tracks.filter((t) => t.type === 'audio');
@@ -402,6 +413,9 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
           <button className={control} disabled={blocked} aria-label="Next channel" onClick={() => void retuneLive(1)}>
             <ChevronDown />
           </button>
+          <button className={control} disabled={blocked} aria-label="Start multiview" title="Multiview: add channels" onClick={() => setPicking(true)}>
+            <PanelsTopLeft />
+          </button>
           <button className={control} aria-label="Live playback settings" onClick={() => setSettings(!settings)}>
             <Settings2 />
           </button>
@@ -413,6 +427,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
           </button>
         </div>
       </div>
+      {picking && !blocked && <MultiviewPicker session={session} onClose={() => setPicking(false)} />}
     </div>
   );
 }

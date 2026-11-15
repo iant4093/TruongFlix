@@ -216,3 +216,31 @@ it('matches shortened broadcaster names to channel names', async () => {
   expect(broadcasterKey('ESPN 2')).toBe('espn2');
   expect(broadcasterKey('CBS Sports HQ')).not.toBe('cbs');
 });
+
+it('starts multiview from the player with the playing channel first', async () => {
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+  const source = await webSource();
+  await playLive({ playlist: source, channel: source.channels[0], key: 'a' });
+  const session = useLibraryStore.getState().playerSession as LivePlayerSession;
+  render(<LivePlayer session={session} />);
+  act(() => screen.getByLabelText('Start multiview').click());
+  expect(screen.getByText('Playing')).toBeTruthy();
+  const watch = screen.getByRole<HTMLButtonElement>('button', { name: 'Watch multiview' });
+  expect(watch.disabled).toBe(true);
+  act(() => screen.getByLabelText('Add From base to multiview').click());
+  await act(async () => watch.click());
+  const next = useLibraryStore.getState().playerSession as LivePlayerSession;
+  expect([next.title, next.multiview?.title]).toEqual(['ABC', 'From base']);
+});
+
+it('paints web panes and the empty fourth cell solid so the desktop never shows through', async () => {
+  const source = await webSource();
+  await playLive({ playlist: source, channel: source.channels[0], key: 'a' }, undefined, undefined, [
+    { match: { playlist: source, channel: source.channels[1], key: 'b' } },
+    { match: { playlist: source, channel: source.channels[2], key: 'c' } },
+  ]);
+  const session = useLibraryStore.getState().playerSession as LivePlayerSession;
+  render(<LivePlayer session={session} />);
+  const grid = screen.getByLabelText('Live TV multiview').firstElementChild!;
+  expect([...grid.children].map((cell) => cell.className.includes('bg-black'))).toEqual([true, true, true, true]);
+});
