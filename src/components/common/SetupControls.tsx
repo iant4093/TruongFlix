@@ -316,11 +316,14 @@ export function OpenSubtitlesFields({ value, onChange, showAccount }: SubtitleFi
 interface FolderProps {
   value: string[];
   onChange: (dirs: string[]) => void;
+  /** Folder picker title and the text shown while the list is empty. */
+  pickerTitle?: string;
+  emptyText?: string;
 }
 
-export function FolderList({ value, onChange }: FolderProps) {
+export function FolderList({ value, onChange, pickerTitle = 'Choose Movie / TV folders', emptyText = 'No folders yet. Add the folders containing your movies and TV shows.' }: FolderProps) {
   const add = async () => {
-    const picked = await openDialog({ directory: true, multiple: true, title: 'Choose Movie / TV folders' });
+    const picked = await openDialog({ directory: true, multiple: true, title: pickerTitle });
     if (!picked) return;
     const list = Array.isArray(picked) ? picked : [picked];
     onChange([...new Set([...value, ...list])]);
@@ -347,7 +350,7 @@ export function FolderList({ value, onChange }: FolderProps) {
         </ul>
       ) : (
         <p className="rounded border border-dashed border-white/15 px-4 py-5 text-center text-sm text-nf-muted">
-          No folders yet. Add the folders containing your movies and TV shows.
+          {emptyText}
         </p>
       )}
       <button type="button" onClick={add} className="nf-btn-ghost">

@@ -7,6 +7,7 @@ import { organizeLooseFiles } from './files';
 import { startBackgroundAnalysis } from './enrich';
 import { reconnectOfflineShares, refreshShares } from './nas';
 import { createReloadThrottle } from './libraryReload';
+import { runMusicScan } from './music';
 import { imdbSyncDue, syncImdbRatings } from './imdb';
 import { guessSeasonEpisode, parseVideoFile, toRawFile } from './parser';
 import * as tmdb from './tmdb';
@@ -166,6 +167,10 @@ export async function runScan(opts: ScanOptions = {}) {
   const { settings, setScan, toast, reload } = store;
   const quiet = !!opts.quiet;
   const dirs = settings.media_directories;
+
+  // Music has its own folders and needs no TMDB key; it scans alongside.
+  void runMusicScan({ force: opts.force, quiet });
+  if (!dirs.length && settings.music_directories?.length) return;
 
   if (!settings.tmdb_api_key || !dirs.length) {
     if (!quiet) toast(settings.tmdb_api_key ? 'Add at least one media folder in Settings.' : 'Add your TMDB API key in Settings before scanning.', 'error');

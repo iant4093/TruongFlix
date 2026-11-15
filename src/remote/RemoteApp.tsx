@@ -9,17 +9,20 @@ import RemotePlayer from './RemotePlayer';
 import { NowPlayingBar, RemoteSheet, useNowPlaying, type NowPlaying } from './RemoteControl';
 import { errorMessage } from '../lib/errors';
 import RemoteLiveSection from './RemoteLive';
+import { RemoteMusicPlayer, RemoteMusicSection, useRemoteMusic } from './RemoteMusic';
+import { pause as pauseMusic } from '../music/player';
 import type { RemoteRow } from './types';
 import { DownloadButton, DownloadsPage } from './RemoteDownloads';
 import { initOffline } from './offline';
 import type { OfflineItem } from './offlineLogic';
 
-type Tab = 'home' | 'tv' | 'movies' | 'live' | 'mylist';
+type Tab = 'home' | 'tv' | 'movies' | 'live' | 'music' | 'mylist';
 const TABS: { tab: Tab; label: string }[] = [
   { tab: 'home', label: 'Home' },
   { tab: 'tv', label: 'TV Shows' },
   { tab: 'movies', label: 'Movies' },
   { tab: 'live', label: 'Live TV' },
+  { tab: 'music', label: 'Music' },
   { tab: 'mylist', label: 'My List' },
 ];
 
@@ -60,6 +63,10 @@ export default function RemoteApp() {
     }
   });
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
+  // A video takes over from the music.
+  useEffect(() => {
+    if (screen.name === 'play') pauseMusic();
+  }, [screen.name]);
 
   const choose = (w: Who | null) => {
     setWho(w);
@@ -283,13 +290,15 @@ function Browse({
   const now = useNowPlaying(who, true, onAuthError);
   const [remoteOpen, setRemoteOpen] = useState(false);
   const closeRemote = useCallback(() => setRemoteOpen(false), []);
+  const musicPlaying = useRemoteMusic(who);
   const remote = (
     <>
       {!remoteOpen && <NowPlayingBar now={now} onOpen={() => setRemoteOpen(true)} />}
       {remoteOpen && <RemoteSheet now={now} onClose={closeRemote} />}
+      <RemoteMusicPlayer lifted={!!now.np && !remoteOpen} />
     </>
   );
-  const pad = now.np ? 'pb-28' : 'pb-16';
+  const pad = now.np && musicPlaying ? 'pb-48' : now.np || musicPlaying ? 'pb-28' : 'pb-16';
   useEffect(() => {
     api<RemoteLibrary>(`/library${qs({ profile: who.id, key: who.key })}`)
       .then(setLib)
@@ -364,6 +373,7 @@ function Browse({
       {query == null && tab === 'live' && (
         <RemoteLiveSection who={who} onAuthError={onAuthError} onPlayedOnPc={() => { now.refresh(); setRemoteOpen(true); }} />
       )}
+      {query == null && tab === 'music' && <RemoteMusicSection />}
       {query == null && lib && tab === 'mylist' && (
         <div className="px-4">
           <h1 className="mb-4 text-2xl font-bold">My List</h1>

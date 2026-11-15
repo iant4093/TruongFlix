@@ -4,6 +4,7 @@
  */
 import type { RemoteDownload, RemoteItem, RemoteLibrary, RemoteLive, RemoteNowPlaying, RemoteProfile, RemoteQualities, RemoteTitle } from './types';
 import type { Quality } from '../lib/quality';
+import { mockArtUrl, mockMusicRoute } from '../music/mock';
 
 const MOCK_BYTES = 40 * 1024 * 1024;
 let polls = 0;
@@ -182,6 +183,7 @@ function answer(method: string, path: string, body: Record<string, unknown>): [n
 }
 
 export function installRemoteMock() {
+  (window as { __TF_MUSIC_ART__?: typeof mockArtUrl }).__TF_MUSIC_ART__ = mockArtUrl;
   const real = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
@@ -195,7 +197,8 @@ export function installRemoteMock() {
     }
     if (!url.pathname.startsWith('/api/')) return real(input, init);
     const body = init?.body ? JSON.parse(String(init.body)) : {};
-    const [status, data] = answer(init?.method ?? 'GET', url.pathname.slice(4), body);
+    const path = url.pathname.slice(4);
+    const [status, data] = path.startsWith('/music/') ? mockMusicRoute(init?.method ?? 'GET', path, url.searchParams, body) : answer(init?.method ?? 'GET', path, body);
     return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   };
 }

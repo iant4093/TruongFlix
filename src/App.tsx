@@ -28,6 +28,9 @@ import { initCastEvents } from './services/cast';
 import { applyRemoteAccess, initRemoteApi } from './services/remoteapi';
 import { CastBar, CastPicker } from './components/cast/CastUI';
 import { reconnectOfflineShares, refreshShares } from './services/nas';
+import { initDesktopMusic } from './services/music';
+import MusicMiniBar from './music/components/MiniBar';
+import MusicOverlays from './music/components/Overlays';
 
 // Windows-only; other builds compile this to null and drop the Games code.
 const GamesView = __GAMES__ ? lazy(() => import('./games/components/GamesView')) : null;
@@ -36,6 +39,8 @@ const GamesView = __GAMES__ ? lazy(() => import('./games/components/GamesView'))
 const loaders = {
   discover: () => import('./components/browse/Discover'),
   live: () => import('./components/live/LiveTV'),
+  music: () => import('./components/music/MusicView'),
+  musicPlayer: () => import('./music/components/FullPlayer'),
   settings: () => import('./components/settings/SettingsDialog'),
   detail: () => import('./components/modals/DetailModal'),
   fixMatch: () => import('./components/modals/FixMatchModal'),
@@ -50,6 +55,8 @@ const loaders = {
 };
 const Discover = lazy(loaders.discover);
 const LiveTV = lazy(loaders.live);
+const MusicView = lazy(loaders.music);
+const MusicFullPlayer = lazy(loaders.musicPlayer);
 const SettingsDialog = lazy(loaders.settings);
 const DetailModal = lazy(loaders.detail);
 const FixMatchModal = lazy(loaders.fixMatch);
@@ -130,6 +137,7 @@ export default function App() {
     initMediaSession().catch((e) => console.warn('Media keys unavailable', e));
     initCastEvents().catch((e) => console.warn('Casting unavailable', e));
     initRemoteApi().catch((e) => console.warn('Browser access unavailable', e));
+    initDesktopMusic().catch((e) => console.warn('Music unavailable', e));
   }, [init]);
 
   // Lock page scroll behind overlays (always on documentElement so body never becomes a nested scroller).
@@ -248,7 +256,7 @@ export default function App() {
     );
   }
 
-  const section = view === 'browse' || view === 'games' || view === 'live' ? view : search.trim() ? 'search' : view;
+  const section = view === 'browse' || view === 'games' || view === 'live' || view === 'music' ? view : search.trim() ? 'search' : view;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -266,6 +274,8 @@ export default function App() {
                   GamesView ? <Suspense fallback={null}><GamesView /></Suspense> : <GamesUnavailable />
                 ) : view === 'live' ? (
                   <Suspense fallback={null}><LiveTV /></Suspense>
+                ) : view === 'music' ? (
+                  <Suspense fallback={null}><MusicView /></Suspense>
                 ) : search.trim() ? (
                   <SearchView query={search} />
                 ) : view === 'mylist' ? (
@@ -295,6 +305,9 @@ export default function App() {
           </Suspense>
         </div>
         <MiniPlayer />
+        {!playerActive && <MusicMiniBar />}
+        <Suspense fallback={null}><MusicFullPlayer /></Suspense>
+        <MusicOverlays />
         <CastBar />
         <CastPicker />
         <Suspense fallback={null}><PlayerScreen /></Suspense>

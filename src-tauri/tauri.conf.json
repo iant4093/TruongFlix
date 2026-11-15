@@ -31,7 +31,8 @@
         "scope": [
           "$APPCACHE/frames/**",
           "$APPCACHE/live-artwork/**",
-          "$APPCACHE/game-images/**"
+          "$APPCACHE/game-images/**",
+          "$APPCACHE/music-art/**"
         ]
       }
     }

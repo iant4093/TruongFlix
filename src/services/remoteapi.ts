@@ -43,6 +43,7 @@ import { estimateBytes, isQualityLevel, isQualityRes, QUALITY_LEVELS, resLabel, 
 import type { RemoteDownload, RemoteDownloadStatus, RemoteQualities, RemoteQualityOption } from '../remote/types';
 import { languageName } from './subtitles';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
+import { endMusicSession, musicRoute } from './musicroute';
 import { togetherRoute } from './watchparty';
 
 /**
@@ -176,6 +177,7 @@ export function sweepIdleStreams(now = Date.now()) {
 /** Ends playback that belonged to a browser that was signed out. */
 export function endRemoteSession(session: string) {
   for (const [token, s] of [...sessions]) if (s.session === session) stopStream(token);
+  endMusicSession(session);
 }
 
 function lite(i: MediaItem, extra: Partial<RemoteItem> = {}): RemoteItem {
@@ -695,6 +697,7 @@ export async function route(caller: Caller, method: string, path: string, query:
     return liveOnPc(caller, p(), String(body.playlistId ?? ''), String(body.id ?? ''), body.eventId ? String(body.eventId) : undefined);
   }
   if (method === 'POST' && path === '/remote/play') return playOnPc(caller, p(), body.type === 'episode' ? 'episode' : 'movie', Number(body.id));
+  if (path.startsWith('/music/')) return musicRoute(caller, p(), method, path, query, body);
   if (path.startsWith('/together/')) {
     const res = await togetherRoute(caller, method, path, query, body, p);
     if (res !== undefined) return res;

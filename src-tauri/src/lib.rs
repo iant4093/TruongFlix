@@ -7,6 +7,7 @@ mod games;
 mod imdb;
 mod live;
 mod media;
+mod music;
 mod nas;
 mod nowplaying;
 mod player;
@@ -128,6 +129,7 @@ pub fn run() {
             }
             power::start(app.handle());
             stream::init(app.handle());
+            music::init(app.handle());
             let args: Vec<String> = std::env::args().collect();
             torrent::capture_startup_args(app.handle(), &args);
             Ok(())
@@ -178,6 +180,9 @@ pub fn run() {
             nowplaying::media_session_clear,
             scanner::scan_media_folders,
             scanner::check_paths,
+            music::music_scan,
+            music::music_art_dir,
+            music::music_lyrics_fetch,
             vlc::detect_vlc,
             vlc::install_vlc,
             vlc::launch_vlc,

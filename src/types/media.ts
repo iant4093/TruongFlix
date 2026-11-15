@@ -426,6 +426,10 @@ export interface Settings {
   torrent_peer_limit: number;
   torrent_movies_dir: string;
   torrent_tv_dir: string;
+  /** Folders with music (scanned separately from the video folders). */
+  music_directories: string[];
+  /** Look up synced lyrics on LRCLIB when a song has none of its own. */
+  music_lyrics_online: boolean;
 }
 
 export type TorrentMode = 'stream' | 'download';

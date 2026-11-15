@@ -1,0 +1,138 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { memoryDb } from './sqlite';
+
+let conn = memoryDb();
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => null), convertFileSrc: (p: string) => `asset://${p}` }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
+vi.mock('../src/services/db', () => ({
+  getDb: vi.fn(async () => conn),
+  loadLibrary: vi.fn(async () => ({ movies: [], series: [], episodes: [] })),
+  recordProgress: vi.fn(),
+  logWatchTime: vi.fn(),
+  setMyList: vi.fn(),
+  getSelectedSubtitlePath: vi.fn(async () => null),
+  readLiveData: vi.fn(async (_k: string, fallback: unknown) => fallback),
+  writeLiveData: vi.fn(),
+}));
+let streamCount = 0;
+vi.mock('../src/services/streaming', () => ({
+  planStream: () => ({ format: 'direct' }),
+  probeStream: vi.fn(async () => null),
+  registerStream: vi.fn(async () => `tok${++streamCount}`),
+  streamUrl: vi.fn(async (token: string) => ({ url: `http://127.0.0.1:8732/stream/${token}/file`, path: `/stream/${token}/file`, offset: 0 })),
+  releaseStream: vi.fn(),
+  durationOf: () => 100,
+}));
+vi.mock('../src/services/limits', () => ({ limitStatus: vi.fn(async () => ({ blocked: null, remaining: null })), blockedMessage: () => '' }));
+vi.mock('../src/services/torrents', () => ({ downloadBlockingPlayback: () => null, stillDownloadingMessage: () => '' }));
+vi.mock('../src/services/player', () => ({ subtitleOptions: () => [], playLive: vi.fn(), noteUserActivity: vi.fn() }));
+vi.mock('../src/services/cast', () => ({ castControl: vi.fn(), castSeek: vi.fn(), stopCasting: vi.fn() }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ isFullscreen: async () => false }) }));
+vi.mock('../src/services/subtitles', () => ({ languageName: (s: string) => s }));
+
+let remote: typeof import('../src/services/remoteapi');
+let mdb: typeof import('../src/services/musicdb');
+let streaming: typeof import('../src/services/streaming');
+let core: typeof import('@tauri-apps/api/core');
+let ids: Record<string, number>;
+
+const adult = { id: 1, name: 'Ian', color: '#E50914', maturity: 'all', pin: '', daily_limit: 0, bedtime: '', wake_time: '07:00' };
+const other = { id: 2, name: 'Sam', color: '#2E86DE', maturity: 'all', pin: '', daily_limit: 0, bedtime: '', wake_time: '07:00' };
+const locked = { id: 3, name: 'Locked', color: '#2E86DE', maturity: 'all', pin: 'hash', daily_limit: 0, bedtime: '', wake_time: '07:00' };
+const A = { session: 'sessA', device: 'iPhone · Safari' };
+const B = { session: 'sessB', device: 'Pixel · Chrome' };
+
+const get = (path: string, query: Record<string, string>, caller = A) => remote.route(caller, 'GET', path, query, {});
+const post = (path: string, body: Record<string, unknown>, caller = A) => remote.route(caller, 'POST', path, {}, body);
+
+const base = { file_size: 1, mtime: 1, album_artist: null, genre: null, track_no: null, track_total: null, disc_no: null, disc_total: null, year: null, duration: 180, sample_rate: null, bit_depth: null, bitrate: null, channels: 2, cover: null, lyrics_source: null, error: null };
+
+beforeEach(async () => {
+  conn = memoryDb();
+  vi.resetModules();
+  streamCount = 0;
+  mdb = await import('../src/services/musicdb');
+  streaming = await import('../src/services/streaming');
+  core = await import('@tauri-apps/api/core');
+  const { useLibraryStore } = await import('../src/store/useLibraryStore');
+  useLibraryStore.setState({ profiles: [adult, other, locked] as never, torrents: [] });
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, music_lyrics_online: true } }));
+  remote = await import('../src/services/remoteapi');
+  await mdb.upsertMusicFiles([
+    { ...base, file_path: '/m/a.mp3', title: 'Plain MP3', artist: 'Luma', album: 'Neon', codec: 'mp3', lyrics: '[00:01.00]Hi' },
+    { ...base, file_path: '/m/b.m4a', title: 'Lossless', artist: 'Luma', album: 'Neon', codec: 'alac', lyrics: null },
+  ] as never);
+  ids = Object.fromEntries((await mdb.loadMusic(1)).tracks.map((t) => [t.title, t.id]));
+});
+
+describe('/api/music', () => {
+  it('returns the library with this profile’s favourites', async () => {
+    await post('/music/favourite', { profile: 1, id: ids['Plain MP3'], value: true });
+    const mine = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;
+    expect(mine.tracks.find((t) => t.title === 'Plain MP3')!.favourite).toBe(true);
+    expect(mine.albums).toHaveLength(1);
+    const theirs = (await get('/music/library', { profile: '2' }, B)) as import('../src/music/types').MusicLibrary;
+    expect(theirs.tracks.every((t) => !t.favourite)).toBe(true);
+  });
+
+  it('checks the profile and its PIN', async () => {
+    await expect(get('/music/library', { profile: '99' })).rejects.toMatchObject({ status: 404 });
+    await expect(get('/music/library', { profile: '3' })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('streams the original file, or converts what the browser can’t play', async () => {
+    const direct = (await post('/music/stream', { profile: 1, id: ids['Plain MP3'], codecs: ['mp3', 'aac'] })) as { url: string; transcoded: boolean };
+    expect(direct).toEqual({ url: '/stream/tok1/file', transcoded: false });
+    expect(vi.mocked(streaming.registerStream)).toHaveBeenLastCalledWith('/m/a.mp3', expect.objectContaining({ format: 'direct' }));
+    const alac = (await post('/music/stream', { profile: 1, id: ids.Lossless, codecs: ['mp3', 'aac', 'bogus'] })) as { transcoded: boolean };
+    expect(alac.transcoded).toBe(true);
+    expect(vi.mocked(streaming.registerStream)).toHaveBeenLastCalledWith('/m/b.m4a', expect.objectContaining({ format: 'aac' }));
+    const safari = (await post('/music/stream', { profile: 1, id: ids.Lossless, codecs: ['alac'] })) as { transcoded: boolean };
+    expect(safari.transcoded).toBe(false);
+    await expect(post('/music/stream', { profile: 1, id: 999, codecs: [] })).rejects.toMatchObject({ status: 404 });
+    await expect(post('/music/stream', { profile: 1, id: 'x' })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('keeps a few streams per browser and releases the rest', async () => {
+    for (let i = 0; i < 5; i++) await post('/music/stream', { profile: 1, id: ids['Plain MP3'], codecs: ['mp3'] });
+    expect(vi.mocked(streaming.releaseStream).mock.calls.map((c) => c[0])).toEqual(['tok1', 'tok2']);
+    remote.endRemoteSession(A.session);
+    expect(vi.mocked(streaming.releaseStream).mock.calls.map((c) => c[0])).toEqual(['tok1', 'tok2', 'tok3', 'tok4', 'tok5']);
+  });
+
+  it('serves file lyrics, then LRCLIB (looked up once)', async () => {
+    expect(await get('/music/lyrics', { profile: '1', id: String(ids['Plain MP3']) })).toEqual({ text: '[00:01.00]Hi', synced: true, source: 'embedded' });
+    vi.mocked(core.invoke).mockImplementation(async (cmd: string) => (cmd === 'music_lyrics_fetch' ? { synced: '[00:02.00]Online', plain: 'Online', instrumental: false } : null));
+    const first = await get('/music/lyrics', { profile: '1', id: String(ids.Lossless) });
+    expect(first).toMatchObject({ text: '[00:02.00]Online', synced: true, source: 'lrclib' });
+    const second = await get('/music/lyrics', { profile: '1', id: String(ids.Lossless) });
+    expect(second).toEqual(first);
+    expect(vi.mocked(core.invoke).mock.calls.filter((c) => c[0] === 'music_lyrics_fetch')).toHaveLength(1);
+  });
+
+  it('manages this profile’s playlists only', async () => {
+    const p = (await post('/music/playlists/create', { profile: 1, name: 'Mix', trackIds: [ids['Plain MP3']] })) as import('../src/music/types').MusicPlaylist;
+    expect(p).toMatchObject({ name: 'Mix', trackIds: [ids['Plain MP3']] });
+    expect(await post('/music/playlists/add', { profile: 1, id: p.id, trackIds: [ids.Lossless] })).toEqual({ trackIds: [ids.Lossless] });
+    expect(await post('/music/playlists/tracks', { profile: 1, id: p.id, trackIds: [ids.Lossless, ids['Plain MP3']] })).toEqual({ trackIds: [ids.Lossless, ids['Plain MP3']] });
+    await post('/music/playlists/rename', { profile: 1, id: p.id, name: 'Best' });
+    await expect(post('/music/playlists/rename', { profile: 2, id: p.id, name: 'Mine now' }, B)).rejects.toMatchObject({ status: 404 });
+    await expect(post('/music/playlists/delete', { profile: 2, id: p.id }, B)).rejects.toMatchObject({ status: 404 });
+    const lib = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;
+    expect(lib.playlists).toEqual([expect.objectContaining({ name: 'Best', trackIds: [ids.Lossless, ids['Plain MP3']] })]);
+    await post('/music/playlists/delete', { profile: 1, id: p.id });
+    expect(((await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary).playlists).toEqual([]);
+  });
+
+  it('records plays for Listen Now', async () => {
+    await post('/music/played', { profile: 1, id: ids.Lossless });
+    const lib = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;
+    expect(lib.tracks.find((t) => t.id === ids.Lossless)!.plays).toBe(1);
+    expect(lib.albums[0].lastPlayed).not.toBeNull();
+    await expect(post('/music/played', { profile: 1, id: 4242 })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('rejects unknown music endpoints', async () => {
+    await expect(post('/music/nope', { profile: 1 })).rejects.toMatchObject({ status: 404 });
+  });
+});

@@ -6,8 +6,8 @@ import { BITRATES, DEFAULT_CONVERTED, PEAK_FACTOR, QUALITY_STEPS, type Quality, 
 export type StreamClient = 'browser' | 'chromecast' | 'dlna' | 'dlna-compat';
 
 export interface StreamOptions {
-  /** 'mp4': one progressive MP4 for saving offline. */
-  format: 'direct' | 'hls' | 'ts' | 'mp4';
+  /** 'mp4': one progressive MP4 for saving offline. 'aac': audio-only conversion for music a player can't decode. */
+  format: 'direct' | 'hls' | 'ts' | 'mp4' | 'aac';
   width: number;
   height: number;
   tone_map: boolean;

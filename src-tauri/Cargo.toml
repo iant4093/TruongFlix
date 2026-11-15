@@ -32,6 +32,8 @@ getrandom = "0.2"
 native-tls = "0.2"
 # OpenSubtitles API (needs a custom User-Agent, which webviews can't set). OS-native TLS keeps it small.
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+# Music library: tags, embedded covers and lyrics from mp3/flac/m4a/ogg/opus/wav files.
+lofty = "0.25"
 # Decompresses IMDb's public .tsv.gz datasets (pure-Rust backend).
 flate2 = "1"
 # libmpv is loaded at runtime so the app still runs (falling back to VLC) when it's missing.
