@@ -8,6 +8,32 @@ import { api, AuthError, getToken, login, qs } from './api';
 import RemotePlayer from './RemotePlayer';
 import { NowPlayingBar, RemoteSheet, useNowPlaying, type NowPlaying } from './RemoteControl';
 import { errorMessage } from '../lib/errors';
+import RemoteLiveSection from './RemoteLive';
+import type { RemoteRow } from './types';
+
+type Tab = 'home' | 'tv' | 'movies' | 'live' | 'mylist';
+const TABS: { tab: Tab; label: string }[] = [
+  { tab: 'home', label: 'Home' },
+  { tab: 'tv', label: 'TV Shows' },
+  { tab: 'movies', label: 'Movies' },
+  { tab: 'live', label: 'Live TV' },
+  { tab: 'mylist', label: 'My List' },
+];
+
+/** Rows for the TV Shows or Movies section, built from the library the PC sent. */
+function sectionRows(lib: RemoteLibrary, kind: 'movie' | 'tv'): RemoteRow[] {
+  const pick = (row?: RemoteRow) => row?.items.filter((i) => i.kind === kind) ?? [];
+  const all = lib.all.filter((i) => i.kind === kind);
+  const rows: RemoteRow[] = [
+    { title: 'Continue Watching', items: pick(lib.rows.find((r) => r.title === 'Continue Watching')) },
+    { title: 'Recently Added', items: pick(lib.rows.find((r) => r.title === 'Recently Added')) },
+  ];
+  const genres = new Map<string, RemoteItem[]>();
+  for (const i of all) for (const g of i.genres.slice(0, 2)) genres.set(g, [...(genres.get(g) ?? []), i]);
+  for (const [g, items] of [...genres.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 8)) rows.push({ title: g, items });
+  rows.push({ title: kind === 'tv' ? 'All TV Shows' : 'All Movies', items: [...all].sort((a, b) => a.title.localeCompare(b.title)) });
+  return rows.filter((r) => r.items.length);
+}
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
 type Screen = { name: 'home' } | { name: 'title'; key: string } | { name: 'play'; target: RemotePlayable };
@@ -162,6 +188,32 @@ function Poster({ item, onClick }: { item: RemoteItem; onClick: () => void }) {
   );
 }
 
+function Featured({ item, open }: { item: RemoteItem; open: (key: string) => void }) {
+  return (
+    <section className="relative -mt-36 mb-6 aspect-[3/4] max-h-[75vh] w-full overflow-hidden sm:aspect-video">
+      <img src={item.backdrop ?? item.poster ?? ''} alt="" className="absolute inset-0 h-full w-full object-cover" />
+      <div className="absolute inset-0 bg-gradient-to-t from-nf-bg via-nf-bg/30 to-transparent" />
+      <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-4 px-6 pb-6 text-center">
+        {item.logo ? <img src={item.logo} alt={item.title} className="max-h-24 max-w-[70%] object-contain" /> : <h1 className="text-4xl font-black">{item.title}</h1>}
+        <button onClick={() => open(item.key)} className="nf-btn-play px-8">
+          <Play className="h-5 w-5 fill-black" strokeWidth={0} /> Play
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function Row({ row, open }: { row: RemoteRow; open: (key: string) => void }) {
+  return (
+    <section className="mb-6">
+      <h2 className="mb-2 px-4 text-lg font-semibold">{row.title}</h2>
+      <div className="flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
+        {row.items.map((i) => <Poster key={`${row.title}-${i.key}`} item={i} onClick={() => open(i.key)} />)}
+      </div>
+    </section>
+  );
+}
+
 function Browse({
   who,
   screen,
@@ -182,6 +234,15 @@ function Browse({
   const [lib, setLib] = useState<RemoteLibrary | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState<string | null>(null);
+  // Picks each section's billboard once per visit.
+  const [featuredSeed] = useState(() => Math.floor(Math.random() * 1e6));
+  const [tab, setTabState] = useState<Tab>(() => (sessionStorage.getItem('tf-remote-tab') as Tab | null) ?? 'home');
+  const setTab = (next: Tab) => {
+    setTabState(next);
+    sessionStorage.setItem('tf-remote-tab', next);
+    setQuery(null);
+    window.scrollTo(0, 0);
+  };
   const now = useNowPlaying(who, true, onAuthError);
   const [remoteOpen, setRemoteOpen] = useState(false);
   const closeRemote = useCallback(() => setRemoteOpen(false), []);
@@ -216,8 +277,25 @@ function Browse({
 
   return (
     <div className={`min-h-[100dvh] ${pad}`}>
-      <header className="sticky top-0 z-30 flex items-center gap-3 bg-gradient-to-b from-black/90 to-transparent px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))]">
-        <Wordmark className="text-3xl" />
+      <header className="sticky top-0 z-30 flex flex-wrap items-center gap-x-6 gap-y-2 bg-gradient-to-b from-black/90 via-black/60 to-transparent px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))]">
+        <button onClick={() => setTab('home')} aria-label="TruongFlix home">
+          <Wordmark className="text-3xl" />
+        </button>
+        {/* On phones the sections wrap onto their own scrolling line under the logo. */}
+        <nav aria-label="Sections" className="order-last flex w-full gap-2 overflow-x-auto [scrollbar-width:none] md:order-none md:w-auto md:gap-5">
+          {TABS.map(({ tab: t, label }) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              aria-current={tab === t && query == null ? 'page' : undefined}
+              className={`shrink-0 whitespace-nowrap text-sm transition-colors max-md:rounded-full max-md:border max-md:px-3 max-md:py-1 ${
+                tab === t && query == null ? 'font-semibold text-white max-md:border-white max-md:bg-white/15' : 'text-white/70 hover:text-white max-md:border-white/30'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
         <div className="flex-1" />
         <button onClick={() => setQuery(query == null ? '' : null)} aria-label={query == null ? 'Search' : 'Close search'} className="p-2">
           {query == null ? <Search className="h-6 w-6" /> : <X className="h-6 w-6" />}
@@ -243,10 +321,37 @@ function Browse({
         </div>
       )}
       {error && <p className="px-4 text-nf-red">{error}</p>}
-      {query == null && lib && (
+      {query == null && tab === 'live' && (
+        <RemoteLiveSection who={who} onAuthError={onAuthError} onPlayedOnPc={() => { now.refresh(); setRemoteOpen(true); }} />
+      )}
+      {query == null && lib && tab === 'mylist' && (
+        <div className="px-4">
+          <h1 className="mb-4 text-2xl font-bold">My List</h1>
+          {(lib.rows.find((r) => r.title === 'My List')?.items.length ?? 0) > 0 ? (
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-5 lg:grid-cols-7">
+              {lib.rows.find((r) => r.title === 'My List')!.items.map((i) => <Poster key={i.key} item={i} onClick={() => open(i.key)} />)}
+            </div>
+          ) : (
+            <p className="py-10 text-center text-nf-secondary">Titles you add to My List show up here.</p>
+          )}
+        </div>
+      )}
+      {query == null && lib && (tab === 'tv' || tab === 'movies') && (() => {
+        const kind = tab === 'tv' ? 'tv' : 'movie';
+        const pool = lib.all.filter((i) => i.kind === kind && i.backdrop && i.overview);
+        const featured = pool.length ? pool[featuredSeed % pool.length] : null;
+        return (
+          <>
+            {featured && <Featured item={featured} open={open} />}
+            {!featured && <h1 className="mb-4 px-4 text-2xl font-bold">{tab === 'tv' ? 'TV Shows' : 'Movies'}</h1>}
+            {sectionRows(lib, kind).map((row) => <Row key={row.title} row={row} open={open} />)}
+          </>
+        );
+      })()}
+      {query == null && lib && tab === 'home' && (
         <>
           {lib.featured && (
-            <section className="relative -mt-24 mb-6 aspect-[3/4] max-h-[75vh] w-full overflow-hidden sm:aspect-video">
+            <section className="relative -mt-36 mb-6 aspect-[3/4] max-h-[75vh] w-full overflow-hidden sm:aspect-video">
               <img src={lib.featured.backdrop ?? lib.featured.poster ?? ''} alt="" className="absolute inset-0 h-full w-full object-cover" />
               <div className="absolute inset-0 bg-gradient-to-t from-nf-bg via-nf-bg/30 to-transparent" />
               <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-4 px-6 pb-6 text-center">

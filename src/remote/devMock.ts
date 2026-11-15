@@ -2,7 +2,7 @@
  * Dev-only stand-in for the media server's `/api`, so the browser app (and its "Playing on PC"
  * remote) can be previewed with `npm run dev` at http://localhost:1420/remote.html?mock.
  */
-import type { RemoteItem, RemoteLibrary, RemoteNowPlaying, RemoteProfile, RemoteTitle } from './types';
+import type { RemoteItem, RemoteLibrary, RemoteLive, RemoteNowPlaying, RemoteProfile, RemoteTitle } from './types';
 
 const profiles: RemoteProfile[] = [
   { id: 1, name: 'Ian', color: '#E50914', maturity: 'all', locked: false },
@@ -107,6 +107,20 @@ function answer(method: string, path: string, body: Record<string, unknown>): [n
       episodes: [1, 2, 3].map((e) => ({ id: e, season: 1, episode: e, title: `Episode ${e}`, overview: null, still: null, runtime: 45, progress: 0, watched: false })),
     };
     return [200, t];
+  }
+  if (path === '/live') {
+    const web = { playlistId: 'w', id: 'abc', name: 'ABC', group: 'Sports', source: 'My web TV', kind: 'web' as const, web: 'https://example.com/embed/abc' };
+    const m3u = { playlistId: 'm', id: 'espn', name: 'ESPN', group: 'Sports', source: 'My M3U', kind: 'm3u' as const, web: null };
+    const team = (name: string, abbreviation: string, score: string, color: string, rank?: number) => ({ name, abbreviation, score, color, logo: '', rank });
+    const live: RemoteLive = {
+      partial: false,
+      channels: [web, m3u],
+      events: [
+        { id: '1', name: 'Texas Tech Red Raiders at Oklahoma State Cowboys', league: 'football/college-football', leagueLabel: 'College football', date: new Date().toISOString(), status: 'live', detail: 'Halftime', broadcasts: ['ESPN'], teams: [team('Oklahoma State', 'OKST', '20', '#ff7300', 25), team('Texas Tech', 'TTU', '28', '#cc0000', 12)], channels: [m3u, web] },
+        { id: '2', name: '49ers at Rams', league: 'football/nfl', leagueLabel: 'NFL', date: new Date(Date.now() + 3 * 3600_000).toISOString(), status: 'upcoming', detail: '', broadcasts: ['FOX'], teams: [team('Rams', 'LAR', '', '#003594'), team('49ers', 'SF', '', '#aa0000')], channels: [] },
+      ],
+    };
+    return [200, live];
   }
   if (path === '/remote/state') {
     advance();
