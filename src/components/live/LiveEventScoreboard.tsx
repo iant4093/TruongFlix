@@ -20,7 +20,11 @@ export default function EventScoreboard({ event, compact = false }: { event: Spo
           <Fragment key={team.id}>
             <div className={`flex min-w-0 items-center text-center ${compact ? 'justify-center gap-3' : 'flex-col gap-2'}`}>
               <LiveArtwork url={team.logo} className={compact ? 'h-8 w-8' : 'h-12 w-12'} />
-              <span className={`${compact ? 'max-w-20' : 'w-full'} truncate text-xs font-bold tracking-wider`} title={team.name}>
+              <span
+                className={`${compact ? 'max-w-24' : 'w-full'} truncate text-xs font-bold tracking-wider`}
+                title={team.rank ? `#${team.rank} ${team.name}` : team.name}
+              >
+                {team.rank ? <span className="mr-1 text-nf-secondary" aria-label={`Ranked ${team.rank}`}>{team.rank}</span> : null}
                 {team.abbreviation || team.name}
               </span>
               {showScores && (

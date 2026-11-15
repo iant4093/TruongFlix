@@ -336,7 +336,7 @@ interface RawEvent {
   competitions?: {
     date?: string;
     status?: RawEvent['status'];
-    competitors?: { team?: RawTeam; score?: string | number }[];
+    competitors?: { team?: RawTeam; score?: string | number; curatedRank?: { current?: number } }[];
     broadcasts?: { names?: string[] }[];
     geoBroadcasts?: { region?: string; lang?: string; media?: { shortName?: string } }[];
   }[];
@@ -369,13 +369,15 @@ export function parseSports(data: unknown, league: string): SportsEvent[] {
               : ('upcoming' as const),
         detail: status?.shortDetail || status?.detail || '',
         broadcasts: [...new Set(broadcasts)],
-        teams: (competition?.competitors ?? []).map(({ team, score }) => ({
+        teams: (competition?.competitors ?? []).map(({ team, score, curatedRank }) => ({
           id: `${league}:${team?.id ?? team?.displayName}`,
           name: team?.displayName ?? '',
           abbreviation: team?.abbreviation ?? '',
           score: /^(?:\d+)(?:\.\d+)?$/.test(String(score ?? '').trim()) ? String(score).trim() : '',
           color: /^[0-9a-f]{6}$/i.test(team?.color ?? '') ? `#${team!.color}` : '#303030',
           logo: team?.logo ?? '',
+          // ESPN uses 99 for unranked teams.
+          ...(Number.isInteger(curatedRank?.current) && curatedRank!.current! >= 1 && curatedRank!.current! <= 25 && { rank: curatedRank!.current }),
         })),
       },
     ];

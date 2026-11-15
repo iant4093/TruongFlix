@@ -81,6 +81,17 @@ describe('event discovery and feed matching', () => {
     expect(parsed.broadcasts).toEqual(['Fox']);
     expect(parsed.teams[0]).toMatchObject({ name: 'San Francisco 49ers', score: '14', id: 'football/nfl:25' });
   });
+  it('keeps poll rankings and drops the unranked placeholder', () => {
+    const parsed = parseSports({ events: [{
+      ...api.events[0],
+      competitions: [{ competitors: [
+        { team: { id: '1' }, curatedRank: { current: 12 } },
+        { team: { id: '2' }, curatedRank: { current: 99 } },
+        { team: { id: '3' } },
+      ] }],
+    }] }, 'football/college-football')[0];
+    expect(parsed.teams.map((t) => t.rank)).toEqual([12, undefined, undefined]);
+  });
   it('keeps zero scores and normalizes numeric scores without inventing missing or invalid ones', () => {
     const parsed = parseSports({ events: [{
       ...api.events[0],
@@ -250,4 +261,10 @@ describe('source persistence and schedule caching', () => {
     await sportsSchedule('football/nfl', today);
     expect(invoke).toHaveBeenCalledTimes(2);
   });
+});
+
+it('opens Live TV on all leagues', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(`${process.cwd()}/src/components/live/LiveTV.tsx`, 'utf8');
+  expect(source).toContain("useSectionState('league', 'all')");
 });
