@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Lock, Monitor, Play, Search, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, Download, Lock, Monitor, Play, Search, Sparkles, X } from 'lucide-react';
 import CriticScores from '../components/common/CriticScores';
 import ProfileAvatar from '../components/common/ProfileAvatar';
 import ProgressBar from '../components/common/ProgressBar';
@@ -12,6 +12,9 @@ import RemoteLiveSection from './RemoteLive';
 import { RemoteMusicPlayer, RemoteMusicSection, useRemoteMusic } from './RemoteMusic';
 import { pause as pauseMusic } from '../music/player';
 import type { RemoteRow } from './types';
+import { DownloadButton, DownloadsPage } from './RemoteDownloads';
+import { initOffline } from './offline';
+import type { OfflineItem } from './offlineLogic';
 
 type Tab = 'home' | 'tv' | 'movies' | 'live' | 'music' | 'mylist';
 const TABS: { tab: Tab; label: string }[] = [
@@ -39,7 +42,11 @@ function sectionRows(lib: RemoteLibrary, kind: 'movie' | 'tv'): RemoteRow[] {
 }
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
-type Screen = { name: 'home' } | { name: 'title'; key: string } | { name: 'play'; target: RemotePlayable };
+type Screen =
+  | { name: 'home' }
+  | { name: 'title'; key: string }
+  | { name: 'downloads' }
+  | { name: 'play'; target: RemotePlayable; offline?: OfflineItem; from?: Screen };
 
 function Wordmark({ className = '' }: { className?: string }) {
   return <span className={`nf-wordmark ${className}`}>TRUONGFLIX</span>;
@@ -70,11 +77,38 @@ export default function RemoteApp() {
   const onAuthError = useCallback((e: unknown) => {
     if (e instanceof AuthError) setSignedIn(false);
   }, []);
+  useEffect(() => {
+    void initOffline();
+  }, []);
 
   if (!signedIn) return <Login onDone={() => setSignedIn(true)} />;
   if (!who) return <Profiles onPick={choose} onAuthError={onAuthError} />;
   if (screen.name === 'play')
-    return <RemotePlayer who={who} target={screen.target} onExit={() => setScreen({ name: 'home' })} onPlay={(t) => setScreen({ name: 'play', target: t })} />;
+    return (
+      <RemotePlayer
+        key={screen.offline ? `offline-${screen.offline.id}` : 'stream'}
+        who={who}
+        target={screen.target}
+        offline={screen.offline}
+        onExit={() => setScreen(screen.from ?? { name: 'home' })}
+        onPlay={(t) => setScreen({ name: 'play', target: t })}
+      />
+    );
+  if (screen.name === 'downloads')
+    return (
+      <DownloadsPage
+        who={who}
+        back={() => setScreen({ name: 'home' })}
+        play={(item) =>
+          setScreen({
+            name: 'play',
+            target: { type: item.type, id: item.mediaId, label: item.subtitle ?? item.title, resume: item.position },
+            offline: item,
+            from: { name: 'downloads' },
+          })
+        }
+      />
+    );
   return (
     <Browse
       who={who}
@@ -83,6 +117,7 @@ export default function RemoteApp() {
       play={(target) => setScreen({ name: 'play', target })}
       back={() => setScreen({ name: 'home' })}
       switchProfile={() => choose(null)}
+      openDownloads={() => setScreen({ name: 'downloads' })}
       onAuthError={onAuthError}
     />
   );
@@ -228,6 +263,7 @@ function Browse({
   play,
   back,
   switchProfile,
+  openDownloads,
   onAuthError,
 }: {
   who: Who;
@@ -236,6 +272,7 @@ function Browse({
   play: (t: RemotePlayable) => void;
   back: () => void;
   switchProfile: () => void;
+  openDownloads: () => void;
   onAuthError: (e: unknown) => void;
 }) {
   const [lib, setLib] = useState<RemoteLibrary | null>(null);
@@ -279,7 +316,7 @@ function Browse({
   if (screen.name === 'title')
     return (
       <>
-        <TitlePage who={who} itemKey={screen.key} back={back} play={play} now={now} pad={pad} openRemote={() => setRemoteOpen(true)} />
+        <TitlePage who={who} itemKey={screen.key} back={back} play={play} now={now} pad={pad} openRemote={() => setRemoteOpen(true)} openDownloads={openDownloads} />
         {remote}
       </>
     );
@@ -308,6 +345,9 @@ function Browse({
         <div className="flex-1" />
         <button onClick={() => setQuery(query == null ? '' : null)} aria-label={query == null ? 'Search' : 'Close search'} className="p-2">
           {query == null ? <Search className="h-6 w-6" /> : <X className="h-6 w-6" />}
+        </button>
+        <button onClick={openDownloads} aria-label="Downloads" title="Downloads" className="p-2">
+          <Download className="h-6 w-6" />
         </button>
         <button onClick={switchProfile} title="Switch profile" aria-label="Switch profile">
           <ProfileAvatar color={who.profile.color} maturity={who.profile.maturity} size={30} />
@@ -403,6 +443,7 @@ function TitlePage({
   now,
   pad,
   openRemote,
+  openDownloads,
 }: {
   who: Who;
   itemKey: string;
@@ -411,6 +452,7 @@ function TitlePage({
   now: NowPlaying;
   pad: string;
   openRemote: () => void;
+  openDownloads: () => void;
 }) {
   const [data, setData] = useState<RemoteTitle | null>(null);
   const [season, setSeason] = useState<number | null>(null);
@@ -475,6 +517,13 @@ function TitlePage({
               <Monitor className="h-6 w-6" />
               {pcBusy ? 'Starting…' : `Play on ${now.pc ?? 'PC'}`}
             </button>
+            {item.kind === 'movie' && data.play.type === 'movie' && (
+              <DownloadButton
+                who={who}
+                target={{ type: 'movie', id: data.play.id, title: item.title, subtitle: null, itemKey: item.key }}
+                onOpenDownloads={openDownloads}
+              />
+            )}
           </div>
         )}
         {pcError && <p className="text-sm text-nf-red">{pcError}</p>}
@@ -512,6 +561,12 @@ function TitlePage({
                     {e.overview && <p className="mt-1 line-clamp-2 text-sm text-nf-secondary">{e.overview}</p>}
                   </div>
                 </button>
+                <DownloadButton
+                  compact
+                  who={who}
+                  target={{ type: 'episode', id: e.id, title: item.title, subtitle: `S${e.season}:E${e.episode} · ${e.title}`, itemKey: item.key }}
+                  onOpenDownloads={openDownloads}
+                />
                 <button
                   onClick={() => void playOnPc({ type: 'episode', id: e.id, label: `S${e.season}:E${e.episode} · ${e.title}`, resume: -1 })}
                   disabled={pcBusy}

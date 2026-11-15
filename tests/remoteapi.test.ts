@@ -14,14 +14,20 @@ vi.mock('../src/services/db', () => ({
   writeLiveData: vi.fn(async () => {}),
 }));
 let streamCount = 0;
-vi.mock('../src/services/streaming', () => ({
-  planStream: () => ({ format: 'direct' }),
-  probeStream: vi.fn(async () => null),
-  registerStream: vi.fn(async () => `tok${++streamCount}`),
-  streamUrl: vi.fn(async (token: string) => ({ url: '', path: `/stream/${token}/file`, offset: 0 })),
-  releaseStream: vi.fn(),
-  durationOf: () => 100,
-}));
+vi.mock('../src/services/streaming', async (importOriginal) => {
+  // Quality planning is real; everything that talks to the media server is faked.
+  const real = await importOriginal<typeof import('../src/services/streaming')>();
+  return {
+    ...real,
+    planStream: vi.fn(() => ({ format: 'direct' })),
+    probeStream: vi.fn(async () => null),
+    registerStream: vi.fn(async () => `tok${++streamCount}`),
+    streamUrl: vi.fn(async (token: string) => ({ url: '', path: `/stream/${token}/file`, offset: 0 })),
+    releaseStream: vi.fn(),
+    durationOf: () => 100,
+    downloadStatus: vi.fn(async () => ({ state: 'converting', progress: 0.25, size: 0, error: null })),
+  };
+});
 vi.mock('../src/services/limits', () => ({ limitStatus: vi.fn(async () => ({ blocked: null, remaining: null })), blockedMessage: () => 'It’s bedtime' }));
 vi.mock('../src/services/torrents', () => ({ downloadBlockingPlayback: () => null, stillDownloadingMessage: () => '' }));
 vi.mock('../src/services/player', () => ({
@@ -333,5 +339,93 @@ describe('browser Live TV', () => {
     expect(live.events[0].channels.map((c) => c.name)).toEqual(['ABC']);
     expect(live.events[0].channels[0].web).toContain('https://tv.example/embed/abc?');
     expect(live.channels.map((c) => c.name)).toEqual(['ABC']);
+  });
+});
+
+describe('browser quality and downloads', () => {
+  const info1080 = JSON.stringify({ duration: 100, width: 1920, height: 1080, video_codec: 'hevc', gamma: null, audio: [], subs: [], chapters: [] });
+  const download = (caller = A, profile = 1, id = 2, quality?: unknown) => remote.route(caller, 'POST', '/download', {}, { profile, type: 'movie', id, quality });
+  const status = (caller: typeof A, token: string) => remote.route(caller, 'GET', '/download/status', { token }, {});
+
+  beforeEach(() => {
+    vi.mocked(db.loadLibrary).mockResolvedValue({ movies: [rated, { ...family, media_info: info1080, file_path: '/Movies/Family.mkv' }], series: [], episodes: [] } as never);
+  });
+
+  it('only accepts known quality values', async () => {
+    for (const quality of [{ res: '1440' }, { res: '1080', level: 'max' }, 'high', { res: ['1080'] }]) {
+      await expect(remote.route(A, 'POST', '/play', {}, { profile: 1, type: 'movie', id: 2, quality })).rejects.toMatchObject({ status: 400 });
+      await expect(download(A, 1, 2, quality)).rejects.toMatchObject({ status: 400 });
+    }
+    await expect(remote.route(A, 'POST', '/download', {}, { profile: 1, type: 'show', id: 2 })).rejects.toMatchObject({ status: 400 });
+    await expect(remote.route(A, 'GET', '/qualities', { profile: '1', type: 'x', id: '2' }, {})).rejects.toMatchObject({ status: 400 });
+    expect(streaming.registerStream).not.toHaveBeenCalled();
+  });
+
+  it('plays the asked quality, stepped down to the source, and lists only what the source has', async () => {
+    const s = (await remote.route(A, 'POST', '/play', {}, { profile: 1, type: 'movie', id: 2, quality: { res: '2160', level: 'low' } })) as import('../src/remote/types').RemoteStream;
+    expect(s.quality).toEqual({ res: '1080', level: 'low' });
+    expect(vi.mocked(streaming.planStream).mock.calls[0][2]).toMatchObject({ quality: { res: '1080', level: 'low' } });
+    expect(s.qualities.map((q) => q.label)).toEqual(['Original', '1080p', '720p', '480p']);
+    expect(s.qualities[0]).toMatchObject({ res: 'original', asIs: false });
+    expect(s.qualities[1].sizes).toEqual({ low: expect.any(Number), medium: expect.any(Number), high: expect.any(Number) });
+    const q = (await remote.route(A, 'GET', '/qualities', { profile: '1', type: 'movie', id: '2' }, {})) as import('../src/remote/types').RemoteQualities;
+    expect(q.default).toEqual({ res: '1080', level: 'high' });
+    await expect(remote.route(A, 'GET', '/qualities', { profile: '2', type: 'movie', id: '1' }, {})).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('prepares downloads with the same rating and limit rules as playback', async () => {
+    await expect(download(A, 2, 1)).rejects.toMatchObject({ status: 404 });
+    vi.mocked(limits.limitStatus).mockResolvedValueOnce({ blocked: 'bedtime', remaining: null });
+    await expect(download(A, 1, 2)).rejects.toMatchObject({ status: 403, message: 'It’s bedtime' });
+    expect(streaming.registerStream).not.toHaveBeenCalled();
+
+    const d = (await download(A, 1, 2, { res: '720', level: 'medium' })) as import('../src/remote/types').RemoteDownload;
+    expect(d).toMatchObject({ mode: 'convert', mime: 'video/mp4', quality: { res: '720', level: 'medium' }, title: 'Family film' });
+    expect(vi.mocked(streaming.registerStream).mock.calls[0]).toEqual(['/Movies/Family.mkv', expect.objectContaining({ format: 'mp4', width: 1280, height: 720, bitrate: 3000 })]);
+    await expect(status(A, d.token)).resolves.toEqual({ state: 'converting', progress: 0.25, error: null });
+    await expect(status(B, d.token)).rejects.toMatchObject({ status: 404 });
+    vi.mocked(streaming.downloadStatus).mockResolvedValueOnce({ state: 'failed', progress: 0, size: 0, error: 'C:\\Users\\me\\Family.mkv: decoder error' });
+    const failed = (await status(A, d.token)) as { error: string };
+    expect(failed.error).not.toContain('Users');
+    // Seeking is for playback only.
+    await expect(remote.route(A, 'POST', '/seek', {}, { token: d.token, time: 5 })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('sends files browsers can play as they are', async () => {
+    vi.mocked(db.loadLibrary).mockResolvedValue({
+      movies: [{ ...family, file_size: 5000, media_info: JSON.stringify({ duration: 100, width: 1280, height: 720, video_codec: 'h264', gamma: null, audio: [], subs: [], chapters: [] }) }],
+      series: [],
+      episodes: [],
+    } as never);
+    const d = (await download(A, 1, 2)) as import('../src/remote/types').RemoteDownload;
+    expect(d).toMatchObject({ mode: 'file', mime: 'video/mp4', estimate: 5000, quality: { res: 'original' } });
+    expect(vi.mocked(streaming.registerStream).mock.calls[0][1]).toMatchObject({ format: 'direct' });
+    await expect(status(A, d.token)).resolves.toEqual({ state: 'ready', progress: 1, error: null });
+    expect(streaming.downloadStatus).not.toHaveBeenCalled();
+  });
+
+  it('counts downloads toward the device limit, one per browser, without ending its playback', async () => {
+    const playing = (await play(A)) as { token: string };
+    const first = (await download(A)) as { token: string };
+    const second = (await download(A)) as { token: string };
+    expect(streaming.releaseStream).toHaveBeenCalledWith(first.token);
+    expect(streaming.releaseStream).not.toHaveBeenCalledWith(playing.token);
+    await remote.route(A, 'POST', '/stop', {}, { token: second.token });
+    expect(streaming.releaseStream).toHaveBeenCalledWith(second.token);
+    for (let i = 1; i < remote.MAX_REMOTE_STREAMS; i++) await download({ session: `d${i}`, device: 'x' });
+    await expect(download({ session: 'late', device: 'x' })).rejects.toMatchObject({ status: 429 });
+    await expect(play({ session: 'late', device: 'x' })).rejects.toMatchObject({ status: 429 });
+  });
+
+  it('checks limits before offline viewing and credits its watch time', async () => {
+    vi.mocked(limits.limitStatus).mockResolvedValueOnce({ blocked: 'bedtime', remaining: null });
+    await expect(remote.route(A, 'POST', '/offline/start', {}, { profile: 1, type: 'movie', id: 2 })).rejects.toMatchObject({ status: 403 });
+    await expect(remote.route(A, 'POST', '/offline/start', {}, { profile: 2, type: 'movie', id: 1 })).rejects.toMatchObject({ status: 404 });
+    const { token } = (await remote.route(A, 'POST', '/offline/start', {}, { profile: 1, type: 'movie', id: 2 })) as { token: string };
+    await remote.route(A, 'POST', '/progress', {}, { profile: 1, type: 'movie', id: 2, time: 10, duration: 100, watched: 5, token });
+    expect(db.logWatchTime).toHaveBeenCalled();
+    // Saved copies don't use the PC, so they don't take a device slot.
+    for (let i = 0; i < remote.MAX_REMOTE_STREAMS; i++) await play({ session: `p${i}`, device: 'x' });
+    await expect(remote.route(B, 'POST', '/offline/start', {}, { profile: 1, type: 'movie', id: 2 })).resolves.toMatchObject({ token: expect.any(String) });
   });
 });
