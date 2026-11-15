@@ -29,7 +29,7 @@ import {
   useLiveStore,
   type LiveFeed,
 } from '../../services/live';
-import type { SportsEvent } from '../../types/live';
+import { MULTIVIEW_MAX, MULTIVIEW_NATIVE_MAX, type SportsEvent } from '../../types/live';
 import { LiveArtwork } from './LiveArtwork';
 import EventCard from './LiveEventCard';
 import Sources from './LiveSources';
@@ -254,11 +254,15 @@ export default function LiveTV() {
       toast('That channel is already selected for multiview.', 'info');
       return;
     }
-    if (feeds.length >= 2) {
+    if (feeds.length >= MULTIVIEW_MAX) {
       toast('Remove a channel before adding another one.', 'info');
       return;
     }
-    setFeeds((current) => [...current, feed].slice(0, 2));
+    if (!feed.match.channel.web && feeds.filter((f) => !f.match.channel.web).length >= MULTIVIEW_NATIVE_MAX) {
+      toast('Multiview can show up to two M3U channels. Add web channels for the rest.', 'info');
+      return;
+    }
+    setFeeds((current) => [...current, feed].slice(0, MULTIVIEW_MAX));
     setMultiview(true);
   };
 
@@ -295,7 +299,7 @@ export default function LiveTV() {
       {multiview && (
         <section aria-label="Multiview selection" className="mb-6 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-nf-hover p-4">
           <div className="mr-auto">
-            <h2 className="font-semibold">Watch two channels</h2>
+            <h2 className="font-semibold">Watch up to four channels</h2>
             <p className="text-sm text-nf-secondary">Add channels from Sports or Channels. Choose which one to hear during playback.</p>
           </div>
           {feeds.map(({ match, event }) => (
@@ -311,11 +315,11 @@ export default function LiveTV() {
           ))}
           <button
             className="nf-btn-red"
-            disabled={feeds.length !== 2 || openingMultiview}
+            disabled={feeds.length < 2 || openingMultiview}
             onClick={async () => {
-              if (feeds.length !== 2 || openingMultiview) return;
+              if (feeds.length < 2 || openingMultiview) return;
               setOpeningMultiview(true);
-              try { await playLiveMultiview(feeds[0], feeds[1]); }
+              try { await playLiveMultiview(feeds); }
               finally { setOpeningMultiview(false); }
             }}
           >

@@ -61,18 +61,27 @@ export interface SportsEvent {
   broadcasts: string[];
 }
 
+export interface MultiviewPane {
+  playlistId: string;
+  id: string;
+  title: string;
+  subtitle: string;
+  event?: SportsEvent;
+  web?: { url: string; source: string };
+}
+
+/** Multiview shows up to four channels; at most two of them can be native (M3U) channels. */
+export const MULTIVIEW_MAX = 4;
+export const MULTIVIEW_NATIVE_MAX = 2;
+
 export interface LivePlayerSession {
   event?: SportsEvent;
   /** Set when the channel plays in its source's web player instead of the native one. */
   web?: { url: string; source: string };
-  multiview?: {
-    playlistId: string;
-    id: string;
-    title: string;
-    subtitle: string;
-    event?: SportsEvent;
-    web?: { url: string; source: string };
-  };
+  /** The second multiview pane. */
+  multiview?: MultiviewPane;
+  /** The third and fourth multiview panes. */
+  more?: MultiviewPane[];
   channels?: { playlistId: string; id: string }[];
   loadId?: string;
   target: { type: 'live'; id: string; playlistId: string; label: string };
