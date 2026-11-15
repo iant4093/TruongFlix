@@ -515,6 +515,8 @@ export async function getSettings(): Promise<Settings> {
     torrent_peer_limit: map.torrent_peer_limit != null ? Math.max(8, Number(map.torrent_peer_limit) || 128) : 128,
     torrent_movies_dir: map.torrent_movies_dir ?? '',
     torrent_tv_dir: map.torrent_tv_dir ?? '',
+    music_directories: parseList(map.music_directories),
+    music_lyrics_online: map.music_lyrics_online !== 'false',
   };
 }
 
@@ -526,6 +528,15 @@ function parseObject<T extends object>(raw: string | undefined): T {
     return (v && typeof v === 'object' ? v : {}) as T;
   } catch {
     return {} as T;
+  }
+}
+
+function parseList(raw: string | undefined): string[] {
+  try {
+    const v = JSON.parse(raw ?? '[]');
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
   }
 }
 

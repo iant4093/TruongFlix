@@ -5,7 +5,8 @@ import { parseMediaInfo } from './mediainfo';
 export type StreamClient = 'browser' | 'chromecast' | 'dlna' | 'dlna-compat';
 
 export interface StreamOptions {
-  format: 'direct' | 'hls' | 'ts';
+  /** 'aac' = audio-only conversion for music a player can't decode. */
+  format: 'direct' | 'hls' | 'ts' | 'aac';
   width: number;
   height: number;
   tone_map: boolean;

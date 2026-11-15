@@ -1186,6 +1186,8 @@ function inspectMockSource(source: string): InspectTorrentRes {
 export function installMocks() {
   mockWindows('main');
   mockOmdb();
+  // Music uses its own in-memory library in previews (src/music/mock.ts).
+  (window as { __TF_DESKTOP_MOCK__?: boolean }).__TF_DESKTOP_MOCK__ = true;
   mockIPC(
     (cmd, args) => {
       const a = (args ?? {}) as Record<string, unknown>;

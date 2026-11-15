@@ -26,7 +26,7 @@ import type {
 import type { SearchResult } from '../services/tmdb';
 import { allowedForMaturity, buildItems, buildMovieItem, buildSeriesItem, groupEpisodes } from './selectors';
 
-export type View = 'home' | 'tv' | 'movies' | 'mylist' | 'live' | 'browse' | 'games';
+export type View = 'home' | 'tv' | 'movies' | 'mylist' | 'live' | 'music' | 'browse' | 'games';
 
 export interface HoverState {
   item: MediaItem;
@@ -244,6 +244,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     torrent_peer_limit: 128,
     torrent_movies_dir: '',
     torrent_tv_dir: '',
+    music_directories: [],
+    music_lyrics_online: true,
   },
   movies: [],
   series: [],

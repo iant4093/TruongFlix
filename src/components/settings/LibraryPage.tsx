@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { DatabaseZap, FilePen, HeartPulse, RefreshCw, Trash2 } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { runScan } from '../../services/scanner';
+import { runMusicScan } from '../../services/music';
 import { clearLibrary } from '../../services/db';
 import { connectShare, refreshShares } from '../../services/nas';
 import { FolderList } from '../common/SetupControls';
@@ -40,6 +41,23 @@ export default function LibraryPage() {
         <Block>
           <FolderList value={settings.media_directories} onChange={(dirs) => void updateSettings({ media_directories: dirs })} />
         </Block>
+      </Group>
+
+      <Group title="Music folders" footer="MP3, FLAC, AAC/ALAC (.m4a), Ogg, Opus and WAV. Tags, covers and lyrics (embedded or a matching .lrc file) are read when you scan.">
+        <Block>
+          <FolderList
+            value={settings.music_directories}
+            onChange={(dirs) => void updateSettings({ music_directories: dirs }).then(() => runMusicScan())}
+            pickerTitle="Choose music folders"
+            emptyText="No music folders yet. Add the folders containing your music."
+          />
+        </Block>
+        <ToggleRow
+          label="Find synced lyrics online"
+          description="Songs without lyrics of their own are looked up once on LRCLIB (lrclib.net). Only the artist, title, album and length are sent."
+          checked={settings.music_lyrics_online}
+          onChange={(v) => void updateSettings({ music_lyrics_online: v })}
+        />
       </Group>
 
       <NetworkShares />

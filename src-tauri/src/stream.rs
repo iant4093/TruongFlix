@@ -38,6 +38,8 @@ const MAX_SESSIONS: usize = 32;
 const PROBE_TTL: Duration = Duration::from_secs(120);
 const PROBE_CACHE_MAX: usize = 256;
 const LOOKAHEAD_SEGS: u32 = 6;
+/// Longest a music conversion (audio only, much faster than real time) may take.
+const AUDIO_ENCODE_WAIT: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct StreamOptions {
@@ -681,6 +683,9 @@ async fn handle(mut conn: TcpStream, peer: SocketAddr) -> std::io::Result<()> {
         }
         return MEDIA_RESPONSE.scope(true, serve_stream(&mut conn, &req, rest)).await;
     }
+    if let Some(name) = req.path.strip_prefix("/music-art/") {
+        return serve_music_art(&mut conn, name, req.method == "HEAD").await;
+    }
     if !matches!(req.method.as_str(), "GET" | "HEAD" | "POST") {
         return respond(&mut conn, 405, "text/plain", "", b"Not allowed", false).await;
     }
@@ -842,6 +847,24 @@ async fn serve_app_asset(conn: &mut TcpStream, req: &Request) -> std::io::Result
     respond(conn, 404, "text/plain", "", b"Not found", false).await
 }
 
+/// Cached album art for the music library. Names are unguessable keyed hashes (see `music`), like
+/// stream tokens, so `<img>` tags can load them without the sign-in header.
+async fn serve_music_art(conn: &mut TcpStream, name: &str, head_only: bool) -> std::io::Result<()> {
+    let Some(dir) = crate::music::served_art_dir().filter(|_| crate::music::valid_art_name(name)) else {
+        return respond(conn, 404, "text/plain", "", b"Not found", false).await;
+    };
+    let mime = match name.rsplit('.').next() {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/jpeg",
+    };
+    match tokio::fs::read(dir.join(name)).await {
+        Ok(bytes) => respond(conn, 200, mime, "Cache-Control: private, max-age=31536000, immutable\r\n", &bytes, head_only).await,
+        Err(_) => respond(conn, 404, "text/plain", "", b"Not found", false).await,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Streams
 // ---------------------------------------------------------------------------
@@ -855,6 +878,12 @@ fn mime_for(path: &Path) -> &'static str {
         Some("mov") => "video/quicktime",
         Some("ts" | "m2ts") => "video/mp2t",
         Some("wmv") => "video/x-ms-wmv",
+        Some("mp3") => "audio/mpeg",
+        Some("flac") => "audio/flac",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("ogg" | "oga" | "opus") => "audio/ogg",
+        Some("wav") => "audio/wav",
         _ => "application/octet-stream",
     }
 }
@@ -898,6 +927,20 @@ async fn serve_stream(conn: &mut TcpStream, req: &Request, rest: &str) -> std::i
             return respond(conn, 404, "text/plain", "", b"This conversion has ended", false).await;
         };
         return serve_growing(conn, &dir.join("live.ts"), &done, head_only).await;
+    }
+    if third == "audio.m4a" {
+        let Some((_, dir, done)) = live_job.filter(|j| j.0 == second) else {
+            return respond(conn, 404, "text/plain", "", b"This conversion has ended", false).await;
+        };
+        // Audio converts far faster than real time; the finished file supports seeking.
+        let started = Instant::now();
+        while !done.load(Ordering::Acquire) {
+            if started.elapsed() > AUDIO_ENCODE_WAIT {
+                return respond(conn, 503, "text/plain", "", b"Still converting", false).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        return serve_file_range(conn, &dir.join("audio.m4a"), req.headers.get("range").map(String::as_str), head_only).await;
     }
     respond(conn, 404, "text/plain", "", b"Not found", false).await
 }
@@ -1382,6 +1425,79 @@ fn spawn_ts_job(
     Ok(job)
 }
 
+/// Audio-only conversion to AAC in MP4 (for music a browser can't play, e.g. ALAC outside Safari).
+fn spawn_audio_job(path: &Path, root: &Path) -> Job {
+    let id = random_token()[..12].to_string();
+    let dir = root.join(&id);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let error = Arc::new(Mutex::new(None));
+    let job = Job {
+        id,
+        dir: dir.clone(),
+        start: 0.0,
+        start_seg: 0,
+        frontier: Arc::new(AtomicU32::new(0)),
+        cancel: cancel.clone(),
+        done: done.clone(),
+        eof: Arc::new(AtomicBool::new(false)),
+        error: error.clone(),
+    };
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let result = run_audio_encode(&path, &dir.join("audio.m4a"), &cancel);
+        if let Err(e) = result {
+            let _ = std::fs::remove_file(dir.join("audio.m4a"));
+            *error.lock().unwrap() = Some(e);
+        }
+        done.store(true, Ordering::Release);
+    });
+    job
+}
+
+fn run_audio_encode(path: &Path, out: &Path, cancel: &AtomicBool) -> Result<(), String> {
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let out_s = out.to_string_lossy().into_owned();
+    let core = Core::new(&[
+        ("o", out_s.as_str()),
+        ("of", "mp4"),
+        ("ofopts", "movflags=+faststart"),
+        ("oac", "aac"),
+        ("oacopts", "b=256k"),
+        ("audio-samplerate", "48000"),
+        ("vid", "no"),
+        ("sid", "no"),
+        ("keep-open", "no"),
+    ])?;
+    let file = path.to_string_lossy().into_owned();
+    core.api.command(core.h, &["loadfile", &file, "replace"])?;
+    let deadline = Instant::now() + AUDIO_ENCODE_WAIT;
+    let mut ok = false;
+    while Instant::now() < deadline {
+        if cancel.load(Ordering::Acquire) {
+            let _ = core.api.command(core.h, &["stop"]);
+            break;
+        }
+        let ev = unsafe { &*(core.api.wait_event)(core.h, 0.1) };
+        if ev.event_id == mpv::EVENT_END_FILE {
+            ok = ev.data.is_null() || unsafe { &*(ev.data as *const mpv::EventEndFile) }.reason != mpv::END_FILE_REASON_ERROR;
+            break;
+        }
+        if ev.event_id == mpv::EVENT_SHUTDOWN {
+            break;
+        }
+    }
+    drop(core); // finishes the MP4 (moves the index to the front)
+    let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+    if ok && size > 0 {
+        Ok(())
+    } else {
+        Err("The song couldn’t be converted".into())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_encode(
     path: PathBuf,
@@ -1710,6 +1826,18 @@ pub async fn stream_url(_app: AppHandle, token: String, start: f64, host: Option
                 }
                 (format!("/stream/{token}/index.m3u8"), 0.0)
             }
+            "aac" => {
+                // One conversion per stream: the finished file serves every seek.
+                let reuse = st.job.as_ref().is_some_and(|j| j.error.lock().unwrap().is_none() && !j.cancel.load(Ordering::Acquire));
+                if !reuse {
+                    if let Some(old) = st.job.take() {
+                        old.stop();
+                    }
+                    st.job = Some(spawn_audio_job(&st.path, &st.dir));
+                }
+                let job = st.job.as_ref().unwrap();
+                (format!("/stream/{token}/{}/audio.m4a", job.id), 0.0)
+            }
             _ => {
                 let reuse = st.job.as_ref().is_some_and(|j| {
                     (j.start - start).abs() < 0.5 && j.error.lock().unwrap().is_none() && !j.cancel.load(Ordering::Acquire)
@@ -1841,6 +1969,36 @@ pub fn remote_session_revoke(id: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `TRUONGFLIX_LIBMPV=…/libmpv-2.dll cargo test --lib -- --ignored real_audio_transcode`
+    #[test]
+    #[ignore]
+    fn real_audio_transcode() {
+        use lofty::file::AudioFile;
+        let root = std::env::temp_dir().join(format!("truongflix-audio-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // An ALAC song (what Chrome and Edge can't play), made by libmpv itself.
+        let alac = root.join("song.m4a");
+        {
+            let out = alac.to_string_lossy().into_owned();
+            let core = Core::new(&[("o", out.as_str()), ("of", "ipod"), ("oac", "alac"), ("vid", "no"), ("keep-open", "no")]).unwrap();
+            core.api.command(core.h, &["loadfile", "av://lavfi:sine=frequency=440:duration=4", "replace"]).unwrap();
+            assert!(core.wait_for(&[mpv::EVENT_END_FILE], Duration::from_secs(20)).is_some());
+        }
+        let mut f = std::fs::File::open(&alac).unwrap();
+        let src = lofty::mp4::Mp4File::read_from(&mut f, lofty::config::ParseOptions::new()).unwrap();
+        assert_eq!(src.properties().codec(), Some(lofty::mp4::Mp4Codec::ALAC));
+
+        let out = root.join("job/audio.m4a");
+        run_audio_encode(&alac, &out, &AtomicBool::new(false)).expect("converted");
+        let mut f = std::fs::File::open(&out).unwrap();
+        let aac = lofty::mp4::Mp4File::read_from(&mut f, lofty::config::ParseOptions::new()).unwrap();
+        assert_eq!(aac.properties().codec(), Some(lofty::mp4::Mp4Codec::AAC));
+        let secs = aac.properties().duration().as_secs_f64();
+        assert!((secs - 4.0).abs() < 0.3, "duration {secs}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// `TRUONGFLIX_STREAM_TEST=video.mkv cargo test -- --ignored real_stream --nocapture`
     #[test]

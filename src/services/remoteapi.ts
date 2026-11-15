@@ -28,6 +28,7 @@ import type { LiveChannel, LivePlaylist, LivePreferences } from '../types/live';
 import { durationOf, planStream, probeStream, registerStream, releaseStream, streamUrl } from './streaming';
 import { languageName } from './subtitles';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
+import { endMusicSession, musicRoute } from './musicroute';
 
 /**
  * Answers the browser app's `/api/…` requests (forwarded by the Rust media server) with the same
@@ -106,6 +107,7 @@ export function sweepIdleStreams(now = Date.now()) {
 /** Ends playback that belonged to a browser that was signed out. */
 export function endRemoteSession(session: string) {
   for (const [token, s] of [...sessions]) if (s.session === session) stopStream(token);
+  endMusicSession(session);
 }
 
 function lite(i: MediaItem, extra: Partial<RemoteItem> = {}): RemoteItem {
@@ -516,6 +518,7 @@ export async function route(caller: Caller, method: string, path: string, query:
     return liveOnPc(caller, p(), String(body.playlistId ?? ''), String(body.id ?? ''), body.eventId ? String(body.eventId) : undefined);
   }
   if (method === 'POST' && path === '/remote/play') return playOnPc(caller, p(), body.type === 'episode' ? 'episode' : 'movie', Number(body.id));
+  if (path.startsWith('/music/')) return musicRoute(caller, p(), method, path, query, body);
   throw new ApiError(404, 'Unknown endpoint');
 }
 

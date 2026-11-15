@@ -3,6 +3,7 @@
  * remote) can be previewed with `npm run dev` at http://localhost:1420/remote.html?mock.
  */
 import type { RemoteItem, RemoteLibrary, RemoteLive, RemoteNowPlaying, RemoteProfile, RemoteTitle } from './types';
+import { mockArtUrl, mockMusicRoute } from '../music/mock';
 
 const profiles: RemoteProfile[] = [
   { id: 1, name: 'Ian', color: '#E50914', maturity: 'all', locked: false },
@@ -139,12 +140,14 @@ function answer(method: string, path: string, body: Record<string, unknown>): [n
 }
 
 export function installRemoteMock() {
+  (window as { __TF_MUSIC_ART__?: typeof mockArtUrl }).__TF_MUSIC_ART__ = mockArtUrl;
   const real = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
     if (!url.pathname.startsWith('/api/')) return real(input, init);
     const body = init?.body ? JSON.parse(String(init.body)) : {};
-    const [status, data] = answer(init?.method ?? 'GET', url.pathname.slice(4), body);
+    const path = url.pathname.slice(4);
+    const [status, data] = path.startsWith('/music/') ? mockMusicRoute(init?.method ?? 'GET', path, url.searchParams, body) : answer(init?.method ?? 'GET', path, body);
     return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   };
 }

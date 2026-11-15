@@ -16,6 +16,7 @@ const LINKS: { view: View; label: string }[] = [
   { view: 'tv', label: 'TV Shows' },
   { view: 'movies', label: 'Movies' },
   { view: 'live', label: 'Live TV' },
+  { view: 'music', label: 'Music' },
   { view: 'games', label: 'Games' },
   { view: 'browse', label: 'Browse' },
   { view: 'mylist', label: 'My List' },
@@ -129,6 +130,8 @@ export default function Navbar() {
           <button aria-label="Search Browse" className="p-1.5" onClick={() => focusAndReveal(document.querySelector('input[aria-label="Search titles to browse"]'))}><Search className="h-5 w-5" /></button>
         ) : view === 'games' ? (
           <button aria-label="Search games" className="p-1.5" onClick={() => focusAndReveal(document.querySelector('input[aria-label="Search games"]'))}><Search className="h-5 w-5" /></button>
+        ) : view === 'music' ? (
+          <button aria-label="Search music" className="p-1.5" onClick={() => focusAndReveal(document.querySelector('input[aria-label="Search music"]'))}><Search className="h-5 w-5" /></button>
         ) : view === 'live' ? (
           <button
             aria-label="Search live TV"

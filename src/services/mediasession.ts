@@ -3,6 +3,33 @@ import { listen } from '@tauri-apps/api/event';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { closeBuiltin, noteUserActivity, playBuiltin, playerCommand, playerSet, retuneLive, seekLive } from './player';
 import { resize } from './tmdb';
+import { musicCoverForSystem } from './music';
+import * as music from '../music/player';
+
+const useMusicPlayer = music.useMusicPlayer;
+
+/** Media keys while music (not a video) is playing. */
+function musicControl(action: string, value: number) {
+  const { time, duration } = useMusicPlayer.getState();
+  switch (action) {
+    case 'play':
+      return music.resume();
+    case 'pause':
+      return music.pause();
+    case 'toggle':
+      return music.toggle();
+    case 'next':
+      return music.next();
+    case 'previous':
+      return music.previous();
+    case 'seek_by':
+      return music.seek(time + value);
+    case 'set_position':
+      return music.seek(Math.max(0, Math.min(value, duration)));
+    case 'stop':
+      return music.pause();
+  }
+}
 
 interface SessionUpdate {
   title: string;
@@ -20,9 +47,26 @@ let last: (SessionUpdate & { sentAt: number }) | null = null;
 let active = false;
 
 /** What the system media controls should show for the current playback, or null. */
+function describeMusic(): SessionUpdate | null {
+  const { track, playing, time, duration, queue } = useMusicPlayer.getState();
+  if (!track) return null;
+  return {
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    duration: duration || track.duration,
+    position: time,
+    state: playing ? 'playing' : 'paused',
+    rate: 1,
+    cover_url: musicCoverForSystem(track.art),
+    can_next: queue.index + 1 < queue.items.length || queue.repeat !== 'off',
+  };
+}
+
 function describeNowPlaying(): SessionUpdate | null {
   const { playerSession: session, playerState: state, allItems, episodes } = useLibraryStore.getState();
-  if (!session || !state?.loaded) return null;
+  if (!session) return describeMusic();
+  if (!state?.loaded) return null;
   if (session.target.type === 'live') return { title: session.title, artist: session.subtitle || 'Live TV', album: 'TruongFlix Live TV', duration: 0, position: 0, state: state.paused ? 'paused' : 'playing', rate: 1, cover_url: null, can_next: true };
   const item = allItems.find((i) => i.key === session.itemKey);
   const ep = session.target.type === 'episode' ? episodes.find((e) => e.id === session.target.id) : undefined;
@@ -74,7 +118,10 @@ function sync() {
 async function handle(action: string, value: number) {
   const store = useLibraryStore.getState();
   const { playerSession: session, playerState: state } = store;
-  if (!session) return;
+  if (!session) {
+    if (useMusicPlayer.getState().track) musicControl(action, value);
+    return;
+  }
   noteUserActivity();
   switch (action) {
     case 'play':
@@ -119,5 +166,8 @@ export async function initMediaSession() {
   await listen<{ action: string; value: number }>('media-control', ({ payload }) => void handle(payload.action, payload.value));
   useLibraryStore.subscribe((s, prev) => {
     if (s.playerSession !== prev.playerSession || s.playerState !== prev.playerState) sync();
+  });
+  useMusicPlayer.subscribe((s, prev) => {
+    if (s.track !== prev.track || s.playing !== prev.playing || s.time !== prev.time || s.queue !== prev.queue) sync();
   });
 }
