@@ -14,6 +14,7 @@ import {
   Play,
   RotateCcw,
   RotateCw,
+  Settings2,
   SkipForward,
   Sparkles,
   Volume1,
@@ -22,14 +23,19 @@ import {
   X,
 } from 'lucide-react';
 import type { RemotePlayable, RemoteProfile, RemoteStream, RemoteSubStyle } from './types';
-import { api } from './api';
+import { api, ApiStatusError } from './api';
 import { formatClock } from '../lib/format';
 import { errorMessage } from '../lib/errors';
 import { isPlayerShortcut, playerControlTitles } from '../components/player/shortcuts';
+import { QUALITY_LEVELS, levelLabel, resLabel, type Quality } from '../lib/quality';
+import { savedQuality, saveQuality } from './qualityPref';
+import type { OfflineItem } from './offlineLogic';
+import { offlineUrl, queueProgress, savePosition } from './offline';
 import WatchTogether from './WatchTogether';
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
-type Panel = 'tracks' | 'speed' | 'chapters' | null;
+type Panel = 'tracks' | 'speed' | 'chapters' | 'quality' | null;
+const DEFAULT_SUB_STYLE: RemoteSubStyle = { size: 'medium', background: 'shadow' };
 
 const REPORT_MS = 10_000;
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
@@ -66,11 +72,14 @@ export default function RemotePlayer({
   target,
   onExit,
   onPlay,
+  offline,
 }: {
   who: Who;
   target: RemotePlayable;
   onExit: () => void;
   onPlay: (t: RemotePlayable) => void;
+  /** Plays this saved copy instead of streaming from the PC. */
+  offline?: OfflineItem;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
@@ -106,6 +115,9 @@ export default function RemotePlayer({
   const mounted = useRef(true);
   const loadSeq = useRef(0);
   const choiceRef = useRef<{ aid: number | null; sid: number; subStyle: RemoteSubStyle } | null>(null);
+  /** The quality this browser picked (undefined: the PC's default for each file). */
+  const qualityRef = useRef<Quality | undefined>(savedQuality());
+  const blobUrl = useRef<string | null>(null);
 
   const base = { profile: who.id, key: who.key };
   const absolute = offset + time;
@@ -174,6 +186,7 @@ export default function RemotePlayer({
       setLoading(true);
       setError('');
       setEnded(false);
+      if (offline) return loadOffline(seq, opts.start);
       try {
         const s = await api<RemoteStream>('/play', {
           body: {
@@ -185,6 +198,7 @@ export default function RemotePlayer({
             sid: opts.sid,
             subStyle: opts.subStyle,
             prevToken: opts.prevToken,
+            quality: qualityRef.current,
           },
         });
         if (!mounted.current || seq !== loadSeq.current) {
@@ -206,8 +220,66 @@ export default function RemotePlayer({
         return null;
       }
     },
-    [attach, base.key, base.profile, target.id, target.type],
+    [attach, base.key, base.profile, target.id, target.type, offline?.id],
   );
+
+  /**
+   * A saved copy. When the PC can be reached it checks viewing limits first and hands out a token
+   * so watch time counts; without a connection it just plays.
+   */
+  async function loadOffline(seq: number, start?: number) {
+    if (!offline) return null;
+    try {
+      const { token } = await api<{ token: string }>('/offline/start', { body: { ...base, type: offline.type, id: offline.mediaId } });
+      if (!mounted.current || seq !== loadSeq.current) {
+        void api('/stop', { body: { token } }).catch(() => {});
+        return null;
+      }
+      streamToken.current = token;
+    } catch (e) {
+      if (e instanceof ApiStatusError && e.status === 403) {
+        setLoading(false);
+        setError(e.message);
+        return null;
+      }
+      streamToken.current = null;
+    }
+    try {
+      blobUrl.current ??= await offlineUrl(offline);
+    } catch (e) {
+      setLoading(false);
+      setError(errorMessage(e));
+      return null;
+    }
+    if (!mounted.current || seq !== loadSeq.current) return null;
+    const resume = start ?? (offline.position > 0 && offline.position < offline.duration - 30 ? offline.position : 0);
+    const s: RemoteStream = {
+      token: streamToken.current ?? '',
+      url: blobUrl.current,
+      offset: 0,
+      duration: offline.duration,
+      mode: 'direct',
+      title: offline.title,
+      subtitle: offline.subtitle,
+      start: resume,
+      next: null,
+      aid: null,
+      sid: 0,
+      audioTracks: [],
+      subTracks: [],
+      chapters: offline.chapters,
+      segments: offline.segments,
+      stinger: offline.stinger,
+      subStyle: DEFAULT_SUB_STYLE,
+      quality: offline.quality ?? { res: 'original', level: 'high' },
+      qualities: [],
+    };
+    setStream(s);
+    setOffset(0);
+    setTime(resume);
+    attach(s.url, resume);
+    return s;
+  }
 
   // Start playback when target changes.
   useEffect(() => {
@@ -235,6 +307,10 @@ export default function RemotePlayer({
         void api('/stop', { body: { token: streamToken.current } }).catch(() => {});
         streamToken.current = null;
       }
+      if (blobUrl.current) {
+        URL.revokeObjectURL(blobUrl.current);
+        blobUrl.current = null;
+      }
     };
   }, []);
 
@@ -244,9 +320,12 @@ export default function RemotePlayer({
       const seconds = watched.current.total;
       watched.current.total = 0;
       const cur = offset + (video.current?.currentTime ?? time);
+      if (offline) void savePosition(offline.id, cur).catch(() => {});
       const res = await api<{ blocked: string | null }>('/progress', {
         body: { ...base, type: target.type, id: target.id, time: cur, duration, watched: seconds, token: streamToken.current },
       }).catch(() => null);
+      // Saved copies keep their place for the PC until it can be reached again.
+      if (offline && !res) void queueProgress({ profile: who.id, profileKey: who.key, type: target.type, id: target.id, time: cur, duration });
       if (res?.blocked && !final) {
         video.current?.pause();
         setError(res.blocked);
@@ -312,6 +391,19 @@ export default function RemotePlayer({
       subStyle,
       prevToken: prev,
     });
+  };
+
+  /** Restarts the stream at the current time in another quality, and remembers the choice. */
+  const changeQuality = async (q: Quality) => {
+    if (!stream || offline) return;
+    qualityRef.current = q;
+    saveQuality(q);
+    if (stream.quality.res === q.res && (q.res === 'original' || stream.quality.level === q.level)) return;
+    const choice = choiceRef.current ?? { aid: stream.aid, sid: stream.sid, subStyle: stream.subStyle };
+    const cur = offset + (video.current?.currentTime ?? time);
+    const prev = streamToken.current ?? undefined;
+    streamToken.current = null;
+    await loadStream({ start: cur, aid: choice.aid ?? undefined, sid: choice.sid, subStyle: choice.subStyle, prevToken: prev });
   };
 
   const applySpeed = (s: number) => {
@@ -454,7 +546,7 @@ export default function RemotePlayer({
       } else if ((k === 's' || k === 'S') && activeSkip && !ended && !error) {
         e.preventDefault();
         skipActive();
-      } else if (k === 'a' || k === 'A') {
+      } else if ((k === 'a' || k === 'A') && !offline) {
         setPanel((p) => (p === 'tracks' ? null : 'tracks'));
         poke();
       } else if ((k === 'c' || k === 'C') && stream?.chapters.length) {
@@ -531,6 +623,8 @@ export default function RemotePlayer({
         onLoadedMetadata={(e) => {
           const el = e.currentTarget;
           el.playbackRate = speedRef.current;
+          // Saved copies of files the PC hadn't measured: take the length from the video itself.
+          if (Number.isFinite(el.duration) && el.duration > 0) setStream((s) => (s && !s.duration ? { ...s, duration: el.duration } : s));
           if (pendingSeek.current != null) {
             const want = pendingSeek.current;
             pendingSeek.current = null;
@@ -671,7 +765,7 @@ export default function RemotePlayer({
         >
           <div className="mb-3 flex items-center justify-between border-b border-white/10 pb-2">
             <h3 className="text-sm font-bold uppercase tracking-wider text-white/90">
-              {panel === 'tracks' ? 'Audio & Subtitles' : panel === 'speed' ? 'Playback Speed' : 'Chapters'}
+              {panel === 'tracks' ? 'Audio & Subtitles' : panel === 'speed' ? 'Playback Speed' : panel === 'quality' ? 'Quality' : 'Chapters'}
             </h3>
             <button onClick={() => setPanel(null)} aria-label="Close menu" className="rounded-full p-1 text-white/70 hover:bg-white/10 hover:text-white">
               <X className="h-4 w-4" />
@@ -778,6 +872,52 @@ export default function RemotePlayer({
             </div>
           )}
 
+          {panel === 'quality' && (
+            <div className="space-y-1">
+              {stream.qualities.map((o) => {
+                const active = stream.quality.res === o.res;
+                const detail =
+                  o.res === 'original' ? (o.asIs ? 'Plays the file as it is' : 'Converted on your PC at full resolution') : null;
+                return (
+                  <div key={o.res} className={`flex items-center gap-2 rounded px-2.5 py-1.5 ${active ? 'bg-white/15' : ''}`}>
+                    <button
+                      onClick={() => {
+                        setPanel(null);
+                        void changeQuality({ res: o.res, level: active ? stream.quality.level : (qualityRef.current?.level ?? 'high') });
+                      }}
+                      className={`flex min-w-0 flex-1 items-center gap-2 py-1 text-left text-sm ${active ? 'font-semibold text-white' : 'text-nf-secondary hover:text-white'}`}
+                    >
+                      <Check className={`h-4 w-4 shrink-0 ${active ? 'opacity-100' : 'opacity-0'}`} />
+                      <div className="min-w-0">
+                        <div>{o.label}</div>
+                        {detail && <div className="truncate text-[11px] font-normal text-nf-muted">{detail}</div>}
+                      </div>
+                    </button>
+                    {o.res !== 'original' && (
+                      <div className="flex shrink-0 gap-1" role="group" aria-label={`${o.label} bitrate`}>
+                        {QUALITY_LEVELS.map((level) => (
+                          <button
+                            key={level}
+                            onClick={() => {
+                              setPanel(null);
+                              void changeQuality({ res: o.res, level });
+                            }}
+                            aria-pressed={active && stream.quality.level === level}
+                            className={`rounded px-2 py-1 text-xs font-medium ${
+                              active && stream.quality.level === level ? 'bg-white text-black' : 'bg-white/10 text-nf-secondary hover:text-white'
+                            }`}
+                          >
+                            {levelLabel(level)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {panel === 'speed' && (
             <div className="grid grid-cols-4 gap-2 sm:grid-cols-7">
               {SPEEDS.map((s) => (
@@ -829,7 +969,7 @@ export default function RemotePlayer({
             <div className="truncate font-semibold sm:text-lg">{stream?.title}</div>
             {stream?.subtitle && <div className="truncate text-xs text-nf-secondary sm:text-sm">{stream.subtitle}</div>}
           </div>
-          <WatchTogether who={who} target={target} video={video} offset={offset} seek={seekTo} onSwitch={onPlay} />
+          {!offline && <WatchTogether who={who} target={target} video={video} offset={offset} seek={seekTo} onSwitch={onPlay} />}
         </div>
 
         <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-10 max-[539px]:px-3 ${chromePointer}`}>
@@ -938,6 +1078,18 @@ export default function RemotePlayer({
                 <Gauge className="h-5 w-5 sm:h-6 sm:w-6" />
                 {speed !== 1 && <span>{speed}×</span>}
               </button>
+              {!offline && !!stream?.qualities.length && (
+                <button
+                  onClick={() => setPanel((p) => (p === 'quality' ? null : 'quality'))}
+                  aria-label="Quality"
+                  title="Quality"
+                  className={`flex items-center gap-1 rounded-full px-2 py-1.5 text-xs font-semibold hover:bg-white/10 ${panel === 'quality' ? 'bg-white/15' : ''}`}
+                >
+                  <Settings2 className="h-5 w-5 sm:h-6 sm:w-6" />
+                  <span className="hidden sm:inline">{resLabel(stream.quality.res)}</span>
+                </button>
+              )}
+              {!offline && (
               <button
                 onClick={() => setPanel((p) => (p === 'tracks' ? null : 'tracks'))}
                 aria-label="Audio & Subtitles"
@@ -947,6 +1099,7 @@ export default function RemotePlayer({
                 <MessageSquareText className="h-5 w-5 sm:h-6 sm:w-6" />
                 {(stream?.sid ?? 0) > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-nf-red" />}
               </button>
+              )}
               {canPip && (
                 <button onClick={togglePip} aria-label="Picture in Picture" title="Picture in Picture" className="hidden rounded-full p-2 hover:bg-white/10 sm:inline-flex">
                   <PictureInPicture2 className="h-5 w-5 sm:h-6 sm:w-6" />
