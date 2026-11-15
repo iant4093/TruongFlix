@@ -26,6 +26,7 @@ import { api } from './api';
 import { formatClock } from '../lib/format';
 import { errorMessage } from '../lib/errors';
 import { isPlayerShortcut, playerControlTitles } from '../components/player/shortcuts';
+import WatchTogether from './WatchTogether';
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
 type Panel = 'tracks' | 'speed' | 'chapters' | null;
@@ -828,6 +829,7 @@ export default function RemotePlayer({
             <div className="truncate font-semibold sm:text-lg">{stream?.title}</div>
             {stream?.subtitle && <div className="truncate text-xs text-nf-secondary sm:text-sm">{stream.subtitle}</div>}
           </div>
+          <WatchTogether who={who} target={target} video={video} offset={offset} seek={seekTo} onSwitch={onPlay} />
         </div>
 
         <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-10 max-[539px]:px-3 ${chromePointer}`}>

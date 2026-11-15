@@ -29,6 +29,7 @@ import { durationOf, planStream, probeStream, registerStream, releaseStream, str
 import { languageName } from './subtitles';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
 import { endMusicSession, musicRoute } from './musicroute';
+import { togetherRoute } from './watchparty';
 
 /**
  * Answers the browser app's `/api/…` requests (forwarded by the Rust media server) with the same
@@ -519,6 +520,10 @@ export async function route(caller: Caller, method: string, path: string, query:
   }
   if (method === 'POST' && path === '/remote/play') return playOnPc(caller, p(), body.type === 'episode' ? 'episode' : 'movie', Number(body.id));
   if (path.startsWith('/music/')) return musicRoute(caller, p(), method, path, query, body);
+  if (path.startsWith('/together/')) {
+    const res = await togetherRoute(caller, method, path, query, body, p);
+    if (res !== undefined) return res;
+  }
   throw new ApiError(404, 'Unknown endpoint');
 }
 
