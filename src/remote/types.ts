@@ -1,4 +1,5 @@
 /** Shapes exchanged between the browser app and the desktop app (over `/api/…`). */
+import type { Quality, QualityLevel, QualityRes } from '../lib/quality';
 
 export interface RemoteProfile {
   id: number;
@@ -132,6 +133,21 @@ export interface RemoteNowPlaying {
 
 export type RemoteCommandAction = 'play' | 'pause' | 'toggle' | 'seek' | 'skip' | 'volume' | 'mute' | 'audio' | 'subtitle' | 'next' | 'stop' | 'fullscreen';
 
+/** A quality the browser may pick for one file (never above the source). */
+export interface RemoteQualityOption {
+  res: QualityRes;
+  label: string;
+  /** Original only: false when the file is converted at its own resolution because the browser can't play it. */
+  asIs?: boolean;
+  /** Estimated download size in bytes per bitrate level (Original: `high` only; null when unknown). */
+  sizes: Partial<Record<QualityLevel, number | null>>;
+}
+
+export interface RemoteQualities {
+  options: RemoteQualityOption[];
+  default: Quality;
+}
+
 export interface RemoteStream {
   token: string;
   /** Relative URL on the TruongFlix server. */
@@ -153,6 +169,36 @@ export interface RemoteStream {
   segments: RemoteSegment[];
   stinger: 'during' | 'after' | 'both' | null;
   subStyle: RemoteSubStyle;
+  /** The quality playing (may be lower than asked when the source is smaller). */
+  quality: Quality;
+  qualities: RemoteQualityOption[];
+}
+
+/** A file prepared on the PC for saving in the browser. */
+export interface RemoteDownload {
+  token: string;
+  /** Relative URL of the bytes, fetched with byte ranges. */
+  url: string;
+  /** 'file': the original file; 'convert': an MP4 the PC converts first (poll `/download/status`). */
+  mode: 'file' | 'convert';
+  mime: string;
+  quality: Quality;
+  itemKey: string | null;
+  title: string;
+  subtitle: string | null;
+  duration: number;
+  /** Expected size in bytes, when known. */
+  estimate: number | null;
+  chapters: RemoteChapter[];
+  segments: RemoteSegment[];
+  stinger: 'during' | 'after' | 'both' | null;
+}
+
+export interface RemoteDownloadStatus {
+  state: 'converting' | 'ready' | 'failed';
+  /** 0–1. */
+  progress: number;
+  error: string | null;
 }
 
 /** A Live TV channel from the PC's sources. */

@@ -2,7 +2,11 @@
  * Dev-only stand-in for the media server's `/api`, so the browser app (and its "Playing on PC"
  * remote) can be previewed with `npm run dev` at http://localhost:1420/remote.html?mock.
  */
-import type { RemoteItem, RemoteLibrary, RemoteLive, RemoteNowPlaying, RemoteProfile, RemoteTitle } from './types';
+import type { RemoteDownload, RemoteItem, RemoteLibrary, RemoteLive, RemoteNowPlaying, RemoteProfile, RemoteQualities, RemoteTitle } from './types';
+import type { Quality } from '../lib/quality';
+
+const MOCK_BYTES = 40 * 1024 * 1024;
+let polls = 0;
 
 const profiles: RemoteProfile[] = [
   { id: 1, name: 'Ian', color: '#E50914', maturity: 'all', locked: false },
@@ -130,6 +134,45 @@ function answer(method: string, path: string, body: Record<string, unknown>): [n
     const status = command(String(body.action), body.value);
     return status === 200 ? [200, { ok: true }] : [status, { error: 'Nothing is playing' }];
   }
+  if (path === '/qualities') {
+    const sizes = (kbps: number) => Math.round(((kbps + 192) * 1000 * 2700) / 8);
+    const q: RemoteQualities = {
+      default: { res: '1080', level: 'high' },
+      options: [
+        { res: 'original', label: 'Original', asIs: false, sizes: { high: sizes(10000) } },
+        { res: '1080', label: '1080p', sizes: { low: sizes(4000), medium: sizes(6000), high: sizes(10000) } },
+        { res: '720', label: '720p', sizes: { low: sizes(2000), medium: sizes(3000), high: sizes(5000) } },
+        { res: '480', label: '480p', sizes: { low: sizes(800), medium: sizes(1200), high: sizes(2000) } },
+      ],
+    };
+    return [200, q];
+  }
+  if (method === 'POST' && path === '/download') {
+    polls = 0;
+    const quality = (body.quality as Quality | undefined) ?? { res: '1080', level: 'high' };
+    const d: RemoteDownload = {
+      token: 'mock',
+      url: '/stream/mock/download.mp4',
+      mode: 'convert',
+      mime: 'video/mp4',
+      quality,
+      itemKey: 'tv-2',
+      title: 'Harbor Lights',
+      subtitle: `S1:E${body.id} · Episode ${body.id}`,
+      duration: 2700,
+      estimate: MOCK_BYTES,
+      chapters: [],
+      segments: [],
+      stinger: null,
+    };
+    return [200, d];
+  }
+  if (path === '/download/status') {
+    polls++;
+    return [200, { state: polls > 4 ? 'ready' : 'converting', progress: Math.min(1, polls / 5), error: null }];
+  }
+  if (method === 'POST' && path === '/offline/start') return [200, { token: 'mock-offline' }];
+  if (method === 'POST' && (path === '/stop' || path === '/progress')) return [200, { ok: true, blocked: null }];
   if (method === 'POST' && path === '/remote/play') {
     if (body.profile !== 1) return [403, { error: 'Living Room PC is using Ian’s profile. Switch to Kids on the PC to play there.' }];
     start('Harbor Lights', 'S1:E1 · Pilot');
@@ -142,6 +185,14 @@ export function installRemoteMock() {
   const real = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+    if (url.pathname.startsWith('/stream/mock/')) {
+      // A made-up "download", served slowly in ranges like the PC does.
+      const range = /bytes=(\d+)-(\d+)/.exec(new Headers(init?.headers).get('Range') ?? '');
+      const start = Number(range?.[1] ?? 0);
+      const end = Math.min(Number(range?.[2] ?? MOCK_BYTES - 1), MOCK_BYTES - 1);
+      await new Promise((r) => setTimeout(r, 300));
+      return new Response(new Uint8Array(end - start + 1), { status: 206, headers: { 'Content-Range': `bytes ${start}-${end}/${MOCK_BYTES}` } });
+    }
     if (!url.pathname.startsWith('/api/')) return real(input, init);
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     const [status, data] = answer(init?.method ?? 'GET', url.pathname.slice(4), body);

@@ -162,6 +162,7 @@ pub fn run() {
             stream::stream_register,
             stream::stream_url,
             stream::stream_release,
+            stream::stream_download_status,
             stream::remote_access_set,
             stream::server_info,
             stream::remote_api_reply,

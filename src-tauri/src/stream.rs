@@ -39,9 +39,9 @@ const PROBE_TTL: Duration = Duration::from_secs(120);
 const PROBE_CACHE_MAX: usize = 256;
 const LOOKAHEAD_SEGS: u32 = 6;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct StreamOptions {
-    /// "direct" | "hls" | "ts"
+    /// "direct" | "hls" | "ts" | "mp4" (a single progressive MP4 for saving offline)
     pub format: String,
     /// Output size for conversions (even numbers; 0 = keep).
     #[serde(default)]
@@ -60,6 +60,34 @@ pub struct StreamOptions {
     /// mpv subtitle appearance options `[name, value]` applied when `sid` is set.
     #[serde(default)]
     pub sub_style: Vec<(String, String)>,
+    /// Target video bitrate in kbit/s for conversions (0 = the encoder's default quality).
+    #[serde(default)]
+    pub bitrate: u32,
+    /// Peak video bitrate in kbit/s (0 = 1.5 × `bitrate`).
+    #[serde(default)]
+    pub maxrate: u32,
+    /// Converts only this many seconds (0 = the whole file). Tests only; never sent by the app.
+    #[serde(skip)]
+    pub length: f64,
+}
+
+const FORMATS: [&str; 4] = ["direct", "hls", "ts", "mp4"];
+const MAX_BITRATE_KBPS: u32 = 80_000;
+const MAX_WIDTH: u32 = 7680;
+const MAX_HEIGHT: u32 = 4320;
+
+/// Keeps options from callers within what the encoder accepts.
+fn sanitize_options(mut o: StreamOptions) -> Result<StreamOptions, String> {
+    if !FORMATS.contains(&o.format.as_str()) {
+        return Err(format!("Unknown stream format: {}", o.format));
+    }
+    o.sub_style = sanitize_sub_style(std::mem::take(&mut o.sub_style));
+    o.width = o.width.min(MAX_WIDTH);
+    o.height = o.height.min(MAX_HEIGHT);
+    o.bitrate = o.bitrate.min(MAX_BITRATE_KBPS);
+    o.maxrate = o.maxrate.min(MAX_BITRATE_KBPS * 2);
+    o.length = 0.0;
+    Ok(o)
 }
 
 fn is_number(v: &str, max: f64) -> bool {
@@ -194,7 +222,27 @@ impl Job {
     fn stop(&self) {
         self.cancel.store(true, Ordering::Release);
     }
+
+    /// Finished on its own, without an error (a download MP4 is complete).
+    fn finished_ok(&self) -> bool {
+        self.done.load(Ordering::Acquire) && self.eof.load(Ordering::Acquire) && !self.cancel.load(Ordering::Acquire) && self.error.lock().unwrap().is_none()
+    }
 }
+
+/// What a conversion job writes.
+#[derive(Clone)]
+enum Output {
+    /// VOD HLS segments from a start segment; the frontier is the last finished segment.
+    Hls(HlsPlan, u32, Arc<AtomicU32>),
+    /// One growing MPEG-TS file (`live.ts`).
+    Ts,
+    /// One progressive MP4 for saving offline; the counter is progress in thousandths.
+    Mp4(Arc<AtomicU32>),
+}
+
+/// Download MP4 while it is being written, and once it is complete.
+const MP4_PART: &str = "download.part.mp4";
+const MP4_READY: &str = "download.mp4";
 
 struct Stream {
     path: PathBuf,
@@ -330,6 +378,17 @@ fn cleanup_stream_dir(job: Option<Job>, dir: PathBuf) {
 
 pub fn init(app: &AppHandle) {
     let _ = SHARED.set(Shared { app: app.clone(), inner: Mutex::new(Inner::default()) });
+    // Conversions (including download MP4s) left behind when the app last quit.
+    // Only the app's own cache folder, never the shared temp dir.
+    // Moved aside first (instant), so new streams never land in a folder being deleted.
+    if let Ok(cache) = app.path().app_cache_dir() {
+        let old = cache.join(format!("streams-old-{}", &random_token()[..8]));
+        if std::fs::rename(cache.join("streams"), &old).is_ok() {
+            std::thread::spawn(move || {
+                let _ = std::fs::remove_dir_all(old);
+            });
+        }
+    }
     // Housekeeping: stop conversions nobody has asked for in a while.
     tauri::async_runtime::spawn(async {
         loop {
@@ -874,14 +933,22 @@ async fn serve_stream(conn: &mut TcpStream, req: &Request, rest: &str) -> std::i
         let st = inner.streams.get_mut(&token)?;
         st.touched = Instant::now();
         let live_job = st.job.as_ref().map(|j| (j.id.clone(), j.dir.clone(), j.done.clone()));
-        Some((st.path.clone(), st.hls.clone(), live_job))
+        let download = (st.opts.format == "mp4").then(|| (st.dir.join(MP4_READY), st.job.as_ref().is_some_and(Job::finished_ok)));
+        Some((st.path.clone(), st.hls.clone(), live_job, download))
     });
-    let Some((path, hls, live_job)) = info else {
+    let Some((path, hls, live_job, download)) = info else {
         return respond(conn, 404, "text/plain", "", b"Unknown stream", false).await;
     };
 
     if second == "file" {
         return serve_file_range(conn, &path, req.headers.get("range").map(String::as_str), head_only).await;
+    }
+    if second == MP4_READY {
+        return match download {
+            Some((file, true)) => serve_file_range(conn, &file, req.headers.get("range").map(String::as_str), head_only).await,
+            Some(_) => respond(conn, 409, "text/plain", "", b"Still converting", false).await,
+            None => respond(conn, 404, "text/plain", "", b"Not a download", false).await,
+        };
     }
     if second == "index.m3u8" {
         let Some(plan) = hls else {
@@ -1151,11 +1218,19 @@ fn candidate_encoders() -> &'static [&'static str] {
     }
 }
 
-fn ovcopts_for(encoder: &str, gop: u32) -> String {
+/// Encoder options. With a `bitrate` (kbit/s), x264 keeps its constant quality but is capped at
+/// `maxrate`, and hardware encoders aim for `bitrate` with the same peak; without one, the old
+/// defaults apply (casting and DLNA).
+fn ovcopts_for(encoder: &str, gop: u32, bitrate: u32, maxrate: u32) -> String {
+    let peak = if bitrate == 0 { 0 } else if maxrate == 0 { bitrate.saturating_mul(3) / 2 } else { maxrate.max(bitrate) };
+    let buf = peak.saturating_mul(2);
     if encoder == "libx264" {
-        format!("preset=veryfast,crf=21,g={gop},keyint_min={gop},sc_threshold=0,profile=high")
-    } else {
+        let base = format!("preset=veryfast,crf=21,g={gop},keyint_min={gop},sc_threshold=0,profile=high");
+        if bitrate == 0 { base } else { format!("{base},maxrate={peak}k,bufsize={buf}k") }
+    } else if bitrate == 0 {
         format!("b=6M,maxrate=10M,g={gop}")
+    } else {
+        format!("b={bitrate}k,maxrate={peak}k,bufsize={buf}k,g={gop}")
     }
 }
 
@@ -1345,7 +1420,7 @@ fn spawn_hls_job(
     };
     let (path, opts, plan, dir) = (path.to_path_buf(), opts.clone(), plan.clone(), dir.to_path_buf());
     std::thread::spawn(move || {
-        run_encode(path, opts, Some((plan, start_seg, frontier)), start, dir, prev_done, cancel, done, eof, error);
+        run_encode(path, opts, Output::Hls(plan, start_seg, frontier), start, dir, prev_done, cancel, done, eof, error);
     });
     Ok(job)
 }
@@ -1377,7 +1452,34 @@ fn spawn_ts_job(
     };
     let (path, opts) = (path.to_path_buf(), opts.clone());
     std::thread::spawn(move || {
-        run_encode(path, opts, None, start, dir, prev_done, cancel, done, eof, error);
+        run_encode(path, opts, Output::Ts, start, dir, prev_done, cancel, done, eof, error);
+    });
+    Ok(job)
+}
+
+/// Converts the whole file into `dir/download.mp4` (H.264/AAC, index at the front), for saving
+/// offline. Progress (thousandths) is in the job's `frontier`.
+fn spawn_mp4_job(path: &Path, opts: &StreamOptions, dir: &Path, prev_done: Option<Arc<AtomicBool>>) -> Result<Job, String> {
+    let id = random_token()[..12].to_string();
+    let progress = Arc::new(AtomicU32::new(0));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let eof = Arc::new(AtomicBool::new(false));
+    let error = Arc::new(Mutex::new(None));
+    let job = Job {
+        id,
+        dir: dir.to_path_buf(),
+        start: 0.0,
+        start_seg: 0,
+        frontier: progress.clone(),
+        cancel: cancel.clone(),
+        done: done.clone(),
+        eof: eof.clone(),
+        error: error.clone(),
+    };
+    let (path, opts, dir) = (path.to_path_buf(), opts.clone(), dir.to_path_buf());
+    std::thread::spawn(move || {
+        run_encode(path, opts, Output::Mp4(progress), 0.0, dir, prev_done, cancel, done, eof, error);
     });
     Ok(job)
 }
@@ -1386,7 +1488,7 @@ fn spawn_ts_job(
 fn run_encode(
     path: PathBuf,
     opts: StreamOptions,
-    hls: Option<(HlsPlan, u32, Arc<AtomicU32>)>,
+    output: Output,
     start: f64,
     dir: PathBuf,
     prev_done: Option<Arc<AtomicBool>>,
@@ -1439,6 +1541,16 @@ fn run_encode(
     attempts.push(Convert::Plain);
     let m3u8 = dir.join("seg.m3u8");
     let live_ts = dir.join("live.ts");
+    let mp4_part = dir.join(MP4_PART);
+    let mp4_ready = dir.join(MP4_READY);
+    let hls = match &output {
+        Output::Hls(plan, start_seg, frontier) => Some((plan.clone(), *start_seg, frontier.clone())),
+        _ => None,
+    };
+    let mp4_progress = match &output {
+        Output::Mp4(p) => Some(p.clone()),
+        _ => None,
+    };
 
     for (attempt_idx, &mode) in attempts.iter().enumerate() {
         let use_gpu = mode == Convert::Gpu;
@@ -1452,14 +1564,32 @@ fn run_encode(
         };
         let broken = if use_gpu { &GPU_FILTER_BROKEN } else { &FILTER_TONEMAP_BROKEN };
         let _ = std::fs::remove_file(&m3u8);
-        if hls.is_none() {
-            let _ = std::fs::remove_file(&live_ts);
+        match output {
+            Output::Hls(..) => {}
+            Output::Ts => {
+                let _ = std::fs::remove_file(&live_ts);
+            }
+            Output::Mp4(_) => {
+                let _ = std::fs::remove_file(&mp4_part);
+                let _ = std::fs::remove_file(&mp4_ready);
+            }
         }
         remove_tmp_files(&dir);
 
-        let gop = hls.as_ref().map(|(p, _, _)| p.gop).unwrap_or(48);
-        let ovcopts = ovcopts_for(enc, gop);
-        let out = if hls.is_some() { &m3u8 } else { &live_ts }.to_string_lossy().into_owned();
+        let gop = match &output {
+            Output::Hls(plan, _, _) => plan.gop,
+            Output::Ts => 48,
+            Output::Mp4(_) => 96,
+        };
+        let ovcopts = ovcopts_for(enc, gop, opts.bitrate, opts.maxrate);
+        let out = match output {
+            Output::Hls(..) => &m3u8,
+            Output::Ts => &live_ts,
+            Output::Mp4(_) => &mp4_part,
+        }
+        .to_string_lossy()
+        .into_owned();
+        let length = format!("{:.3}", opts.length);
         let start_s = if hls.is_some() { format!("{:.6}", start.max(0.0)) } else { format!("{:.3}", start.max(0.0)) };
         let (w, h) = (opts.width.max(2) & !1, opts.height.max(2) & !1);
         let vf = video_filter(mode, if opts.width > 0 { w } else { 0 }, h);
@@ -1498,8 +1628,15 @@ fn run_encode(
             options.push(("orawts", "yes"));
             options.push(("of", "hls"));
             options.push(("ofopts", of_str));
+        } else if mp4_progress.is_some() {
+            // The index goes to the front once the file is complete, so it plays while it loads.
+            options.push(("of", "mp4"));
+            options.push(("ofopts", "movflags=+faststart"));
         } else {
             options.push(("of", "mpegts"));
+        }
+        if opts.length > 0.0 {
+            options.push(("length", &length));
         }
         if use_gpu {
             options.extend([("target-prim", "bt.709"), ("target-trc", "bt.1886"), ("tone-mapping", "bt.2390")]);
@@ -1541,6 +1678,16 @@ fn run_encode(
                     }
                 }
             }
+            if let Some(ref progress) = mp4_progress {
+                if last_scan.elapsed() >= Duration::from_millis(500) {
+                    last_scan = Instant::now();
+                    let pos = core.get("time-pos").and_then(|v| v.parse::<f64>().ok());
+                    let total = if opts.length > 0.0 { Some(opts.length) } else { core.get("duration").and_then(|v| v.parse::<f64>().ok()) };
+                    if let (Some(pos), Some(total)) = (pos, total.filter(|t| *t > 0.0)) {
+                        progress.store(((pos / total).clamp(0.0, 0.999) * 1000.0) as u32, Ordering::Release);
+                    }
+                }
+            }
             let ev = unsafe { &*(core.api.wait_event)(core.h, 0.10) };
             if ev.event_id == mpv::EVENT_PLAYBACK_RESTART {
                 if core.get("vo-configured").as_deref() == Some("yes") {
@@ -1573,6 +1720,8 @@ fn run_encode(
                 }
                 let _ = std::fs::remove_file(&m3u8);
                 remove_tmp_files(&dir);
+            } else if mp4_progress.is_some() {
+                let _ = std::fs::remove_file(&mp4_part);
             } else {
                 let _ = std::fs::remove_dir_all(&dir);
             }
@@ -1583,6 +1732,7 @@ fn run_encode(
             for bad in all_playlist_segs(&m3u8) {
                 let _ = std::fs::remove_file(dir.join(format!("seg{bad}.ts")));
             }
+            let _ = std::fs::remove_file(&mp4_part);
             let _ = std::fs::remove_file(&m3u8);
             remove_tmp_files(&dir);
             continue;
@@ -1592,7 +1742,18 @@ fn run_encode(
             for bad in all_playlist_segs(&m3u8) {
                 let _ = std::fs::remove_file(dir.join(format!("seg{bad}.ts")));
             }
+            let _ = std::fs::remove_file(&mp4_part);
             *error.lock().unwrap() = Some("The video couldn’t be converted".into());
+        } else if let Some(ref progress) = mp4_progress {
+            // Only a file converted to the end is offered for download.
+            let renamed = reached_eof && std::fs::rename(&mp4_part, &mp4_ready).is_ok();
+            if renamed {
+                progress.store(1000, Ordering::Release);
+                eof.store(true, Ordering::Release);
+            } else {
+                let _ = std::fs::remove_file(&mp4_part);
+                *error.lock().unwrap() = Some("The video couldn’t be converted".into());
+            }
         } else {
             if let Some((_, _, ref frontier)) = hls {
                 if let Some(last) = last_playlist_seg(&m3u8) {
@@ -1633,8 +1794,8 @@ pub async fn stream_encoder() -> Result<String, String> {
 
 /// Makes a file streamable; returns its token.
 #[tauri::command]
-pub async fn stream_register(path: String, mut options: StreamOptions) -> Result<String, String> {
-    options.sub_style = sanitize_sub_style(std::mem::take(&mut options.sub_style));
+pub async fn stream_register(path: String, options: StreamOptions) -> Result<String, String> {
+    let options = sanitize_options(options)?;
     ensure_server(0).await?;
     let s = shared()?;
     let p = PathBuf::from(&path);
@@ -1710,6 +1871,18 @@ pub async fn stream_url(_app: AppHandle, token: String, start: f64, host: Option
                 }
                 (format!("/stream/{token}/index.m3u8"), 0.0)
             }
+            "mp4" => {
+                // One conversion per download; a failed one starts over when asked again.
+                let keep = st.job.as_ref().is_some_and(|j| j.error.lock().unwrap().is_none() && !j.cancel.load(Ordering::Acquire));
+                if !keep {
+                    let prev = st.job.take().map(|old| {
+                        old.stop();
+                        old.done
+                    });
+                    st.job = Some(spawn_mp4_job(&st.path, &st.opts, &st.dir, prev)?);
+                }
+                (format!("/stream/{token}/{MP4_READY}"), 0.0)
+            }
             _ => {
                 let reuse = st.job.as_ref().is_some_and(|j| {
                     (j.start - start).abs() < 0.5 && j.error.lock().unwrap().is_none() && !j.cancel.load(Ordering::Acquire)
@@ -1733,6 +1906,48 @@ pub async fn stream_url(_app: AppHandle, token: String, start: f64, host: Option
         .or_else(|| lan_addresses().into_iter().next())
         .unwrap_or_else(|| "127.0.0.1".into());
     Ok(StreamUrl { url: format!("http://{ip}:{port}{rel}"), path: rel, offset })
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct DownloadStatus {
+    /// "converting" | "ready" | "failed"
+    state: &'static str,
+    /// 0–1.
+    progress: f64,
+    /// Bytes of the finished MP4 (0 until ready).
+    size: u64,
+    error: Option<String>,
+}
+
+fn download_status(job: Option<&Job>, ready_file: &Path) -> DownloadStatus {
+    let Some(job) = job else {
+        return DownloadStatus { state: "failed", progress: 0.0, size: 0, error: Some("The conversion hasn’t started".into()) };
+    };
+    if let Some(e) = job.error.lock().unwrap().clone() {
+        return DownloadStatus { state: "failed", progress: 0.0, size: 0, error: Some(e) };
+    }
+    if job.finished_ok() {
+        let size = std::fs::metadata(ready_file).map(|m| m.len()).unwrap_or(0);
+        return DownloadStatus { state: "ready", progress: 1.0, size, error: None };
+    }
+    if job.cancel.load(Ordering::Acquire) || job.done.load(Ordering::Acquire) {
+        return DownloadStatus { state: "failed", progress: 0.0, size: 0, error: Some("The conversion stopped".into()) };
+    }
+    let progress = f64::from(job.frontier.load(Ordering::Acquire).min(999)) / 1000.0;
+    DownloadStatus { state: "converting", progress, size: 0, error: None }
+}
+
+/// How far a download's MP4 conversion has got.
+#[tauri::command]
+pub fn stream_download_status(token: String) -> Result<DownloadStatus, String> {
+    let s = shared()?;
+    let mut inner = s.inner.lock().unwrap();
+    let st = inner.streams.get_mut(&token).ok_or("Unknown stream")?;
+    if st.opts.format != "mp4" {
+        return Err("Not a download".into());
+    }
+    st.touched = Instant::now();
+    Ok(download_status(st.job.as_ref(), &st.dir.join(MP4_READY)))
 }
 
 /// Stops a stream's conversion and deletes its temporary segments.
@@ -1873,6 +2088,7 @@ mod tests {
                 aid: probe.audio.first().map(|a| a.id),
                 sid,
                 sub_style: vec![("sub-font-size".into(), "46".into())],
+                ..Default::default()
             };
             let t = Instant::now();
             let job = spawn_hls_job(&video, &opts, &plan, start_seg, &dir, None).unwrap();
@@ -1892,7 +2108,7 @@ mod tests {
         }
 
         // Live TS job (DLNA fallback).
-        let ts_opts = StreamOptions { format: "ts".into(), width: 1280, height: 720, tone_map: false, aid: None, sid: None, sub_style: Vec::new() };
+        let ts_opts = StreamOptions { format: "ts".into(), width: 1280, height: 720, tone_map: false, aid: None, sid: None, sub_style: Vec::new(), ..Default::default() };
         let ts_job = spawn_ts_job(&video, &ts_opts, 0.0, &root, None).unwrap();
         let t = Instant::now();
         while std::fs::metadata(ts_job.dir.join("live.ts")).map(|m| m.len()).unwrap_or(0) < 10_000
@@ -1950,7 +2166,7 @@ mod tests {
         }
 
         let plan = HlsPlan::from_probe(probe_file(&video).unwrap().duration, 24.0);
-        let opts = StreamOptions { format: "hls".into(), width: 1280, height: 720, tone_map: true, aid: None, sid: None, sub_style: Vec::new() };
+        let opts = StreamOptions { format: "hls".into(), width: 1280, height: 720, tone_map: true, aid: None, sid: None, sub_style: Vec::new(), ..Default::default() };
         let dir = out.join("hls");
         let job = spawn_hls_job(&video, &opts, &plan, 100, &dir, None).unwrap();
         let first = dir.join("seg100.ts");
@@ -1962,6 +2178,123 @@ mod tests {
         assert!(job.error.lock().unwrap().is_none(), "{:?}", job.error.lock().unwrap());
         assert!(first.exists(), "no tone-mapped segment");
         assert!(!FILTER_TONEMAP_BROKEN.load(Ordering::Relaxed), "the zscale/tonemap filters were not available");
+    }
+
+    /// `TRUONGFLIX_STREAM_TEST=video.mkv cargo test -- --ignored real_download_mp4 --nocapture`:
+    /// converts the first 20 seconds to a download MP4 and checks its index is at the front.
+    #[test]
+    #[ignore]
+    fn real_download_mp4() {
+        let video = PathBuf::from(std::env::var("TRUONGFLIX_STREAM_TEST").expect("set TRUONGFLIX_STREAM_TEST"));
+        let opts = StreamOptions { format: "mp4".into(), width: 1280, height: 720, bitrate: 3000, maxrate: 4500, length: 20.0, ..Default::default() };
+        check_download_mp4(&video, &opts, "sdr");
+        // `TRUONGFLIX_HDR_TEST=<HDR video>` also: a tone-mapped 4K download.
+        if let Ok(hdr) = std::env::var("TRUONGFLIX_HDR_TEST") {
+            let opts = StreamOptions { format: "mp4".into(), width: 3840, height: 2160, tone_map: true, bitrate: 35000, maxrate: 52500, length: 6.0, ..Default::default() };
+            check_download_mp4(Path::new(&hdr), &opts, "hdr");
+        }
+    }
+
+    fn check_download_mp4(video: &Path, opts: &StreamOptions, name: &str) {
+        let dir = std::env::temp_dir().join(format!("truongflix-download-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let video = video.to_path_buf();
+        let t = Instant::now();
+        let job = spawn_mp4_job(&video, opts, &dir, None).unwrap();
+        let mut last = 0;
+        while !job.done.load(Ordering::Acquire) && t.elapsed() < Duration::from_secs(180) {
+            let p = job.frontier.load(Ordering::Acquire);
+            assert!(p >= last, "progress went backwards");
+            last = p;
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let status = download_status(Some(&job), &dir.join(MP4_READY));
+        assert_eq!(status.state, "ready", "{status:?}");
+        assert!(!dir.join(MP4_PART).exists());
+        let data = std::fs::read(dir.join(MP4_READY)).unwrap();
+        assert_eq!(status.size, data.len() as u64);
+        // Top-level boxes: ftyp first, moov before mdat (faststart).
+        let mut boxes = Vec::new();
+        let mut at = 0usize;
+        while at + 8 <= data.len() {
+            let size = u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+            boxes.push(String::from_utf8_lossy(&data[at + 4..at + 8]).into_owned());
+            if size < 8 {
+                break;
+            }
+            at += size;
+        }
+        if opts.tone_map {
+            assert!(!FILTER_TONEMAP_BROKEN.load(Ordering::Relaxed), "fell back to a copy without tone-mapping");
+        }
+        let kbps = data.len() as f64 * 8.0 / 1000.0 / opts.length;
+        println!("{name}: {} bytes ({kbps:.0} kbit/s) in {:?}: {boxes:?}", data.len(), t.elapsed());
+        assert_eq!(boxes.first().map(String::as_str), Some("ftyp"));
+        let moov = boxes.iter().position(|b| b == "moov").expect("moov box");
+        let mdat = boxes.iter().position(|b| b == "mdat").expect("mdat box");
+        assert!(moov < mdat, "index is not at the front: {boxes:?}");
+        // At most the peak video rate plus audio, with headroom for the container.
+        assert!(data.len() > 50_000 && kbps < (opts.maxrate + 192) as f64 * 1.3, "unexpected size {}", data.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bitrate_caps_every_encoder() {
+        // No bitrate: the defaults casting has always used.
+        assert_eq!(ovcopts_for("libx264", 96, 0, 0), "preset=veryfast,crf=21,g=96,keyint_min=96,sc_threshold=0,profile=high");
+        assert_eq!(ovcopts_for("h264_nvenc", 96, 0, 0), "b=6M,maxrate=10M,g=96");
+        // x264 keeps constant quality, capped at the peak.
+        assert_eq!(
+            ovcopts_for("libx264", 96, 4000, 6000),
+            "preset=veryfast,crf=21,g=96,keyint_min=96,sc_threshold=0,profile=high,maxrate=6000k,bufsize=12000k"
+        );
+        for hw in ["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_videotoolbox", "h264_vaapi"] {
+            assert_eq!(ovcopts_for(hw, 48, 35000, 52500), "b=35000k,maxrate=52500k,bufsize=105000k,g=48");
+        }
+        // A missing or too-low peak becomes 1.5 × the target.
+        assert_eq!(ovcopts_for("h264_mf", 48, 800, 0), "b=800k,maxrate=1200k,bufsize=2400k,g=48");
+        assert_eq!(ovcopts_for("h264_mf", 48, 2000, 10), "b=2000k,maxrate=2000k,bufsize=4000k,g=48");
+    }
+
+    #[test]
+    fn stream_options_are_checked() {
+        // Callers from before bitrates existed still deserialize.
+        let old: StreamOptions = serde_json::from_str(r#"{"format":"hls","width":1920,"height":1080,"tone_map":false,"aid":null,"sid":null,"sub_style":[]}"#).unwrap();
+        assert_eq!((old.bitrate, old.maxrate), (0, 0));
+        let new: StreamOptions = serde_json::from_str(r#"{"format":"mp4","width":3840,"height":2160,"bitrate":35000,"maxrate":52500,"length":5}"#).unwrap();
+        assert_eq!((new.bitrate, new.maxrate, new.length), (35000, 52500, 0.0));
+        assert!(sanitize_options(StreamOptions { format: "exe".into(), ..Default::default() }).is_err());
+        let wild = sanitize_options(StreamOptions { format: "mp4".into(), width: 99_999, height: 99_999, bitrate: u32::MAX, maxrate: u32::MAX, length: 3.0, ..Default::default() }).unwrap();
+        assert_eq!((wild.width, wild.height, wild.bitrate, wild.maxrate, wild.length), (MAX_WIDTH, MAX_HEIGHT, MAX_BITRATE_KBPS, MAX_BITRATE_KBPS * 2, 0.0));
+    }
+
+    #[test]
+    fn download_status_reports_each_stage() {
+        let job = || Job {
+            id: "j".into(),
+            dir: PathBuf::new(),
+            start: 0.0,
+            start_seg: 0,
+            frontier: Arc::new(AtomicU32::new(0)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            done: Arc::new(AtomicBool::new(false)),
+            eof: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+        };
+        let none = Path::new("no-such-file.mp4");
+        assert_eq!(download_status(None, none).state, "failed");
+        let j = job();
+        j.frontier.store(1000, Ordering::Release);
+        assert_eq!(download_status(Some(&j), none), DownloadStatus { state: "converting", progress: 0.999, size: 0, error: None });
+        j.done.store(true, Ordering::Release);
+        assert_eq!(download_status(Some(&j), none).state, "failed", "ended without reaching the end");
+        j.eof.store(true, Ordering::Release);
+        assert_eq!(download_status(Some(&j), none).state, "ready");
+        *j.error.lock().unwrap() = Some("boom".into());
+        assert_eq!(download_status(Some(&j), none).error.as_deref(), Some("boom"));
+        let c = job();
+        c.stop();
+        assert_eq!(download_status(Some(&c), none).state, "failed");
     }
 
     #[test]

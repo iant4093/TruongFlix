@@ -25,7 +25,22 @@ import { playLive, subtitleOptions } from './player';
 import { ApiError, command as remoteCommand, noteController, nowPlaying, rateLimit, startOnPc, type Caller } from './remotecontrol';
 import { eventMatches, findLiveChannel, initLive, LEAGUES, localDate, sportsSchedule, useLiveStore, webPlayerUrl } from './live';
 import type { LiveChannel, LivePlaylist, LivePreferences } from '../types/live';
-import { durationOf, planStream, probeStream, registerStream, releaseStream, streamUrl } from './streaming';
+import {
+  conversionKbps,
+  downloadStatus,
+  durationOf,
+  planDownload,
+  planStream,
+  probeStream,
+  qualityChoices,
+  registerStream,
+  releaseStream,
+  resolveQuality,
+  streamUrl,
+  type QualityChoices,
+} from './streaming';
+import { estimateBytes, isQualityLevel, isQualityRes, QUALITY_LEVELS, resLabel, type Quality } from '../lib/quality';
+import type { RemoteDownload, RemoteDownloadStatus, RemoteQualities, RemoteQualityOption } from '../remote/types';
 import { languageName } from './subtitles';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
 
@@ -45,8 +60,62 @@ export const STREAM_IDLE_MS = 2 * 60_000;
 /** Unlock keys for PIN-protected profiles: valid for 12 hours and only while the PIN is unchanged. */
 const unlocked = new Map<number, Map<string, { pin: string; expires: number }>>();
 const pinFailures = new Map<number, number[]>();
-/** Browser playbacks by stream token. Only the signed-in browser that started one may control it. */
-const sessions = new Map<string, { session: string; profile: number; type: 'movie' | 'episode'; id: number; lastProgress: number; lastSeen: number }>();
+/**
+ * Browser playbacks, downloads and offline viewings by token. Only the signed-in browser that
+ * started one may control it. Offline viewings play a saved copy, so only they don't count
+ * toward `MAX_REMOTE_STREAMS`.
+ */
+type SessionKind = 'play' | 'download' | 'offline';
+const sessions = new Map<
+  string,
+  { session: string; profile: number; type: 'movie' | 'episode'; id: number; lastProgress: number; lastSeen: number; kind: SessionKind; convert?: boolean }
+>();
+
+const activeStreams = () => [...sessions.values()].filter((s) => s.kind !== 'offline').length;
+
+/** Ends this browser's earlier session of the same kind (one playback, one download, one offline viewing each). */
+function replaceOwn(caller: Caller, kind: SessionKind) {
+  for (const [token, s] of [...sessions]) if (s.session === caller.session && s.kind === kind) stopStream(token);
+}
+
+function parseQuality(v: unknown): Partial<Quality> | undefined {
+  if (v == null) return undefined;
+  const q = (typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  if (!isQualityRes(q.res)) throw new ApiError(400, 'Unknown quality');
+  if (q.level == null) return { res: q.res };
+  if (!isQualityLevel(q.level)) throw new ApiError(400, 'Unknown quality');
+  return { res: q.res, level: q.level };
+}
+
+function parseType(v: unknown): 'movie' | 'episode' {
+  if (v === 'movie' || v === 'episode') return v;
+  throw new ApiError(400, 'Unknown title type');
+}
+
+/** The picker's entries for one file, with estimated download sizes. */
+function qualityOptions(row: MovieRow | EpisodeRow, choices: QualityChoices): RemoteQualityOption[] {
+  const duration = durationOf(row);
+  const size = (q: Quality) => (duration > 0 ? estimateBytes(conversionKbps(row, q), duration) : null);
+  const original: RemoteQualityOption = {
+    res: 'original',
+    label: resLabel('original'),
+    asIs: choices.asIs,
+    sizes: { high: choices.asIs ? row.file_size || null : size({ res: 'original', level: 'high' }) },
+  };
+  return [
+    original,
+    ...choices.steps.map((res) => ({
+      res,
+      label: resLabel(res),
+      sizes: Object.fromEntries(QUALITY_LEVELS.map((level) => [level, size({ res, level })])),
+    })),
+  ];
+}
+
+function mimeFor(path: string) {
+  const e = path.split('.').pop()?.toLowerCase();
+  return e === 'webm' ? 'video/webm' : 'video/mp4';
+}
 
 const key = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -201,15 +270,42 @@ interface PlayOptions {
   aid?: number;
   sid?: number;
   subStyle?: Partial<RemoteSubStyle>;
+  quality?: Partial<Quality>;
+}
+
+const TOO_MANY = 'Too many devices are watching or downloading right now. Stop on another device and try again.';
+
+/** Title, episode line, next episode and credits-scene hint shown with a playback or download. */
+function describe(row: MovieRow | EpisodeRow, type: 'movie' | 'episode', items: MediaItem[], bySeries: Map<number, EpisodeRow[]>) {
+  let titleText = row.title;
+  let subtitle: string | null = null;
+  let next: RemotePlayable | null = null;
+  let stinger: RemoteStream['stinger'] = null;
+  let itemKey: string | null = null;
+  if (type === 'episode') {
+    const e = row as EpisodeRow;
+    const show = items.find((i) => i.kind === 'tv' && i.id === e.series_id);
+    titleText = show?.title ?? e.title;
+    itemKey = show?.key ?? null;
+    subtitle = `${epLabel(e)} · ${e.title}`;
+    const list = bySeries.get(e.series_id) ?? [];
+    const n = list.slice(list.findIndex((x) => x.id === e.id) + 1).find((x) => x.season_number > 0);
+    if (n) next = { type: 'episode', id: n.id, label: `${epLabel(n)} · ${n.title}`, resume: 0 };
+  } else {
+    const m = row as MovieRow;
+    itemKey = items.find((i) => i.kind === 'movie' && (i.id === m.id || i.versions.some((v) => v.id === m.id)))?.key ?? null;
+    if (m.stinger === 'during' || m.stinger === 'after' || m.stinger === 'both') stinger = m.stinger;
+  }
+  return { title: titleText, subtitle, next, stinger, itemKey };
 }
 
 async function play(caller: Caller, profile: Profile, type: 'movie' | 'episode', id: number, opts: PlayOptions = {}): Promise<RemoteStream> {
   const st = await limitStatus(profile);
   if (st.blocked) throw new ApiError(403, blockedMessage(profile, st.blocked));
   // One playback per browser: starting another replaces it.
-  for (const [token, s] of [...sessions]) if (s.session === caller.session) stopStream(token);
+  replaceOwn(caller, 'play');
   sweepIdleStreams();
-  if (sessions.size >= MAX_REMOTE_STREAMS) throw new ApiError(429, 'Too many devices are watching right now. Stop playback on another device and try again.');
+  if (activeStreams() >= MAX_REMOTE_STREAMS) throw new ApiError(429, TOO_MANY);
   const { movies, episodes, bySeries, items } = await libraryFor(profile);
   const row: MovieRow | EpisodeRow | undefined = type === 'movie' ? movies.find((m) => m.id === id) : episodes.find((e) => e.id === id);
   if (!row || !allowedTitle(items, episodes, type, id)) throw new ApiError(404, 'Not found');
@@ -236,33 +332,23 @@ async function play(caller: Caller, profile: Profile, type: 'movie' | 'episode',
   };
   const mpvSubStyle = subtitleOptions({ ...settings.subtitle_style, ...subStyle });
 
+  const defaultAid = defaultAudio?.id ?? null;
+  const needsConversion = chosenSid > 0 || (chosenAid != null && defaultAid != null && chosenAid !== defaultAid);
+  const choices = qualityChoices(row, needsConversion);
+  const quality = resolveQuality(opts.quality, choices);
   const plan = planStream(row, 'browser', {
     aid: chosenAid,
-    defaultAid: defaultAudio?.id ?? null,
+    defaultAid,
     sid: chosenSid,
     subStyle: mpvSubStyle,
+    quality,
   });
   const token = await registerStream(row.file_path, plan);
   const resume = opts.start != null ? Math.max(0, opts.start) : row.watched ? 0 : row.progress_seconds;
   const url = await streamUrl(token, plan.format === 'direct' ? 0 : resume);
-  sessions.set(token, { session: caller.session, profile: profile.id, type, id, lastProgress: Date.now(), lastSeen: Date.now() });
+  sessions.set(token, { session: caller.session, profile: profile.id, type, id, lastProgress: Date.now(), lastSeen: Date.now(), kind: 'play' });
 
-  let titleText = row.title;
-  let subtitle: string | null = null;
-  let next: RemotePlayable | null = null;
-  let stinger: RemoteStream['stinger'] = null;
-  if (type === 'episode') {
-    const e = row as EpisodeRow;
-    const show = items.find((i) => i.kind === 'tv' && i.id === e.series_id);
-    titleText = show?.title ?? e.title;
-    subtitle = `${epLabel(e)} · ${e.title}`;
-    const list = bySeries.get(e.series_id) ?? [];
-    const n = list.slice(list.findIndex((x) => x.id === e.id) + 1).find((x) => x.season_number > 0);
-    if (n) next = { type: 'episode', id: n.id, label: `${epLabel(n)} · ${n.title}`, resume: 0 };
-  } else {
-    const m = row as MovieRow;
-    if (m.stinger === 'during' || m.stinger === 'after' || m.stinger === 'both') stinger = m.stinger;
-  }
+  const { title: titleText, subtitle, next, stinger } = describe(row, type, items, bySeries);
 
   const audioTracks: RemoteAudioTrack[] = (probe?.audio ?? []).map((a) => ({
     id: a.id,
@@ -300,7 +386,91 @@ async function play(caller: Caller, profile: Profile, type: 'movie' | 'episode',
     segments,
     stinger,
     subStyle,
+    quality,
+    qualities: qualityOptions(row, choices),
   };
+}
+
+/** The quality choices for one title (for the download picker). */
+async function qualities(profile: Profile, type: 'movie' | 'episode', id: number): Promise<RemoteQualities> {
+  const { movies, episodes, items } = await libraryFor(profile);
+  const row: MovieRow | EpisodeRow | undefined = type === 'movie' ? movies.find((m) => m.id === id) : episodes.find((e) => e.id === id);
+  if (!row || !allowedTitle(items, episodes, type, id)) throw new ApiError(404, 'Not found');
+  const choices = qualityChoices(row);
+  return { options: qualityOptions(row, choices), default: choices.default };
+}
+
+/**
+ * Prepares a title for saving in the browser: the file itself when browsers play it as it is,
+ * otherwise an MP4 the PC converts first. Same rating, limit and device checks as playback.
+ */
+async function download(caller: Caller, profile: Profile, type: 'movie' | 'episode', id: number, requested?: Partial<Quality>): Promise<RemoteDownload> {
+  rateLimit(caller, 'download', 10, 60_000);
+  const st = await limitStatus(profile);
+  if (st.blocked) throw new ApiError(403, blockedMessage(profile, st.blocked));
+  const { movies, episodes, bySeries, items } = await libraryFor(profile);
+  const row: MovieRow | EpisodeRow | undefined = type === 'movie' ? movies.find((m) => m.id === id) : episodes.find((e) => e.id === id);
+  if (!row || !allowedTitle(items, episodes, type, id)) throw new ApiError(404, 'Not found');
+  if (downloadBlockingPlayback(row.file_path, useLibraryStore.getState().torrents)) throw new ApiError(409, stillDownloadingMessage(row.title));
+  // One download per browser at a time; the browser queues the rest.
+  replaceOwn(caller, 'download');
+  sweepIdleStreams();
+  if (activeStreams() >= MAX_REMOTE_STREAMS) throw new ApiError(429, TOO_MANY);
+
+  const { options, quality } = planDownload(row, requested);
+  const token = await registerStream(row.file_path, options);
+  let path: string;
+  try {
+    path = (await streamUrl(token, 0)).path;
+  } catch (e) {
+    releaseStream(token);
+    throw e;
+  }
+  const convert = options.format !== 'direct';
+  sessions.set(token, { session: caller.session, profile: profile.id, type, id, lastProgress: Date.now(), lastSeen: Date.now(), kind: 'download', convert });
+  const duration = durationOf(row);
+  const { title: titleText, subtitle, stinger, itemKey } = describe(row, type, items, bySeries);
+  return {
+    token,
+    url: path,
+    mode: convert ? 'convert' : 'file',
+    mime: convert ? 'video/mp4' : mimeFor(row.file_path),
+    quality,
+    itemKey,
+    title: titleText,
+    subtitle,
+    duration,
+    estimate: convert ? (duration > 0 ? estimateBytes(options.bitrate ?? 0, duration) : null) : row.file_size || null,
+    chapters: parseMediaInfo(row.media_info)?.chapters ?? [],
+    segments: parseSegments(row.segments).map(({ kind, start, end }) => ({ kind, start, end })),
+    stinger,
+  };
+}
+
+async function downloadProgress(caller: Caller, token: unknown): Promise<RemoteDownloadStatus> {
+  const s = ownedStream(token, caller);
+  if (!s || s.kind !== 'download') throw new ApiError(404, 'This download ended. Start it again.');
+  s.lastSeen = Date.now();
+  if (!s.convert) return { state: 'ready', progress: 1, error: null };
+  const st = await downloadStatus(String(token)).catch(() => null);
+  if (!st) throw new ApiError(404, 'This download ended. Start it again.');
+  // Encoder errors can mention files on the PC; browsers get a plain message.
+  return { state: st.state, progress: st.progress, error: st.state === 'failed' ? 'The PC couldn’t convert this video. Try another quality.' : null };
+}
+
+/**
+ * Watching a saved copy while the PC is reachable: the same limit and rating checks, and a token
+ * so `/progress` credits the watch time.
+ */
+async function offlineStart(caller: Caller, profile: Profile, type: 'movie' | 'episode', id: number) {
+  rateLimit(caller, 'offline', 20, 60_000);
+  const st = await limitStatus(profile);
+  if (st.blocked) throw new ApiError(403, blockedMessage(profile, st.blocked));
+  if (!(await allowedRow(profile, type, id))) throw new ApiError(404, 'Not found');
+  replaceOwn(caller, 'offline');
+  const token = key();
+  sessions.set(token, { session: caller.session, profile: profile.id, type, id, lastProgress: Date.now(), lastSeen: Date.now(), kind: 'offline' });
+  return { token };
 }
 
 async function progress(caller: Caller, profile: Profile, body: { type: 'movie' | 'episode'; id: number; time: number; duration: number; watched?: number; token?: string }) {
@@ -474,11 +644,19 @@ export async function route(caller: Caller, method: string, path: string, query:
       aid: body.aid != null ? Number(body.aid) : undefined,
       sid: body.sid != null ? Number(body.sid) : undefined,
       subStyle: (body.subStyle as Partial<RemoteSubStyle> | undefined) ?? undefined,
+      quality: parseQuality(body.quality),
     });
   }
+  if (method === 'GET' && path === '/qualities') return qualities(p(), parseType(query.type), Number(query.id));
+  if (method === 'POST' && path === '/download') return download(caller, p(), parseType(body.type), Number(body.id), parseQuality(body.quality));
+  if (method === 'GET' && path === '/download/status') {
+    rateLimit(caller, 'download-status', 120, 60_000);
+    return downloadProgress(caller, query.token);
+  }
+  if (method === 'POST' && path === '/offline/start') return offlineStart(caller, p(), parseType(body.type), Number(body.id));
   if (method === 'POST' && path === '/seek') {
     const s = ownedStream(body.token, caller);
-    if (!s) throw new ApiError(404, 'Playback ended');
+    if (!s || s.kind !== 'play') throw new ApiError(404, 'Playback ended');
     s.lastSeen = Date.now();
     const profile = useLibraryStore.getState().profiles.find((x) => x.id === s.profile);
     const st = profile ? await limitStatus(profile) : null;
