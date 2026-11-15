@@ -54,6 +54,7 @@ import { setSegments } from '../../services/db';
 import { cancelFrames, coarseToFine, extractFrames } from '../../services/frames';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isPlayerShortcut, playerControlTitles } from './shortcuts';
+import WatchTogetherButton from './WatchTogetherButton';
 
 const HIDE_AFTER_MS = 3000;
 const NEXT_EPISODE_WINDOW_S = 30;
@@ -1252,6 +1253,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
               <ControlButton label="Chapters & skip markers (C)" onClick={() => setPanel(panel === 'chapters' ? null : 'chapters')} active={panel === 'chapters'}>
                 <ListVideo className="h-8 w-8" />
               </ControlButton>
+              <WatchTogetherButton />
               <ControlButton label="Sleep timer" onClick={() => setPanel(panel === 'sleep' ? null : 'sleep')} active={panel === 'sleep'}>
                 <Timer className={`h-8 w-8 ${sleepTimer ? 'text-nf-red' : ''}`} />
               </ControlButton>

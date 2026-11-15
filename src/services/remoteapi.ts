@@ -28,6 +28,7 @@ import type { LiveChannel, LivePlaylist, LivePreferences } from '../types/live';
 import { durationOf, planStream, probeStream, registerStream, releaseStream, streamUrl } from './streaming';
 import { languageName } from './subtitles';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
+import { togetherRoute } from './watchparty';
 
 /**
  * Answers the browser app's `/api/…` requests (forwarded by the Rust media server) with the same
@@ -516,6 +517,10 @@ export async function route(caller: Caller, method: string, path: string, query:
     return liveOnPc(caller, p(), String(body.playlistId ?? ''), String(body.id ?? ''), body.eventId ? String(body.eventId) : undefined);
   }
   if (method === 'POST' && path === '/remote/play') return playOnPc(caller, p(), body.type === 'episode' ? 'episode' : 'movie', Number(body.id));
+  if (path.startsWith('/together/')) {
+    const res = await togetherRoute(caller, method, path, query, body, p);
+    if (res !== undefined) return res;
+  }
   throw new ApiError(404, 'Unknown endpoint');
 }
 
