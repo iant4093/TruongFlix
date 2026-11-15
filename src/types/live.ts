@@ -57,7 +57,8 @@ export interface SportsEvent {
   date: string;
   status: 'live' | 'upcoming' | 'finished';
   detail: string;
-  teams: { id: string; name: string; abbreviation: string; score: string; color: string; logo: string }[];
+  /** `rank` is the poll ranking (1-25, college sports) when the team is ranked. */
+  teams: { id: string; name: string; abbreviation: string; score: string; color: string; logo: string; rank?: number }[];
   broadcasts: string[];
 }
 

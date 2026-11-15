@@ -12,6 +12,15 @@ import type { Profile } from '../src/types/media';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), convertFileSrc: (s: string) => s }));
 vi.mock('../src/services/db', () => ({ readLiveData: vi.fn(), writeLiveData: vi.fn() }));
 vi.mock('../src/services/player', () => ({ playLive: vi.fn(), playLiveMultiview: vi.fn() }));
+// These tests follow one league's schedule; the app itself opens on all leagues.
+vi.mock('../src/lib/sectionMemory', async (load) => {
+  const actual = await load<typeof import('../src/lib/sectionMemory')>();
+  return {
+    ...actual,
+    useSectionState: <T,>(key: string, initial: T | (() => T)) =>
+      actual.useSectionState(key, key === 'league' && initial === 'all' ? ('football/nfl' as T) : initial),
+  };
+});
 
 let playlist: LivePlaylist;
 const scoreboard = (state = 'in', score = '14', otherScore = '0', detail = '6:13 - 3rd') => ({

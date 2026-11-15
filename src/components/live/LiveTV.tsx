@@ -55,7 +55,7 @@ export default function LiveTV() {
   const playerOpen = useLibraryStore((s) => !!s.playerSession);
   const state = useLiveStore();
   const [tab, setTab] = useSectionState<'sports' | 'channels'>('tab', 'sports');
-  const [league, setLeague] = useSectionState('league', 'football/nfl');
+  const [league, setLeague] = useSectionState('league', 'all');
   const [day, setDay] = useState(() => {
     const d = new Date();
     d.setHours(12, 0, 0, 0);
