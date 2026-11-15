@@ -154,3 +154,46 @@ export interface RemoteStream {
   stinger: 'during' | 'after' | 'both' | null;
   subStyle: RemoteSubStyle;
 }
+
+/** A Live TV channel from the PC's sources. */
+export interface RemoteLiveChannel {
+  playlistId: string;
+  id: string;
+  name: string;
+  group: string;
+  /** The source's name, as the user typed it. */
+  source: string;
+  kind: 'm3u' | 'web';
+  /** Web channels: the web player link, which plays right in the browser. */
+  web: string | null;
+}
+
+export interface RemoteLiveTeam {
+  name: string;
+  abbreviation: string;
+  score: string;
+  color: string;
+  logo: string;
+  rank?: number;
+}
+
+export interface RemoteLiveEvent {
+  id: string;
+  name: string;
+  league: string;
+  leagueLabel: string;
+  date: string;
+  status: 'live' | 'upcoming' | 'finished';
+  detail: string;
+  broadcasts: string[];
+  teams: RemoteLiveTeam[];
+  /** Channels that carry this game. */
+  channels: RemoteLiveChannel[];
+}
+
+export interface RemoteLive {
+  events: RemoteLiveEvent[];
+  channels: RemoteLiveChannel[];
+  /** Some leagues could not be refreshed. */
+  partial: boolean;
+}

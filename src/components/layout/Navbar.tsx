@@ -16,8 +16,8 @@ const LINKS: { view: View; label: string }[] = [
   { view: 'tv', label: 'TV Shows' },
   { view: 'movies', label: 'Movies' },
   { view: 'live', label: 'Live TV' },
-  { view: 'browse', label: 'Browse' },
   { view: 'games', label: 'Games' },
+  { view: 'browse', label: 'Browse' },
   { view: 'mylist', label: 'My List' },
 ];
 
@@ -137,47 +137,50 @@ export default function Navbar() {
           >
             <Search className="h-5 w-5" />
           </button>
-        ) : <div className="relative">
-          <button
-            ref={searchButtonRef}
-            type="button"
-            onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
-            className={`rounded p-1.5 ${searchOpen ? 'bg-white/15' : ''}`}
-            aria-label="Search"
-            aria-expanded={searchOpen}
-            aria-controls={searchOpen ? 'library-search' : undefined}
-          >
-            <Search className="h-5 w-5" />
-          </button>
-          <AnimatePresence initial={false}>
-            {searchOpen && (
-              <motion.div
-                id="library-search"
-                initial={{ y: -4, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                exit={{ y: -4, opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                className="absolute right-0 top-full mt-2 flex w-[min(290px,85vw)] items-center rounded border border-white/25 bg-nf-surface px-3 shadow-xl"
-              >
-                <input
-                  ref={inputRef}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  aria-label="Search your library"
-                  onBlur={(e) => { if (!search && e.relatedTarget !== searchButtonRef.current) setSearchOpen(false); }}
-                  onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); closeSearch(); } }}
-                  placeholder="Titles, people, genres"
-                  className="min-w-0 flex-1 bg-transparent py-2.5 pr-2 text-sm text-white placeholder:text-nf-muted outline-none"
-                />
-                {search && (
-                  <button type="button" aria-label="Clear search" onClick={closeSearch} className="p-1">
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>}
+        ) : (
+          // Netflix-style: the icon opens an input inline in the bar, growing to its left.
+          <div className={`flex h-9 items-center overflow-hidden rounded-sm border transition-colors duration-200 ${searchOpen ? 'border-white/80 bg-black/75' : 'border-transparent'}`}>
+            <button
+              ref={searchButtonRef}
+              type="button"
+              onClick={() => (searchOpen ? (search ? inputRef.current?.focus() : closeSearch()) : setSearchOpen(true))}
+              className="flex h-full shrink-0 items-center px-1.5"
+              aria-label="Search"
+              aria-expanded={searchOpen}
+              aria-controls={searchOpen ? 'library-search' : undefined}
+            >
+              <Search className="h-5 w-5" />
+            </button>
+            <AnimatePresence initial={false}>
+              {searchOpen && (
+                <motion.div
+                  id="library-search"
+                  initial={{ width: 0, opacity: 0 }}
+                  animate={{ width: 'min(240px, 40vw)', opacity: 1 }}
+                  exit={{ width: 0, opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  className="flex h-full items-center"
+                >
+                  <input
+                    ref={inputRef}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    aria-label="Search your library"
+                    onBlur={(e) => { if (!search && e.relatedTarget !== searchButtonRef.current) setSearchOpen(false); }}
+                    onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); closeSearch(); } }}
+                    placeholder="Titles, people, genres"
+                    className="h-full min-w-0 flex-1 bg-transparent pr-1 text-sm text-white placeholder:text-nf-muted outline-none"
+                  />
+                  {search && (
+                    <button type="button" aria-label="Clear search" onClick={closeSearch} className="shrink-0 px-2">
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
 
         <button
           onClick={() => runScan()}

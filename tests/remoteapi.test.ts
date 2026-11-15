@@ -10,6 +10,8 @@ vi.mock('../src/services/db', () => ({
   setMyList: vi.fn(async () => {}),
   getSelectedSubtitlePath: vi.fn(async () => null),
   getDb: vi.fn(),
+  readLiveData: vi.fn(async (_key: string, fallback: unknown) => fallback),
+  writeLiveData: vi.fn(async () => {}),
 }));
 let streamCount = 0;
 vi.mock('../src/services/streaming', () => ({
@@ -299,5 +301,37 @@ describe('phone as a remote for the PC', () => {
     vi.mocked(limits.limitStatus).mockResolvedValue({ blocked: 'bedtime', remaining: null });
     await expect(playOnPc(2, 2, B)).rejects.toMatchObject({ status: 403, message: 'It’s bedtime' });
     expect(player.play).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('browser Live TV', () => {
+  const sources = [{
+    id: 'web', kind: 'web', name: 'My web TV', input: '', updatedAt: 0, health: { 'web:off': { state: 'unavailable' } },
+    channels: [
+      { id: 'web:abc', tvgId: '', name: 'ABC', logo: '', group: 'Sports', transport: { url: 'https://tv.example/embed/abc', referrer: '', userAgent: '' }, web: { url: 'https://tv.example/embed/abc', region: '', quality: 'HD', live: true } },
+      { id: 'web:off', tvgId: '', name: 'Off air', logo: '', group: 'Sports', transport: { url: 'https://tv.example/embed/off', referrer: '', userAgent: '' }, web: { url: 'https://tv.example/embed/off', region: '', quality: '', live: false } },
+    ],
+  }];
+  const schedule = { events: [{ id: '9', name: 'Ducks at Huskies', date: new Date().toISOString(), competitions: [{
+    status: { type: { state: 'in', shortDetail: 'Q3' } },
+    competitors: [{ team: { id: '1', displayName: 'Huskies', abbreviation: 'UW' }, score: '7', curatedRank: { current: 8 } }, { team: { id: '2', displayName: 'Ducks', abbreviation: 'ORE' }, score: '3' }],
+    broadcasts: [{ names: ['ABC'] }],
+  }] }] };
+
+  it('keeps Live TV from kids profiles', async () => {
+    await expect(remote.route(A, 'GET', '/live', { profile: '2' }, {})).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('lists today’s games with matching channels that play in the browser', async () => {
+    vi.mocked(db.readLiveData).mockImplementation(async (key: string, fallback: unknown) => (key === 'playlists' ? sources : fallback) as never);
+    vi.mocked(core.invoke).mockImplementation(async (cmd: string, args?: { league?: string }) =>
+      (cmd === 'live_sports' ? (args?.league === 'football/college-football' ? schedule : { events: [] }) : null) as never);
+    const live = (await remote.route(A, 'GET', '/live', { profile: '1' }, {})) as import('../src/remote/types').RemoteLive;
+    expect(live.events).toHaveLength(1);
+    expect(live.events[0]).toMatchObject({ status: 'live', leagueLabel: 'College football' });
+    expect(live.events[0].teams[0]).toMatchObject({ abbreviation: 'UW', rank: 8 });
+    expect(live.events[0].channels.map((c) => c.name)).toEqual(['ABC']);
+    expect(live.events[0].channels[0].web).toContain('https://tv.example/embed/abc?');
+    expect(live.channels.map((c) => c.name)).toEqual(['ABC']);
   });
 });

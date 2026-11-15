@@ -7,6 +7,8 @@ import type {
   RemoteEpisode,
   RemoteItem,
   RemoteLibrary,
+  RemoteLive,
+  RemoteLiveChannel,
   RemotePlayable,
   RemoteProfile,
   RemoteStream,
@@ -19,8 +21,10 @@ import { allowedForMaturity, buildItems, continueWatching, epLabel, episodeTarge
 import { blockedMessage, limitStatus } from './limits';
 import { verifyPin } from './pin';
 import { parseMediaInfo, parseSegments } from './mediainfo';
-import { subtitleOptions } from './player';
-import { ApiError, command as remoteCommand, nowPlaying, rateLimit, startOnPc, type Caller } from './remotecontrol';
+import { playLive, subtitleOptions } from './player';
+import { ApiError, command as remoteCommand, noteController, nowPlaying, rateLimit, startOnPc, type Caller } from './remotecontrol';
+import { eventMatches, findLiveChannel, initLive, LEAGUES, localDate, sportsSchedule, useLiveStore, webPlayerUrl } from './live';
+import type { LiveChannel, LivePlaylist, LivePreferences } from '../types/live';
 import { durationOf, planStream, probeStream, registerStream, releaseStream, streamUrl } from './streaming';
 import { languageName } from './subtitles';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
@@ -386,6 +390,76 @@ async function playOnPc(caller: Caller, profile: Profile, type: 'movie' | 'episo
   return startOnPc(caller, profile, target);
 }
 
+function liveChannel(playlist: LivePlaylist, channel: LiveChannel): RemoteLiveChannel {
+  return {
+    playlistId: playlist.id,
+    id: channel.id,
+    name: channel.name,
+    group: channel.group,
+    source: playlist.name,
+    kind: channel.web ? 'web' : 'm3u',
+    web: channel.web ? webPlayerUrl(channel.web.url) : null,
+  };
+}
+
+function liveProfile(profile: Profile) {
+  if (profile.maturity !== 'all') throw new ApiError(403, 'Live channels have no verified age ratings. Use an unrestricted profile for Live TV.');
+}
+
+async function todaysEvents() {
+  const results = await Promise.allSettled(LEAGUES.map(([league]) => sportsSchedule(league, localDate())));
+  const events = results
+    .flatMap((r) => (r.status === 'fulfilled' ? r.value.events : []))
+    .sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+  return { events, partial: results.some((r) => r.status === 'rejected') };
+}
+
+/** Today's games with the channels that carry them, and every available channel. */
+async function live(profile: Profile): Promise<RemoteLive> {
+  liveProfile(profile);
+  const [playlists, preferences, schedule] = await Promise.all([
+    db.readLiveData<LivePlaylist[]>('playlists', []),
+    db.readLiveData<Partial<LivePreferences>>(`profile:${profile.id}`, {}),
+    todaysEvents(),
+  ]);
+  const order = { live: 0, upcoming: 1, finished: 2 } as const;
+  return {
+    events: schedule.events
+      .sort((a, b) => order[a.status] - order[b.status])
+      .map((event) => ({
+        id: event.id,
+        name: event.name,
+        league: event.league,
+        leagueLabel: LEAGUES.find(([id]) => id === event.league)?.[1] ?? event.league,
+        date: event.date,
+        status: event.status,
+        detail: event.detail,
+        broadcasts: event.broadcasts,
+        teams: event.teams.map(({ name, abbreviation, score, color, logo, rank }) => ({ name, abbreviation, score, color, logo, rank })),
+        channels: eventMatches(event, playlists, false, preferences.matches ?? {}).map((m) => liveChannel(m.playlist, m.channel)),
+      })),
+    channels: playlists
+      .flatMap((playlist) => playlist.channels.filter((c) => playlist.health[c.id]?.state !== 'unavailable').map((c) => liveChannel(playlist, c)))
+      .slice(0, 1000),
+    partial: schedule.partial,
+  };
+}
+
+/** Plays a Live TV channel on the PC (M3U channels can't be played in a browser). */
+async function liveOnPc(caller: Caller, profile: Profile, playlistId: string, channelId: string, eventId: string | undefined) {
+  liveProfile(profile);
+  const store = useLibraryStore.getState();
+  if (store.activeProfile?.id !== profile.id)
+    throw new ApiError(403, store.activeProfile ? `The PC is using ${store.activeProfile.name}’s profile. Switch to ${profile.name} there to play.` : `Pick ${profile.name}’s profile on the PC first.`);
+  if (useLiveStore.getState().profileId !== profile.id || !useLiveStore.getState().ready) await initLive(profile.id);
+  const match = findLiveChannel(playlistId, channelId);
+  if (!match) throw new ApiError(404, 'This channel is no longer in your sources');
+  const event = eventId ? (await todaysEvents()).events.find((e) => e.id === eventId) : undefined;
+  noteController(caller);
+  await Promise.race([playLive(match, event), new Promise((r) => setTimeout(r, 8000))]);
+  return { ok: true };
+}
+
 export async function route(caller: Caller, method: string, path: string, query: Record<string, string>, body: Record<string, unknown>): Promise<unknown> {
   const p = () => profileFor(query.profile ?? body.profile, query.key ?? body.key);
   if (method === 'GET' && path === '/profiles') {
@@ -433,6 +507,14 @@ export async function route(caller: Caller, method: string, path: string, query:
     return nowPlaying(caller, p());
   }
   if (method === 'POST' && path === '/remote/command') return remoteCommand(caller, p(), body.action as never, body.value);
+  if (method === 'GET' && path === '/live') {
+    rateLimit(caller, 'live', 20, 60_000);
+    return live(p());
+  }
+  if (method === 'POST' && path === '/live/pc') {
+    rateLimit(caller, 'live-pc', 10, 60_000);
+    return liveOnPc(caller, p(), String(body.playlistId ?? ''), String(body.id ?? ''), body.eventId ? String(body.eventId) : undefined);
+  }
   if (method === 'POST' && path === '/remote/play') return playOnPc(caller, p(), body.type === 'episode' ? 'episode' : 'movie', Number(body.id));
   throw new ApiError(404, 'Unknown endpoint');
 }

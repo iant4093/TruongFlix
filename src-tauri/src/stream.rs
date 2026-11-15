@@ -282,6 +282,33 @@ struct Shared {
 static SHARED: OnceLock<Shared> = OnceLock::new();
 static ENCODER: Mutex<Option<&'static str>> = Mutex::new(None);
 static GPU_FILTER_BROKEN: AtomicBool = AtomicBool::new(false);
+/// Set when libmpv's FFmpeg lacks the zscale/tonemap filters, so HDR falls back to an untone-mapped copy.
+static FILTER_TONEMAP_BROKEN: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Convert {
+    /// mpv's GPU renderer tone-maps (macOS).
+    Gpu,
+    /// FFmpeg's zscale + tonemap filters tone-map on the CPU (Windows, or when the GPU path fails).
+    Filters,
+    /// Copy colours as they are: HDR looks washed out, but it plays.
+    Plain,
+}
+
+/// The video filter for a conversion. HDR (PQ/HLG) has to be tone-mapped to SDR BT.709, or a
+/// browser shows it grey and washed out.
+fn video_filter(mode: Convert, w: u32, h: u32) -> String {
+    let size = |sep: &str| if w > 0 { format!("{sep}w={w}:h={h}") } else { String::new() };
+    match mode {
+        Convert::Gpu => format!("gpu{},format=yuv420p", if w > 0 { format!("=w={w}:h={h}") } else { String::new() }),
+        Convert::Filters => format!(
+            "lavfi=[zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv{},format=yuv420p]",
+            size(":")
+        ),
+        Convert::Plain if w > 0 => format!("scale={w}:{h},format=yuv420p"),
+        Convert::Plain => "format=yuv420p".into(),
+    }
+}
 static PROBE_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, StreamProbe)>>> = OnceLock::new();
 
 fn shared() -> Result<&'static Shared, String> {
@@ -509,7 +536,7 @@ async fn read_request(conn: &mut TcpStream) -> Option<Request> {
 /// Media only: TVs and Chromecast receivers fetch streams from another origin.
 const CORS: &str = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Range\r\nAccess-Control-Expose-Headers: Content-Length, Content-Range\r\n";
 const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n";
-const APP_CSP: &str = "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://image.tmdb.org; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n";
+const APP_CSP: &str = "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://image.tmdb.org https://a.espncdn.com; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self' data:; frame-src https:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n";
 
 tokio::task_local! {
     /// Set while answering a `/stream/…` request, whose responses carry CORS headers.
@@ -1400,12 +1427,30 @@ fn run_encode(
 
     // Headless vf=gpu works via CGL on macOS; on Windows shinchiro's libmpv-2.dll segfaults
     // (0xc0000005) when vf=gpu initializes inside vo=lavc without a swapchain, so use swscale there.
-    let want_gpu = cfg!(target_os = "macos") && opts.tone_map && !GPU_FILTER_BROKEN.load(Ordering::Relaxed);
-    let attempts: &[bool] = if want_gpu { &[true, false] } else { &[false] };
+    let mut attempts = Vec::new();
+    if opts.tone_map {
+        if cfg!(target_os = "macos") && !GPU_FILTER_BROKEN.load(Ordering::Relaxed) {
+            attempts.push(Convert::Gpu);
+        }
+        if !FILTER_TONEMAP_BROKEN.load(Ordering::Relaxed) {
+            attempts.push(Convert::Filters);
+        }
+    }
+    attempts.push(Convert::Plain);
     let m3u8 = dir.join("seg.m3u8");
     let live_ts = dir.join("live.ts");
 
-    for (attempt_idx, &use_gpu) in attempts.iter().enumerate() {
+    for (attempt_idx, &mode) in attempts.iter().enumerate() {
+        let use_gpu = mode == Convert::Gpu;
+        let retry = |broken: &AtomicBool| {
+            if attempt_idx + 1 < attempts.len() && mode != Convert::Plain {
+                broken.store(true, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        };
+        let broken = if use_gpu { &GPU_FILTER_BROKEN } else { &FILTER_TONEMAP_BROKEN };
         let _ = std::fs::remove_file(&m3u8);
         if hls.is_none() {
             let _ = std::fs::remove_file(&live_ts);
@@ -1417,15 +1462,7 @@ fn run_encode(
         let out = if hls.is_some() { &m3u8 } else { &live_ts }.to_string_lossy().into_owned();
         let start_s = if hls.is_some() { format!("{:.6}", start.max(0.0)) } else { format!("{:.3}", start.max(0.0)) };
         let (w, h) = (opts.width.max(2) & !1, opts.height.max(2) & !1);
-        let vf = if use_gpu && opts.width > 0 {
-            format!("gpu=w={w}:h={h},format=yuv420p")
-        } else if use_gpu {
-            "gpu,format=yuv420p".into()
-        } else if opts.width > 0 {
-            format!("scale={w}:{h},format=yuv420p")
-        } else {
-            "format=yuv420p".into()
-        };
+        let vf = video_filter(mode, if opts.width > 0 { w } else { 0 }, h);
 
         let aid = opts.aid.filter(|a| *a > 0).map(|a| a.to_string()).unwrap_or_else(|| "auto".into());
         let sid = opts.sid.filter(|s| *s > 0).map(|s| s.to_string()).unwrap_or_else(|| "no".into());
@@ -1471,8 +1508,7 @@ fn run_encode(
         let core = match Core::new(&options) {
             Ok(c) => c,
             Err(e) => {
-                if use_gpu && attempt_idx + 1 < attempts.len() {
-                    GPU_FILTER_BROKEN.store(true, Ordering::Relaxed);
+                if retry(broken) {
                     continue;
                 }
                 *error.lock().unwrap() = Some(e);
@@ -1543,8 +1579,7 @@ fn run_encode(
             break;
         }
 
-        if (end_err || !video_ok) && use_gpu && attempt_idx + 1 < attempts.len() {
-            GPU_FILTER_BROKEN.store(true, Ordering::Relaxed);
+        if (end_err || !video_ok) && retry(broken) {
             for bad in all_playlist_segs(&m3u8) {
                 let _ = std::fs::remove_file(dir.join(format!("seg{bad}.ts")));
             }
@@ -1890,6 +1925,43 @@ mod tests {
             assert_eq!(body, &std::fs::read(&video).unwrap()[100..200]);
         });
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `TRUONGFLIX_HDR_TEST=<HDR10 video>`: tone-mapping must convert without falling back, and
+    /// writes one frame per mode next to the system temp dir for a visual check.
+    #[test]
+    #[ignore]
+    fn real_hdr_tone_map() {
+        let video = PathBuf::from(std::env::var("TRUONGFLIX_HDR_TEST").expect("set TRUONGFLIX_HDR_TEST"));
+        let out = std::env::temp_dir().join("truongflix-hdr-test");
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+        let file = video.to_string_lossy().into_owned();
+        for mode in [Convert::Filters, Convert::Plain] {
+            let png = out.join(format!("{mode:?}.png")).to_string_lossy().into_owned();
+            let vf = video_filter(mode, 960, 540);
+            let core = Core::new(&[("o", &png), ("ovc", "png"), ("of", "image2"), ("frames", "1"), ("start", "600"), ("vf", &vf), ("aid", "no"), ("sid", "no")]).unwrap();
+            core.api.command(core.h, &["loadfile", &file, "replace"]).unwrap();
+            assert!(core.wait_for(&[mpv::EVENT_END_FILE], Duration::from_secs(60)).is_some(), "{mode:?} did not finish");
+            drop(core);
+            let size = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
+            println!("{mode:?}: {png} ({size} bytes)");
+            assert!(size > 10_000, "{mode:?} wrote no frame");
+        }
+
+        let plan = HlsPlan::from_probe(probe_file(&video).unwrap().duration, 24.0);
+        let opts = StreamOptions { format: "hls".into(), width: 1280, height: 720, tone_map: true, aid: None, sid: None, sub_style: Vec::new() };
+        let dir = out.join("hls");
+        let job = spawn_hls_job(&video, &opts, &plan, 100, &dir, None).unwrap();
+        let first = dir.join("seg100.ts");
+        let t = Instant::now();
+        while !first.exists() && !job.done.load(Ordering::Acquire) && t.elapsed() < Duration::from_secs(90) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        job.stop();
+        assert!(job.error.lock().unwrap().is_none(), "{:?}", job.error.lock().unwrap());
+        assert!(first.exists(), "no tone-mapped segment");
+        assert!(!FILTER_TONEMAP_BROKEN.load(Ordering::Relaxed), "the zscale/tonemap filters were not available");
     }
 
     #[test]

@@ -12,6 +12,8 @@ export interface HoverRect {
   left: number;
   width: number;
   height: number;
+  /** Where the pointer rested (viewport Y); tall posters open their card there. */
+  pointerY?: number;
 }
 
 const EDGE = 0.04; // matches the rows' 4% gutters
@@ -29,13 +31,15 @@ export function useHoverIntentCore(open: (rect: HoverRect) => void, isOpen: () =
   openRef.current = open;
   const isOpenRef = useRef(isOpen);
   isOpenRef.current = isOpen;
+  const pointerY = useRef<number | undefined>(undefined);
 
   const cancel = useCallback(() => {
     if (timer.current != null) window.clearTimeout(timer.current);
     timer.current = null;
   }, []);
 
-  const onMouseEnter = useCallback(() => {
+  const onMouseEnter = useCallback((event?: { clientY: number }) => {
+    if (event) pointerY.current = event.clientY;
     cancel();
     // While navigating with arrows/a controller, the card under a resting cursor stays closed.
     if (keyboardNavigating()) return;
@@ -45,11 +49,12 @@ export function useHoverIntentCore(open: (rect: HoverRect) => void, isOpen: () =
       const r = el.getBoundingClientRect();
       timer.current = null;
       if (r.right <= 0 || r.left >= window.innerWidth || r.bottom <= NAV_HEIGHT || r.top >= window.innerHeight) return;
-      openRef.current({ top: r.top, left: r.left, width: r.width, height: r.height });
+      openRef.current({ top: r.top, left: r.left, width: r.width, height: r.height, pointerY: pointerY.current });
     }, HOVER_DELAY_MS);
   }, [cancel]);
 
-  const onMouseMove = useCallback(() => {
+  const onMouseMove = useCallback((event?: { clientY: number }) => {
+    if (event) pointerY.current = event.clientY;
     if (timer.current == null && !isOpenRef.current()) onMouseEnter();
   }, [onMouseEnter]);
 
@@ -186,8 +191,14 @@ export function HoverCardFrame({ rect, onClose, media, onMediaClick, actions, ch
       originX = 'right';
     }
     left = Math.max(8, Math.min(left, vw - width - 8));
-    const top = Math.max(NAV_HEIGHT + 4, Math.min(rect.top + rect.height / 2 - imgH / 2, window.innerHeight - cardHeight - 8));
-    return { width, left, top, origin: `${originX} ${rect.top - top + rect.height / 2}px` };
+    // A tall poster is much taller than the card's artwork: center the artwork on the pointer,
+    // kept inside the poster, instead of always on the poster's middle.
+    const portrait = rect.width < rect.height;
+    const anchor = portrait && rect.pointerY != null
+      ? Math.max(rect.top + imgH / 2, Math.min(rect.pointerY, rect.top + rect.height - imgH / 2))
+      : rect.top + rect.height / 2;
+    const top = Math.max(NAV_HEIGHT + 4, Math.min(anchor - imgH / 2, window.innerHeight - cardHeight - 8));
+    return { width, left, top, origin: `${originX} ${anchor - top}px` };
   }, [rect, cardHeight]);
 
   return (
