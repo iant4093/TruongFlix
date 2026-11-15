@@ -165,10 +165,10 @@ it('combines a game feed with a playlist channel without overwriting the sports 
   fireEvent.click(screen.getByRole('button', { name: 'Channels', exact: true }));
   fireEvent.click(screen.getByRole('button', { name: 'Add Provider Seven to multiview' }));
   fireEvent.click(screen.getByRole('button', { name: 'Watch multiview' }));
-  await waitFor(() => expect(playLiveMultiview).toHaveBeenCalledWith(
+  await waitFor(() => expect(playLiveMultiview).toHaveBeenCalledWith([
     expect.objectContaining({ match: expect.objectContaining({ key: 'one/fox' }), event: expect.objectContaining({ name: '49ers at Rams' }) }),
     expect.objectContaining({ match: expect.objectContaining({ key: 'one/custom' }) }),
-  ));
+  ]));
   expect(useLiveStore.getState().preferences.matches).toEqual({});
 });
 

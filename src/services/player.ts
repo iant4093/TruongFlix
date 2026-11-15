@@ -20,7 +20,8 @@ import type {
 } from '../types/media';
 import { getSelectedSubtitlePath, logLiveViewing, logWatchTime, recordProgress } from './db';
 import { findLiveChannel, sameLiveFeed, useLiveStore, verifiedChannel, type ChannelMatch, type LiveFeed } from './live';
-import type { LiveMultiviewState, LivePlayerSession, SportsEvent } from '../types/live';
+import { MULTIVIEW_MAX, MULTIVIEW_NATIVE_MAX } from '../types/live';
+import type { LiveMultiviewState, LivePlayerSession, MultiviewPane, SportsEvent } from '../types/live';
 import { parseMediaInfo } from './mediainfo';
 import { ensureReachable } from './nas';
 import { blockedMessage, formatLeft, limitStatus } from './limits';
@@ -501,12 +502,24 @@ function countLiveTime(playing: boolean) {
   }
 }
 
+/** Every channel on screen: the main one first, then the multiview panes. */
+export function livePanes(session: LivePlayerSession): MultiviewPane[] {
+  const first: MultiviewPane = {
+    playlistId: session.target.playlistId,
+    id: session.target.id,
+    title: session.title,
+    subtitle: session.subtitle ?? '',
+    event: session.event,
+    web: session.web,
+  };
+  return [first, ...(session.multiview ? [session.multiview] : []), ...(session.more ?? [])];
+}
+
 /** Whether a session's video (or one of its multiview panes) plays in the native player. */
 function usesNativePlayer(session: PlaybackSession | null) {
   if (!session) return false;
   if (session.target.type !== 'live') return true;
-  const live = session as LivePlayerSession;
-  return !live.web || (!!live.multiview && !live.multiview.web);
+  return livePanes(session as LivePlayerSession).some((pane) => !pane.web);
 }
 
 /** The live session when it (or one of its multiview panes) plays in a web player. */
@@ -514,7 +527,7 @@ function webSession() {
   const session = useLibraryStore.getState().playerSession;
   if (session?.target.type !== 'live') return null;
   const live = session as LivePlayerSession;
-  return live.web || live.multiview?.web ? live : null;
+  return livePanes(live).some((pane) => pane.web) ? live : null;
 }
 
 /** Called every second while only web players are on screen, for watch time and limits. */
@@ -522,13 +535,12 @@ export function tickWebLive(playing: boolean) {
   const session = useLibraryStore.getState().playerSession;
   if (webSession() && !usesNativePlayer(session)) countLiveTime(playing);
 }
-
 function playingLive(state: BuiltinPlayerState | LiveMultiviewState | null) {
   return !!state?.loaded && !state.paused && !state.buffering && !('eof' in state ? state.eof : state.failed);
 }
 
 /** Live sessions share the native renderer without library resume points or episode policy. */
-export async function playLive(match: ChannelMatch, event?: SportsEvent, channels?: ChannelMatch[], second?: LiveFeed) {
+export async function playLive(match: ChannelMatch, event?: SportsEvent, channels?: ChannelMatch[], others: LiveFeed[] = []) {
   const store = useLibraryStore.getState();
   if (store.playerPrompt) return;
   const limit = await limitStatus(store.activeProfile, liveSeconds + pendingSeconds);
@@ -536,9 +548,9 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   if (store.activeProfile?.maturity !== 'all')
     return store.toast('Live channels have no verified age ratings. Switch to an unrestricted profile to watch.', 'info');
   const web = match.channel.web;
-  const secondWeb = second?.match.channel.web;
+  const multiview = others.length > 0;
   // The native player plays the first native channel; web channels draw their own video.
-  const nativeMatch = !web ? match : second && !secondWeb ? second.match : null;
+  const nativeMatch = [match, ...others.map((o) => o.match)].find((m) => !m.channel.web);
   if (nativeMatch && !(await engineStatus()).available)
     return store.toast(
       'Live TV needs the built-in player. Reinstall TruongFlix to restore its player engine.',
@@ -559,14 +571,8 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   const session: LivePlayerSession = {
     event,
     ...(web && { web: { url: web.url, source: match.playlist.name } }),
-    ...(second && { multiview: {
-      playlistId: second.match.playlist.id,
-      id: second.match.channel.id,
-      title: second.match.channel.name,
-      subtitle: second.event?.name ?? second.match.playlist.name,
-      event: second.event,
-      ...(secondWeb && { web: { url: secondWeb.url, source: second.match.playlist.name } }),
-    } }),
+    ...(multiview && { multiview: paneFor(others[0]) }),
+    ...(others.length > 1 && { more: others.slice(1, MULTIVIEW_MAX - 1).map(paneFor) }),
     channels: channels?.map((m) => ({ playlistId: m.playlist.id, id: m.channel.id })),
     loadId,
     target: { type: 'live', id: match.channel.id, playlistId: match.playlist.id, label: match.channel.name },
@@ -580,7 +586,7 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   };
   const native = usesNativePlayer(store.playerSession);
   store.setPlayerSession(session);
-  if (second) store.setPlayerMini(false);
+  if (multiview) store.setPlayerMini(false);
   store.setPlayerState(null);
   store.setPlayerTracks([]);
   store.setPlayerChapters([]);
@@ -617,7 +623,7 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
     if (generation !== openGeneration) return;
     startOutputWatch();
     void syncOutput(true);
-    if (!second) await invoke('player_layout', { rect: useLibraryStore.getState().playerMini ? miniRect() : null });
+    if (!multiview) await invoke('player_layout', { rect: useLibraryStore.getState().playerMini ? miniRect() : null });
   } catch {
     if (generation === openGeneration) {
       useLiveStore.setState({ playbackError: 'This channel could not start.' });
@@ -626,34 +632,49 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   }
 }
 
-export async function playLiveMultiview(first: LiveFeed, second: LiveFeed) {
-  const left = findLiveChannel(first.match.playlist.id, first.match.channel.id);
-  const right = findLiveChannel(second.match.playlist.id, second.match.channel.id);
-  if (!left || !right || sameLiveFeed(left, right)) {
-    return useLibraryStore.getState().toast('Choose two different available channels for multiview.', 'info');
-  }
-  await playLive(left, first.event, undefined, { match: right, event: second.event });
+function paneFor({ match, event }: LiveFeed): MultiviewPane {
+  return {
+    playlistId: match.playlist.id,
+    id: match.channel.id,
+    title: match.channel.name,
+    subtitle: event?.name ?? match.playlist.name,
+    event,
+    ...(match.channel.web && { web: { url: match.channel.web.url, source: match.playlist.name } }),
+  };
 }
 
-export function watchLivePane(session: LivePlayerSession, second: boolean) {
-  const pane = second ? session.multiview : session.target;
+export async function playLiveMultiview(feeds: LiveFeed[]) {
+  const store = useLibraryStore.getState();
+  const found = feeds.slice(0, MULTIVIEW_MAX).map((f) => findLiveChannel(f.match.playlist.id, f.match.channel.id));
+  if (found.length < 2 || found.some((m) => !m) || found.some((m, i) => found.some((o, j) => j < i && sameLiveFeed(m!, o!))))
+    return store.toast('Choose two to four different available channels for multiview.', 'info');
+  if (found.filter((m) => !m!.channel.web).length > MULTIVIEW_NATIVE_MAX)
+    return store.toast('Multiview can show up to two M3U channels. Use web channels for the rest.', 'info');
+  const [first, ...rest] = found as ChannelMatch[];
+  await playLive(first, feeds[0].event, undefined, rest.map((match, i) => ({ match, event: feeds[i + 1].event })));
+}
+
+export function watchLivePane(session: LivePlayerSession, index: number) {
+  const pane = livePanes(session)[index];
   const match = pane && findLiveChannel(pane.playlistId, pane.id);
   if (!match) return useLibraryStore.getState().toast('This channel is no longer in your playlists.', 'info');
-  return playLive(match, second ? session.multiview?.event : session.event);
+  return playLive(match, pane.event);
 }
 
 export async function retryLiveMultiview(session: LivePlayerSession) {
-  const first = findLiveChannel(session.target.playlistId, session.target.id);
-  const second = session.multiview && findLiveChannel(session.multiview.playlistId, session.multiview.id);
-  if (first && second) await playLive(first, session.event, undefined, { match: second, event: session.multiview?.event });
-  else useLibraryStore.getState().toast('A channel is no longer in your playlists.', 'info');
+  const panes = livePanes(session);
+  const matches = panes.map((p) => findLiveChannel(p.playlistId, p.id));
+  if (matches.every(Boolean)) {
+    const [first, ...rest] = matches as ChannelMatch[];
+    await playLive(first, session.event, undefined, rest.map((match, i) => ({ match, event: panes[i + 1].event })));
+  } else useLibraryStore.getState().toast('A channel is no longer in your playlists.', 'info');
 }
-
 type PaneRect = ReturnType<typeof miniRect>;
 export type MultiviewLayout = { left: PaneRect; right: PaneRect };
 
 export async function openLiveMultiviewPane(session: LivePlayerSession, paneId: string, layout: MultiviewLayout) {
-  const target = session.multiview;
+  // The second native channel gets the native multiview view.
+  const target = livePanes(session).filter((pane) => !pane.web)[1];
   const match = target && findLiveChannel(target.playlistId, target.id);
   if (!match) throw new Error('This channel is no longer in your playlists.');
   await openQueue;
@@ -1015,8 +1036,7 @@ export async function initPlayerEvents() {
         if (playingLive(payload)) {
           if (payload.time > 1 && useLiveStore.getState().playbackError) useLiveStore.setState({ playbackError: '' });
           // With a web channel first, the native player is showing the multiview's second channel.
-          const live = store.playerSession as LivePlayerSession;
-          const target = live.web && live.multiview ? live.multiview : live.target;
+          const target = livePanes(store.playerSession as LivePlayerSession).find((pane) => !pane.web)!;
           const health = useLiveStore.getState().playlists.find((p) => p.id === target.playlistId)?.health[target.id];
           if (payload.time > 1 && health?.state !== 'verified') verifiedChannel(target.playlistId, target.id);
         }

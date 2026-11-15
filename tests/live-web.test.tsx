@@ -105,9 +105,9 @@ async function webSource() {
 
 it('shows a web channel and an M3U channel together, with the native player on the M3U side', async () => {
   const source = await webSource();
-  await playLive({ playlist: source, channel: source.channels[0], key: 'a' }, undefined, undefined, {
-    match: { playlist: m3u, channel: m3u.channels[0], key: 'b' },
-  });
+  await playLive({ playlist: source, channel: source.channels[0], key: 'a' }, undefined, undefined, [
+    { match: { playlist: m3u, channel: m3u.channels[0], key: 'b' } },
+  ]);
   const session = useLibraryStore.getState().playerSession as LivePlayerSession;
   expect(session.web?.url).toBe('https://tv.example/embed/abc-one');
   expect(session.multiview).toMatchObject({ title: 'ESPN' });
@@ -123,9 +123,9 @@ it('shows a web channel and an M3U channel together, with the native player on t
 
 it('shows two web channels with only the chosen one heard and no native player', async () => {
   const source = await webSource();
-  await playLive({ playlist: source, channel: source.channels[0], key: 'a' }, undefined, undefined, {
-    match: { playlist: source, channel: source.channels[1], key: 'b' },
-  });
+  await playLive({ playlist: source, channel: source.channels[0], key: 'a' }, undefined, undefined, [
+    { match: { playlist: source, channel: source.channels[1], key: 'b' } },
+  ]);
   const session = useLibraryStore.getState().playerSession as LivePlayerSession;
   expect(session.multiview?.web?.url).toBe('https://tv.example/embed/from-base');
   expect(nativeOpens()).toEqual([]);
@@ -151,4 +151,68 @@ it('keeps a web channel playing in the mini player', async () => {
   expect(screen.getByTitle('ABC live')).toBe(before);
   expect(before.className).toContain('fixed');
   expect(invoke).not.toHaveBeenCalledWith('player_layout', expect.anything());
+});
+
+it('shows the web player above the mini player frame', async () => {
+  const source = await webSource();
+  await playLive({ playlist: source, channel: source.channels[0], key: 'a' });
+  useLibraryStore.setState({ playerMini: true });
+  const session = useLibraryStore.getState().playerSession as LivePlayerSession;
+  const { container } = render(<LivePlayer session={session} />);
+  // The mini player's frame is z-120; the layer holding the web player must be above it.
+  expect((container.firstElementChild as HTMLElement).className).toContain('z-[121]');
+});
+
+it('shows four channels with at most two native ones', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const source = await webSource();
+  const m3u2 = { ...m3u, id: 'm3u2', channels: [{ ...m3u.channels[0], id: 'fox', name: 'FOX', transport: { ...m3u.channels[0].transport, url: 'https://cdn.example/fox.m3u8' } }] };
+  const m3u3 = { ...m3u, id: 'm3u3', channels: [{ ...m3u.channels[0], id: 'cbs', name: 'CBS', transport: { ...m3u.channels[0].transport, url: 'https://cdn.example/cbs.m3u8' } }] };
+  useLiveStore.setState({ playlists: [source, m3u, m3u2, m3u3] });
+  const feed = (playlist: typeof m3u, i = 0) => ({ match: { playlist, channel: playlist.channels[i], key: `${playlist.id}/${i}` } });
+  const { playLiveMultiview } = await import('../src/services/player');
+  await playLiveMultiview([feed(m3u), feed(m3u2), feed(m3u3), feed(source as never)]);
+  expect(useLibraryStore.getState().playerSession).toBeNull();
+  await playLiveMultiview([feed(source as never), feed(m3u), feed(source as never, 1), feed(m3u2)]);
+  const session = useLibraryStore.getState().playerSession as LivePlayerSession;
+  expect([session.title, session.multiview?.title, ...(session.more ?? []).map((p) => p.title)]).toEqual(['ABC', 'ESPN', 'From base', 'FOX']);
+  expect(nativeOpens()).toEqual(['https://cdn.example/espn.m3u8']);
+  render(<LivePlayer session={session} />);
+  expect(screen.getByTitle('ABC live')).toBeTruthy();
+  expect(screen.getByTitle('From base live')).toBeTruthy();
+  expect(screen.getByLabelText('Listen to FOX')).toBeTruthy();
+});
+
+it('hides multiview controls and the cursor when the mouse rests', async () => {
+  vi.useFakeTimers();
+  try {
+    const source = await webSource();
+    await playLive({ playlist: source, channel: source.channels[0], key: 'a' }, undefined, undefined, [
+      { match: { playlist: source, channel: source.channels[1], key: 'b' } },
+    ]);
+    const session = useLibraryStore.getState().playerSession as LivePlayerSession;
+    render(<LivePlayer session={session} />);
+    const view = screen.getByLabelText('Live TV multiview');
+    expect(view.className).not.toContain('cursor-none');
+    act(() => vi.advanceTimersByTime(3500));
+    expect(view.className).toContain('cursor-none');
+    expect(screen.getByRole('banner').className).toContain('opacity-0');
+    act(() => { view.dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); });
+    expect(view.className).not.toContain('cursor-none');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('matches shortened broadcaster names to channel names', async () => {
+  const { broadcasterKey, channelBroadcaster } = await import('../src/services/live');
+  const named = (name: string) => ({ ...m3u.channels[0], name });
+  expect(broadcasterKey('USA Net')).toBe('usanetwork');
+  expect(channelBroadcaster(named('USA Network'))).toBe('usanetwork');
+  expect(channelBroadcaster(named('USA Network FHD'))).toBe('usanetwork');
+  expect(channelBroadcaster(named('USA Network East'))).toBe('usanetwork');
+  expect(broadcasterKey('CBS Sports Net')).toBe('cbssportsnetwork');
+  expect(broadcasterKey('NHL Net')).toBe('nhlnetwork');
+  expect(broadcasterKey('ESPN 2')).toBe('espn2');
+  expect(broadcasterKey('CBS Sports HQ')).not.toBe('cbs');
 });

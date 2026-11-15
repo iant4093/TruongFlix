@@ -9,6 +9,7 @@ import { useLiveStore } from '../../services/live';
 import {
   closeBuiltin,
   dismissPrompt,
+  livePanes,
   openLiveMultiviewPane,
   playerSet,
   retryLiveMultiview,
@@ -20,11 +21,12 @@ import {
 import { button } from './ui';
 import { isPlayerShortcut } from '../player/shortcuts';
 import LiveWebFrame, { type WebFrameStatus } from './LiveWebFrame';
+import useIdle from '../../hooks/useIdle';
 
-type Side = 'left' | 'right';
-
-function box(node: HTMLDivElement) {
+function box(node: HTMLDivElement | null) {
+  if (!node) return;
   const rect = node.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
   return {
     x: rect.left, y: rect.top, w: rect.width, h: rect.height,
     viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
@@ -32,9 +34,9 @@ function box(node: HTMLDivElement) {
 }
 
 /**
- * Two channels side by side. Each pane is either native video (M3U channels) or a web player
- * (web channel lists). Two native channels share the native multiview; a single native channel
- * is the main player placed in its pane; web panes are frames.
+ * Two to four channels in a grid. Each pane is native video (M3U channels) or a web player (web
+ * channel lists). Two native channels share the native multiview; a single native channel is the
+ * main player placed in its pane; web panes are frames. One channel is heard at a time.
  */
 export default function LiveMultiview({ session }: { session: LivePlayerSession & { multiview: NonNullable<LivePlayerSession['multiview']> } }) {
   const primary = useLibraryStore((s) => s.playerState);
@@ -43,32 +45,33 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
   const primaryError = useLiveStore((s) => s.playbackError);
   const secondary = useLiveStore((s) => s.multiviewState);
   const webPaused = useLiveStore((s) => s.webPaused);
-  const left = useRef<HTMLDivElement>(null);
-  const right = useRef<HTMLDivElement>(null);
-  const web = { left: session.web, right: session.multiview.web };
-  const bothNative = !web.left && !web.right;
-  // The pane the main native player shows, if any.
-  const nativePane: Side | null = !web.left ? 'left' : !web.right ? 'right' : null;
+  const panes = livePanes(session);
+  const refs = useRef<(HTMLDivElement | null)[]>([]);
+  const natives = panes.flatMap((pane, index) => (pane.web ? [] : [index]));
+  // The main native player shows `mainPane`; the native multiview view shows `secondPane`.
+  const mainPane = natives[0] ?? -1;
+  const secondPane = natives[1] ?? -1;
+  const twoNative = secondPane >= 0;
+  const { active, wake } = useIdle();
   const [paneId, setPaneId] = useState(() => crypto.randomUUID());
-  const [opening, setOpening] = useState(bothNative);
+  const [opening, setOpening] = useState(twoNative);
   const [secondError, setSecondError] = useState('');
   const [firstTimedOut, setFirstTimedOut] = useState(false);
   const [secondTimedOut, setSecondTimedOut] = useState(false);
-  const [audio, setAudio] = useState<Side>('left');
-  const [changingAudio, setChangingAudio] = useState(false);
+  const [audio, setAudio] = useState(0);
   const [switching, setSwitching] = useState(false);
-  const [webStatus, setWebStatus] = useState<Record<Side, WebFrameStatus>>({ left: 'loading', right: 'loading' });
-  const [webReload, setWebReload] = useState<Record<Side, number>>({ left: 0, right: 0 });
+  const [webStatus, setWebStatus] = useState<Record<number, WebFrameStatus>>({});
+  const [webReload, setWebReload] = useState<Record<number, number>>({});
   const activeSecondary = secondary?.loadId === session.loadId && secondary?.paneId === paneId ? secondary : null;
   const readLayout = (): MultiviewLayout | undefined => {
-    if (!left.current || !right.current) return;
-    const layout = { left: box(left.current), right: box(right.current) };
-    if (layout.left.w > 0 && layout.left.h > 0 && layout.right.w > 0 && layout.right.h > 0) return layout;
+    const left = box(refs.current[mainPane]);
+    const right = box(refs.current[secondPane]);
+    if (left && right) return { left, right };
   };
 
   // Two native channels: open the second native view beside the main one.
   useEffect(() => {
-    if (!bothNative) return;
+    if (!twoNative) return;
     let disposed = false;
     let frame = 0;
     const applyLayout = () => {
@@ -81,21 +84,19 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
     setOpening(true);
     setSecondError('');
     setSecondTimedOut(false);
-    setAudio('left');
-
-    // Read the layout after React commits both panes. The playback service waits for the primary
+    // Read the layout after React commits the panes. The playback service waits for the main
     // player, so both native views belong to this session even when Back is clicked during startup.
     const start = window.requestAnimationFrame(async () => {
       const layout = readLayout();
       if (!layout) {
-        setSecondError('Could not size the second video pane.');
+        setSecondError('Could not size the video pane.');
         setOpening(false);
         return;
       }
       try {
         await openLiveMultiviewPane(session, paneId, layout);
       } catch (error) {
-        if (!disposed) setSecondError(typeof error === 'string' ? error : 'The second channel could not start.');
+        if (!disposed) setSecondError(typeof error === 'string' ? error : 'This channel could not start.');
       } finally {
         if (!disposed) {
           setOpening(false);
@@ -103,10 +104,8 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
         }
       }
     });
-
     const observer = new ResizeObserver(applyLayout);
-    if (left.current) observer.observe(left.current);
-    if (right.current) observer.observe(right.current);
+    refs.current.forEach((node) => node && observer.observe(node));
     window.addEventListener('resize', applyLayout);
     return () => {
       disposed = true;
@@ -115,62 +114,73 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
       window.cancelAnimationFrame(start);
       window.cancelAnimationFrame(frame);
     };
-  }, [session.loadId, paneId, bothNative]);
+  }, [session.loadId, paneId, twoNative]);
 
   // One native channel: place the main player in its pane once it is running.
   useEffect(() => {
-    if (bothNative || !nativePane || !primary?.loaded) return;
-    const pane = nativePane === 'left' ? left : right;
+    if (twoNative || mainPane < 0 || !primary?.loaded) return;
     let frame = 0;
     const applyLayout = () => {
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
-        if (pane.current) void invoke('player_layout', { rect: box(pane.current) }).catch(() => {});
+        const rect = box(refs.current[mainPane]);
+        if (rect) void invoke('player_layout', { rect }).catch(() => {});
       });
     };
     applyLayout();
     const observer = new ResizeObserver(applyLayout);
-    if (pane.current) observer.observe(pane.current);
+    const node = refs.current[mainPane];
+    if (node) observer.observe(node);
     window.addEventListener('resize', applyLayout);
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', applyLayout);
       window.cancelAnimationFrame(frame);
     };
-  }, [session.loadId, bothNative, nativePane, primary?.loaded]);
+  }, [session.loadId, twoNative, mainPane, primary?.loaded]);
 
-  // Only one channel is heard. A web pane is reloaded muted or unmuted; a lone native pane is muted.
+  // Only one channel is heard. Web panes reload muted or unmuted; native panes are muted or
+  // given the audio track.
   useEffect(() => {
-    if (!bothNative && nativePane && primary?.loaded) void playerSet('mute', audio === nativePane ? 'no' : 'yes');
-  }, [audio, bothNative, nativePane, primary?.loaded, session.loadId]);
+    if (mainPane < 0 || !primary?.loaded) return;
+    const nativeHeard = audio === mainPane || audio === secondPane;
+    if (twoNative && nativeHeard) {
+      if (!activeSecondary?.loaded) return;
+      void invoke('player_multiview_audio', { loadId: session.loadId, secondary: audio === secondPane })
+        .catch(() => toast('Could not switch audio.', 'error'));
+    }
+    void playerSet('mute', nativeHeard ? 'no' : 'yes');
+  }, [audio, mainPane, secondPane, twoNative, primary?.loaded, activeSecondary?.loaded, session.loadId]);
 
   // Watch time and limits when no native player is reporting.
+  const anyWebReady = Object.values(webStatus).includes('ready');
   useEffect(() => {
-    if (nativePane) return;
-    const playing = !webPaused && !prompt && (webStatus.left === 'ready' || webStatus.right === 'ready');
+    if (mainPane >= 0) return;
+    const playing = !webPaused && !prompt && anyWebReady;
     const clock = window.setInterval(() => tickWebLive(playing), 1000);
     return () => window.clearInterval(clock);
-  }, [nativePane, webPaused, prompt, webStatus.left, webStatus.right]);
+  }, [mainPane, webPaused, prompt, anyWebReady]);
 
   useEffect(() => {
     setFirstTimedOut(false);
-    if (!nativePane || (primary?.loaded && !primary.buffering) || prompt) return;
+    if (mainPane < 0 || (primary?.loaded && !primary.buffering) || prompt) return;
     const timer = window.setTimeout(() => setFirstTimedOut(true), 20_000);
     return () => window.clearTimeout(timer);
-  }, [session.loadId, nativePane, primary?.loaded, primary?.buffering, prompt]);
+  }, [session.loadId, mainPane, primary?.loaded, primary?.buffering, prompt]);
 
   useEffect(() => {
     setSecondTimedOut(false);
-    if (!bothNative || (activeSecondary?.loaded && !activeSecondary.buffering) || prompt) return;
+    if (!twoNative || (activeSecondary?.loaded && !activeSecondary.buffering) || prompt) return;
     const timer = window.setTimeout(() => setSecondTimedOut(true), 20_000);
     return () => window.clearTimeout(timer);
-  }, [paneId, bothNative, activeSecondary?.loaded, activeSecondary?.buffering, prompt]);
+  }, [paneId, twoNative, activeSecondary?.loaded, activeSecondary?.buffering, prompt]);
 
-  const paused = nativePane ? !!primary?.paused : webPaused;
+  const hasWeb = natives.length < panes.length;
+  const paused = mainPane >= 0 ? !!primary?.paused : webPaused;
   const togglePause = () => {
     const next = !paused;
-    if (nativePane) void playerSet('pause', next ? 'yes' : 'no');
-    if (!bothNative) useLiveStore.setState({ webPaused: next });
+    if (mainPane >= 0) void playerSet('pause', next ? 'yes' : 'no');
+    if (hasWeb) useLiveStore.setState({ webPaused: next });
   };
   const back = async () => {
     const fullscreen = await getCurrentWindow().isFullscreen().catch(() => false);
@@ -180,6 +190,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       if (!isPlayerShortcut(event)) return;
+      wake();
       if (event.code === 'Escape') {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -192,25 +203,10 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
         togglePause();
       }
       if (event.code === 'KeyF') void toggleFullscreen();
-      if (event.code === 'KeyM' && bothNative) void playerSet('mute', primary?.muted ? 'no' : 'yes');
     };
     window.addEventListener('keydown', handleKey, true);
     return () => window.removeEventListener('keydown', handleKey, true);
-  }, [paused, primary?.muted, prompt, bothNative, nativePane]);
-
-  const chooseAudio = async (target: Side) => {
-    if (changingAudio || target === audio) return;
-    if (!bothNative) return setAudio(target);
-    setChangingAudio(true);
-    try {
-      await invoke('player_multiview_audio', { loadId: session.loadId, secondary: target === 'right' });
-      setAudio(target);
-    } catch {
-      toast('Could not switch audio.', 'error');
-    } finally {
-      setChangingAudio(false);
-    }
-  };
+  }, [paused, prompt, mainPane, hasWeb]);
 
   const switchPlayer = async (action: () => void | Promise<void>) => {
     setSwitching(true);
@@ -219,114 +215,93 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
   };
   const nativeFailure = primaryError || (primary?.eof ? 'This stream ended.' : firstTimedOut ? 'This channel did not start in time.' : '');
   const secondFailure = secondError || (activeSecondary?.failed ? 'This stream could not be played.' : secondTimedOut ? 'This channel did not start in time.' : '');
-  const webFailure = 'The web player didn’t answer.';
-  const paneState = (side: Side) => {
-    if (web[side]) return { error: webStatus[side] === 'failed' ? webFailure : '', buffering: !webPaused && webStatus[side] === 'loading' };
-    if (side === nativePane) return { error: nativeFailure, buffering: !primary?.loaded || primary.buffering };
+  const paneState = (index: number) => {
+    if (panes[index].web)
+      return { error: webStatus[index] === 'failed' ? 'The web player didn’t answer.' : '', buffering: !webPaused && (webStatus[index] ?? 'loading') === 'loading' };
+    if (index === mainPane) return { error: nativeFailure, buffering: !primary?.loaded || primary.buffering };
     return { error: secondFailure, buffering: !activeSecondary?.loaded || activeSecondary.buffering };
   };
-  const retry = (side: Side) => {
-    if (web[side]) setWebReload((r) => ({ ...r, [side]: r[side] + 1 }));
-    else if (bothNative && side === 'right') setPaneId(crypto.randomUUID());
+  const retry = (index: number) => {
+    if (panes[index].web) setWebReload((r) => ({ ...r, [index]: (r[index] ?? 0) + 1 }));
+    else if (index === secondPane) setPaneId(crypto.randomUUID());
     else void switchPlayer(() => retryLiveMultiview(session));
   };
+  const show = active || !!prompt;
+  const fade = `transition-opacity duration-300 ${show ? 'opacity-100' : 'pointer-events-none opacity-0'}`;
+  const grid = panes.length > 2;
 
   return (
-    <section className="fixed inset-0 z-[110] flex min-h-0 flex-col text-white" aria-label="Live TV multiview">
-      <header className="flex items-center gap-4 border-b border-white/10 bg-nf-bg px-[4%] py-4">
-        <button className={button} disabled={!!prompt} onClick={() => void closeBuiltin()} aria-label="Back to Live TV"><ArrowLeft className="h-5 w-5" /></button>
-        <h1 className="flex-1 text-xl font-bold">Live TV multiview</h1>
-        <button className={button} disabled={!!prompt} onClick={() => void toggleFullscreen()} aria-label="Toggle fullscreen" title="Toggle fullscreen (F)"><Maximize className="h-5 w-5" /></button>
-      </header>
-      <div className="grid min-h-0 flex-1 grid-cols-2">
-        {[
-          { key: 'left' as const, name: session.title, subtitle: session.subtitle, ref: left },
-          { key: 'right' as const, name: session.multiview.title, subtitle: session.multiview.subtitle, ref: right },
-        ].map((pane) => {
-          const isRight = pane.key === 'right';
-          const player = web[pane.key];
-          const { error, buffering } = paneState(pane.key);
+    <section
+      className={`fixed inset-0 z-[110] overflow-hidden text-white ${show ? '' : 'cursor-none'}`}
+      aria-label="Live TV multiview"
+      onMouseMove={wake}
+      onClick={wake}
+    >
+      <div className={`absolute inset-0 grid ${grid ? 'grid-cols-2 grid-rows-2' : 'grid-cols-2 grid-rows-1'}`}>
+        {panes.map((pane, index) => {
+          const { error, buffering } = paneState(index);
+          const heard = audio === index;
           return (
-            <div key={pane.key} className="flex min-h-0 min-w-0 flex-col border-r border-white/10 last:border-r-0">
-              <div className={`flex items-center justify-between gap-3 border-b bg-nf-surface px-4 py-3 ${audio === pane.key ? 'border-nf-red' : 'border-white/10'}`}>
-                <div className="min-w-0">
-                  <h2 className="truncate text-sm font-bold" title={pane.name}>{pane.name}</h2>
-                  <p className="flex min-w-0 items-center gap-1.5 truncate text-xs text-nf-secondary" title={pane.subtitle ?? undefined}>
-                    {player && <Globe className="h-3 w-3 shrink-0" aria-hidden />}
-                    <span className="truncate">{[pane.subtitle, player && 'Web player'].filter(Boolean).join(' · ')}</span>
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  <button
-                    className={button}
-                    onClick={() => void chooseAudio(pane.key)}
-                    disabled={opening || changingAudio || (!player && buffering) || !!error || !!prompt}
-                    aria-pressed={audio === pane.key}
-                    aria-label={`Listen to ${pane.name}`}
-                    title={audio === pane.key ? 'Audio selected' : 'Listen to this channel'}
-                  >
-                    {audio === pane.key ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-                  </button>
-                  <button
-                    className={button}
-                    aria-label={`Watch ${pane.name} alone`}
-                    title="Watch this channel alone"
-                    disabled={switching || !!prompt}
-                    onClick={() => void switchPlayer(() => watchLivePane(session, isRight))}
-                  >
-                    <SquarePlay className="h-4 w-4" />
+            <div
+              key={`${pane.playlistId}/${pane.id}`}
+              ref={(node) => { refs.current[index] = node; }}
+              className={`relative min-h-0 min-w-0 border-white/10 ${index % 2 === 0 ? 'border-r' : ''} ${grid && index < 2 ? 'border-b' : ''}`}
+            >
+              {pane.web && !prompt && !webPaused && (
+                <LiveWebFrame
+                  url={pane.web.url}
+                  title={`${pane.title} live`}
+                  muted={!heard}
+                  compact
+                  reload={webReload[index] ?? 0}
+                  onStatus={(status) => setWebStatus((s) => (s[index] === status ? s : { ...s, [index]: status }))}
+                  className="absolute inset-0 h-full w-full"
+                />
+              )}
+              {pane.web && webPaused && !prompt && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black text-sm text-nf-secondary" role="status">Paused</div>
+              )}
+              {error ? (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black/90 p-4 text-center">
+                  <p className="text-sm" role="status">{error}</p>
+                  <button className={button} disabled={opening || switching || !!prompt} onClick={() => retry(index)}>
+                    <RefreshCw className="h-4 w-4" /> {pane.web || index === secondPane ? 'Retry channel' : 'Retry multiview'}
                   </button>
                 </div>
-              </div>
-              <div ref={pane.ref} className="relative min-h-0 flex-1">
-                {player && !prompt && !webPaused && (
-                  <LiveWebFrame
-                    url={player.url}
-                    title={`${pane.name} live`}
-                    muted={audio !== pane.key}
-                    compact
-                    reload={webReload[pane.key]}
-                    onStatus={(status) => setWebStatus((s) => (s[pane.key] === status ? s : { ...s, [pane.key]: status }))}
-                    className="absolute inset-0 h-full w-full"
-                  />
-                )}
-                {player && webPaused && !prompt && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black text-sm text-nf-secondary" role="status">Paused</div>
-                )}
-                {error ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/90 p-4 text-center">
-                    <p className="text-sm" role="status">{error}</p>
-                    <button className={button} disabled={opening || switching || !!prompt} onClick={() => retry(pane.key)}>
-                      <RefreshCw className="h-4 w-4" /> {player || (bothNative && isRight) ? 'Retry channel' : 'Retry multiview'}
-                    </button>
-                  </div>
-                ) : buffering && (
-                  <div className={`pointer-events-none absolute inset-0 flex items-center justify-center ${player ? '' : 'bg-black/80'}`} role="status" aria-label={`Buffering ${pane.name}`}>
-                    <Spinner className="h-8 w-8" />
-                  </div>
-                )}
-              </div>
+              ) : buffering && (
+                <div className={`pointer-events-none absolute inset-0 flex items-center justify-center ${pane.web ? '' : 'bg-black/80'}`} role="status" aria-label={`Buffering ${pane.title}`}>
+                  <Spinner className="h-8 w-8" />
+                </div>
+              )}
+              <PaneBar
+                top={grid ? index < 2 : true}
+                className={fade}
+                name={pane.title}
+                subtitle={[pane.subtitle, pane.web && 'Web player'].filter(Boolean).join(' · ')}
+                web={!!pane.web}
+                heard={heard}
+                disabled={!!prompt}
+                busy={switching}
+                onListen={() => setAudio(index)}
+                onSolo={() => void switchPlayer(() => watchLivePane(session, index))}
+              />
             </div>
           );
         })}
       </div>
-      <footer className="flex items-center gap-3 border-t border-white/10 bg-nf-bg px-[4%] py-3">
-        <button className={button} disabled={!!prompt} title={paused ? 'Resume both (Space)' : 'Pause both (Space)'} onClick={togglePause}>
+      {/* Wakes the controls (and shows the cursor) on the first move over a web player. */}
+      {!show && <div className="absolute inset-0 z-30 cursor-none" onMouseMove={wake} onMouseDown={wake} aria-hidden />}
+      <header className={`absolute inset-x-0 top-0 z-20 flex items-center gap-4 bg-gradient-to-b from-black/90 to-transparent px-[4%] pb-8 pt-4 ${fade}`}>
+        <button className={button} disabled={!!prompt} onClick={() => void closeBuiltin()} aria-label="Back to Live TV"><ArrowLeft className="h-5 w-5" /></button>
+        <h1 className="flex-1 text-xl font-bold">Live TV multiview</h1>
+        <button className={button} disabled={!!prompt} onClick={() => void toggleFullscreen()} aria-label="Toggle fullscreen" title="Toggle fullscreen (F)"><Maximize className="h-5 w-5" /></button>
+      </header>
+      <footer className={`absolute inset-x-0 bottom-0 z-20 flex items-center gap-3 bg-gradient-to-t from-black/90 to-transparent px-[4%] pb-4 pt-8 ${fade}`}>
+        <button className={button} disabled={!!prompt} title={paused ? 'Resume all (Space)' : 'Pause all (Space)'} onClick={togglePause}>
           {paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-          {paused ? 'Resume both' : 'Pause both'}
+          {paused ? 'Resume all' : 'Pause all'}
         </button>
-        {bothNative && (
-          <button
-            className={button}
-            disabled={!!prompt}
-            aria-label={primary?.muted ? 'Unmute multiview' : 'Mute multiview'}
-            title={primary?.muted ? 'Unmute (M)' : 'Mute (M)'}
-            onClick={() => void playerSet('mute', primary?.muted ? 'no' : 'yes')}
-          >
-            {primary?.muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-          </button>
-        )}
-        {nativePane && (
+        {mainPane >= 0 && (
           <input
             type="range"
             aria-label="Multiview volume"
@@ -338,10 +313,10 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
             className="w-20 accent-white"
           />
         )}
-        <span className="min-w-0 truncate text-xs text-nf-secondary">Audio: {audio === 'left' ? session.title : session.multiview.title}</span>
+        <span className="min-w-0 truncate text-xs text-nf-secondary">Audio: {panes[audio]?.title}</span>
       </footer>
       {prompt && (
-        <div key={prompt} role="dialog" aria-modal="true" aria-label="Playback paused" className="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
+        <div key={prompt} role="dialog" aria-modal="true" aria-label="Playback paused" className="absolute inset-0 z-40 flex items-center justify-center bg-black/75">
           <div className="rounded-lg bg-nf-surface p-8 text-center">
             <h2 className="mb-5 text-xl font-bold">
               {prompt === 'limit' ? 'That’s all for today!' : prompt === 'bedtime' ? 'It’s bedtime' : 'Playback paused'}
@@ -356,3 +331,46 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
     </section>
   );
 }
+
+function PaneBar(props: {
+  top: boolean;
+  className: string;
+  name: string;
+  subtitle: string;
+  web: boolean;
+  heard: boolean;
+  disabled: boolean;
+  busy: boolean;
+  onListen: () => void;
+  onSolo: () => void;
+}) {
+  const { top, className, name, subtitle, web, heard, disabled, busy, onListen, onSolo } = props;
+  return (
+    // Panes in the top row sit below the window's title bar.
+    <div className={`absolute inset-x-3 z-20 flex items-center justify-between gap-3 rounded bg-black/70 px-3 py-2 ${top ? 'top-20' : 'top-3'} ${heard ? 'ring-1 ring-nf-red' : ''} ${className}`}>
+      <div className="min-w-0">
+        <h2 className="truncate text-sm font-bold" title={name}>{name}</h2>
+        <p className="flex min-w-0 items-center gap-1.5 truncate text-xs text-nf-secondary" title={subtitle}>
+          {web && <Globe className="h-3 w-3 shrink-0" aria-hidden />}
+          <span className="truncate">{subtitle}</span>
+        </p>
+      </div>
+      <div className="flex shrink-0 gap-2">
+        <button
+          className={button}
+          onClick={onListen}
+          disabled={disabled}
+          aria-pressed={heard}
+          aria-label={`Listen to ${name}`}
+          title={heard ? 'Audio selected' : 'Listen to this channel'}
+        >
+          {heard ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+        </button>
+        <button className={button} aria-label={`Watch ${name} alone`} title="Watch this channel alone" disabled={busy || disabled} onClick={onSolo}>
+          <SquarePlay className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+

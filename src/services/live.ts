@@ -215,6 +215,27 @@ const ALIASES: Record<string, string> = {
   btn: 'bigtennetwork',
   'acc network': 'accnetwork',
   accn: 'accnetwork',
+  'usa network': 'usanetwork',
+  usa: 'usanetwork',
+  'cbs sports network': 'cbssportsnetwork',
+  cbssn: 'cbssportsnetwork',
+  espnews: 'espnews',
+  'espn news': 'espnews',
+  'the cw': 'cw',
+  cw: 'cw',
+  trutv: 'trutv',
+  'tru tv': 'trutv',
+  'golf channel': 'golf',
+  golf: 'golf',
+  'tennis channel': 'tennis',
+  'mlb network': 'mlbnetwork',
+  'nba tv canada': 'nbatv',
+  'big ten': 'bigtennetwork',
+  'pac 12 network': 'pac12network',
+  'longhorn network': 'longhornnetwork',
+  lhn: 'longhornnetwork',
+  'sec network+': 'secnetworkplus',
+  'acc network extra': 'accnx',
 };
 const normalized = (s: string) =>
   s
@@ -226,7 +247,12 @@ const normalized = (s: string) =>
 const compactAliases = new Map(Object.entries(ALIASES).map(([alias, key]) => [alias.replace(/ /g, ''), key]));
 const channelNetworks = new WeakMap<LiveChannel, string>();
 export function broadcasterKey(name: string) {
-  const key = normalized(name).replace(/\s+(hd|sd|us|usa)$/, '');
+  const key = normalized(name)
+    // Schedules shorten names ("USA Net", "CBS Sports Ntwk"); feeds add feed labels.
+    .replace(/\b(net|ntwk|nw)\b/g, 'network')
+    .replace(/\s+(east|west|feed|backup( \d+)?|alt|alternate)$/g, '')
+    .replace(/\s+(hd|sd|fhd|uhd|4k|us|usa)$/g, '')
+    .trim();
   return ALIASES[key] ?? compactAliases.get(key.replace(/ /g, '')) ?? key.replace(/ /g, '');
 }
 function identifyBroadcaster(channel: LiveChannel): string {

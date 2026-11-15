@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import useIdle from '../../hooks/useIdle';
 import { ArrowLeft, ChevronDown, ChevronUp, Globe, Maximize, PictureInPicture2, Play, RefreshCw } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { LivePlayerSession } from '../../types/live';
@@ -22,24 +23,15 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
   const prompt = useLibraryStore((s) => s.playerPrompt);
   const mini = useLibraryStore((s) => s.playerMini);
   const paused = useLiveStore((s) => s.webPaused);
-  const [visible, setVisible] = useState(true);
   const [status, setStatus] = useState<WebFrameStatus>('loading');
   const [attempt, setAttempt] = useState(0);
   const [rect, setRect] = useState(miniRect);
-  const hide = useRef<number>();
+  const { active: visible, wake: reveal } = useIdle();
   const blocked = !!prompt;
   const showFrame = !blocked && !paused;
   const failed = status === 'failed';
-  const reveal = () => {
-    setVisible(true);
-    window.clearTimeout(hide.current);
-    hide.current = window.setTimeout(() => setVisible(false), 3000);
-  };
   const reload = () => setAttempt((n) => n + 1);
-  useEffect(() => {
-    reveal();
-    return () => window.clearTimeout(hide.current);
-  }, [session.loadId]);
+  useEffect(reveal, [session.loadId]);
   useEffect(() => {
     if (!mini) return;
     setRect(miniRect());
@@ -81,7 +73,11 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
   }, [blocked, mini]);
   const show = visible || blocked || paused || failed || status === 'loading';
   return (
-    <div className={`fixed inset-0 z-[110] text-white ${mini ? 'pointer-events-none' : 'bg-black'}`}>
+    // In the mini player this layer sits above the mini player's frame (z-120) so the video shows.
+    <div
+      className={`fixed inset-0 text-white ${mini ? 'pointer-events-none z-[121]' : `z-[110] bg-black ${show ? '' : 'cursor-none'}`}`}
+      onMouseMove={mini ? undefined : reveal}
+    >
       {showFrame && (
         <LiveWebFrame
           key={session.loadId}
@@ -90,7 +86,7 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
           reload={attempt}
           onStatus={setStatus}
           // In the mini player the frame sits over the mini player's video area.
-          className={mini ? 'pointer-events-auto fixed z-[121] rounded-t-md' : 'absolute inset-0 h-full w-full'}
+          className={mini ? 'pointer-events-auto fixed rounded-t-md' : 'absolute inset-0 h-full w-full'}
           style={mini ? { left: rect.x, top: rect.y, width: rect.w, height: rect.h } : undefined}
         />
       )}
@@ -101,6 +97,8 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
               <Spinner className="h-12 w-12" />
             </div>
           )}
+          {/* Wakes the controls (and shows the cursor) on the first move over the web player. */}
+          {!show && <div className="absolute inset-0 z-[5] cursor-none" onMouseMove={reveal} onMouseDown={reveal} aria-hidden />}
           {/* The bar stays reachable: hovering its strip brings it back over the web player. */}
           <div
             hidden={blocked}
