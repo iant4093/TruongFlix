@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, motion, useDragControls, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, LayoutGroup, motion, useDragControls, useReducedMotion } from 'framer-motion';
 import { AudioLines, ChevronDown, Heart, ListMusic, MessageSquareQuote, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { cycleRepeat, next, previous, seek, setFull, setPanel, toggle, toggleFavourite, toggleMute, toggleShuffle, useMusicPlayer } from '../player';
 import { musicToast } from '../nav';
@@ -216,10 +216,18 @@ function Sheet() {
     </div>
   );
 
+  // Opening lyrics or Up Next moves the artwork into place (and the panel slides in), like Apple Music.
+  const layoutSpring = reduce ? { duration: 0 } : { type: 'spring' as const, stiffness: 300, damping: 34 };
+  const panelIn = reduce
+    ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0.12 } }
+    : { initial: { opacity: 0, y: 28 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: 28 }, transition: { duration: 0.32, ease: [0.22, 0.9, 0.28, 1] as const } };
+
   const artwork = (size: string) => (
     <motion.div
+      layoutId="tfm-art"
+      layout
       animate={{ scale: playing || reduce ? 1 : 0.86 }}
-      transition={reduce ? { duration: 0 } : { type: 'spring', stiffness: 160, damping: 20 }}
+      transition={reduce ? { duration: 0 } : { scale: { type: 'spring', stiffness: 160, damping: 20 }, layout: layoutSpring }}
       className={`${size} shrink-0`}
       onPointerDown={(e) => !wide && drag.start(e)}
     >
@@ -264,23 +272,36 @@ function Sheet() {
 
         {error && <div className="mx-auto mb-2 rounded-full bg-black/40 px-4 py-1.5 text-sm text-white/85">{error}</div>}
 
+        <LayoutGroup>
         {wide ? (
           <div className={`mx-auto grid min-h-0 w-full max-w-[1500px] flex-1 items-center gap-[5vw] px-[5vw] ${showPanel ? 'grid-cols-[minmax(320px,0.9fr)_1.1fr]' : 'grid-cols-1 justify-items-center'}`}>
             {/* The artwork gets what's left after the controls, so nothing drops off the bottom of a short window. */}
-            <div className="flex w-full max-w-[min(520px,max(340px,calc(100vh-27rem)))] flex-col gap-[min(1.25rem,2.2vh)]">
+            <motion.div layout="position" transition={layoutSpring} className="flex w-full max-w-[min(520px,max(340px,calc(100vh-27rem)))] flex-col gap-[min(1.25rem,2.2vh)]">
               {artwork('aspect-square w-full max-w-[min(520px,max(160px,calc(100vh-27rem)))] self-center')}
               {info}
               {scrubber}
               {controls(false)}
               {volumeRow}
               {panelButtons}
-            </div>
-            {showPanel && <div className="h-full min-h-0 py-6">{side}</div>}
+            </motion.div>
+            <AnimatePresence mode="popLayout" initial={false}>
+              {showPanel && (
+                <motion.div key="panel" className="h-full min-h-0 py-6" {...panelIn} initial={reduce ? { opacity: 0 } : { opacity: 0, x: 60 }} animate={reduce ? { opacity: 1 } : { opacity: 1, x: 0 }} exit={reduce ? { opacity: 0 } : { opacity: 0, x: 60 }}>
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div key={panel} className="h-full" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18 }}>
+                      {side}
+                    </motion.div>
+                  </AnimatePresence>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         ) : panel ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex items-center gap-3 px-6 pb-2" onPointerDown={(e) => drag.start(e)}>
-              <Cover art={track.art} className="h-14 w-14 shrink-0 shadow-lg" rounded="rounded-md" />
+              <motion.div layoutId="tfm-art" layout transition={{ layout: layoutSpring }} className="h-14 w-14 shrink-0">
+                <Cover art={track.art} className="h-full w-full shadow-lg" rounded="rounded-md" />
+              </motion.div>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-bold">{track.title}</div>
                 <div className="truncate text-white/60">{track.artist}</div>
@@ -289,7 +310,11 @@ function Sheet() {
                 <Heart className={`h-4 w-4 ${track.favourite ? 'fill-[#fa2d48] text-[#fa2d48]' : ''}`} />
               </RoundButton>
             </div>
-            <div className="min-h-0 flex-1">{side}</div>
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div key={panel} className="min-h-0 flex-1" {...panelIn}>
+                {side}
+              </motion.div>
+            </AnimatePresence>
             <div className="space-y-2 px-7 pt-2">
               {scrubber}
               {controls(false)}
@@ -298,7 +323,8 @@ function Sheet() {
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col justify-between gap-4 px-7 pb-1">
-            <div className="flex min-h-0 flex-1 items-center justify-center py-2">{artwork('aspect-square w-full max-w-[min(86vw,46vh)]')}</div>
+            {/* Sized to the space it has (width and height), so it never runs into the title below. */}
+            <div className="flex min-h-0 flex-1 items-center justify-center py-2 [container-type:size]">{artwork('aspect-square w-[min(100cqw,100cqh)]')}</div>
             <div className="space-y-4">
               {info}
               {scrubber}
@@ -308,6 +334,7 @@ function Sheet() {
             </div>
           </div>
         )}
+        </LayoutGroup>
         {loading && <div className="pointer-events-none absolute left-1/2 top-[max(1.25rem,env(safe-area-inset-top))] h-1 w-16 -translate-x-1/2 animate-pulse rounded-full bg-white/50" aria-label="Loading" />}
       </div>
     </motion.div>
