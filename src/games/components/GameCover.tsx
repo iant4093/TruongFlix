@@ -32,6 +32,28 @@ export function useCachedImageStatus(url: string | null | undefined, fallbackUrl
   return { src: current?.src ?? null, settled: !!current };
 }
 
+/**
+ * Several images, cached in order; each appears as soon as it's on disk (for cycling hover stills).
+ * `limit` caps how many are fetched.
+ */
+export function useCachedImages(urls: string[], limit = 6): string[] {
+  const key = urls.slice(0, limit).join('\n');
+  const [state, setState] = useState<{ key: string; list: (string | null)[] }>({ key: '', list: [] });
+  useEffect(() => {
+    const wanted = key ? key.split('\n') : [];
+    setState({ key, list: wanted.map(() => null) });
+    let active = true;
+    wanted.forEach((url, i) => {
+      void cachedImage(url).then((src) => {
+        if (!active || !src) return;
+        setState((prev) => (prev.key !== key ? prev : { key, list: prev.list.map((v, j) => (j === i ? src : v)) }));
+      });
+    });
+    return () => { active = false; };
+  }, [key]);
+  return state.key === key ? state.list.filter((v): v is string => !!v) : [];
+}
+
 export function useCachedImage(url: string | null | undefined, fallbackUrl?: string | null) {
   return useCachedImageStatus(url, fallbackUrl).src;
 }

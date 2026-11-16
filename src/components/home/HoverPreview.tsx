@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence } from 'framer-motion';
 import { Check, Clock, Download, HardDriveDownload, Play, Plus, Wrench } from 'lucide-react';
 import { useLibraryStore, type HoverState } from '../../store/useLibraryStore';
 import { formatRuntime, genreBuckets, playTargetFor } from '../../store/selectors';
@@ -24,13 +24,13 @@ import ProgressBar from '../common/ProgressBar';
 import TechBadges from '../common/TechBadges';
 import ImdbRating from '../common/ImdbRating';
 import { CardTitleOverlay } from './MediaCard';
+import StillCycler from '../common/StillCycler';
 import { GenreDots, HoverButton, HoverCardFrame, MoreInfoButton } from '../common/HoverCard';
 
 const STILL_POINTS = [0.14, 0.28, 0.42, 0.56, 0.7];
 const STILL_DELAY_MS = 700;
-const STILL_INTERVAL_MS = 1700;
 
-/** Frames from the actual file (the episode you'd play next, for shows), cycled like a preview. */
+/** Frames from the actual file (the episode you'd play next, for shows), in the order they arrive. */
 function useStills(item: MediaItem, available: boolean) {
   const enabled = useLibraryStore((s) => s.settings.hover_stills);
   // A string so the selector result is stable between renders.
@@ -43,12 +43,10 @@ function useStills(item: MediaItem, available: boolean) {
     return JSON.stringify([row.file_path, row.file_mtime, duration]);
   });
   const [frames, setFrames] = useState<string[]>([]);
-  const [index, setIndex] = useState(0);
   const [path, mtime, duration] = source ? (JSON.parse(source) as [string, number, number]) : [null, 0, 0];
 
   useEffect(() => {
     setFrames([]);
-    setIndex(0);
     if (!enabled || !available || !path) return;
     let alive = true;
     const t = window.setTimeout(() => {
@@ -65,13 +63,7 @@ function useStills(item: MediaItem, available: boolean) {
     };
   }, [enabled, available, path, mtime, duration]);
 
-  useEffect(() => {
-    if (frames.length < 1) return;
-    const t = window.setInterval(() => setIndex((i) => i + 1), STILL_INTERVAL_MS);
-    return () => window.clearInterval(t);
-  }, [frames.length]);
-
-  return frames.length ? frames[index % frames.length] : null;
+  return frames;
 }
 /**
  * The expanded Netflix hover card for library titles. Rendered once at the app root (fixed
@@ -99,7 +91,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
   });
   const isDownloading = Boolean(torrent && !torrent.finished);
   const expiry = torrent?.mode === 'stream' ? formatExpiryRemaining(torrent.expiresAt, false) : null;
-  const still = useStills(item, !isDownloading);
+  const stills = useStills(item, !isDownloading);
   const genres = genreBuckets(item.genres).slice(0, 3);
   const meta =
     item.kind === 'movie'
@@ -123,20 +115,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
           className={`h-full w-full ${isDownloading ? 'opacity-50 grayscale' : ''}`}
           eager
         />
-        <AnimatePresence>
-          {still && !isDownloading && (
-            <motion.img
-              key={still}
-              src={still}
-              alt=""
-              initial={{ opacity: 0, scale: 1 }}
-              animate={{ opacity: 1, scale: 1.06 }}
-              exit={{ opacity: 0 }}
-              transition={{ opacity: { duration: 0.6 }, scale: { duration: STILL_INTERVAL_MS / 1000 + 0.6, ease: 'linear' } }}
-              className="absolute inset-0 h-full w-full object-cover"
-            />
-          )}
-        </AnimatePresence>
+        {!isDownloading && <StillCycler stills={stills} />}
         <CardTitleOverlay item={item} />
         {expiry && (
           <span

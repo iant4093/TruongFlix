@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Download, Gamepad2, Loader2, Pause, Play, RotateCcw } from 'lucide-react';
 import { Slider, useItemsPerRow } from '../../components/home/MediaRow';
 import { pauseTorrent, resumeTorrent } from '../../services/torrents';
@@ -13,7 +13,9 @@ import ProgressBar from '../../components/common/ProgressBar';
 import { FadeImage } from '../../components/common/Artwork';
 import { RowSkeleton } from '../../components/common/Skeleton';
 import { GenreDots, HoverButton, HoverCardFrame, HoverCardLayer, HoverTitleOverlay, MoreInfoButton, useHoverCard, type HoverRect } from '../../components/common/HoverCard';
-import GameCover, { useCachedImage } from './GameCover';
+import GameCover, { useCachedImage, useCachedImages } from './GameCover';
+import StillCycler from '../../components/common/StillCycler';
+import { useLibraryStore } from '../../store/useLibraryStore';
 import { formatPlayTime, gameProgress, gameStatusLabel, isInstalled } from './status';
 
 const isDetail = (game: GameCard): game is GameDetail => 'magnet' in game && Array.isArray((game as GameDetail).screenshots);
@@ -112,8 +114,10 @@ export function GamePoster({ game, openers, caption = false }: { game: GameCard;
 function GameHoverCard({ game, rect, onClose, openers }: { game: GameCard; rect: HoverRect; onClose: () => void; openers: Openers }) {
   const { owned, job, running, torrent } = useOwnedGame(game.slug);
   const detail = useGameDetail(game);
-  const shot = detail?.screenshots[0];
-  const screenshot = useCachedImage(shot?.thumb ?? null, shot?.full);
+  // Hover stills: the game's screenshots, cycled like the library's (when hover stills are on).
+  const stillsOn = useLibraryStore((s) => s.settings.hover_stills);
+  const shots = useMemo(() => (detail?.screenshots ?? []).map((s) => s.thumb || s.full).filter(Boolean), [detail]);
+  const screenshots = useCachedImages(stillsOn ? shots : shots.slice(0, 1));
   const cover = useCachedImage(game.cover);
   const installed = !!owned && isInstalled(owned) && !job;
   const progress = owned ? gameProgress(owned, job, torrent) : null;
@@ -163,7 +167,7 @@ function GameHoverCard({ game, rect, onClose, openers }: { game: GameCard; rect:
       media={<>
         {cover && <div className="absolute inset-0 opacity-60"><FadeImage src={cover} alt="" eager className="h-full w-full scale-110 blur-xl" /></div>}
         {cover && <FadeImage src={cover} alt="" eager fit="contain" className={`absolute inset-y-0 left-1/2 h-full w-auto -translate-x-1/2 ${busy ? 'opacity-50 grayscale' : ''}`} />}
-        {screenshot && <FadeImage src={screenshot} alt={game.title} eager className={`absolute inset-0 h-full w-full ${busy ? 'grayscale' : ''}`} />}
+        <StillCycler stills={screenshots} className={busy ? 'grayscale' : ''} />
         <HoverTitleOverlay title={game.title} />
         {progress != null && (
           <ProgressBar value={progress / 100} min={0.03} size="regular" tone={job ? 'red' : 'download'} track="overlay" animated className="pointer-events-none absolute inset-x-0 bottom-0" />

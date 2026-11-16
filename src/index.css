@@ -80,6 +80,35 @@ html.nf-modal-open { overflow-y: hidden; }
   .nf-menu-enter, .nf-dialog-enter { animation: none; }
 }
 
+/* Hover-card stills: each frame fades in over the last (no dip to black) while slowly drifting closer. */
+@keyframes nf-still-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes nf-still-drift-a {
+  from { transform: scale(1.02) translate3d(-1%, 0.6%, 0); }
+  to { transform: scale(1.1) translate3d(1%, -0.6%, 0); }
+}
+@keyframes nf-still-drift-b {
+  from { transform: scale(1.1) translate3d(1%, 0.6%, 0); }
+  to { transform: scale(1.02) translate3d(-1%, -0.6%, 0); }
+}
+.nf-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  will-change: transform, opacity;
+  animation: nf-still-in 0.8s cubic-bezier(0.4, 0, 0.2, 1) both, nf-still-drift-a var(--nf-still-life, 3.4s) linear both;
+}
+.nf-still.nf-still-b {
+  animation-name: nf-still-in, nf-still-drift-b;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nf-still, .nf-still.nf-still-b { animation: nf-still-in 0.3s linear both; }
+}
+
 /* TV mode: a larger 10-foot layout (rows also show one card fewer), with the cursor hidden when idle. */
 html.tv-mode {
   font-size: 112.5%;
