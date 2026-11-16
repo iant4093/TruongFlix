@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronLeft, Heart, ListMusic, Music2, Pencil, Play, Plus, Search, Shuffle, Trash2, X } from 'lucide-react';
 import { createPlaylist, deletePlaylist, loadMusicLibrary, moveInList, renamePlaylist, setPlaylistTracks, useMusicLoad } from '../actions';
 import { byName, formatTotal, listenNow, playlistArt, searchMusic } from '../library';
-import { currentRoute, goBack, MUSIC_TABS, musicToast, openRoute, openTab, setMusicQuery, useMusicNav, type MusicRoute } from '../nav';
+import { currentRoute, goBack, MUSIC_TABS, musicToast, openRoute, openTab, setMusicQuery, takeScroll, useMusicNav, type MusicRoute } from '../nav';
 import { playTracks, useMusicPlayer } from '../player';
 import type { MusicAlbum, MusicArtist, MusicLibrary as Library, MusicPlaylist, MusicTrack } from '../types';
 import { askName } from './Overlays';
@@ -35,8 +35,15 @@ export default function MusicLibrary({ variant, emptyAction, headerExtra }: Prop
   useEffect(() => {
     if (api) void loadMusicLibrary();
   }, [api]);
-  useEffect(() => {
-    window.scrollTo(0, 0);
+  // A new page starts at the top and Back returns to where you were. Not on mount: coming back to
+  // Music restores the section's own position.
+  const mounted = useRef(false);
+  useLayoutEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
+    window.scrollTo({ top: takeScroll(), behavior: 'instant' });
   }, [route]);
 
   const tab = 'id' in route ? null : route.page;
