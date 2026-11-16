@@ -6,27 +6,26 @@
   overflow: hidden;
   background: #1c1c1e;
 }
-.tfm-bg img {
+/* Square layers big enough that their corners never show while they turn and drift. */
+.tfm-bg canvas {
   position: absolute;
-  width: 140%;
-  height: 140%;
-  left: -20%;
-  top: -20%;
-  object-fit: cover;
-  filter: blur(70px) saturate(1.7) brightness(0.75);
+  width: 250vmax;
+  height: 250vmax;
+  left: calc(50% - 125vmax);
+  top: calc(50% - 125vmax);
   transform-origin: 50% 50%;
   will-change: transform;
 }
-.tfm-bg img:nth-child(1) { animation: tfm-drift-a 48s linear infinite; }
-.tfm-bg img:nth-child(2) { mix-blend-mode: screen; opacity: 0.55; animation: tfm-drift-b 62s linear infinite; }
-.tfm-bg img:nth-child(3) { mix-blend-mode: overlay; opacity: 0.6; animation: tfm-drift-c 37s linear infinite; }
+.tfm-bg canvas:nth-child(1) { animation: tfm-drift-a 48s linear infinite; }
+.tfm-bg canvas:nth-child(2) { mix-blend-mode: screen; opacity: 0.55; animation: tfm-drift-b 62s linear infinite; }
+.tfm-bg canvas:nth-child(3) { mix-blend-mode: overlay; opacity: 0.6; animation: tfm-drift-c 37s linear infinite; }
 .tfm-bg::after {
   content: '';
   position: absolute;
   inset: 0;
   background: radial-gradient(120% 90% at 30% 20%, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.45));
 }
-.tfm-paused .tfm-bg img { animation-play-state: paused; }
+.tfm-paused .tfm-bg canvas { animation-play-state: paused; }
 
 @keyframes tfm-drift-a {
   from { transform: rotate(0deg) scale(1.2); }
@@ -88,7 +87,7 @@
 .tfm-range::-moz-range-thumb { width: 0; height: 0; border: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .tfm-bg img, .tfm-eq > span, .tfm-dots.tfm-dots-active { animation: none !important; }
+  .tfm-bg canvas, .tfm-eq > span, .tfm-dots.tfm-dots-active { animation: none !important; }
   .tfm-word { transition: none; }
   .tfm-word.tfm-lift { transform: none; }
 }

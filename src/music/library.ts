@@ -120,3 +120,46 @@ export function formatTotal(s: number) {
   const m = mins % 60;
   return `${h} hour${h === 1 ? '' : 's'}${m ? `, ${m} minute${m === 1 ? '' : 's'}` : ''}`;
 }
+
+const LOSSLESS = new Set(['flac', 'alac', 'wav', 'aiff', 'wavpack', 'ape']);
+const CODEC_NAMES: Record<string, string> = {
+  mp3: 'MP3',
+  aac: 'AAC',
+  alac: 'ALAC',
+  flac: 'FLAC',
+  vorbis: 'Ogg Vorbis',
+  opus: 'Opus',
+  wav: 'WAV',
+  aiff: 'AIFF',
+  wavpack: 'WavPack',
+  ape: "Monkey's Audio",
+  musepack: 'Musepack',
+  speex: 'Speex',
+};
+
+export interface MusicQuality {
+  /** "Hi-Res Lossless" | "Lossless" | "High Quality" | "" (unknown). */
+  label: string;
+  /** "24-bit/96 kHz ALAC" or "AAC 256 kbps". */
+  detail: string;
+  lossless: boolean;
+  hiRes: boolean;
+}
+
+const khz = (hz: number) => `${Number((hz / 1000).toFixed(1))} kHz`;
+
+/** Apple Music-style quality badge for a song, from its codec, bit depth and sample rate. */
+export function musicQuality(t: Pick<MusicTrack, 'codec' | 'sampleRate' | 'bitDepth' | 'bitrate'>): MusicQuality {
+  const codec = (t.codec || '').toLowerCase();
+  const name = CODEC_NAMES[codec] ?? (codec && codec !== 'unknown' ? codec.toUpperCase() : '');
+  if (LOSSLESS.has(codec)) {
+    const depth = t.bitDepth && t.bitDepth > 0 ? t.bitDepth : null;
+    const rate = t.sampleRate && t.sampleRate > 0 ? t.sampleRate : null;
+    const hiRes = (depth ?? 16) > 16 || (rate ?? 44100) > 48000;
+    const spec = [depth ? `${depth}-bit` : null, rate ? khz(rate) : null].filter(Boolean).join('/');
+    return { label: hiRes ? 'Hi-Res Lossless' : 'Lossless', detail: [spec, name].filter(Boolean).join(' '), lossless: true, hiRes };
+  }
+  if (!name) return { label: '', detail: '', lossless: false, hiRes: false };
+  const kbps = t.bitrate && t.bitrate > 0 ? `${Math.round(t.bitrate)} kbps` : '';
+  return { label: (t.bitrate ?? 0) >= 256 ? 'High Quality' : '', detail: [name, kbps].filter(Boolean).join(' '), lossless: false, hiRes: false };
+}

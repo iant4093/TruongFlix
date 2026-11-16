@@ -8,6 +8,7 @@ import { BrowseView, MyListView, SearchView } from './components/home/Browse';
 import HoverPreview from './components/home/HoverPreview';
 import Toasts from './components/common/Toasts';
 import TvNavigation from './components/common/TvNavigation';
+import ContextMenu, { initContextMenu } from './components/common/ContextMenu';
 import ConfirmDialog from './components/common/ConfirmDialog';
 import MiniPlayer from './components/player/MiniPlayer';
 import ProfileGate from './components/profiles/ProfileGate';
@@ -151,6 +152,7 @@ export default function App() {
 
   // Built-in player: make the page transparent over the native video surface (not in the mini-player).
   const playerActive = useLibraryStore((s) => !!s.playerSession && !s.playerMini);
+  const videoOpen = useLibraryStore((s) => !!s.playerSession);
   useEffect(() => {
     document.documentElement.classList.toggle('player-mode', playerActive);
   }, [playerActive]);
@@ -173,7 +175,7 @@ export default function App() {
   }, [ready]);
 
   // Restart folder watching when the folders or the setting change.
-  const dirsKey = useLibraryStore((s) => `${s.settings.watch_folders}|${s.settings.tmdb_api_key ? 1 : 0}|${s.settings.media_directories.join('|')}`);
+  const dirsKey = useLibraryStore((s) => `${s.settings.watch_folders}|${s.settings.tmdb_api_key ? 1 : 0}|${s.settings.media_directories.join('|')}|${(s.settings.music_directories ?? []).join('|')}`);
   useEffect(() => {
     if (ready) void refreshShares().then(() => startFolderWatch());
   }, [ready, dirsKey]);
@@ -227,6 +229,7 @@ export default function App() {
       })
       .catch(() => {});
 
+    const stopMenu = initContextMenu();
     window.addEventListener('keydown', onKey);
     window.addEventListener('dragover', onDragOver);
     window.addEventListener('drop', onDrop);
@@ -234,6 +237,7 @@ export default function App() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('dragover', onDragOver);
       window.removeEventListener('drop', onDrop);
+      stopMenu();
       unlistenDrop?.();
     };
   }, []);
@@ -264,7 +268,8 @@ export default function App() {
         {/* Stays mounted (just hidden) during playback so scroll position and open pages survive. */}
         <div id="app-shell">
           <Navbar />
-          <main>
+          {/* Pages scroll clear of the music bar while it shows. */}
+          <main style={{ paddingBottom: 'var(--tf-music-bar, 0px)' }}>
             {/* One short fade between sections; each section restores where you left it. */}
             <AnimatePresence mode="wait" initial={false}>
               <SectionFrame key={section} section={section}>
@@ -305,7 +310,8 @@ export default function App() {
           </Suspense>
         </div>
         <MiniPlayer />
-        {!playerActive && <MusicMiniBar />}
+        {/* A video (full screen or in the mini player) has the bottom of the window to itself. */}
+        {!videoOpen && <MusicMiniBar />}
         <Suspense fallback={null}><MusicFullPlayer /></Suspense>
         <MusicOverlays />
         <CastBar />
@@ -316,6 +322,7 @@ export default function App() {
         <Toasts />
         <ConfirmDialog />
         <TvNavigation />
+        <ContextMenu />
         {launchIntro && !introDone && !onboardingOpen && <LaunchIntro sound={introSound} onDone={() => setIntroDone(true)} />}
       </div>
     </MotionConfig>

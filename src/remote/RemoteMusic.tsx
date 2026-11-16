@@ -31,7 +31,8 @@ export function useRemoteMusic(who: { id: number; key?: string }) {
 export function RemoteMusicPlayer({ lifted }: { lifted: boolean }) {
   return (
     <>
-      <MiniBar compact className={lifted ? '!bottom-[4.75rem]' : ''} />
+      {/* Under the browser app's sheets and full-screen pages (z-50), over its now-playing bar. */}
+      <MiniBar compact className={`!z-[45] ${lifted ? '!bottom-[4.75rem]' : ''}`} />
       <FullPlayer />
       <MusicOverlays />
     </>

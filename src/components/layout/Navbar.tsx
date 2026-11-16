@@ -10,6 +10,8 @@ import { stopPlayback } from '../../services/player';
 import { isActiveDownload } from '../../services/torrents';
 import { formatClock, formatSpeed } from '../../lib/format';
 import { focusAndReveal } from '../../lib/scroll';
+import { setBarHidden, useMusicPlayer } from '../../music/player';
+import { EqBars } from '../../music/components/ui';
 
 const LINKS: { view: View; label: string }[] = [
   { view: 'home', label: 'Home' },
@@ -185,6 +187,8 @@ export default function Navbar() {
           </div>
         )}
 
+        <MusicNowPlaying />
+
         <button
           onClick={() => runScan()}
           disabled={scanning}
@@ -211,6 +215,25 @@ export default function Navbar() {
         <ProfileMenu />
       </div>
     </header>
+  );
+}
+
+/** After the music bar is closed: shows what's still playing, and brings the bar back. */
+function MusicNowPlaying() {
+  const track = useMusicPlayer((s) => (s.barHidden ? s.track : null));
+  const playing = useMusicPlayer((s) => s.playing);
+  if (!track) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setBarHidden(false)}
+      title={`${track.title} — ${track.artist}. Show the music player`}
+      aria-label={`Music: ${track.title} by ${track.artist}. Show the music player`}
+      className="flex max-w-[14rem] items-center gap-2 rounded-full border border-white/15 bg-black/50 px-3 py-1 text-xs text-nf-light transition-colors hover:border-white/30 hover:text-white"
+    >
+      <EqBars playing={playing} className="shrink-0 text-[#fa2d48]" />
+      <span className="hidden truncate xl:inline">{track.title}</span>
+    </button>
   );
 }
 

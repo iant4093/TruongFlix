@@ -97,6 +97,27 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
   const idxRef = useRef(idx);
   idxRef.current = idx;
 
+  // One set of ref callbacks per row for the life of the song, so rows stay memoised between renders.
+  const rowRefs = useMemo(
+    () =>
+      entries.map((_, i) => ({
+        line: (el: HTMLDivElement | null) => {
+          lineRefs.current[i] = el;
+        },
+        word: (k: number, el: HTMLSpanElement | null) => {
+          const list = wordRefs.current.get(i) ?? [];
+          list[k] = el;
+          wordRefs.current.set(i, list);
+        },
+        dot: (k: number, el: HTMLSpanElement | null) => {
+          const list = dotRefs.current.get(i) ?? [];
+          list[k] = el;
+          dotRefs.current.set(i, list);
+        },
+      })),
+    [entries],
+  );
+
   // Per frame: which line is current, and how far through each word / break we are.
   useEffect(() => {
     let raf = 0;
@@ -202,12 +223,14 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
     if (idleTimer.current) window.clearTimeout(idleTimer.current);
   }, []);
 
-  const seekTo = (t: number) => {
+  const onSeekRef = useRef(onSeek);
+  onSeekRef.current = onSeek;
+  const seekTo = useCallback((t: number) => {
     manualRef.current = 0;
     setManual(0);
     setManualActive(false);
-    onSeek(t);
-  };
+    onSeekRef.current(t);
+  }, []);
 
   const y = -(target + manual);
   return (
@@ -224,17 +247,9 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
             manual={manualActive || manual !== 0}
             compact={compact}
             onSeek={seekTo}
-            lineRef={(el) => (lineRefs.current[i] = el)}
-            wordRef={(k, el) => {
-              const list = wordRefs.current.get(i) ?? [];
-              list[k] = el;
-              wordRefs.current.set(i, list);
-            }}
-            dotRef={(k, el) => {
-              const list = dotRefs.current.get(i) ?? [];
-              list[k] = el;
-              dotRefs.current.set(i, list);
-            }}
+            lineRef={rowRefs[i].line}
+            wordRef={rowRefs[i].word}
+            dotRef={rowRefs[i].dot}
           />
         ))}
         <motion.div animate={{ y }} transition={reduce ? { duration: 0 } : { type: 'spring', stiffness: 90, damping: 20, mass: 1 }}>
@@ -259,13 +274,18 @@ interface RowProps {
   dotRef: (k: number, el: HTMLSpanElement | null) => void;
 }
 
+/** Rows this far from the current line are out of view: they move without a spring and aren't blurred. */
+const NEAR_ABOVE = 8;
+const NEAR_BELOW = 16;
+
 const LyricRow = memo(function LyricRow({ entry, distance, y, reduce, manual, compact, onSeek, lineRef, wordRef, dotRef }: RowProps) {
   const active = distance === 0;
   const past = distance < 0;
+  const near = distance >= -NEAR_ABOVE && distance <= NEAR_BELOW;
   // Lines below the current one follow a beat later, which gives the scroll its ripple.
   const delay = reduce || manual ? 0 : Math.max(0, Math.min(distance, 8)) * 0.045;
-  const transition = reduce ? { duration: 0.15 } : { type: 'spring' as const, stiffness: 90, damping: 20, mass: 1, delay };
-  const blur = reduce || manual || active ? 0 : Math.min(Math.abs(distance), 4) * 0.6;
+  const transition = reduce ? { duration: 0.15 } : near || manual ? { type: 'spring' as const, stiffness: 90, damping: 20, mass: 1, delay } : { duration: 0 };
+  const blur = reduce || manual || active || Math.abs(distance) > NEAR_ABOVE ? 0 : Math.min(Math.abs(distance), 4) * 0.6;
   const opacity = manual ? (active ? 1 : 0.55) : active ? 1 : past ? 0.28 : Math.abs(distance) === 1 ? 0.42 : 0.32;
 
   if (entry.kind === 'gap') {

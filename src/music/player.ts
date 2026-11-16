@@ -24,6 +24,8 @@ export interface MusicPlayerState {
   volume: number;
   muted: boolean;
   full: boolean;
+  /** The bottom bar was closed: playback carries on, and the bar comes back with the next song you pick. */
+  barHidden: boolean;
   panel: Panel;
   error: string | null;
 }
@@ -51,6 +53,7 @@ export const useMusicPlayer = create<MusicPlayerState>(() => ({
   volume: savedVolume(),
   muted: false,
   full: false,
+  barHidden: false,
   panel: null,
   error: null,
 }));
@@ -419,7 +422,7 @@ export function patchTrack(id: number, patch: Partial<MusicTrack>) {
 export function playTracks(ids: number[], start = 0, opts: { shuffle?: boolean } = {}) {
   unlock();
   const q = Q.playList(get().queue, ids, start, opts.shuffle ?? get().queue.shuffle);
-  set({ queue: q });
+  set({ queue: q, barHidden: false });
   void load(Q.current(q), true);
 }
 
@@ -482,7 +485,7 @@ export function jumpTo(index: number) {
   unlock();
   const q = Q.jump(get().queue, index);
   if (q === get().queue && index !== get().queue.index) return;
-  set({ queue: q });
+  set({ queue: q, barHidden: false });
   void load(Q.current(q), true);
 }
 
@@ -521,7 +524,7 @@ export function cycleRepeat() {
 export function playNext(ids: number[]) {
   const empty = get().queue.index < 0;
   if (empty) unlock();
-  set({ queue: Q.playNext(get().queue, ids) });
+  set({ queue: Q.playNext(get().queue, ids), ...(empty ? { barHidden: false } : {}) });
   dropSpare();
   if (empty) void load(Q.current(get().queue), true);
 }
@@ -529,7 +532,7 @@ export function playNext(ids: number[]) {
 export function addToQueue(ids: number[]) {
   const empty = get().queue.index < 0;
   if (empty) unlock();
-  set({ queue: Q.addToQueue(get().queue, ids) });
+  set({ queue: Q.addToQueue(get().queue, ids), ...(empty ? { barHidden: false } : {}) });
   dropSpare();
   if (empty) void load(Q.current(get().queue), true);
 }
@@ -557,12 +560,17 @@ export function stopMusic() {
     s.url = null;
   }
   loadSeq++;
-  set({ queue: Q.EMPTY_QUEUE, track: null, playing: false, loading: false, time: 0, duration: 0, full: false });
+  set({ queue: Q.EMPTY_QUEUE, track: null, playing: false, loading: false, time: 0, duration: 0, full: false, barHidden: false });
   updateMediaSession();
 }
 
 export function setFull(full: boolean) {
-  set({ full });
+  set(full ? { full, barHidden: false } : { full });
+}
+
+/** Closes (or brings back) the bottom bar without touching playback or the queue. */
+export function setBarHidden(barHidden: boolean) {
+  if (get().barHidden !== barHidden) set({ barHidden });
 }
 
 export function setPanel(panel: Panel) {

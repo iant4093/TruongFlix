@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useDragControls, useReducedMotion } from 'framer-motion';
-import { ChevronDown, Heart, ListMusic, MessageSquareQuote, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX } from 'lucide-react';
+import { AudioLines, ChevronDown, Heart, ListMusic, MessageSquareQuote, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { cycleRepeat, next, previous, seek, setFull, setPanel, toggle, toggleFavourite, toggleMute, toggleShuffle, useMusicPlayer } from '../player';
 import { musicToast } from '../nav';
+import { musicQuality } from '../library';
+import type { MusicTrack } from '../types';
 import Lyrics from './Lyrics';
 import QueuePanel from './QueuePanel';
 import TrackMenu from './TrackMenu';
@@ -22,19 +24,82 @@ function useWide() {
   return wide;
 }
 
+/**
+ * The artwork shrunk to a few dozen pixels, blurred once and stretched to fill the screen. A tiny
+ * canvas scaled up is as soft as a huge CSS blur but costs almost nothing per frame, so the drifting
+ * colours stay smooth (a full-screen `filter: blur()` on three moving layers made the player lag).
+ */
+function useSoftArt(url: string | null) {
+  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  useEffect(() => {
+    setImage(null);
+    if (!url) return;
+    let live = true;
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => live && setImage(img);
+    img.src = url;
+    return () => {
+      live = false;
+    };
+  }, [url]);
+  return image;
+}
+
+const SOFT_SIZE = 48;
+
+function SoftLayer({ image }: { image: HTMLImageElement }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const ctx = ref.current?.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, SOFT_SIZE, SOFT_SIZE);
+    // A little blur on the small canvas hides the stretch; colours are lifted like Apple Music.
+    ctx.filter = 'blur(2px) saturate(1.7) brightness(0.75)';
+    ctx.drawImage(image, -4, -4, SOFT_SIZE + 8, SOFT_SIZE + 8);
+  }, [image]);
+  return <canvas ref={ref} width={SOFT_SIZE} height={SOFT_SIZE} />;
+}
+
 /** Blurred, slowly drifting copies of the artwork: the colours of the album fill the screen. */
 function Backdrop({ url }: { url: string | null }) {
+  const image = useSoftArt(url);
   return (
     <div className="tfm-bg" aria-hidden>
-      {url ? (
+      {image ? (
         <>
-          <img src={url} alt="" />
-          <img src={url} alt="" />
-          <img src={url} alt="" />
+          <SoftLayer image={image} />
+          <SoftLayer image={image} />
+          <SoftLayer image={image} />
         </>
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-[#5b2333] via-[#2a2440] to-[#13243b]" />
       )}
+    </div>
+  );
+}
+
+/** The scrubber, on its own so the rest of the player doesn't re-render as the song plays. */
+function TimeScrubber() {
+  const time = useMusicPlayer((s) => s.time);
+  const duration = useMusicPlayer((s) => s.duration || s.track?.duration || 0);
+  return <Scrubber time={time} duration={duration} onSeek={seek} />;
+}
+
+/** "Lossless" / "Hi-Res Lossless" / "AAC 256 kbps", like Apple Music's badge under the scrubber. */
+function QualityBadge({ track }: { track: MusicTrack }) {
+  const q = musicQuality(track);
+  if (!q.label && !q.detail) return null;
+  return (
+    <div className="flex justify-center">
+      <span
+        title={q.detail || q.label}
+        className="inline-flex items-center gap-1.5 rounded-md bg-white/10 px-2 py-[3px] text-[11px] font-semibold tracking-wide text-white/75"
+      >
+        {q.lossless && <AudioLines className="h-3.5 w-3.5" aria-hidden />}
+        {q.label || q.detail}
+        {q.label && q.detail && <span className="font-medium text-white/50">{q.detail}</span>}
+      </span>
     </div>
   );
 }
@@ -49,7 +114,6 @@ function Sheet() {
   const track = useMusicPlayer((s) => s.track)!;
   const playing = useMusicPlayer((s) => s.playing);
   const loading = useMusicPlayer((s) => s.loading);
-  const time = useMusicPlayer((s) => s.time);
   const duration = useMusicPlayer((s) => s.duration || s.track?.duration || 0);
   const panel = useMusicPlayer((s) => s.panel);
   const queue = useMusicPlayer((s) => s.queue);
@@ -124,7 +188,12 @@ function Sheet() {
     </div>
   );
 
-  const scrubber = <Scrubber time={time} duration={duration} onSeek={seek} />;
+  const scrubber = (
+    <div className="space-y-1.5">
+      <TimeScrubber />
+      <QualityBadge track={track} />
+    </div>
+  );
 
   const volumeRow = (
     <div className="flex items-center gap-3 text-white/60">
@@ -197,8 +266,9 @@ function Sheet() {
 
         {wide ? (
           <div className={`mx-auto grid min-h-0 w-full max-w-[1500px] flex-1 items-center gap-[5vw] px-[5vw] ${showPanel ? 'grid-cols-[minmax(320px,0.9fr)_1.1fr]' : 'grid-cols-1 justify-items-center'}`}>
-            <div className="flex w-full max-w-[min(520px,62vh)] flex-col gap-5">
-              {artwork('aspect-square w-full')}
+            {/* The artwork gets what's left after the controls, so nothing drops off the bottom of a short window. */}
+            <div className="flex w-full max-w-[min(520px,max(340px,calc(100vh-27rem)))] flex-col gap-[min(1.25rem,2.2vh)]">
+              {artwork('aspect-square w-full max-w-[min(520px,max(160px,calc(100vh-27rem)))] self-center')}
               {info}
               {scrubber}
               {controls(false)}

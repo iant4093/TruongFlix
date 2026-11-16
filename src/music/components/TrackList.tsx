@@ -3,7 +3,7 @@ import { formatTime } from '../library';
 import { playTracks, toggle, toggleFavourite, useMusicPlayer } from '../player';
 import type { MusicTrack } from '../types';
 import { musicToast } from '../nav';
-import TrackMenu, { type MenuContext } from './TrackMenu';
+import TrackMenu, { openTrackMenuAt, type MenuContext } from './TrackMenu';
 import { Cover, EqBars } from './ui';
 
 interface Props {
@@ -31,7 +31,8 @@ export default function TrackList({ tracks, lead = 'art', showAlbum = true, show
         const discBreak = multiDisc && (i === 0 || (tracks[i - 1].discNo ?? 1) !== (t.discNo ?? 1));
         const context: MenuContext | undefined = playlistId != null ? { playlistId, position: i } : undefined;
         return (
-          <div key={`${t.id}-${i}`} role="listitem">
+          // Long lists: rows off screen skip layout and paint until scrolled near (keeps big libraries smooth).
+          <div key={`${t.id}-${i}`} role="listitem" className="[contain-intrinsic-size:auto_3.5rem] [content-visibility:auto]">
             {discBreak && <div className="pb-2 pt-5 text-xs font-semibold uppercase tracking-widest text-white/45">Disc {t.discNo ?? 1}</div>}
             <div
               draggable={!!onMove}
@@ -45,6 +46,7 @@ export default function TrackList({ tracks, lead = 'art', showAlbum = true, show
                 if (onMove && Number.isFinite(from)) onMove(from, i);
               }}
               onClick={() => (isCurrent ? toggle() : playTracks(ids, i))}
+              onContextMenu={(e) => openTrackMenuAt(e, [t], context)}
               className={`group flex cursor-default items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.06] ${isCurrent ? 'text-[#fa2d48]' : ''}`}
             >
               {lead === 'number' ? (

@@ -19,6 +19,12 @@ export interface MusicTrack {
   duration: number;
   /** "mp3" | "flac" | "aac" | "alac" | "vorbis" | "opus" | "wav" | … */
   codec: string;
+  /** Hz, when known. */
+  sampleRate?: number | null;
+  /** Bits per sample (lossless files), when known. */
+  bitDepth?: number | null;
+  /** kbit/s, when known. */
+  bitrate?: number | null;
   /** Cached cover name (see `MusicApi.artUrl`). */
   art: string | null;
   favourite: boolean;
