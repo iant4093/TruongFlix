@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useMusicNav } from '../nav';
+import { TrackPointMenu } from './TrackMenu';
 
 interface Prompt {
   title: string;
@@ -73,6 +74,7 @@ export default function MusicOverlays() {
   return createPortal(
     <>
       {prompt && <NamePrompt prompt={prompt} />}
+      <TrackPointMenu />
       <AnimatePresence>
         {toast && (
           <motion.div

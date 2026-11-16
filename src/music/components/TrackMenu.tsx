@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { create } from 'zustand';
 import { ChevronLeft, Disc3, Heart, ListEnd, ListMusic, ListPlus, ListStart, MicVocal, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 import { addToPlaylist, createPlaylist, setPlaylistTracks } from '../actions';
 import { musicToast, openRoute } from '../nav';
@@ -12,6 +13,23 @@ export interface MenuContext {
   /** Shown inside this playlist: offers "Remove from Playlist" for this position. */
   playlistId?: number;
   position?: number;
+}
+
+/** The same menu opened by right-clicking a song (at the pointer). */
+const usePointMenu = create<{ at: { x: number; y: number; tracks: MusicTrack[]; context?: MenuContext } | null }>(() => ({ at: null }));
+
+export function openTrackMenuAt(event: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation: () => void }, tracks: MusicTrack[], context?: MenuContext) {
+  event.preventDefault();
+  event.stopPropagation();
+  usePointMenu.setState({ at: { x: event.clientX, y: event.clientY, tracks, context } });
+}
+
+/** Rendered once by each app (see `MusicOverlays`). */
+export function TrackPointMenu() {
+  const at = usePointMenu((s) => s.at);
+  const close = useCallback(() => usePointMenu.setState({ at: null }), []);
+  if (!at) return null;
+  return <Menu key={`${at.x}:${at.y}`} anchor={null} point={at} tracks={at.tracks} context={at.context} close={close} />;
 }
 
 const ITEM = 'flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] hover:bg-white/10 focus-visible:bg-white/10 focus-visible:outline-none sm:py-2 sm:text-sm';
@@ -42,7 +60,7 @@ export default function TrackMenu({ tracks, context, className = '', label = 'Mo
   );
 }
 
-function Menu({ anchor, tracks, context, close }: { anchor: HTMLElement | null; tracks: MusicTrack[]; context?: MenuContext; close: () => void }) {
+function Menu({ anchor, point, tracks, context, close }: { anchor: HTMLElement | null; point?: { x: number; y: number }; tracks: MusicTrack[]; context?: MenuContext; close: () => void }) {
   const playlists = useMusicPlayer((s) => s.library?.playlists ?? []);
   const byId = useMusicPlayer((s) => s.byId);
   const [page, setPage] = useState<'main' | 'playlists'>('main');
@@ -54,13 +72,18 @@ function Menu({ anchor, tracks, context, close }: { anchor: HTMLElement | null; 
   const single = tracks.length === 1 ? byId.get(tracks[0].id) ?? tracks[0] : null;
 
   useLayoutEffect(() => {
-    if (sheet || !anchor || !ref.current) return;
-    const r = anchor.getBoundingClientRect();
+    if (sheet || (!anchor && !point) || !ref.current) return;
     const h = ref.current.offsetHeight;
     const w = ref.current.offsetWidth;
+    if (point) {
+      const top = point.y + h > window.innerHeight - 8 ? Math.max(8, point.y - h) : point.y;
+      const left = point.x + w > window.innerWidth - 8 ? Math.max(8, point.x - w) : point.x;
+      return setPos({ top, left });
+    }
+    const r = anchor!.getBoundingClientRect();
     const top = r.bottom + 6 + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : r.bottom + 6;
     setPos({ top, left: Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) });
-  }, [anchor, sheet, page, ref]);
+  }, [anchor, point, sheet, page, ref]);
 
   const run = (fn: () => void | Promise<unknown>) => () => {
     close();
@@ -176,6 +199,7 @@ function Menu({ anchor, tracks, context, close }: { anchor: HTMLElement | null; 
         ref={ref}
         role="menu"
         onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.preventDefault()}
         className="fixed z-[250] w-60 overflow-hidden rounded-xl border border-white/10 bg-[#2c2c2e]/95 py-1.5 shadow-2xl backdrop-blur-xl"
         style={pos ? { top: pos.top, left: pos.left } : { visibility: 'hidden', top: 0, left: 0 }}
       >

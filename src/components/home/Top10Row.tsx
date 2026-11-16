@@ -50,6 +50,7 @@ const Top10Card = memo(function Top10Card({ item, rank }: { item: MediaItem; ran
       onMouseEnter={hover.onMouseEnter}
       onMouseMove={hover.onMouseMove}
       onMouseLeave={hover.onMouseLeave}
+      data-item-key={item.key}
       className="relative flex aspect-[1.42] w-full cursor-pointer items-stretch"
     >
       <button type="button" aria-label={`#${rank} View ${item.title}`} onClick={() => openDetail(item.key)}
