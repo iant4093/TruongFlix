@@ -197,7 +197,10 @@ export function HoverCardFrame({ rect, onClose, media, onMediaClick, actions, ch
     const anchor = portrait && rect.pointerY != null
       ? Math.max(rect.top + imgH / 2, Math.min(rect.pointerY, rect.top + rect.height - imgH / 2))
       : rect.top + rect.height / 2;
-    const top = Math.max(NAV_HEIGHT + 4, Math.min(anchor - imgH / 2, window.innerHeight - cardHeight - 8));
+    // Kept above the music bar when it shows, so the card's details never slide under it.
+    const bar = document.querySelector('[data-music-bar] > div')?.getBoundingClientRect().top;
+    const bottom = bar && bar > 0 ? Math.min(window.innerHeight, bar) : window.innerHeight;
+    const top = Math.max(NAV_HEIGHT + 4, Math.min(anchor - imgH / 2, bottom - cardHeight - 8));
     return { width, left, top, origin: `${originX} ${anchor - top}px` };
   }, [rect, cardHeight]);
 

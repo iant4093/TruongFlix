@@ -95,7 +95,7 @@ export function CastBar() {
   const busy = cast.state === 'connecting' || cast.state === 'buffering';
 
   return (
-    <div className={`pointer-events-none fixed inset-x-0 bottom-4 z-[115] flex justify-center ${mini ? 'hidden' : ''}`}>
+    <div className={`pointer-events-none fixed inset-x-0 bottom-[calc(1rem+var(--tf-music-bar,0px))] z-[115] flex justify-center ${mini ? 'hidden' : ''}`}>
     <motion.div
       initial={{ y: 80, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}

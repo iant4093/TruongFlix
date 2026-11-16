@@ -38,7 +38,9 @@ export default function Toasts() {
   const scanVisible = showScan && (!scan.quiet || scan.phase === 'matching' || (finished && !failed && (scan.added > 0 || scan.removed > 0)));
   const mini = useLibraryStore((s) => s.playerMini);
   const casting = useLibraryStore((s) => !!s.cast);
-  const bottom = mini ? window.innerHeight - miniRect().y + 16 : casting ? 150 : 24;
+  const lift = casting ? 150 : 24;
+  // Above the music bar (when it shows) as well as the cast bar.
+  const bottom = mini ? window.innerHeight - miniRect().y + 16 : `calc(${lift}px + var(--tf-music-bar, 0px))`;
   const title = scan.running
     ? scan.phase === 'ratings'
       ? 'Updating IMDb ratings'
