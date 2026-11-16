@@ -37,7 +37,8 @@ const SESSION_MAX: Duration = Duration::from_secs(60 * 24 * 3600);
 const MAX_SESSIONS: usize = 32;
 const PROBE_TTL: Duration = Duration::from_secs(120);
 const PROBE_CACHE_MAX: usize = 256;
-const LOOKAHEAD_SEGS: u32 = 6;
+/// A request this many segments past the encoder still waits for it (about 20 s) instead of restarting it.
+const LOOKAHEAD_SEGS: u32 = 10;
 /// Longest a music conversion (audio only, much faster than real time) may take.
 const AUDIO_ENCODE_WAIT: Duration = Duration::from_secs(90);
 
@@ -172,7 +173,9 @@ struct HlsPlan {
 impl HlsPlan {
     fn from_probe(duration: f64, fps: f64) -> Self {
         let fps = if (1.0..240.0).contains(&fps) { fps } else { 24.0 };
-        let gop = ((4.0 * fps).round() as u32).clamp(24, 480);
+        // 2-second segments: playback starts (and resumes after a seek) as soon as 2 s are converted.
+        // Safari plays HLS itself and waits for whole segments, so shorter ones start much sooner there.
+        let gop = ((2.0 * fps).round() as u32).clamp(12, 240);
         let seg_len = gop as f64 / fps;
         let dur = duration.max(seg_len);
         let raw = (dur / seg_len).ceil() as u32;
@@ -2550,13 +2553,13 @@ mod tests {
         assert_eq!(random_token().len(), 32);
 
         let plan = HlsPlan::from_probe(1441.5, 24000.0 / 1001.0);
-        assert_eq!(plan.gop, 96);
-        assert!((plan.seg_len - 4.004).abs() < 1e-6);
-        assert_eq!(plan.seg_count, 360);
+        assert_eq!(plan.gop, 48);
+        assert!((plan.seg_len - 2.002).abs() < 1e-6);
+        assert_eq!(plan.seg_count, 720);
         let m3u8 = plan.playlist();
         assert!(m3u8.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
         assert!(m3u8.contains("#EXT-X-ENDLIST"));
-        assert!(m3u8.contains("seg0.ts") && m3u8.contains("seg359.ts") && !m3u8.contains("seg360.ts"));
+        assert!(m3u8.contains("seg0.ts") && m3u8.contains("seg719.ts") && !m3u8.contains("seg720.ts"));
         let sum: f64 = m3u8
             .lines()
             .filter_map(|l| l.strip_prefix("#EXTINF:")?.strip_suffix(',')?.parse::<f64>().ok())

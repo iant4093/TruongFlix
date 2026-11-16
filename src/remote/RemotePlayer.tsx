@@ -141,6 +141,9 @@ export default function RemotePlayer({
         startPosition: startAt > 0.5 ? startAt : 0,
         maxBufferLength: 60,
         maxMaxBufferLength: 120,
+        // Ask for the next segment while the first is still arriving, and keep phones' memory in check.
+        startFragPrefetch: true,
+        backBufferLength: 30,
         fragLoadPolicy: {
           default: {
             maxTimeToFirstByteMs: 45_000,
