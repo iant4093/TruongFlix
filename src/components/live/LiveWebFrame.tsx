@@ -1,5 +1,33 @@
 import { useEffect, useState, type CSSProperties } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { webPlayerUrl } from '../../services/live';
+
+let fullscreenByFrame = false;
+let watchingFullscreen = 0;
+
+/**
+ * A web player going full screen (its own button, or a double-click on the video) only fills the
+ * app's web view; this makes the TruongFlix window full screen with it, and back again on exit.
+ */
+function onFrameFullscreen() {
+  const el = document.fullscreenElement;
+  if (el instanceof HTMLIFrameElement) {
+    fullscreenByFrame = true;
+    void getCurrentWindow().setFullscreen(true).catch(() => {});
+  } else if (!el && fullscreenByFrame) {
+    fullscreenByFrame = false;
+    void getCurrentWindow().setFullscreen(false).catch(() => {});
+  }
+}
+
+function useFrameFullscreen() {
+  useEffect(() => {
+    if (watchingFullscreen++ === 0) document.addEventListener('fullscreenchange', onFrameFullscreen);
+    return () => {
+      if (--watchingFullscreen === 0) document.removeEventListener('fullscreenchange', onFrameFullscreen);
+    };
+  }, []);
+}
 
 export type WebFrameStatus = 'loading' | 'ready' | 'failed';
 
@@ -30,6 +58,7 @@ export default function LiveWebFrame({
   const load = `${src}:${reload}`;
   const [loadedFor, setLoadedFor] = useState('');
   const loaded = loadedFor === load;
+  useFrameFullscreen();
   useEffect(() => {
     if (loaded) {
       onStatus?.('ready');
@@ -45,7 +74,8 @@ export default function LiveWebFrame({
       title={title}
       src={src}
       sandbox="allow-scripts allow-same-origin allow-presentation"
-      allow="autoplay; encrypted-media; picture-in-picture"
+      allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+      allowFullScreen
       className={`border-0 bg-black ${className}`}
       style={style}
       onLoad={() => setLoadedFor(load)}

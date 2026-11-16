@@ -180,6 +180,10 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
       className={`fixed inset-0 z-[110] text-white ${show ? '' : 'cursor-none has-[:focus-visible]:cursor-auto'}`}
       onMouseMove={reveal}
       onClick={reveal}
+      // Double-click the picture for full screen, like the movie player.
+      onDoubleClick={(event) => {
+        if (!blocked && !(event.target as Element).closest('button, input, select, [role="slider"], [role="dialog"], [role="menu"]')) void toggleFullscreen();
+      }}
     >
       <div
         hidden={blocked}

@@ -45,6 +45,21 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
     const clock = window.setInterval(() => tickWebLive(showFrame && status === 'ready'), 1000);
     return () => window.clearInterval(clock);
   }, [showFrame, status]);
+  // Clicking the web player moves keyboard focus into its frame, where F, Esc and the channel keys
+  // can't be heard; hand focus back to TruongFlix right after (the click itself still lands).
+  useEffect(() => {
+    if (mini) return;
+    const reclaim = () =>
+      window.setTimeout(() => {
+        const active = document.activeElement;
+        if (active instanceof HTMLIFrameElement && !document.fullscreenElement) {
+          active.blur();
+          window.focus();
+        }
+      }, 0);
+    window.addEventListener('blur', reclaim);
+    return () => window.removeEventListener('blur', reclaim);
+  }, [mini]);
   useEffect(() => {
     if (mini) return;
     const key = (event: KeyboardEvent) => {
@@ -108,7 +123,15 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
             </div>
           )}
           {/* Wakes the controls (and shows the cursor) on the first move over the web player. */}
-          {!show && <div className="absolute inset-0 z-[5] cursor-none" onMouseMove={reveal} onMouseDown={reveal} aria-hidden />}
+          {!show && (
+            <div
+              className="absolute inset-0 z-[5] cursor-none"
+              onMouseMove={reveal}
+              onMouseDown={reveal}
+              onDoubleClick={() => void toggleFullscreen()}
+              aria-hidden
+            />
+          )}
           {/* The bar stays reachable: hovering its strip brings it back over the web player. */}
           <div
             hidden={blocked}
