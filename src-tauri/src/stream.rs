@@ -331,6 +331,8 @@ struct Shared {
 
 static SHARED: OnceLock<Shared> = OnceLock::new();
 static ENCODER: Mutex<Option<&'static str>> = Mutex::new(None);
+/// The chosen encoder accepted `speed_opts` in its test encode.
+static ENCODER_FAST: AtomicBool = AtomicBool::new(false);
 static GPU_FILTER_BROKEN: AtomicBool = AtomicBool::new(false);
 /// Set when libmpv's FFmpeg lacks the zscale/tonemap filters, so HDR falls back to an untone-mapped copy.
 static FILTER_TONEMAP_BROKEN: AtomicBool = AtomicBool::new(false);
@@ -347,15 +349,19 @@ enum Convert {
 
 /// The video filter for a conversion. HDR (PQ/HLG) has to be tone-mapped to SDR BT.709, or a
 /// browser shows it grey and washed out.
+///
+/// Speed: the picture is shrunk first, so a 4K HDR file sent at 1080p is tone-mapped at a quarter
+/// of the pixels (the 32-bit float steps are the slow part), and plain resizes use bilinear
+/// scaling, which is several times quicker than the default and looks the same at streaming sizes.
 fn video_filter(mode: Convert, w: u32, h: u32) -> String {
     let size = |sep: &str| if w > 0 { format!("{sep}w={w}:h={h}") } else { String::new() };
     match mode {
         Convert::Gpu => format!("gpu{},format=yuv420p", if w > 0 { format!("=w={w}:h={h}") } else { String::new() }),
         Convert::Filters => format!(
-            "lavfi=[zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv{},format=yuv420p]",
-            size(":")
+            "lavfi=[zscale={}t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p]",
+            if w > 0 { format!("{}:f=bilinear:", size("")) } else { String::new() }
         ),
-        Convert::Plain if w > 0 => format!("scale={w}:{h},format=yuv420p"),
+        Convert::Plain if w > 0 => format!("scale={w}:{h}:flags=bilinear,format=yuv420p"),
         Convert::Plain => "format=yuv420p".into(),
     }
 }
@@ -1277,14 +1283,27 @@ fn ovcopts_for(encoder: &str, gop: u32, bitrate: u32, maxrate: u32) -> String {
     }
 }
 
-fn test_encoder(name: &str) -> bool {
+/// Speed settings for hardware encoders (their defaults favour quality over real-time speed).
+/// Only used once a test encode shows this computer's driver accepts them.
+fn speed_opts(encoder: &str) -> &'static str {
+    match encoder {
+        "h264_nvenc" => ",preset=p2",
+        "h264_qsv" => ",preset=veryfast",
+        "h264_amf" => ",quality=speed",
+        "h264_videotoolbox" => ",realtime=1",
+        _ => "",
+    }
+}
+
+fn test_encoder(name: &str, extra: &str) -> bool {
     let tmp = std::env::temp_dir().join(format!("tf-enc-{}-{}.ts", name, random_token()));
     let out = tmp.to_string_lossy().into_owned();
+    let ovcopts = format!("b=2M,g=24{extra}");
     let opts = [
         ("o", out.as_str()),
         ("of", "mpegts"),
         ("ovc", name),
-        ("ovcopts", "b=2M,g=24"),
+        ("ovcopts", ovcopts.as_str()),
         ("vf", "format=yuv420p"),
         ("aid", "no"),
         ("sid", "no"),
@@ -1327,7 +1346,9 @@ fn pick_encoder() -> Result<&'static str, String> {
         return Ok(enc);
     }
     for &cand in candidate_encoders() {
-        if test_encoder(cand) {
+        if test_encoder(cand, "") {
+            let fast = !speed_opts(cand).is_empty() && test_encoder(cand, speed_opts(cand));
+            ENCODER_FAST.store(fast, Ordering::Relaxed);
             let mut guard = ENCODER.lock().unwrap();
             *guard = Some(cand);
             return Ok(cand);
@@ -1697,7 +1718,10 @@ fn run_encode(
             Output::Ts => 48,
             Output::Mp4(_) => 96,
         };
-        let ovcopts = ovcopts_for(enc, gop, opts.bitrate, opts.maxrate);
+        let mut ovcopts = ovcopts_for(enc, gop, opts.bitrate, opts.maxrate);
+        if ENCODER_FAST.load(Ordering::Relaxed) {
+            ovcopts.push_str(speed_opts(enc));
+        }
         let out = match output {
             Output::Hls(..) => &m3u8,
             Output::Ts => &live_ts,
@@ -1732,6 +1756,8 @@ fn run_encode(
             ("sid", &sid),
             ("vf", &vf),
             ("hwdec", "auto-copy-safe"),
+            // Pixel-format conversions (10-bit to 8-bit and the like) take the quick path.
+            ("sws-fast", "yes"),
             ("keep-open", "no"),
         ];
         if sid != "no" {
@@ -2225,7 +2251,7 @@ mod tests {
 
         let enc = pick_encoder().expect("a working H.264 encoder");
         println!("Selected encoder: {enc}");
-        assert!(!test_encoder("definitely_no_such_encoder_123"));
+        assert!(!test_encoder("definitely_no_such_encoder_123", ""));
 
         let probe = probe_file(&video).expect("probe video");
         println!("Probed: duration={:.2}s fps={:.3} audio={} subs={}", probe.duration, probe.fps, probe.audio.len(), probe.subs.len());
@@ -2394,6 +2420,18 @@ mod tests {
         // At most the peak video rate plus audio, with headroom for the container.
         assert!(data.len() > 50_000 && kbps < (opts.maxrate + 192) as f64 * 1.3, "unexpected size {}", data.len());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn filters_shrink_before_tone_mapping() {
+        assert_eq!(video_filter(Convert::Plain, 1280, 720), "scale=1280:720:flags=bilinear,format=yuv420p");
+        assert_eq!(video_filter(Convert::Plain, 0, 0), "format=yuv420p");
+        let hdr = video_filter(Convert::Filters, 1920, 1080);
+        assert!(hdr.starts_with("lavfi=[zscale=w=1920:h=1080:f=bilinear:t=linear:npl=100,format=gbrpf32le"), "{hdr}");
+        assert!(hdr.ends_with("zscale=t=bt709:m=bt709:r=tv,format=yuv420p]"), "{hdr}");
+        assert!(video_filter(Convert::Filters, 0, 0).starts_with("lavfi=[zscale=t=linear:npl=100,"));
+        assert_eq!(speed_opts("h264_nvenc"), ",preset=p2");
+        assert_eq!(speed_opts("libx264"), "");
     }
 
     #[test]
