@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { restoreScroll, saveScroll, useRowScroll } from './scrollMemory';
 import { ArrowLeft, Download, Lock, Monitor, Play, Search, Sparkles, X } from 'lucide-react';
 import CriticScores from '../components/common/CriticScores';
 import ProfileAvatar from '../components/common/ProfileAvatar';
@@ -230,13 +231,22 @@ function Poster({ item, onClick }: { item: RemoteItem; onClick: () => void }) {
   );
 }
 
+/**
+ * The billboard. Portrait phones get the poster (a widescreen still cropped to a phone looks odd);
+ * wider screens get the backdrop. It's tall enough that the title never runs into the navigation.
+ */
 function Featured({ item, open }: { item: RemoteItem; open: (key: string) => void }) {
+  const wide = item.backdrop ?? item.poster ?? '';
   return (
-    <section className="relative -mt-36 mb-6 aspect-[3/4] max-h-[75vh] w-full overflow-hidden sm:aspect-video">
-      <img src={item.backdrop ?? item.poster ?? ''} alt="" className="absolute inset-0 h-full w-full object-cover" />
+    <section className="relative -mt-36 mb-6 aspect-[2/3] max-h-[78vh] min-h-[26rem] w-full overflow-hidden sm:aspect-video md:-mt-[5.5rem] md:max-h-[80vh] md:min-h-[30rem]">
+      <picture>
+        {item.poster && <source media="(max-aspect-ratio: 4/5)" srcSet={item.poster} />}
+        <img src={wide} alt="" className="absolute inset-0 h-full w-full object-cover object-top" />
+      </picture>
+      <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/70 to-transparent" />
       <div className="absolute inset-0 bg-gradient-to-t from-nf-bg via-nf-bg/30 to-transparent" />
       <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-4 px-6 pb-6 text-center">
-        {item.logo ? <img src={item.logo} alt={item.title} className="max-h-24 max-w-[70%] object-contain" /> : <h1 className="text-4xl font-black">{item.title}</h1>}
+        {item.logo ? <img src={item.logo} alt={item.title} className="max-h-[min(6rem,16vh)] max-w-[70%] object-contain drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)]" /> : <h1 className="text-4xl font-black">{item.title}</h1>}
         <button onClick={() => open(item.key)} className="nf-btn-play px-8">
           <Play className="h-5 w-5 fill-black" strokeWidth={0} /> Play
         </button>
@@ -245,11 +255,12 @@ function Featured({ item, open }: { item: RemoteItem; open: (key: string) => voi
   );
 }
 
-function Row({ row, open }: { row: RemoteRow; open: (key: string) => void }) {
+function Row({ row, open, scope }: { row: RemoteRow; open: (key: string) => void; scope: string }) {
+  const memory = useRowScroll(`${scope}:${row.title}`);
   return (
     <section className="mb-6">
       <h2 className="mb-2 px-4 text-lg font-semibold">{row.title}</h2>
-      <div className="flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
+      <div ref={memory.ref} onScroll={memory.onScroll} className="flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
         {row.items.map((i) => <Poster key={`${row.title}-${i.key}`} item={i} onClick={() => open(i.key)} />)}
       </div>
     </section>
@@ -259,11 +270,11 @@ function Row({ row, open }: { row: RemoteRow; open: (key: string) => void }) {
 function Browse({
   who,
   screen,
-  open,
-  play,
+  open: openTitle,
+  play: playTitle,
   back,
   switchProfile,
-  openDownloads,
+  openDownloads: showDownloads,
   onAuthError,
 }: {
   who: Who;
@@ -281,11 +292,30 @@ function Browse({
   // Picks each section's billboard once per visit.
   const [featuredSeed] = useState(() => Math.floor(Math.random() * 1e6));
   const [tab, setTabState] = useState<Tab>(() => (sessionStorage.getItem('tf-remote-tab') as Tab | null) ?? 'home');
+  // Each section remembers where you were: in it, and when you come back from a title, the
+  // player or Downloads.
+  const page = `tab:${tab}`;
   const setTab = (next: Tab) => {
+    saveScroll(page);
     setTabState(next);
     sessionStorage.setItem('tf-remote-tab', next);
     setQuery(null);
-    window.scrollTo(0, 0);
+  };
+  useLayoutEffect(() => {
+    if (screen.name === 'home') restoreScroll(page);
+  }, [screen.name, page]);
+  const open = (key: string) => {
+    if (screen.name === 'home') saveScroll(page);
+    openTitle(key);
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  };
+  const play = (target: RemotePlayable) => {
+    if (screen.name === 'home') saveScroll(page);
+    playTitle(target);
+  };
+  const openDownloads = () => {
+    if (screen.name === 'home') saveScroll(page);
+    showDownloads();
   };
   const now = useNowPlaying(who, true, onAuthError);
   const [remoteOpen, setRemoteOpen] = useState(false);
@@ -321,10 +351,16 @@ function Browse({
 
   // Keep the current section's tab in view on phones, where the tabs scroll sideways.
   const tabsRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const el = tabsRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
-    el?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
-  }, [tab, query]);
+  const tabsPlaced = useRef(false);
+  useLayoutEffect(() => {
+    const nav = tabsRef.current;
+    const el = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!nav || !el) return;
+    // Centre the tab within the row only (scrollIntoView would also scroll the page).
+    const left = el.offsetLeft - (nav.clientWidth - el.offsetWidth) / 2;
+    nav.scrollTo({ left: Math.max(0, left), behavior: tabsPlaced.current ? 'smooth' : 'instant' });
+    tabsPlaced.current = true;
+  }, [tab, query, screen.name]);
 
   if (screen.name === 'title')
     return (
@@ -344,7 +380,7 @@ function Browse({
         <nav
           ref={tabsRef}
           aria-label="Sections"
-          className="order-last -mr-4 flex w-[calc(100%+1rem)] gap-2 overflow-x-auto pr-8 [scrollbar-width:none] max-md:[mask-image:linear-gradient(to_right,#000_calc(100%-2.5rem),transparent)] md:order-none md:mr-0 md:w-auto md:gap-5 md:pr-0"
+          className="relative order-last -mx-4 flex w-[calc(100%+2rem)] scroll-px-4 gap-2 overflow-x-auto px-4 pr-8 [scrollbar-width:none] max-md:[mask-image:linear-gradient(to_right,#000_calc(100%-2.5rem),transparent)] md:order-none md:mx-0 md:w-auto md:gap-5 md:px-0"
         >
           {TABS.map(({ tab: t, label }) => (
             <button
@@ -416,40 +452,14 @@ function Browse({
           <>
             {featured && <Featured item={featured} open={open} />}
             {!featured && <h1 className="mb-4 px-4 text-2xl font-bold">{tab === 'tv' ? 'TV Shows' : 'Movies'}</h1>}
-            {sectionRows(lib, kind).map((row) => <Row key={row.title} row={row} open={open} />)}
+            {sectionRows(lib, kind).map((row) => <Row key={row.title} row={row} open={open} scope={tab} />)}
           </>
         );
       })()}
       {query == null && lib && tab === 'home' && (
         <>
-          {lib.featured && (
-            <section className="relative -mt-36 mb-6 aspect-[3/4] max-h-[75vh] w-full overflow-hidden sm:aspect-video">
-              <img src={lib.featured.backdrop ?? lib.featured.poster ?? ''} alt="" className="absolute inset-0 h-full w-full object-cover" />
-              <div className="absolute inset-0 bg-gradient-to-t from-nf-bg via-nf-bg/30 to-transparent" />
-              <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-4 px-6 pb-6 text-center">
-                {lib.featured.logo ? (
-                  <img src={lib.featured.logo} alt={lib.featured.title} className="max-h-24 max-w-[70%] object-contain" />
-                ) : (
-                  <h1 className="text-4xl font-black">{lib.featured.title}</h1>
-                )}
-                <div className="flex gap-3">
-                  <button onClick={() => open(lib.featured!.key)} className="nf-btn-play px-8">
-                    <Play className="h-5 w-5 fill-black" strokeWidth={0} /> Play
-                  </button>
-                </div>
-              </div>
-            </section>
-          )}
-          {lib.rows.map((row) => (
-            <section key={row.title} className="mb-6">
-              <h2 className="mb-2 px-4 text-lg font-semibold">{row.title}</h2>
-              <div className="flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
-                {row.items.map((i) => (
-                  <Poster key={`${row.title}-${i.key}`} item={i} onClick={() => open(i.key)} />
-                ))}
-              </div>
-            </section>
-          ))}
+          {lib.featured && <Featured item={lib.featured} open={open} />}
+          {lib.rows.map((row) => <Row key={row.title} row={row} open={open} scope="home" />)}
         </>
       )}
       {remote}
