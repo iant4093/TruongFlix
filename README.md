@@ -110,7 +110,8 @@ Screenshots use the development preview with sample metadata and artwork from [T
 **Home**
 
 - Netflix-style billboard with muted HD trailers (up to 1080p), optional sound and replay, without an embedded site's controls or closed captions
-- Hover cards that cycle through still frames taken from your actual file
+- Hover cards that crossfade through still frames taken from your actual file (screenshots for games)
+- TruongFlix's own right-click menu: play, details, My List, Fix Match and Show in folder on any title, and queue or playlist actions on songs
 - Continue Watching with TV "Next Up", My List, Top 10, genre rows and search
 - A short animated launch intro with its own sound (both can be turned off)
 
@@ -126,8 +127,17 @@ Screenshots use the development preview with sample metadata and artwork from [T
 
 - Built-in BitTorrent client: add a magnet link or `.torrent` file from the navbar, by drag and drop, or by opening it with TruongFlix
 - Stream while downloading (temporary, cleared after a time you choose) or download straight into your Movies and TV folders, choosing which files to keep and which title they belong to
+- Music torrents are recognised from their files, saved to your music folder and added to Music when they finish
 - Settings › Torrents: transfer list with filters, pause and resume, move a stream into your library, share-ratio and seeding-time limits, speed limits, port, UPnP/NAT-PMP, peer limits, and DHT, local peer discovery and trackers
 - Tuned to stay connected over VPNs, and downloads fetch the rarest pieces first while streams stay in order
+
+**Music**
+
+- Your own music folders as an Apple Music-style library: albums, artists, songs, playlists and favourites per profile, on the desktop and in the browser app
+- Songs matched from their tags, then file and folder names (`Artist/Album (Year)/CD1/01 - Title.flac`); featured artists don't split an album, mixed-artist albums become Various Artists, and "Album (Disc 2)" joins its album
+- Music folders are kept out of Movies & TV, even inside a movie or TV folder, and new songs show up on their own while folder watching is on
+- Full-screen player with synced lyrics (from the file, a `.lrc` file or LRCLIB), queue, shuffle and repeat, and a Lossless / Hi-Res Lossless quality badge
+- The bottom music bar can be closed while music keeps playing; it comes back from the navbar or the Music section
 
 **Live TV**
 

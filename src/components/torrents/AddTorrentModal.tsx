@@ -9,6 +9,7 @@ import {
   FolderOpen,
   HardDriveDownload,
   Magnet,
+  Music,
   Play,
   Search,
   Sparkles,
@@ -23,8 +24,10 @@ import {
   initiateTorrent,
   inspectTorrent,
   inspectTorrentFilesLive,
+  isMusicTorrent,
   matchTorrentMetadata,
   pickDestinationFolder,
+  pickMusicFolder,
 } from '../../services/torrents';
 import { searchTitles, type SearchResult } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
@@ -34,6 +37,8 @@ import Spinner from '../common/Spinner';
 import { formatBytes } from '../../lib/format';
 import { errorMessage } from '../../lib/errors';
 import { basename } from '../../lib/path';
+
+const AUDIO_FILE = /\.(mp3|flac|m4a|aac|ogg|oga|opus|wav)$/i;
 
 const CACHE_PRESETS: { hours: number; label: string }[] = [
   { hours: 6, label: '6 hours' },
@@ -75,7 +80,9 @@ export default function AddTorrentModal() {
   const [destFolder, setDestFolder] = useState<string>(settings.media_directories[0] ?? '');
   const folderTouched = useRef(false);
   const matchTouched = useRef(false);
-  const [autoFolderReason, setAutoFolderReason] = useState<'movie' | 'tv' | null>(null);
+  const [autoFolderReason, setAutoFolderReason] = useState<'movie' | 'tv' | 'music' | null>(null);
+  // Songs (audio files, no videos): saved to a music folder and picked up by Music, no TMDB match.
+  const [music, setMusic] = useState(false);
 
   // Inline manual TMDB search state
   const [searchOpen, setSearchOpen] = useState(false);
@@ -119,6 +126,7 @@ export default function AddTorrentModal() {
     setFallbackTitle('');
     setFallbackYear(null);
     setAutoFolderReason(null);
+    setMusic(false);
     setDestFolder(useLibraryStore.getState().settings.media_directories[0] ?? '');
     setSearchOpen(false);
     setSearchResults([]);
@@ -132,10 +140,22 @@ export default function AddTorrentModal() {
       const videos = result.files.filter((f) => f.is_video);
       setSelectedFiles(new Set((videos.length ? videos : result.files).map((f) => f.index)));
     };
-    const applyDestination = (folder: string | null, kind: MediaKind) => {
+    const applyDestination = (folder: string | null, kind: MediaKind | 'music') => {
       if (folderTouched.current || !folder) return;
       setDestFolder(folder);
       setAutoFolderReason(kind);
+    };
+    /** Songs skip TMDB: they go to the music folder as a download. */
+    const acceptMusic = (result: InspectTorrentRes) => {
+      if (!isMusicTorrent(result.files)) return false;
+      setMusic(true);
+      setMode('download');
+      setMatch(null);
+      setMatchOrigin('none');
+      setSearchOpen(false);
+      setFallbackTitle(result.name);
+      applyDestination(pickMusicFolder(), 'music');
+      return true;
     };
     const debounceMs = /^(magnet:|base64:)|\.torrent$/i.test(trimmedSource) ? 60 : 350;
     const timer = window.setTimeout(async () => {
@@ -145,6 +165,10 @@ export default function AddTorrentModal() {
         if (!isCurrent()) return;
         acceptFiles(res);
         setInspecting(false);
+        if (acceptMusic(res)) {
+          setReviewedRevision(revision);
+          return;
+        }
         setMatching(true);
 
         const proposal = catalogMatch ? {
@@ -173,7 +197,9 @@ export default function AddTorrentModal() {
             if (!isCurrent()) return;
             if (liveRes.metadata_ready) {
               acceptFiles(liveRes);
-              if (!catalogMatch && !matchTouched.current) {
+              if (acceptMusic(liveRes)) {
+                // Matched as a movie before the file list arrived: songs after all.
+              } else if (!catalogMatch && !matchTouched.current) {
                 const refined = await matchTorrentMetadata(liveRes.name, liveRes.files);
                 if (!isCurrent()) return;
                 if (!matchTouched.current) {
@@ -265,7 +291,9 @@ export default function AddTorrentModal() {
       title: 'Choose download library folder',
     });
     if (typeof picked === 'string' && picked && startedAt === sourceRevision.current && !submittingRef.current) {
-      if (!settings.media_directories.includes(picked)) {
+      if (music) {
+        if (!settings.music_directories.includes(picked)) await updateSettings({ music_directories: [...settings.music_directories, picked] });
+      } else if (!settings.media_directories.includes(picked)) {
         await updateSettings({ media_directories: [...settings.media_directories, picked] });
       }
       if (startedAt !== sourceRevision.current || submittingRef.current) return;
@@ -343,6 +371,7 @@ export default function AddTorrentModal() {
         fallbackTitle: fallbackTitle || inspected.name,
         fallbackYear,
         playImmediately: playImmediately && mode === 'stream',
+        music,
       });
       if (sourceRevision.current === revision) close();
     } catch (e) {
@@ -354,7 +383,9 @@ export default function AddTorrentModal() {
   };
 
   const effectiveKind: MediaKind = match?.kind ?? fallbackKind;
-  const folderOptions = settings.media_directories;
+  // Music downloads offer the music folders first; the movie and TV folders stay available.
+  const folderOptions = [...new Set(music ? [...settings.music_directories, ...settings.media_directories] : settings.media_directories)];
+  const musicFolders = new Set(settings.music_directories);
 
   const footer = (
     <>
@@ -456,7 +487,9 @@ export default function AddTorrentModal() {
               <button
                 type="button"
                 onClick={() => setMode('stream')}
-                className={`flex flex-col items-start gap-1.5 rounded-lg border p-3.5 text-left transition-all ${
+                disabled={music}
+                title={music ? 'Music is saved as a download' : undefined}
+                className={`flex flex-col items-start gap-1.5 rounded-lg border p-3.5 text-left transition-all disabled:cursor-not-allowed disabled:opacity-40 ${
                   mode === 'stream'
                     ? 'border-nf-red bg-nf-red/10 ring-1 ring-nf-red/50'
                     : 'border-white/15 bg-white/[0.02] hover:border-white/30 hover:bg-white/[0.05]'
@@ -545,7 +578,7 @@ export default function AddTorrentModal() {
                 {autoFolderReason && !folderTouched.current && (
                   <span className="flex items-center gap-1 rounded-full bg-nf-green/15 px-2.5 py-0.5 text-[11px] font-semibold text-nf-green">
                     <Sparkles className="h-3 w-3" />
-                    Auto-selected for {autoFolderReason === 'tv' ? 'TV shows' : 'movies'}
+                    Auto-selected for {autoFolderReason === 'music' ? 'music' : autoFolderReason === 'tv' ? 'TV shows' : 'movies'}
                   </span>
                 )}
               </div>
@@ -570,7 +603,10 @@ export default function AddTorrentModal() {
                         }`}
                       >
                         <div className="min-w-0">
-                          <div className="font-semibold text-white">{leaf}</div>
+                          <div className="flex items-center gap-1.5 font-semibold text-white">
+                            {musicFolders.has(dir) && <Music className="h-3 w-3 shrink-0 text-nf-secondary" aria-label="Music folder" />}
+                            {leaf}
+                          </div>
                           <div className="truncate font-mono text-[11px] text-nf-muted">{dir}</div>
                         </div>
                         {selected && <Check className="h-4 w-4 shrink-0 text-nf-green" />}
@@ -579,7 +615,9 @@ export default function AddTorrentModal() {
                   })}
                 </div>
               ) : (
-                <p className="text-xs text-nf-secondary">No library folders configured yet. Browse to pick a destination folder.</p>
+                <p className="text-xs text-nf-secondary">
+                  {music ? 'No music folders yet. Choose one; it’s added to your music folders.' : 'No library folders configured yet. Browse to pick a destination folder.'}
+                </p>
               )}
 
               <div className="pt-1">
@@ -590,8 +628,29 @@ export default function AddTorrentModal() {
             </div>
           )}
 
+          {inspected && music && (
+            <div className="flex items-start gap-3.5 rounded-lg border border-white/10 bg-white/[0.03] p-4">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded bg-gradient-to-br from-[#fa2d48] to-[#a8203a]">
+                <Music className="h-7 w-7 text-white" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="truncate font-bold text-white">{inspected.name}</span>
+                  <span className="rounded bg-nf-green/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-nf-green">Music</span>
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-nf-secondary">
+                  {(() => {
+                    const songs = inspected.files.filter((f) => AUDIO_FILE.test(f.relative_path)).length;
+                    return `${songs} song${songs === 1 ? '' : 's'}. `;
+                  })()}
+                  Saved to your music folder and added to Music when the download finishes; songs are matched from their tags, covers and file names.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Smart Library Match Card + Inline Manual TMDB Search */}
-          {inspected && (
+          {inspected && !music && (
             <div className="space-y-3 rounded-lg border border-white/10 bg-white/[0.03] p-4">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-nf-muted">Library match</span>
@@ -779,7 +838,7 @@ export default function AddTorrentModal() {
                           onChange={() => toggleFile(f.index)}
                           className="accent-nf-red"
                         />
-                        <span className={`truncate ${f.is_video ? 'text-white' : 'text-nf-muted'}`}>{f.relative_path}</span>
+                        <span className={`truncate ${f.is_video || (music && AUDIO_FILE.test(f.relative_path)) ? 'text-white' : 'text-nf-muted'}`}>{f.relative_path}</span>
                       </span>
                       <span className="shrink-0 tabular-nums text-nf-muted">{formatBytes(f.size)}</span>
                     </label>

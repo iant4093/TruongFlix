@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
-import { DatabaseZap, FilePen, HeartPulse, RefreshCw, Trash2 } from 'lucide-react';
+import { DatabaseZap, FilePen, HeartPulse, Music, RefreshCw, Trash2 } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { runScan } from '../../services/scanner';
-import { runMusicScan } from '../../services/music';
 import { clearLibrary } from '../../services/db';
 import { connectShare, refreshShares } from '../../services/nas';
 import { FolderList } from '../common/SetupControls';
@@ -36,28 +35,19 @@ export default function LibraryPage() {
   };
 
   return (
-    <Page title="Library" description="Where your movies and shows live, and how TruongFlix keeps up with them.">
-      <Group title="Media folders">
+    <Page title="Movies & TV" description="Where your movies and shows live, and how TruongFlix keeps up with them.">
+      <Group title="Movie & TV folders">
         <Block>
           <FolderList value={settings.media_directories} onChange={(dirs) => void updateSettings({ media_directories: dirs })} />
         </Block>
       </Group>
 
-      <Group title="Music folders" footer="MP3, FLAC, AAC/ALAC (.m4a), Ogg, Opus and WAV. Tags, covers and lyrics (embedded or a matching .lrc file) are read when you scan.">
-        <Block>
-          <FolderList
-            value={settings.music_directories}
-            onChange={(dirs) => void updateSettings({ music_directories: dirs }).then(() => runMusicScan())}
-            pickerTitle="Choose music folders"
-            emptyText="No music folders yet. Add the folders containing your music."
-          />
-        </Block>
-        <ToggleRow
-          label="Find synced lyrics online"
-          description="Songs without lyrics of their own are looked up once on LRCLIB (lrclib.net). Only the artist, title, album and length are sent."
-          checked={settings.music_lyrics_online}
-          onChange={(v) => void updateSettings({ music_lyrics_online: v })}
-        />
+      <Group title="Music">
+        <Row label="Music folders" description={settings.music_directories.length ? `${settings.music_directories.length} folder${settings.music_directories.length === 1 ? '' : 's'}. Music is kept out of Movies & TV.` : 'Add your music folders to fill the Music section.'}>
+          <button onClick={() => useLibraryStore.getState().setSettingsOpen(true, 'music')} className={BTN}>
+            <Music className="h-4 w-4" /> Music settings
+          </button>
+        </Row>
       </Group>
 
       <NetworkShares />
@@ -77,7 +67,7 @@ export default function LibraryPage() {
             </div>
           ))}
         </Block>
-        <Row label="Scan for changes" description="Finds new, changed and removed files. Usually automatic (see below).">
+        <Row label="Scan for changes" description="Finds new, changed and removed files, music included. Usually automatic (see below).">
           <button onClick={() => runScan()} disabled={scanning} className={BTN_PRIMARY}>
             <RefreshCw className={`h-4 w-4 ${scanning ? 'animate-spin' : ''}`} /> Scan now
           </button>
@@ -89,7 +79,7 @@ export default function LibraryPage() {
         </Row>
         <ToggleRow
           label="Watch folders for changes"
-          description="New downloads, deletions and renames show up a few seconds after they happen."
+          description="New downloads, deletions and renames show up a few seconds after they happen, in Music too."
           checked={settings.watch_folders}
           onChange={(v) => void updateSettings({ watch_folders: v })}
         />

@@ -40,7 +40,7 @@ async function seed() {
     file('/m/A/02 Song.mp3', { title: 'Song', artist: 'Guest', album_artist: 'Luma', album: 'Neon', track_no: 2 }),
     file('/m/B/x.flac', { title: 'Other', artist: 'luma', album: 'Echo', codec: 'flac' }),
     file('/m/loose/07 - Untagged Track.wav', { codec: 'wav' }),
-  ]);
+  ], 1, ['/m']);
   const lib = await mdb.loadMusic(1);
   return Object.fromEntries(lib.tracks.map((t) => [t.title, t]));
 }
@@ -65,10 +65,11 @@ describe('music library tables', () => {
     expect(neon.art).toBe('a'.repeat(32) + '.jpg');
     const luma = lib.artists.find((a) => a.name === 'Luma')!;
     expect(luma.albumIds).toHaveLength(2);
-    // Untagged files are named after the file.
+    // Untagged files are named after the file, and their album after the folder.
     expect(t['Untagged Track']).toBeDefined();
     expect(t['Untagged Track'].artist).toBe('Unknown Artist');
-    expect(t['Untagged Track'].album).toBe('Unknown Album');
+    expect(t['Untagged Track'].album).toBe('loose');
+    expect(t['Untagged Track'].trackNo).toBe(7);
   });
 
   it('updates changed files and removes gone ones (with their playlist entries)', async () => {
@@ -79,10 +80,34 @@ describe('music library tables', () => {
     await mdb.removeMusicPaths(['/m/B/x.flac']);
     const lib = await mdb.loadMusic(1);
     expect(lib.tracks.map((x) => x.title).sort()).toEqual(['Intro (Remastered)', 'Song', 'Untagged Track']);
-    expect(lib.albums.map((a) => a.title).sort()).toEqual(['Neon', 'Unknown Album']); // "Echo" had no songs left
+    expect(lib.albums.map((a) => a.title).sort()).toEqual(['Neon', 'loose']); // "Echo" had no songs left
     expect(lib.playlists.find((p) => p.id === pl.id)!.trackIds).toEqual([t.Intro.id]);
     const index = await mdb.musicFileIndex();
     expect(index.get('/m/A/01 Intro.mp3')).toEqual({ id: t.Intro.id, mtime: 2 });
+  });
+
+  it('keeps featured artists and compilations on one album', async () => {
+    await mdb.upsertMusicFiles([
+      file('/m/Calvin/Motion/01.mp3', { title: 'One', artist: 'Calvin Harris', album: 'Motion' }),
+      file('/m/Calvin/Motion/02.mp3', { title: 'Two', artist: 'Calvin Harris feat. Ellie Goulding', album: 'Motion' }),
+      file('/m/Hits/01.mp3', { title: 'A', artist: 'Artist A', album: 'Now Hits' }),
+      file('/m/Hits/02.mp3', { title: 'B', artist: 'Artist B', album: 'Now Hits' }),
+      file('/m/Hits/03.mp3', { title: 'C', artist: 'Artist C', album: 'Now Hits' }),
+      file('/m/Wall/CD1/01.mp3', { title: 'In the Flesh?', artist: 'Pink Floyd', album: 'The Wall (Disc 1)' }),
+      file('/m/Wall/CD2/01.mp3', { title: 'Hey You', artist: 'Pink Floyd', album: 'The Wall (Disc 2)' }),
+    ], 1, ['/m']);
+    // A song added later joins its album.
+    await mdb.upsertMusicFiles([file('/m/Hits/04.mp3', { title: 'D', artist: 'Artist D', album: 'Now Hits' })], 2, ['/m']);
+    const lib = await mdb.loadMusic(1);
+    const byTitle = (title: string) => lib.albums.filter((a) => a.title === title);
+    expect(byTitle('Motion')).toHaveLength(1);
+    expect(byTitle('Motion')[0].artist).toBe('Calvin Harris');
+    expect(byTitle('Now Hits')).toHaveLength(1);
+    expect(byTitle('Now Hits')[0]).toMatchObject({ artist: 'Various Artists' });
+    expect(byTitle('Now Hits')[0].trackIds).toHaveLength(4);
+    const wall = byTitle('The Wall');
+    expect(wall).toHaveLength(1);
+    expect(wall[0].trackIds.map((id) => lib.tracks.find((t) => t.id === id)!.discNo)).toEqual([1, 2]);
   });
 
   it('keeps plays and favourites per profile', async () => {

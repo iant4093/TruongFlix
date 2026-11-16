@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { create } from 'zustand';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { httpMusicApi, playableCodecs, type MusicApi } from '../music/api';
 import { loadMusicLibrary } from '../music/actions';
@@ -199,12 +200,34 @@ export function goneMusicPaths(indexed: string[], seen: Set<string>, dirs: strin
 
 let scanning = false;
 
+/** Bumped when matching changes, so existing libraries are regrouped on the next scan. */
+const MATCH_VERSION = 2;
+const MATCH_KEY = 'tf-music-match';
+const readMatchVersion = () => {
+  try {
+    return Number(localStorage.getItem(MATCH_KEY)) || 1;
+  } catch {
+    return MATCH_VERSION;
+  }
+};
+const writeMatchVersion = () => {
+  try {
+    localStorage.setItem(MATCH_KEY, String(MATCH_VERSION));
+  } catch {
+    /* private storage: matched again next time, which is harmless */
+  }
+};
+
+/** Whether a music scan is running (for Settings). */
+export const useMusicScan = create<{ running: boolean }>(() => ({ running: false }));
+
 /** Reads new and changed songs in the music folders; runs alongside the video scan. */
 export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = {}) {
   if (scanning) return;
   const { settings, toast } = useLibraryStore.getState();
   const dirs = settings.music_directories ?? [];
   scanning = true;
+  useMusicScan.setState({ running: true });
   try {
     const index = await mdb.musicFileIndex();
     if (!dirs.length && !index.size) return;
@@ -213,15 +236,20 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
     const offline = dirs.filter((_, i) => !reachable[i]);
     const known: Record<string, number> = {};
     for (const [path, rec] of index) known[path] = rec.mtime;
-    const res = roots.length ? await invoke<MusicScanResult>('music_scan', { paths: roots, known, force: !!opts.force }) : { seen: [], changed: [] };
+    // Songs imported before matching improved are matched again once, all together.
+    const rematch = !!index.size && readMatchVersion() < MATCH_VERSION;
+    const force = !!opts.force || rematch;
+    const res = roots.length ? await invoke<MusicScanResult>('music_scan', { paths: roots, known, force }) : { seen: [], changed: [] };
     const added = res.changed.filter((f) => !index.has(f.file_path)).length;
-    await mdb.upsertMusicFiles(res.changed);
+    await mdb.upsertMusicFiles(res.changed, Date.now(), dirs);
+    if (roots.length && !offline.length) writeMatchVersion();
     const gone = goneMusicPaths([...index.keys()], new Set(res.seen), dirs, offline);
     await mdb.removeMusicPaths(gone);
     if (!gone.length && res.changed.length) await mdb.pruneMusic();
     if (res.changed.length || gone.length) await loadMusicLibrary(true);
-    if (!opts.quiet && (added || gone.length || res.changed.length)) {
-      const updated = res.changed.length - added;
+    // The one-off rematch after an update isn't news: only new and removed songs are reported then.
+    const updated = rematch && !opts.force ? 0 : res.changed.length - added;
+    if (!opts.quiet && (added || gone.length || updated)) {
       toast(`Music: ${[`${added} song${added === 1 ? '' : 's'} added`, updated ? `${updated} updated` : '', gone.length ? `${gone.length} removed` : ''].filter(Boolean).join(' · ')}`, 'success');
     }
     if (offline.length && !opts.quiet) toast(`Offline music folder skipped: ${offline.join(', ')}`, 'error');
@@ -230,5 +258,6 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
     if (!opts.quiet) toast(`Music scan failed: ${String(e)}`, 'error');
   } finally {
     scanning = false;
+    useMusicScan.setState({ running: false });
   }
 }

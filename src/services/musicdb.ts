@@ -1,6 +1,7 @@
 import type Database from '@tauri-apps/plugin-sql';
 import { getDb } from './db';
 import { assembleLibrary } from '../music/library';
+import { albumFolder, albumKey, guessFromPath, nameKey, primaryArtist, resolveTags, settleAlbumArtist } from '../music/match';
 import type { MusicLibrary, MusicPlaylist, MusicTrack } from '../music/types';
 
 /**
@@ -153,14 +154,8 @@ export async function musicFileIndex(): Promise<Map<string, { id: number; mtime:
   return new Map(rows.map((r) => [r.file_path, { id: r.id, mtime: r.file_mtime }]));
 }
 
-const fileTitle = (path: string) =>
-  (path.split(/[\\/]/).pop() ?? path)
-    .replace(/\.[^.]+$/, '')
-    .replace(/^\d{1,3}[\s.\-_]+/, '')
-    .trim() || 'Untitled';
-
 async function ensureArtist(db: Database, cache: Map<string, number>, name: string): Promise<number> {
-  const k = key(name);
+  const k = nameKey(name) || key(name);
   const hit = cache.get(k);
   if (hit) return hit;
   await db.execute('INSERT INTO music_artists (name, name_key) VALUES ($1, $2) ON CONFLICT(name_key) DO NOTHING', [name.trim(), k]);
@@ -170,28 +165,63 @@ async function ensureArtist(db: Database, cache: Map<string, number>, name: stri
 }
 
 async function ensureAlbum(db: Database, cache: Map<string, number>, title: string, artistId: number, now: number): Promise<number> {
-  const k = `${artistId}|${key(title)}`;
+  const tk = albumKey(title) || key(title);
+  const k = `${artistId}|${tk}`;
   const hit = cache.get(k);
   if (hit) return hit;
-  await db.execute('INSERT INTO music_albums (title, title_key, artist_id, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT(artist_id, title_key) DO NOTHING', [title.trim(), key(title), artistId, now]);
-  const [row] = await db.select<{ id: number }[]>('SELECT id FROM music_albums WHERE artist_id = $1 AND title_key = $2', [artistId, key(title)]);
+  await db.execute('INSERT INTO music_albums (title, title_key, artist_id, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT(artist_id, title_key) DO NOTHING', [title.trim(), tk, artistId, now]);
+  const [row] = await db.select<{ id: number }[]>('SELECT id FROM music_albums WHERE artist_id = $1 AND title_key = $2', [artistId, tk]);
   cache.set(k, row.id);
   return row.id;
 }
 
-/** Adds new and updates changed files. Untagged files are named after the file. */
-export async function upsertMusicFiles(files: MusicFile[], now = Date.now()) {
+/** Album artists of songs already in the library from the same album folder (not in this batch), so new songs join their album. */
+async function folderArtists(db: Database, folder: string, album: string, skip: Set<string>): Promise<string[]> {
+  if (!folder) return [];
+  // `albumFolder` is lower-case with forward slashes; char(92) is a backslash.
+  const like = `${folder.replace(/[!%_]/g, (c) => `!${c}`)}/%`;
+  const rows = await db.select<{ file_path: string; artist: string; album: string }[]>(
+    `SELECT t.file_path, aa.name AS artist, al.title AS album FROM music_tracks t
+     JOIN music_albums al ON al.id = t.album_id JOIN music_artists aa ON aa.id = al.artist_id
+     WHERE lower(replace(t.file_path, char(92), '/')) LIKE $1 ESCAPE '!' LIMIT 400`,
+    [like],
+  );
+  const k = albumKey(album);
+  return rows.filter((r) => !skip.has(r.file_path) && albumFolder(r.file_path) === folder && albumKey(r.album) === k).map((r) => r.artist);
+}
+
+/**
+ * Adds new and updates changed files. Missing tags are filled from the file and folder names;
+ * songs without an album artist are grouped by album folder (featured guests don't split an album,
+ * and mixed-artist albums become "Various Artists"). `roots` are the music folders.
+ */
+export async function upsertMusicFiles(files: MusicFile[], now = Date.now(), roots: string[] = []) {
   if (!files.length) return;
   const db = await musicDb();
   const artists = new Map<string, number>();
   const albums = new Map<string, number>();
-  for (const f of files) {
-    const artist = f.artist?.trim() || f.album_artist?.trim() || 'Unknown Artist';
-    const albumArtist = f.album_artist?.trim() || artist;
-    const album = f.album?.trim() || 'Unknown Album';
-    const artistId = await ensureArtist(db, artists, artist);
-    const albumArtistId = await ensureArtist(db, artists, albumArtist);
-    const albumId = await ensureAlbum(db, albums, album, albumArtistId, now);
+  const resolved = files.map((f) => ({ f, tags: resolveTags(f, roots), folder: albumFolder(f.file_path) }));
+
+  // Album artist for untagged albums, decided once per album folder.
+  const groups = new Map<string, typeof resolved>();
+  for (const r of resolved) {
+    if (r.tags.albumArtistTagged) continue;
+    const g = `${r.folder}|${albumKey(r.tags.album)}`;
+    groups.set(g, [...(groups.get(g) ?? []), r]);
+  }
+  const batch = new Set(files.map((f) => f.file_path));
+  for (const list of groups.values()) {
+    const first = list[0];
+    const others = first.tags.album === 'Unknown Album' ? [] : await folderArtists(db, first.folder, first.tags.album, batch);
+    const folderArtist = guessFromPath(first.f.file_path, roots).albumArtist;
+    const albumArtist = first.tags.album === 'Unknown Album' ? null : settleAlbumArtist(list.map((r) => r.tags.artist), others, folderArtist);
+    for (const r of list) r.tags.albumArtist = albumArtist ?? primaryArtist(r.tags.artist);
+  }
+
+  for (const { f, tags } of resolved) {
+    const artistId = await ensureArtist(db, artists, tags.artist);
+    const albumArtistId = await ensureArtist(db, artists, tags.albumArtist || tags.artist);
+    const albumId = await ensureAlbum(db, albums, tags.album, albumArtistId, now);
     await db.execute(
       `INSERT INTO music_tracks (file_path, file_mtime, file_size, title, artist_id, album_id, track_no, disc_no, year, genre, duration, codec, sample_rate, bit_depth, bitrate, art, lyrics, lyrics_source, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
@@ -203,12 +233,12 @@ export async function upsertMusicFiles(files: MusicFile[], now = Date.now()) {
         f.file_path,
         f.mtime,
         f.file_size,
-        f.title?.trim() || fileTitle(f.file_path),
+        tags.title,
         artistId,
         albumId,
-        f.track_no,
-        f.disc_no,
-        f.year,
+        tags.trackNo,
+        tags.discNo,
+        tags.year,
         f.genre,
         f.duration || 0,
         f.codec,
@@ -266,6 +296,9 @@ interface TrackRow {
   genre: string | null;
   duration: number;
   codec: string | null;
+  sample_rate: number | null;
+  bit_depth: number | null;
+  bitrate: number | null;
   art: string | null;
   created_at: number;
   has_lyrics: number;
@@ -289,6 +322,9 @@ const toTrack = (r: TrackRow): MusicTrack => ({
   genre: r.genre,
   duration: r.duration,
   codec: r.codec ?? '',
+  sampleRate: r.sample_rate ?? null,
+  bitDepth: r.bit_depth ?? null,
+  bitrate: r.bitrate ?? null,
   art: r.art,
   favourite: !!r.favourite,
   plays: r.plays ?? 0,
@@ -301,7 +337,7 @@ export async function loadMusic(profileId: number): Promise<MusicLibrary> {
   const db = await musicDb();
   const rows = await db.select<TrackRow[]>(
     `SELECT t.id, t.title, t.artist_id, ar.name AS artist, t.album_id, al.title AS album, al.artist_id AS album_artist_id, aa.name AS album_artist,
-            t.track_no, t.disc_no, t.year, t.genre, t.duration, t.codec, t.art, t.created_at, (t.lyrics IS NOT NULL) AS has_lyrics,
+            t.track_no, t.disc_no, t.year, t.genre, t.duration, t.codec, t.sample_rate, t.bit_depth, t.bitrate, t.art, t.created_at, (t.lyrics IS NOT NULL) AS has_lyrics,
             (f.track_id IS NOT NULL) AS favourite, p.plays, p.last_played
      FROM music_tracks t
      JOIN music_artists ar ON ar.id = t.artist_id

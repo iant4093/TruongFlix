@@ -1,5 +1,5 @@
-//! Watches the media folders and emits a debounced `library-changed` event when videos are added,
-//! removed or renamed, so the library updates itself without pressing Scan.
+//! Watches the media and music folders and emits a debounced `library-changed` event when videos or
+//! songs are added, removed or renamed, so the library updates itself without pressing Scan.
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ const DEBOUNCE: Duration = Duration::from_secs(5);
 
 static WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
 
-/// Changes that can affect the library: video files, or folders (which may contain videos).
+/// Changes that can affect the library: video or audio files, or folders (which may contain them).
 fn relevant(path: &Path) -> bool {
     if path.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
@@ -21,7 +21,7 @@ fn relevant(path: &Path) -> bool {
     }) {
         return false; // hidden folders, including .truongflix-trash
     }
-    path.extension().is_none() || crate::scanner::has_video_extension(path)
+    path.extension().is_none() || crate::scanner::has_video_extension(path) || crate::music::has_audio_extension(path)
 }
 
 /// (Re)starts watching `paths`. An empty list stops watching. Runs off the async runtime: setting

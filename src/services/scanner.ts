@@ -148,6 +148,14 @@ const isUnder = (path: string, root: string) => {
   return path === r || path.startsWith(r + '/') || path.startsWith(r + '\\');
 };
 
+/** Like `isUnder`, but ignores slash direction and letter case (Windows and macOS paths). */
+export const isUnderAny = (path: string, root: string) => {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const p = norm(path);
+  const r = norm(root);
+  return !!r && (p === r || p.startsWith(`${r}/`));
+};
+
 export interface ScanOptions {
   /** Re-fetch metadata for every file, not just new/changed ones. */
   force?: boolean;
@@ -184,12 +192,13 @@ export async function runScan(opts: ScanOptions = {}) {
     const roots = dirs.filter((_, i) => reachable[i]);
     const offline = dirs.filter((_, i) => !reachable[i]);
 
+    const inMusicRoot = (root: string) => (settings.music_directories ?? []).some((m) => isUnderAny(root, m));
     // Tidy loose videos into their own folders first (DB paths are updated, so nothing is re-matched).
     let organized = 0;
     if (settings.organize_loose_files && roots.length) {
       setScan({ message: 'Organizing loose files…' });
       try {
-        const res = await organizeLooseFiles(roots);
+        const res = await organizeLooseFiles(roots.filter((r) => !inMusicRoot(r)));
         organized = res.moved;
         if (res.errors.length) console.warn('[scan] organize issues', res.errors);
       } catch (e) {
@@ -197,7 +206,10 @@ export async function runScan(opts: ScanOptions = {}) {
       }
     }
 
-    const files = roots.length ? await invoke<RawVideoFile[]>('scan_media_folders', { paths: roots }) : [];
+    // Music folders belong to Music, even when they sit inside a movie or TV folder.
+    const musicDirs = settings.music_directories ?? [];
+    const inMusic = (path: string) => musicDirs.some((m) => isUnderAny(path, m));
+    const files = (roots.length ? await invoke<RawVideoFile[]>('scan_media_folders', { paths: roots }) : []).filter((f) => !inMusic(f.file_path));
 
     setScan({ phase: 'diffing', message: `Found ${files.length} videos` });
     const [index, hints, protectedTorrentPaths] = await Promise.all([

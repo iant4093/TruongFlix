@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import * as db from '../src/services/db';
 import { play } from '../src/services/player';
-import { canStreamTorrent, playTorrentByHash, pollTorrents, reapExpiredStreams, removeTorrent, resolvePlayablePathOrStream } from '../src/services/torrents';
+import { canStreamTorrent, isMusicFolder, isMusicTorrent, playTorrentByHash, pollTorrents, reapExpiredStreams, removeTorrent, resolvePlayablePathOrStream } from '../src/services/torrents';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import type { PlayerSession, TorrentRecord, TorrentStatus } from '../src/types/media';
 import { movie, torrentRecord, torrentStatus } from './fixtures';
@@ -207,5 +207,23 @@ describe('playing a selected season transfer', () => {
       items: [{ kind: 'tv', id: 9, title: 'Example', key: 'tv-9' }] as never });
     await playTorrentByHash('season-pack');
     expect(play).toHaveBeenCalledWith(expect.objectContaining({ type: 'episode', id: 20, filePath: selected.file_path }));
+  });
+});
+
+describe('music torrents', () => {
+  const f = (relative_path: string, is_video = false) => ({ relative_path, is_video });
+
+  it('spots albums: audio files and no videos', () => {
+    expect(isMusicTorrent([f('Album/01 Song.flac'), f('Album/cover.jpg'), f('Album/album.cue')])).toBe(true);
+    expect(isMusicTorrent([f('Movie.mkv', true), f('Soundtrack/01.mp3')])).toBe(false);
+    expect(isMusicTorrent([f('readme.txt')])).toBe(false);
+    expect(isMusicTorrent([])).toBe(false);
+  });
+
+  it('knows which folders are music folders', () => {
+    const settings = { ...useLibraryStore.getState().settings, music_directories: ['D:\\Music'] };
+    expect(isMusicFolder('d:/music/Some Album', settings)).toBe(true);
+    expect(isMusicFolder('D:\\Music', settings)).toBe(true);
+    expect(isMusicFolder('D:\\Musicals', settings)).toBe(false);
   });
 });

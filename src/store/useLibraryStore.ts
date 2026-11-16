@@ -65,7 +65,7 @@ export interface PinRequest {
   then: () => void;
 }
 
-export type SettingsTab = 'library' | 'torrents' | 'playback' | 'audio' | 'subtitles' | 'ratings' | 'devices' | 'home' | 'profiles' | 'trash' | 'about';
+export type SettingsTab = 'library' | 'music' | 'torrents' | 'playback' | 'audio' | 'subtitles' | 'ratings' | 'devices' | 'home' | 'profiles' | 'trash' | 'about';
 
 export type Overlay = 'wrapped' | 'history' | 'rename' | 'health' | null;
 

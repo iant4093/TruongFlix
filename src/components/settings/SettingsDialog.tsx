@@ -1,10 +1,12 @@
 import { useLayoutEffect, useRef, type ComponentType } from 'react';
 import { motion } from 'framer-motion';
-import { Captions, Home, Info, Library, Magnet, MonitorSmartphone, PlayCircle, Star, Trash2, Users, Volume2, type LucideIcon } from 'lucide-react';
+import { Captions, Home, Info, Library, Magnet, MonitorSmartphone, Music, PlayCircle, Star, Trash2, Users, Volume2, type LucideIcon } from 'lucide-react';
 import { useLibraryStore, type SettingsTab } from '../../store/useLibraryStore';
 import Dialog from '../common/Dialog';
 import Badge from '../common/Badge';
+import { useMusicScan } from '../../services/music';
 import LibraryPage from './LibraryPage';
+import MusicPage from './MusicPage';
 import TorrentsPage from './TorrentsPage';
 import PlaybackPage from './PlaybackPage';
 import AudioPage from './AudioPage';
@@ -17,7 +19,8 @@ import TrashPage from './TrashPage';
 import AboutPage from './AboutPage';
 
 const PAGES: { id: SettingsTab; label: string; icon: LucideIcon; page: ComponentType }[] = [
-  { id: 'library', label: 'Library', icon: Library, page: LibraryPage },
+  { id: 'library', label: 'Movies & TV', icon: Library, page: LibraryPage },
+  { id: 'music', label: 'Music', icon: Music, page: MusicPage },
   { id: 'torrents', label: 'Torrents', icon: Magnet, page: TorrentsPage },
   { id: 'playback', label: 'Playback', icon: PlayCircle, page: PlaybackPage },
   { id: 'audio', label: 'Audio', icon: Volume2, page: AudioPage },
@@ -35,6 +38,7 @@ export default function SettingsDialog() {
   const tab = useLibraryStore((s) => s.settingsTab);
   const setOpen = useLibraryStore((s) => s.setSettingsOpen);
   const scanning = useLibraryStore((s) => s.scan.running);
+  const musicScanning = useMusicScan((s) => s.running);
   const activeTorrentCount = useLibraryStore(
     (s) => s.torrents.filter((t) => !t.finished && t.inSession && !t.paused && t.state !== 'error').length,
   );
@@ -70,7 +74,7 @@ export default function SettingsDialog() {
             >
               <Icon className="h-4 w-4 shrink-0" />
               <span className="flex-1">{label}</span>
-              {id === 'library' && scanning && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-nf-red" title="Scanning" />}
+              {((id === 'library' && scanning) || (id === 'music' && musicScanning)) && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-nf-red" title="Scanning" />}
               {id === 'torrents' && activeTorrentCount > 0 && (
                 <Badge tone="download" pill title="Active downloads">
                   {activeTorrentCount}

@@ -114,6 +114,31 @@ export interface TorrentMatchProposal {
   recommendedFolder: string;
 }
 
+const AUDIO_EXTENSIONS = new Set(['mp3', 'flac', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'wav']);
+
+const extensionOf = (path: string) => path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '';
+
+/** A torrent of songs: audio files and no videos (covers, .cue and .lrc files don't count). */
+export function isMusicTorrent(files: { relative_path: string; is_video: boolean }[]): boolean {
+  if (!files.length || files.some((f) => f.is_video)) return false;
+  return files.some((f) => AUDIO_EXTENSIONS.has(extensionOf(f.relative_path)));
+}
+
+/** Where a music download goes: the first music folder that's still set. */
+export function pickMusicFolder(settings = useLibraryStore.getState().settings): string {
+  return settings.music_directories?.[0] ?? '';
+}
+
+/** Whether a folder is (inside) one of the music folders. */
+export function isMusicFolder(path: string, settings = useLibraryStore.getState().settings): boolean {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const p = norm(path);
+  return (settings.music_directories ?? []).some((d) => {
+    const r = norm(d);
+    return !!r && (p === r || p.startsWith(`${r}/`));
+  });
+}
+
 /**
  * Picks the best destination folder from `settings.media_directories` based on whether the torrent
  * matched a Movie or a TV Show (honoring explicit overrides, existing SQLite path distributions,
@@ -403,9 +428,50 @@ export interface InitiateTorrentOptions {
   fallbackYear: number | null;
   playImmediately?: boolean;
   abortSignal?: AbortSignal;
+  /** Songs for the music library: no TMDB match, and Music is rescanned when it finishes. */
+  music?: boolean;
 }
 
 const autoPlayQueue = new Set<string>();
+
+/** Downloads an album (or any songs) into a music folder, in a folder named after the torrent. */
+async function initiateMusicTorrent(opts: InitiateTorrentOptions): Promise<TorrentStatus> {
+  const name = opts.fallbackTitle || cleanTitle(opts.name) || opts.name;
+  const status = await invoke<TorrentStatus>('torrent_add', {
+    req: {
+      source: opts.source,
+      is_stream: false,
+      output_folder: opts.destinationRoot,
+      sub_folder: sanitizeSubfolder(opts.name || name),
+      only_files: opts.onlyFiles ?? null,
+      paused: false,
+      initial_peers: null,
+    },
+  });
+  await db.upsertTorrentRecord({
+    info_hash: status.info_hash,
+    name: status.name || opts.name,
+    source: opts.source,
+    mode: 'download',
+    save_path: status.output_folder,
+    delete_on_complete: opts.deleteOnComplete,
+    cache_hours: null,
+    expires_at: null,
+    media_kind: null,
+    tmdb_id: null,
+    series_id: null,
+    movie_id: null,
+    file_paths: [],
+    total_bytes: status.total_bytes,
+    completed_at: status.finished ? new Date().toISOString() : null,
+    seeding_stopped: false,
+  });
+  await pollTorrents();
+  scheduleAdaptivePoll();
+  if (status.finished) void import('./music').then((m) => m.runMusicScan());
+  useLibraryStore.getState().toast(`Downloading “${status.name || name}” to Music`, 'success');
+  return status;
+}
 
 export async function initiateTorrent(opts: InitiateTorrentOptions): Promise<TorrentStatus> {
   await syncTorrentEngineConfig();
@@ -418,6 +484,8 @@ export async function initiateTorrent(opts: InitiateTorrentOptions): Promise<Tor
     kind === 'movie'
       ? sanitizeSubfolder(year ? `${cleanTitleStr} (${year})` : cleanTitleStr)
       : sanitizeSubfolder(year ? `${cleanTitleStr} (${year})` : cleanTitleStr);
+
+  if (opts.music) return initiateMusicTorrent(opts);
 
   const status = await invoke<TorrentStatus>('torrent_add', {
     req: {
@@ -1048,6 +1116,7 @@ export function pollTorrents(): Promise<TorrentItem[]> {
     let needsLibraryReload = false;
     let triggerProbe = false;
     const justCompleted: string[] = [];
+    let musicFinished = false;
     const prevCache = parsedPathsCache;
     parsedPathsCache = new Map();
     const parse = (raw: string) => {
@@ -1088,6 +1157,8 @@ export function pollTorrents(): Promise<TorrentItem[]> {
           total_bytes: live.total_bytes || rec.total_bytes,
         });
         justCompleted.push(hash);
+        // Songs downloaded into a music folder show up in Music right away.
+        if (!isGame && savePath && isMusicFolder(savePath, settings)) musicFinished = true;
         if (!isGame) {
           triggerProbe = true;
           needsLibraryReload = true;
@@ -1206,6 +1277,7 @@ export function pollTorrents(): Promise<TorrentItem[]> {
     merged = next;
     if (needsLibraryReload) await useLibraryStore.getState().reload();
     if (triggerProbe) void startBackgroundAnalysis();
+    if (musicFinished) void import('./music').then((m) => m.runMusicScan());
     for (const hash of justCompleted) {
       const item = merged.find((t) => t.infoHash === hash);
       if (item) for (const listener of completionListeners) listener(item);
