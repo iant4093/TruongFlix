@@ -108,7 +108,9 @@ export default function Navbar() {
         ))}
       </nav>
 
-      <div className="ml-auto flex shrink-0 items-center gap-3 pl-3 text-white xl:gap-5">
+      <div className="relative ml-auto flex shrink-0 items-center gap-3 pl-3 text-white xl:gap-5">
+        {/* Floats to the left of the controls, so nothing in the bar moves when it appears. */}
+        <MusicNowPlaying />
         {playback.active && (
           <div className="flex items-center gap-2 rounded-full border border-white/15 bg-black/50 py-1 pl-3 pr-1 text-xs">
             <span className="h-2 w-2 animate-pulse rounded-full bg-nf-red" />
@@ -187,8 +189,6 @@ export default function Navbar() {
           </div>
         )}
 
-        <MusicNowPlaying />
-
         <button
           onClick={() => runScan()}
           disabled={scanning}
@@ -229,10 +229,10 @@ function MusicNowPlaying() {
       onClick={() => setBarHidden(false)}
       title={`${track.title} — ${track.artist}. Show the music player`}
       aria-label={`Music: ${track.title} by ${track.artist}. Show the music player`}
-      className="flex max-w-[14rem] items-center gap-2 rounded-full border border-white/15 bg-black/50 px-3 py-1 text-xs text-nf-light transition-colors hover:border-white/30 hover:text-white"
+      className="absolute right-full top-1/2 mr-1 flex max-w-[16rem] -translate-y-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-white/15 bg-black/50 px-3 py-1 text-xs text-nf-light transition-colors hover:border-white/30 hover:text-white"
     >
       <EqBars playing={playing} className="shrink-0 text-[#fa2d48]" />
-      <span className="hidden truncate xl:inline">{track.title}</span>
+      <span className="hidden min-w-0 truncate xl:block">{track.title}</span>
     </button>
   );
 }

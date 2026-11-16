@@ -1,10 +1,11 @@
-import { useLayoutEffect } from 'react';
+import { useLayoutEffect, useState } from 'react';
+import { formatTime } from '../library';
 import { ListMusic, MessageSquareQuote, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react';
 import { next, previous, seek, setBarHidden, setFull, setPanel, toggle, toggleMute, useMusicPlayer } from '../player';
 import { Cover, RoundButton, VolumeSlider } from './ui';
 
 /** Space the bar takes at the bottom of the window; pages, toasts and the cast bar keep clear of it. */
-export const MUSIC_BAR_INSET = '5.5rem';
+export const MUSIC_BAR_INSET = '5.75rem';
 
 /** Sets `--tf-music-bar` on the page while the bar shows. */
 function useBottomInset(active: boolean) {
@@ -18,29 +19,55 @@ function useBottomInset(active: boolean) {
   }, [active]);
 }
 
-/** Thin progress line and the invisible seek slider over it. Only this re-renders as the song plays. */
+/**
+ * The seek bar along the bottom of the bar. It thickens and shows a knob under the pointer, and
+ * shows the time while dragging. Only this re-renders as the song plays.
+ */
 function Progress({ seekable }: { seekable: boolean }) {
   const time = useMusicPlayer((s) => s.time);
   const duration = useMusicPlayer((s) => s.duration || s.track?.duration || 0);
-  const pct = duration ? Math.min(100, (time / duration) * 100) : 0;
-  return (
-    <>
+  const [drag, setDrag] = useState<number | null>(null);
+  const shown = drag ?? time;
+  const pct = duration ? Math.min(100, (shown / duration) * 100) : 0;
+  const commit = () => {
+    if (drag != null) seek(drag);
+    setDrag(null);
+  };
+  if (!seekable) {
+    return (
       <div className="absolute inset-x-0 bottom-0 h-[3px] bg-white/10">
         <div className="h-full bg-white/70" style={{ width: `${pct}%` }} />
       </div>
-      {seekable && (
-        <input
-          type="range"
-          aria-label="Seek"
-          min={0}
-          max={duration || 0}
-          step={0.5}
-          value={Math.min(time, duration || 0)}
-          onChange={(e) => seek(Number(e.target.value))}
-          className="tfm-range absolute inset-x-0 bottom-0 h-2 opacity-0"
+    );
+  }
+  return (
+    <div className="group/seek absolute inset-x-3 bottom-0 h-4">
+      <div className={`absolute inset-x-0 bottom-1.5 rounded-full bg-white/15 transition-[height] duration-150 group-hover/seek:h-1.5 ${drag != null ? 'h-1.5' : 'h-1'}`}>
+        <div className="h-full rounded-full bg-white/80" style={{ width: `${pct}%` }} />
+        <div
+          className={`pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow transition-opacity group-hover/seek:opacity-100 ${drag != null ? 'opacity-100' : 'opacity-0'}`}
+          style={{ left: `${pct}%` }}
         />
+      </div>
+      {drag != null && (
+        <div className="pointer-events-none absolute bottom-4 -translate-x-1/2 rounded bg-black/80 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-white" style={{ left: `${pct}%` }}>
+          {formatTime(drag)}
+        </div>
       )}
-    </>
+      <input
+        type="range"
+        aria-label="Seek"
+        min={0}
+        max={duration || 0}
+        step={0.5}
+        value={Math.min(shown, duration || 0)}
+        onChange={(e) => setDrag(Number(e.target.value))}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={() => setDrag(null)}
+        className="tfm-range absolute inset-0 h-full w-full cursor-pointer opacity-0"
+      />
+    </div>
   );
 }
 
@@ -66,7 +93,7 @@ export default function MiniBar({ compact = false, className = '' }: { compact?:
   return (
     // Under dialogs and Settings (z-60 and up), over the page, the navbar and hover cards.
     <div data-music-bar="" className={`pointer-events-none fixed inset-x-0 bottom-0 z-[55] px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] ${className}`}>
-      <div className="pointer-events-auto relative mx-auto flex h-16 max-w-5xl items-center gap-3 overflow-hidden rounded-2xl border border-white/10 bg-[#2a2a2c]/95 pl-2 pr-2 shadow-[0_10px_40px_rgba(0,0,0,0.6)] sm:pr-3">
+      <div className={`pointer-events-auto relative mx-auto flex max-w-5xl items-center gap-3 overflow-hidden rounded-2xl ${compact ? 'h-16' : 'h-[4.5rem] pb-2'} border border-white/10 bg-[#2a2a2c]/95 pl-2 pr-2 shadow-[0_10px_40px_rgba(0,0,0,0.6)] sm:pr-3`}>
         <Progress seekable={!compact} />
         <button type="button" onClick={() => open(compact ? null : undefined)} className="flex min-w-0 flex-1 items-center gap-3 text-left" aria-label={`Now playing: ${track.title} by ${track.artist}. Open the player`}>
           <Cover art={track.art} className="h-12 w-12 shrink-0 shadow-md" rounded="rounded-lg" />
