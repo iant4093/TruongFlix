@@ -64,7 +64,8 @@ export default function MusicLibrary({ variant, emptyAction, headerExtra }: Prop
           <SearchBox phone={phone} />
           {headerExtra}
         </div>
-        <nav aria-label="Music sections" className="tfm-scroll -mx-1 mt-4 flex gap-2 overflow-x-auto px-1">
+        {/* On narrow screens the row scrolls; its right edge fades so the hidden tabs read as more. */}
+        <nav aria-label="Music sections" className="tfm-scroll -mx-1 mt-4 flex gap-2 overflow-x-auto px-1 max-sm:-mr-4 max-sm:pr-8 max-sm:[mask-image:linear-gradient(to_right,#000_calc(100%-2.5rem),transparent)]">
           {MUSIC_TABS.map((t) => (
             <button
               key={t.tab}

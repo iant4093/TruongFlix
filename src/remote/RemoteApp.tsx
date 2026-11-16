@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Download, Lock, Monitor, Play, Search, Sparkles, X } from 'lucide-react';
 import CriticScores from '../components/common/CriticScores';
 import ProfileAvatar from '../components/common/ProfileAvatar';
@@ -308,10 +308,23 @@ function Browse({
       });
   }, [who, screen.name, onAuthError]);
 
+  // Every word must match the title, year or a genre; accents and case don't matter ("amelie 2001").
   const results = useMemo(() => {
-    const q = (query ?? '').trim().toLowerCase();
-    return q && lib ? lib.all.filter((i) => i.title.toLowerCase().includes(q)) : [];
+    const fold = (s: string) => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+    const words = fold(query ?? '').split(/\s+/).filter(Boolean);
+    if (!words.length || !lib) return [];
+    return lib.all.filter((i) => {
+      const hay = fold(`${i.title} ${i.year ?? ''} ${(i.genres ?? []).join(' ')}`);
+      return words.every((w) => hay.includes(w));
+    });
   }, [query, lib]);
+
+  // Keep the current section's tab in view on phones, where the tabs scroll sideways.
+  const tabsRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const el = tabsRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
+    el?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+  }, [tab, query]);
 
   if (screen.name === 'title')
     return (
@@ -328,7 +341,11 @@ function Browse({
           <Wordmark className="text-3xl" />
         </button>
         {/* On phones the sections wrap onto their own scrolling line under the logo. */}
-        <nav aria-label="Sections" className="order-last flex w-full gap-2 overflow-x-auto [scrollbar-width:none] md:order-none md:w-auto md:gap-5">
+        <nav
+          ref={tabsRef}
+          aria-label="Sections"
+          className="order-last -mr-4 flex w-[calc(100%+1rem)] gap-2 overflow-x-auto pr-8 [scrollbar-width:none] max-md:[mask-image:linear-gradient(to_right,#000_calc(100%-2.5rem),transparent)] md:order-none md:mr-0 md:w-auto md:gap-5 md:pr-0"
+        >
           {TABS.map(({ tab: t, label }) => (
             <button
               key={t}
@@ -357,9 +374,13 @@ function Browse({
         <div className="px-4">
           <input
             autoFocus
+            type="search"
+            enterKeyHint="search"
+            aria-label="Search your library"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search your library"
+            onKeyDown={(e) => e.key === 'Escape' && setQuery(null)}
+            placeholder="Titles, years, genres"
             className="w-full rounded bg-white/10 px-4 py-3 outline-none placeholder:text-white/50"
           />
           <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-5 lg:grid-cols-7">
@@ -367,6 +388,7 @@ function Browse({
               <Poster key={i.key} item={i} onClick={() => open(i.key)} />
             ))}
           </div>
+          {query.trim() && lib && !results.length && <p className="py-10 text-center text-nf-secondary">Nothing in your library matches “{query.trim()}”.</p>}
         </div>
       )}
       {error && <p className="px-4 text-nf-red">{error}</p>}
