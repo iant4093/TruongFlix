@@ -449,14 +449,54 @@ pub async fn music_lyrics_fetch(artist: String, title: String, album: Option<Str
     if res.status().as_u16() != 404 {
         return Err(format!("LRCLIB answered HTTP {}", res.status()));
     }
-    // No exact match (album or duration differ): search by artist and title.
-    let url = reqwest::Url::parse_with_params("https://lrclib.net/api/search", &[("artist_name", artist), ("track_name", title)]).map_err(|e| e.to_string())?;
-    let res = client.get(url).send().await.map_err(|e| e.to_string())?;
-    if !res.status().is_success() {
-        return Ok(None);
+    // No exact match (album or duration differ): search by artist and title, then by the title
+    // without a version tag ("Song (Remastered 2011)" -> "Song"). A failed search is an error, not
+    // "no lyrics", so it's tried again later instead of being remembered as missing.
+    let mut titles = vec![title.clone()];
+    let bare = bare_title(&title);
+    if !bare.is_empty() && !bare.eq_ignore_ascii_case(&title) {
+        titles.push(bare);
     }
-    let list: Vec<serde_json::Value> = serde_json::from_str(&res.text().await.map_err(|e| e.to_string())?).unwrap_or_default();
-    Ok(best_search_hit(&list, duration).map(parse_lrclib))
+    for name in titles {
+        let url = reqwest::Url::parse_with_params("https://lrclib.net/api/search", &[("artist_name", artist.as_str()), ("track_name", name.as_str())]).map_err(|e| e.to_string())?;
+        let res = client.get(url).send().await.map_err(|e| e.to_string())?;
+        if !res.status().is_success() {
+            return Err(format!("LRCLIB search answered HTTP {}", res.status()));
+        }
+        let list: Vec<serde_json::Value> = serde_json::from_str(&res.text().await.map_err(|e| e.to_string())?).unwrap_or_default();
+        if let Some(hit) = best_search_hit(&list, duration) {
+            return Ok(Some(parse_lrclib(hit)));
+        }
+    }
+    Ok(None)
+}
+
+/// The title without a trailing version tag: "(Remastered 2011)", "[Live]", "- Radio Edit", "feat. X".
+pub(crate) fn bare_title(title: &str) -> String {
+    let mut t = title.trim().to_string();
+    loop {
+        let before = t.clone();
+        if t.ends_with(')') || t.ends_with(']') {
+            let open = if t.ends_with(')') { '(' } else { '[' };
+            if let Some(i) = t.rfind(open) {
+                if i > 0 {
+                    t = t[..i].trim_end().to_string();
+                }
+            }
+        }
+        let lower = t.to_lowercase();
+        for sep in [" - ", " feat. ", " ft. ", " featuring "] {
+            if let Some(i) = lower.rfind(sep) {
+                if i > 0 {
+                    t = t[..i].trim_end().to_string();
+                    break;
+                }
+            }
+        }
+        if t == before {
+            return t;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -495,6 +535,16 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn strips_version_tags_for_lyrics_search() {
+        assert_eq!(bare_title("Birds Of A Feather (Isolated Vocals)"), "Birds Of A Feather");
+        assert_eq!(bare_title("Song [Live] (Remastered 2011)"), "Song");
+        assert_eq!(bare_title("Song - Radio Edit"), "Song");
+        assert_eq!(bare_title("Song feat. Someone"), "Song");
+        assert_eq!(bare_title("(Untitled)"), "(Untitled)");
+        assert_eq!(bare_title("Plain"), "Plain");
     }
 
     #[test]

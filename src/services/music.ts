@@ -13,7 +13,8 @@ import * as mdb from './musicdb';
  * streams for the player, and the `MusicApi` the desktop screens use.
  */
 
-const LYRICS_RETRY_MS = 14 * 86400_000;
+/** A song LRCLIB didn't have is looked up again after this long (new lyrics get added all the time). */
+const LYRICS_RETRY_MS = 3 * 86400_000;
 
 export const looksSynced = (text: string) => /^\s*\[\d{1,3}:\d{1,2}/m.test(text);
 
@@ -36,16 +37,18 @@ function fromCache(c: mdb.CachedLyrics): MusicLyrics | null {
  * Lyrics for a song: synced lyrics from the file (sidecar .lrc or embedded) first, then LRCLIB
  * (when allowed in Settings, looked up once and cached), then the file's plain lyrics.
  */
-export function lyricsFor(trackId: number, online = useLibraryStore.getState().settings.music_lyrics_online): Promise<MusicLyrics | null> {
+export function lyricsFor(trackId: number, online = useLibraryStore.getState().settings.music_lyrics_online, refresh = false): Promise<MusicLyrics | null> {
   const running = lyricsInFlight.get(trackId);
-  if (running) return running;
+  if (running && !refresh) return running;
   const job = (async (): Promise<MusicLyrics | null> => {
     const row = await mdb.musicTrackFile(trackId);
     if (!row) return null;
     const own: MusicLyrics | null = row.lyrics ? { text: row.lyrics, synced: looksSynced(row.lyrics), source: row.lyrics_source === 'sidecar' ? 'sidecar' : 'embedded' } : null;
     if (own?.synced) return own;
     const cached = await mdb.cachedLyrics(trackId);
-    if (cached && (cached.synced || cached.plain || cached.instrumental || Date.now() - cached.fetched_at < LYRICS_RETRY_MS)) {
+    // `refresh` ("Search again") skips a remembered "not found".
+    const missing = cached && !cached.synced && !cached.plain && !cached.instrumental;
+    if (cached && !(refresh && missing) && (!missing || Date.now() - cached.fetched_at < LYRICS_RETRY_MS)) {
       const hit = fromCache(cached);
       return hit?.synced ? hit : own ?? hit;
     }
@@ -119,7 +122,7 @@ function localApi(artDir: string): MusicApi {
   const sep = artDir.includes('\\') ? '\\' : '/';
   return {
     library: () => mdb.loadMusic(profileId()),
-    lyrics: (id) => lyricsFor(id),
+    lyrics: (id, refresh) => lyricsFor(id, undefined, refresh),
     stream: (track) => desktopStream(track.id),
     played: async (id) => {
       await mdb.recordPlay(profileId(), id);

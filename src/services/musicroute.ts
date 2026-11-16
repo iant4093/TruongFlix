@@ -37,7 +37,7 @@ export async function musicRoute(caller: Caller, profile: Profile, method: strin
   }
   if (method === 'GET' && path === '/music/lyrics') {
     rateLimit(caller, 'music-lyrics', 60, 60_000);
-    return (await lyricsFor(id(query.id))) ?? null;
+    return (await lyricsFor(id(query.id), undefined, query.refresh === '1')) ?? null;
   }
   if (method !== 'POST') throw new ApiError(404, 'Unknown endpoint');
   switch (path) {
