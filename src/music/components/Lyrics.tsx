@@ -198,51 +198,103 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
     el.style.transition = animate ? `transform 0.6s ${EASE}` : 'none';
     el.style.transform = `translate3d(0, ${-offset.current}px, 0)`;
   }, []);
+  const manualRef = useRef(false);
+  const fling = useRef(0);
+  const stopFling = () => {
+    if (fling.current) cancelAnimationFrame(fling.current);
+    fling.current = 0;
+  };
   const release = useCallback(() => {
+    stopFling();
     offset.current = 0;
     applyOffset(true);
+    manualRef.current = false;
     setManual(false);
   }, [applyOffset]);
+  /** Moves the lyrics by `delta` px (clamped); false when it hit an end. */
   const nudge = useCallback((delta: number) => {
     const box = inner.current;
     const max = box ? box.scrollHeight : 10000;
     const t = targetRef.current;
-    offset.current = Math.max(-t - 200, Math.min(max - t, offset.current + delta));
+    const want = offset.current + delta;
+    offset.current = Math.max(-t - 200, Math.min(max - t, want));
     applyOffset(false);
-    setManual(true);
+    if (!manualRef.current) {
+      manualRef.current = true;
+      setManual(true);
+    }
     if (idleTimer.current) window.clearTimeout(idleTimer.current);
     idleTimer.current = window.setTimeout(release, MANUAL_IDLE_MS);
+    return offset.current === want;
   }, [applyOffset, release]);
   useEffect(() => {
     const view = viewport.current;
     if (!view) return;
+    // Finger scrolling like a native list: moves are applied once per frame, and a flick keeps
+    // gliding and slows down the way iOS lists do.
     let lastY: number | null = null;
+    let pending = 0;
+    let frame = 0;
+    let samples: { t: number; y: number }[] = [];
+    const flush = () => {
+      frame = 0;
+      if (pending) nudge(pending);
+      pending = 0;
+    };
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
+      stopFling();
       nudge(e.deltaY);
     };
     const start = (e: TouchEvent) => {
+      stopFling();
       lastY = e.touches[0]?.clientY ?? null;
+      samples = lastY == null ? [] : [{ t: performance.now(), y: lastY }];
     };
     const moveT = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY;
       if (lastY == null || y == null) return;
       e.preventDefault();
-      nudge(lastY - y);
+      pending += lastY - y;
       lastY = y;
+      const now = performance.now();
+      samples.push({ t: now, y });
+      while (samples.length > 2 && now - samples[0].t > 100) samples.shift();
+      if (!frame) frame = requestAnimationFrame(flush);
     };
     const end = () => {
+      if (frame) cancelAnimationFrame(frame);
+      flush();
       lastY = null;
+      const first = samples[0];
+      const last = samples[samples.length - 1];
+      samples = [];
+      if (!first || !last || last.t - first.t < 10 || performance.now() - last.t > 80) return;
+      let v = (first.y - last.y) / (last.t - first.t); // px per ms, positive = scrolling down
+      if (Math.abs(v) < 0.15) return;
+      let prev = performance.now();
+      const glide = (now: number) => {
+        const dt = Math.min(32, now - prev);
+        prev = now;
+        if (!nudge(v * dt)) return stopFling();
+        v *= Math.pow(0.998, dt);
+        fling.current = Math.abs(v) > 0.02 ? requestAnimationFrame(glide) : 0;
+      };
+      fling.current = requestAnimationFrame(glide);
     };
     view.addEventListener('wheel', wheel, { passive: false });
     view.addEventListener('touchstart', start, { passive: true });
     view.addEventListener('touchmove', moveT, { passive: false });
     view.addEventListener('touchend', end);
+    view.addEventListener('touchcancel', end);
     return () => {
+      if (frame) cancelAnimationFrame(frame);
+      stopFling();
       view.removeEventListener('wheel', wheel);
       view.removeEventListener('touchstart', start);
       view.removeEventListener('touchmove', moveT);
       view.removeEventListener('touchend', end);
+      view.removeEventListener('touchcancel', end);
     };
   }, [nudge]);
   useEffect(() => () => {
