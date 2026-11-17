@@ -9,11 +9,11 @@ import { registerStream, releaseStream, streamUrl } from './streaming';
 import * as mdb from './musicdb';
 
 /**
- * The desktop side of Music: scanning the music folders, lyrics (from the files, or LRCLIB),
+ * The desktop side of Music: scanning the music folders, lyrics (from the files, or NetEase / LRCLIB),
  * streams for the player, and the `MusicApi` the desktop screens use.
  */
 
-/** A song LRCLIB didn't have is looked up again after this long (new lyrics get added all the time). */
+/** A song the lyrics services didn't have is looked up again after this long (new lyrics get added all the time). */
 const LYRICS_RETRY_MS = 3 * 86400_000;
 
 export const looksSynced = (text: string) => /^\s*\[\d{1,3}:\d{1,2}/m.test(text);
@@ -22,20 +22,22 @@ interface OnlineLyrics {
   synced: string | null;
   plain: string | null;
   instrumental: boolean;
+  provider: 'netease' | 'lrclib';
 }
 
 const lyricsInFlight = new Map<number, Promise<MusicLyrics | null>>();
 
 function fromCache(c: mdb.CachedLyrics): MusicLyrics | null {
-  if (c.synced) return { text: c.synced, synced: true, source: 'lrclib', instrumental: c.instrumental };
-  if (c.instrumental) return { text: '', synced: false, source: 'lrclib', instrumental: true };
-  if (c.plain) return { text: c.plain, synced: false, source: 'lrclib' };
+  const source = c.provider === 'netease' ? 'netease' : 'lrclib';
+  if (c.synced) return { text: c.synced, synced: true, source, instrumental: c.instrumental };
+  if (c.instrumental) return { text: '', synced: false, source, instrumental: true };
+  if (c.plain) return { text: c.plain, synced: false, source };
   return null;
 }
 
 /**
- * Lyrics for a song: synced lyrics from the file (sidecar .lrc or embedded) first, then LRCLIB
- * (when allowed in Settings, looked up once and cached), then the file's plain lyrics.
+ * Lyrics for a song: synced lyrics from the file (sidecar .lrc or embedded) first, then online
+ * (NetEase, then LRCLIB; when allowed in Settings, looked up once and cached), then the file's plain lyrics.
  */
 export function lyricsFor(trackId: number, online = useLibraryStore.getState().settings.music_lyrics_online, refresh = false): Promise<MusicLyrics | null> {
   const running = lyricsInFlight.get(trackId);
@@ -48,20 +50,25 @@ export function lyricsFor(trackId: number, online = useLibraryStore.getState().s
     const cached = await mdb.cachedLyrics(trackId);
     // `refresh` ("Search again") skips a remembered "not found".
     const missing = cached && !cached.synced && !cached.plain && !cached.instrumental;
-    if (cached && !(refresh && missing) && (!missing || Date.now() - cached.fetched_at < LYRICS_RETRY_MS)) {
+    // Rows from before NetEase was added (no provider) are looked up again once: LRCLIB's answer
+    // was often a poor match.
+    if (cached && cached.provider && !(refresh && missing) && (!missing || Date.now() - cached.fetched_at < LYRICS_RETRY_MS)) {
       const hit = fromCache(cached);
       return hit?.synced ? hit : own ?? hit;
     }
-    if (!online) return own;
+    // An older answer stays in use until the new lookup succeeds (offline, or the lookup fails).
+    const old = cached && !cached.provider ? fromCache(cached) : null;
+    const fallback = old?.synced ? old : own ?? old;
+    if (!online) return fallback;
     let found: OnlineLyrics | null;
     try {
       found = await invoke<OnlineLyrics | null>('music_lyrics_fetch', { artist: row.artist, title: row.title, album: row.album, duration: row.duration });
     } catch (e) {
       console.warn('[music] lyrics lookup failed', e);
-      return own; // offline: try again next time
+      return fallback; // offline: try again next time
     }
-    await mdb.saveLyricsCache(trackId, found ?? { synced: null, plain: null, instrumental: false });
-    const hit = found ? fromCache({ ...found, fetched_at: Date.now() }) : null;
+    await mdb.saveLyricsCache(trackId, found ?? { synced: null, plain: null, instrumental: false, provider: 'none' });
+    const hit = found ? fromCache({ ...found, fetched_at: Date.now(), provider: found.provider }) : null;
     return hit?.synced ? hit : own ?? hit;
   })().finally(() => lyricsInFlight.delete(trackId));
   lyricsInFlight.set(trackId, job);

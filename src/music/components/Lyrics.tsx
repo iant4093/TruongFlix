@@ -74,8 +74,8 @@ export default function Lyrics({ trackId, duration, onSeek, compact = false, cla
 }
 
 function Credit({ source }: { source?: string }) {
-  if (source !== 'lrclib') return null;
-  return <p className="mt-10 text-xs font-medium text-white/40">Lyrics from LRCLIB</p>;
+  if (source !== 'lrclib' && source !== 'netease') return null;
+  return <p className="mt-10 text-xs font-medium text-white/40">Lyrics from {source === 'netease' ? 'NetEase Cloud Music' : 'LRCLIB'}</p>;
 }
 
 function PlainLyrics({ lines, compact, className, source }: { lines: LyricEntry[]; compact: boolean; className: string; source?: string }) {

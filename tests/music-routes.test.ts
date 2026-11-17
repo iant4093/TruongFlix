@@ -100,11 +100,11 @@ describe('/api/music', () => {
     expect(vi.mocked(streaming.releaseStream).mock.calls.map((c) => c[0])).toEqual(['tok1', 'tok2', 'tok3', 'tok4', 'tok5']);
   });
 
-  it('serves file lyrics, then LRCLIB (looked up once)', async () => {
+  it('serves file lyrics, then online lyrics (looked up once)', async () => {
     expect(await get('/music/lyrics', { profile: '1', id: String(ids['Plain MP3']) })).toEqual({ text: '[00:01.00]Hi', synced: true, source: 'embedded' });
-    vi.mocked(core.invoke).mockImplementation(async (cmd: string) => (cmd === 'music_lyrics_fetch' ? { synced: '[00:02.00]Online', plain: 'Online', instrumental: false } : null));
+    vi.mocked(core.invoke).mockImplementation(async (cmd: string) => (cmd === 'music_lyrics_fetch' ? { synced: '[00:02.00]Online', plain: 'Online', instrumental: false, provider: 'netease' } : null));
     const first = await get('/music/lyrics', { profile: '1', id: String(ids.Lossless) });
-    expect(first).toMatchObject({ text: '[00:02.00]Online', synced: true, source: 'lrclib' });
+    expect(first).toMatchObject({ text: '[00:02.00]Online', synced: true, source: 'netease' });
     const second = await get('/music/lyrics', { profile: '1', id: String(ids.Lossless) });
     expect(second).toEqual(first);
     expect(vi.mocked(core.invoke).mock.calls.filter((c) => c[0] === 'music_lyrics_fetch')).toHaveLength(1);

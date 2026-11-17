@@ -78,7 +78,7 @@ export interface MusicLyrics {
   /** LRC (when `synced`) or plain text. */
   text: string;
   synced: boolean;
-  source: 'sidecar' | 'embedded' | 'lrclib';
+  source: 'sidecar' | 'embedded' | 'lrclib' | 'netease';
   instrumental?: boolean;
 }
 

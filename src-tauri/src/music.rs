@@ -1,6 +1,6 @@
 //! Music library: walks the music folders, reads each audio file's tags (title, artists, album,
 //! track/disc, year, genre, duration, codec), caches embedded or folder cover art, and picks up
-//! embedded or sidecar `.lrc` lyrics. Synced lyrics can also be looked up on LRCLIB.
+//! embedded or sidecar `.lrc` lyrics. Synced lyrics can also be looked up online (NetEase Cloud Music, then LRCLIB).
 //!
 //! Covers are written to `<app cache>/music-art/<name>` where `name` is a keyed hash of the image
 //! (the key is random per install), so the media server can serve them to the browser app without
@@ -396,7 +396,7 @@ pub fn music_art_dir(app: AppHandle) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// LRCLIB
+// Online lyrics: NetEase Cloud Music and LRCLIB
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -404,11 +404,13 @@ pub struct OnlineLyrics {
     pub synced: Option<String>,
     pub plain: Option<String>,
     pub instrumental: bool,
+    /// Where they came from: "netease" or "lrclib" (shown as a credit under the lyrics).
+    pub provider: &'static str,
 }
 
 fn parse_lrclib(v: &serde_json::Value) -> OnlineLyrics {
     let text = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned).filter(|s| !s.trim().is_empty());
-    OnlineLyrics { synced: text("syncedLyrics"), plain: text("plainLyrics"), instrumental: v.get("instrumental").and_then(|x| x.as_bool()).unwrap_or(false) }
+    OnlineLyrics { synced: text("syncedLyrics"), plain: text("plainLyrics"), instrumental: v.get("instrumental").and_then(|x| x.as_bool()).unwrap_or(false), provider: "lrclib" }
 }
 
 /// Best search hit: closest duration (within 5 s), synced lyrics preferred.
@@ -422,12 +424,24 @@ fn best_search_hit(list: &[serde_json::Value], duration: f64) -> Option<&serde_j
         })
 }
 
-/// Looks up lyrics on LRCLIB (free, no key). `None` = not found.
+/// Looks up lyrics online: NetEase Cloud Music first (synced lyrics for most popular songs, many
+/// timed word by word), then LRCLIB (free, crowd-sourced). `None` = neither has them.
 #[tauri::command]
 pub async fn music_lyrics_fetch(artist: String, title: String, album: Option<String>, duration: f64) -> Result<Option<OnlineLyrics>, String> {
     if artist.trim().is_empty() || title.trim().is_empty() {
         return Ok(None);
     }
+    match netease_lookup(&artist, &title, duration).await {
+        Ok(Some(found)) => return Ok(Some(found)),
+        Ok(None) => {}
+        // NetEase being down or blocked isn't fatal: LRCLIB may still have the song.
+        Err(e) => eprintln!("[music] NetEase lyrics lookup failed: {e}"),
+    }
+    lrclib_lookup(&artist, &title, album, duration).await
+}
+
+async fn lrclib_lookup(artist: &str, title: &str, album: Option<String>, duration: f64) -> Result<Option<OnlineLyrics>, String> {
+    let (artist, title) = (artist.to_string(), title.to_string());
     let client = reqwest::Client::builder()
         .user_agent(concat!("TruongFlix/", env!("CARGO_PKG_VERSION"), " (https://github.com/iant4093/TruongFlix)"))
         .timeout(Duration::from_secs(12))
@@ -469,6 +483,148 @@ pub async fn music_lyrics_fetch(artist: String, title: String, album: Option<Str
         }
     }
     Ok(None)
+}
+
+// NetEase Cloud Music (no key). Its catalogue has time-synced lyrics for most popular songs, and
+// many are timed word by word ("YRC"), which become enhanced LRC here.
+
+const NETEASE_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+/// Lowercased letters and digits only, for comparing titles and artists ("Don't" == "Dont").
+fn simplify(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// The search hit for this song: same title (ignoring version tags) by one of the artists, with the
+/// closest length (within 4 s when the length is known). An exact title beats a bare-title match.
+fn netease_pick(songs: &[serde_json::Value], artist: &str, title: &str, duration: f64) -> Option<u64> {
+    let want_exact = simplify(title);
+    let want_bare = simplify(&bare_title(title));
+    let our_artist = simplify(artist);
+    songs
+        .iter()
+        .filter_map(|s| {
+            let name = s.get("name")?.as_str()?;
+            let id = s.get("id")?.as_u64()?;
+            let exact = simplify(name) == want_exact;
+            if !exact && simplify(&bare_title(name)) != want_bare {
+                return None;
+            }
+            let artists = s.get("ar").and_then(|a| a.as_array())?;
+            let by = artists.iter().filter_map(|a| a.get("name")?.as_str()).map(simplify).any(|a| !a.is_empty() && (our_artist.contains(&a) || a.contains(&our_artist)));
+            if !by {
+                return None;
+            }
+            let len = s.get("dt").and_then(|d| d.as_f64()).unwrap_or(0.0) / 1000.0;
+            let diff = if duration > 0.0 && len > 0.0 { (len - duration).abs() } else { 0.0 };
+            if diff > 4.0 {
+                return None;
+            }
+            Some(((!exact) as u8, (diff * 10.0) as u64, id))
+        })
+        .min()
+        .map(|(_, _, id)| id)
+}
+
+fn lrc_stamp(ms: u64) -> String {
+    format!("{:02}:{:02}.{:02}", ms / 60_000, (ms / 1000) % 60, (ms % 1000) / 10)
+}
+
+/// Song credits NetEase puts at the top of its lyrics ("作词 : Someone", "Producer: …").
+fn is_credit(text: &str) -> bool {
+    let t = text.trim();
+    let Some(i) = t.find([':', '：']) else { return false };
+    let label = t[..i].trim();
+    !label.is_empty() && label.chars().count() <= 12 && (label.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) || ["producer", "producers", "writer", "writers", "composer", "lyricist", "lyrics", "music", "arranger", "mixed by", "mastered by", "recorded by", "vocals", "vocal producer"].contains(&label.to_lowercase().as_str()))
+}
+
+/// Word-timed YRC (`[start,dur](start,dur,0)word(start,dur,0)word`, ms) as enhanced LRC.
+fn yrc_to_lrc(yrc: &str) -> Option<String> {
+    let mut out = Vec::new();
+    for line in yrc.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix('[') else { continue }; // JSON credit lines start with '{'
+        let Some((head, mut body)) = rest.split_once(']') else { continue };
+        let Some(start) = head.split(',').next().and_then(|v| v.trim().parse::<u64>().ok()) else { continue };
+        let mut words = String::new();
+        let mut plain = String::new();
+        let mut end = 0u64;
+        while let Some(open) = body.find('(') {
+            let Some(close) = body[open..].find(')').map(|c| open + c) else { break };
+            let nums: Vec<u64> = body[open + 1..close].split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            let next = body[close + 1..].find('(').map(|n| close + 1 + n).unwrap_or(body.len());
+            let text = &body[close + 1..next];
+            if nums.len() >= 2 && !text.is_empty() {
+                words.push_str(&format!("<{}>{}", lrc_stamp(nums[0]), text));
+                plain.push_str(text);
+                end = end.max(nums[0] + nums[1]);
+            }
+            body = &body[next..];
+        }
+        if plain.trim().is_empty() || is_credit(&plain) {
+            continue;
+        }
+        out.push(format!("[{}]{}<{}>", lrc_stamp(start), words, lrc_stamp(end)));
+    }
+    (!out.is_empty()).then(|| out.join("\n"))
+}
+
+/// Line-timed LRC without the credits and JSON lines. None when no sung line is left.
+fn clean_netease_lrc(lrc: &str) -> Option<String> {
+    let kept: Vec<&str> = lrc
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('[') && l.as_bytes().get(1).is_some_and(u8::is_ascii_digit))
+        .filter(|l| {
+            let text = l.rsplit(']').next().unwrap_or("");
+            // "暂无歌词" (no lyrics yet) and "纯音乐，请欣赏" (instrumental) are placeholders, not lyrics.
+            !is_credit(text) && !text.contains("暂无歌词") && !text.contains("纯音乐")
+        })
+        .collect();
+    let sung = kept.iter().any(|l| !l.rsplit(']').next().unwrap_or("").trim().is_empty());
+    sung.then(|| kept.join("\n"))
+}
+
+/// NetEase's lyrics for the song. `Ok(None)` = not found there (or no synced lyrics).
+async fn netease_lookup(artist: &str, title: &str, duration: f64) -> Result<Option<OnlineLyrics>, String> {
+    let client = reqwest::Client::builder().user_agent(NETEASE_UA).timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
+    let get = |url: reqwest::Url| {
+        let req = client.get(url).header("Referer", "https://music.163.com/");
+        async move {
+            let res = req.send().await.map_err(|e| e.to_string())?;
+            if !res.status().is_success() {
+                return Err(format!("NetEase answered HTTP {}", res.status()));
+            }
+            serde_json::from_str::<serde_json::Value>(&res.text().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        }
+    };
+    let mut queries = vec![format!("{title} {artist}")];
+    let bare = bare_title(title);
+    if !bare.eq_ignore_ascii_case(title) {
+        queries.push(format!("{bare} {artist}"));
+    }
+    let mut id = None;
+    for q in queries {
+        let url = reqwest::Url::parse_with_params("https://music.163.com/api/cloudsearch/pc", &[("s", q.as_str()), ("type", "1"), ("limit", "20")]).map_err(|e| e.to_string())?;
+        let v = get(url).await?;
+        let songs = v.pointer("/result/songs").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+        id = netease_pick(&songs, artist, title, duration);
+        if id.is_some() {
+            break;
+        }
+    }
+    let Some(id) = id else { return Ok(None) };
+    let url = reqwest::Url::parse_with_params("https://music.163.com/api/song/lyric/v1", &[("id", id.to_string().as_str()), ("lv", "-1"), ("kv", "-1"), ("tv", "-1"), ("yv", "-1")]).map_err(|e| e.to_string())?;
+    let v = get(url).await?;
+    if v.get("pureMusic").and_then(|p| p.as_bool()).unwrap_or(false) {
+        return Ok(Some(OnlineLyrics { synced: None, plain: None, instrumental: true, provider: "netease" }));
+    }
+    let text = |p: &str| v.pointer(p).and_then(|s| s.as_str()).unwrap_or("");
+    if text("/lrc/lyric").contains("纯音乐，请欣赏") {
+        return Ok(Some(OnlineLyrics { synced: None, plain: None, instrumental: true, provider: "netease" }));
+    }
+    let synced = yrc_to_lrc(text("/yrc/lyric")).or_else(|| clean_netease_lrc(text("/lrc/lyric")));
+    Ok(synced.map(|s| OnlineLyrics { synced: Some(s), plain: None, instrumental: false, provider: "netease" }))
 }
 
 /// The title without a trailing version tag: "(Remastered 2011)", "[Live]", "- Radio Edit", "feat. X".
@@ -659,5 +815,57 @@ mod tests {
         let hit = parse_lrclib(best_search_hit(&list, 201.0).unwrap());
         assert_eq!(hit.synced.as_deref(), Some("[00:01.00]b"));
         assert!(best_search_hit(&list, 100.0).is_none());
+    }
+
+    #[test]
+    fn converts_netease_word_timing() {
+        let yrc = "{\"t\":0,\"c\":[{\"tx\":\"作曲: \"},{\"tx\":\"Someone\"}]}
+[9520,1350](9520,210,0)If (9730,120,0)you (9850,300,0)wanna
+[12000,500](12000,500,0)Run";
+        let lrc = yrc_to_lrc(yrc).unwrap();
+        assert_eq!(lrc, "[00:09.52]<00:09.52>If <00:09.73>you <00:09.85>wanna<00:10.15>
+[00:12.00]<00:12.00>Run<00:12.50>");
+    }
+
+    #[test]
+    fn drops_netease_credits_and_placeholders() {
+        let lrc = "{\"t\":0}
+[00:00.00] 作词 : Someone
+[00:01.00] Producer: X
+[00:05.10]Hello there
+[00:07.00]";
+        assert_eq!(clean_netease_lrc(lrc).unwrap(), "[00:05.10]Hello there
+[00:07.00]");
+        assert!(clean_netease_lrc("[00:00.00]暂无歌词").is_none());
+        assert!(!is_credit("Baby: I love you so much right now"));
+    }
+
+    #[test]
+    fn picks_netease_hits() {
+        let songs: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"id":1,"name":"Blinding Lights (Live)","ar":[{"name":"The Weeknd"}],"dt":253000},
+                {"id":2,"name":"Blinding Lights","ar":[{"name":"Cover Band"}],"dt":200000},
+                {"id":3,"name":"Blinding Lights","ar":[{"name":"The Weeknd"}],"dt":200045},
+                {"id":4,"name":"Blinding Lights","ar":[{"name":"The Weeknd"}],"dt":215000}]"#,
+        )
+        .unwrap();
+        assert_eq!(netease_pick(&songs, "The Weeknd", "Blinding Lights", 201.0), Some(3));
+        assert_eq!(netease_pick(&songs, "The Weeknd", "Blinding Lights (Remastered)", 200.0), Some(3));
+        assert_eq!(netease_pick(&songs, "Someone Else", "Blinding Lights", 200.0), None);
+    }
+}
+
+#[cfg(test)]
+mod online_tests {
+    /// Real lookups (needs the internet): `cargo test --lib online_lyrics -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn online_lyrics() {
+        for (artist, title, dur) in [("The Weeknd", "Blinding Lights", 200.0), ("Taylor Swift", "Anti-Hero", 200.0), ("Dua Lipa", "Levitating", 203.0), ("Queen", "Bohemian Rhapsody (Remastered 2011)", 355.0), ("Billie Eilish", "BIRDS OF A FEATHER", 210.0)] {
+            let r = tauri::async_runtime::block_on(super::music_lyrics_fetch(artist.into(), title.into(), None, dur)).unwrap();
+            let r = r.expect(title);
+            let s = r.synced.unwrap_or_default();
+            println!("{title}: {} words={} {:?}", r.provider, s.contains('<'), s.lines().take(2).collect::<Vec<_>>());
+        }
     }
 }

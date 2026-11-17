@@ -44,7 +44,7 @@ export const MUSIC_SCHEMA = [
     lyrics_source TEXT,                    -- 'embedded' | 'sidecar'
     created_at INTEGER NOT NULL
   )`,
-  // LRCLIB answers (including "not found"), so each song is looked up once.
+  // Online lyrics answers (including "not found"), so each song is looked up once.
   `CREATE TABLE IF NOT EXISTS music_lyrics_cache (
     track_id INTEGER PRIMARY KEY,
     synced TEXT,
@@ -81,8 +81,11 @@ export const MUSIC_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_music_playlists_profile ON music_playlists(profile_id)`,
 ];
 
-/** Columns added to music tables after they first shipped (none yet). */
-const MUSIC_ADDED_COLUMNS: Record<string, [string, string][]> = {};
+/** Columns added to music tables after they first shipped. */
+const MUSIC_ADDED_COLUMNS: Record<string, [string, string][]> = {
+  // Which service answered ('netease' | 'lrclib' | 'none'); older rows (null) are looked up again.
+  music_lyrics_cache: [['provider', 'TEXT']],
+};
 
 let ready: Promise<Database> | null = null;
 
@@ -378,20 +381,21 @@ export interface CachedLyrics {
   plain: string | null;
   instrumental: boolean;
   fetched_at: number;
+  provider: string | null;
 }
 
 export async function cachedLyrics(trackId: number): Promise<CachedLyrics | null> {
   const db = await musicDb();
-  const rows = await db.select<(Omit<CachedLyrics, 'instrumental'> & { instrumental: number })[]>('SELECT synced, plain, instrumental, fetched_at FROM music_lyrics_cache WHERE track_id = $1', [trackId]);
+  const rows = await db.select<(Omit<CachedLyrics, 'instrumental'> & { instrumental: number })[]>('SELECT synced, plain, instrumental, fetched_at, provider FROM music_lyrics_cache WHERE track_id = $1', [trackId]);
   return rows[0] ? { ...rows[0], instrumental: !!rows[0].instrumental } : null;
 }
 
-export async function saveLyricsCache(trackId: number, l: { synced: string | null; plain: string | null; instrumental: boolean }, now = Date.now()) {
+export async function saveLyricsCache(trackId: number, l: { synced: string | null; plain: string | null; instrumental: boolean; provider: string }, now = Date.now()) {
   const db = await musicDb();
   await db.execute(
-    `INSERT INTO music_lyrics_cache (track_id, synced, plain, instrumental, fetched_at) VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT(track_id) DO UPDATE SET synced = excluded.synced, plain = excluded.plain, instrumental = excluded.instrumental, fetched_at = excluded.fetched_at`,
-    [trackId, l.synced, l.plain, l.instrumental ? 1 : 0, now],
+    `INSERT INTO music_lyrics_cache (track_id, synced, plain, instrumental, fetched_at, provider) VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT(track_id) DO UPDATE SET synced = excluded.synced, plain = excluded.plain, instrumental = excluded.instrumental, fetched_at = excluded.fetched_at, provider = excluded.provider`,
+    [trackId, l.synced, l.plain, l.instrumental ? 1 : 0, now, l.provider],
   );
 }
 
