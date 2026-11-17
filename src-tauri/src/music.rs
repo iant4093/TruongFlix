@@ -750,7 +750,27 @@ fn kugou_pick<'a>(list: &'a [serde_json::Value], artist: &str, title: &str, dura
         .map(|k| k.3)
 }
 
+/// Kugou's song search results as lyric-search candidates (`song`, `singer`, `duration` in ms, `hash`).
+fn kugou_songs(v: &serde_json::Value) -> Vec<serde_json::Value> {
+    // The full name ("Anti-Hero (Acoustic Version)"), not the original one, so versions stay apart.
+    let clean = |s: &str| s.replace("<em>", "").replace("</em>", "");
+    let list = v.pointer("/data/info").and_then(|i| i.as_array()).cloned().unwrap_or_default();
+    list.iter()
+        .filter_map(|s| {
+            let song = clean(s.get("songname")?.as_str()?);
+            let singer = clean(s.get("singername").and_then(|x| x.as_str()).unwrap_or(""));
+            let hash = s.get("hash")?.as_str()?;
+            let secs = s.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0);
+            Some(serde_json::json!({ "song": song, "singer": singer, "duration": secs * 1000.0, "hash": hash }))
+        })
+        .collect()
+}
+
 /// Kugou's word-timed lyrics for the song. `Ok(None)` = not found there.
+///
+/// Kugou's lyric search only matches titles exactly as Kugou spells them ("BIRDS OF A FEATHER", not
+/// "Birds Of A Feather"), so the song is found with the (forgiving) song search first, and its
+/// lyrics are then looked up by Kugou's own song hash.
 async fn kugou_lookup(artist: &str, title: &str, duration: f64) -> Result<Option<OnlineLyrics>, String> {
     let client = reqwest::Client::builder().user_agent(NETEASE_UA).timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
     let get = |url: reqwest::Url| {
@@ -769,12 +789,22 @@ async fn kugou_lookup(artist: &str, title: &str, duration: f64) -> Result<Option
     if !bare.eq_ignore_ascii_case(title) {
         titles.push(bare);
     }
-    for name in titles {
-        let keyword = format!("{artist} - {name}");
-        let url = reqwest::Url::parse_with_params("https://krcs.kugou.com/search", &[("ver", "1"), ("man", "yes"), ("client", "mobi"), ("keyword", keyword.as_str()), ("duration", ms.as_str()), ("hash", "")]).map_err(|e| e.to_string())?;
+    // "Title Artist" finds the original far more often than "Artist Title", which Kugou's search
+    // ranks covers named "Artist - Title" above.
+    let queries: Vec<(&String, String)> = titles.iter().flat_map(|n| [(n, format!("{n} {artist}")), (n, format!("{artist} {n}"))]).collect();
+    for (name, query) in queries {
+        let url = reqwest::Url::parse_with_params("https://mobileservice.kugou.com/api/v3/search/song", &[("format", "json"), ("page", "1"), ("pagesize", "20"), ("showtype", "1"), ("keyword", query.as_str())]).map_err(|e| e.to_string())?;
+        let songs = kugou_songs(&get(url).await?);
+        // Not in the song search: the lyric search may still know the title as it's spelled here.
+        let fallback = serde_json::json!({ "song": name.as_str(), "singer": artist, "hash": "" });
+        let song = kugou_pick(&songs, artist, title, duration).unwrap_or(&fallback);
+        let (Some(hash), Some(kg_title), Some(kg_artist)) = (song["hash"].as_str(), song["song"].as_str(), song["singer"].as_str()) else { continue };
+        let keyword = format!("{kg_artist} - {kg_title}");
+        let url = reqwest::Url::parse_with_params("https://krcs.kugou.com/search", &[("ver", "1"), ("man", "yes"), ("client", "mobi"), ("keyword", keyword.as_str()), ("duration", ms.as_str()), ("hash", hash)]).map_err(|e| e.to_string())?;
         let v = get(url).await?;
         let list = v.get("candidates").and_then(|c| c.as_array()).cloned().unwrap_or_default();
-        let Some(hit) = kugou_pick(&list, artist, title, duration) else { continue };
+        // The candidates are for Kugou's copy of the song, so they're matched against its names.
+        let Some(hit) = kugou_pick(&list, kg_artist, kg_title, duration).or(if hash.is_empty() { None } else { list.first() }) else { continue };
         let id = match hit.get("id") {
             Some(serde_json::Value::String(s)) => s.clone(),
             Some(n) => n.to_string(),
@@ -1061,7 +1091,7 @@ mod online_tests {
     #[test]
     #[ignore]
     fn online_lyrics() {
-        for (artist, title, dur) in [("The Weeknd", "Blinding Lights", 200.0), ("Taylor Swift", "Anti-Hero", 200.0), ("Dua Lipa", "Levitating", 203.0), ("Queen", "Bohemian Rhapsody (Remastered 2011)", 355.0), ("Billie Eilish", "BIRDS OF A FEATHER", 210.0), ("Sabrina Carpenter", "Espresso", 175.0)] {
+        for (artist, title, dur) in [("The Weeknd", "Blinding Lights", 200.0), ("Taylor Swift", "Anti-Hero", 200.0), ("Dua Lipa", "Levitating", 203.0), ("Queen", "Bohemian Rhapsody (Remastered 2011)", 355.0), ("Billie Eilish", "BIRDS OF A FEATHER", 210.0), ("Sabrina Carpenter", "Espresso", 175.0), ("Billie Eilish", "Birds Of A Feather", 210.373), ("Billie Eilish", "Birds Of A Feather (Isolated Vocals)", 210.373)] {
             let r = tauri::async_runtime::block_on(super::music_lyrics_fetch(artist.into(), title.into(), None, dur)).unwrap();
             let r = r.expect(title);
             let s = r.synced.unwrap_or_default();

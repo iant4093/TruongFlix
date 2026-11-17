@@ -26,10 +26,10 @@ interface OnlineLyrics {
 }
 
 /**
- * Bumped when the online lookup gets better (1: NetEase added, 2: Kugou added), so songs looked up
- * before are looked up again once.
+ * Bumped when the online lookup gets better, so songs looked up before are looked up again once
+ * (1: NetEase added, 2: Kugou added, 3: Kugou finds songs however their titles are capitalised).
  */
-const LYRICS_LOOKUP = 2;
+const LYRICS_LOOKUP = 3;
 
 const lyricsInFlight = new Map<number, Promise<MusicLyrics | null>>();
 
