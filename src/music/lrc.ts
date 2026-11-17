@@ -13,8 +13,10 @@ export interface LyricLine {
   time: number;
   end: number;
   text: string;
-  /** Word timing (enhanced LRC), or null. */
+  /** Word timing (enhanced LRC, or estimated for line-timed lyrics), or null. */
   words: LyricWord[] | null;
+  /** The word times were estimated from the line's length, not given by the lyrics. */
+  estimated?: boolean;
 }
 
 export interface ParsedLyrics {
@@ -105,13 +107,42 @@ export function parseLrc(input: string, duration = 0): ParsedLyrics {
       const last = l.words[l.words.length - 1];
       if (!Number.isFinite(last.end)) last.end = Math.min(l.end, last.time + Math.max(1, (l.end - last.time) * 0.8));
       for (const w of l.words) if (!Number.isFinite(w.end) || w.end < w.time) w.end = w.time;
+    } else if (l.text) {
+      l.words = estimateWords(l.text, l.time, l.end);
+      l.estimated = true;
     }
   });
   return { synced: true, lines, meta };
 }
 
+/** About how long one word takes to sing, for lines that only have a start time. */
+const SECONDS_PER_WORD = 0.55;
+
+/**
+ * Word times for a line that only says when it starts: the words share the time until the next
+ * line (most of it, so the last word finishes before the next line begins, and never slower than
+ * a slow singer), each in proportion to its length. Gives line-timed lyrics the word-by-word fill.
+ */
+export function estimateWords(text: string, start: number, end: number): LyricWord[] {
+  const parts = text.match(/\S+\s*/g) ?? [];
+  if (!parts.length) return [];
+  const gap = Math.max(0.3, end - start);
+  const sung = Math.min(gap * 0.9, Math.max(0.6, parts.length * SECONDS_PER_WORD));
+  // Longer words take longer; every word gets a little time of its own.
+  const weights = parts.map((p) => p.trim().length + 2);
+  const total = weights.reduce((a, b) => a + b, 0);
+  const words: LyricWord[] = [];
+  let t = start;
+  parts.forEach((p, i) => {
+    const len = (sung * weights[i]) / total;
+    words.push({ time: t, end: t + len, text: p });
+    t += len;
+  });
+  return words;
+}
+
 export type LyricEntry =
-  | { kind: 'line'; time: number; end: number; text: string; words: LyricWord[] | null }
+  | { kind: 'line'; time: number; end: number; text: string; words: LyricWord[] | null; estimated?: boolean }
   | { kind: 'gap'; time: number; end: number };
 
 /** Gaps shorter than this don't get the "…" indicator. */
@@ -134,9 +165,9 @@ export function lyricTimeline(lyrics: ParsedLyrics, minGap = MIN_GAP): LyricEntr
       if (l.end - l.time >= minGap && out.length && out[out.length - 1].kind !== 'gap') out.push({ kind: 'gap', time: l.time, end: l.end });
       continue;
     }
-    out.push({ kind: 'line', time: l.time, end: l.end, text: l.text, words: l.words });
-    // With word timing we know when singing stops; a long silence after that is a break too.
-    const lastWord = l.words?.[l.words.length - 1];
+    out.push({ kind: 'line', time: l.time, end: l.end, text: l.text, words: l.words, estimated: l.estimated });
+    // With real word timing we know when singing stops; a long silence after that is a break too.
+    const lastWord = l.estimated ? undefined : l.words?.[l.words.length - 1];
     const next = sung[i + 1];
     if (lastWord && next?.text && next.time - lastWord.end >= minGap) {
       out[out.length - 1].end = lastWord.end;

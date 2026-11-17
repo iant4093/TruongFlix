@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activeIndex, lyricTimeline, parseLrc, progressOf } from '../src/music/lrc';
+import { activeIndex, estimateWords, lyricTimeline, parseLrc, progressOf } from '../src/music/lrc';
 
 describe('LRC parsing', () => {
   it('reads line timestamps, metadata and sorts lines', () => {
@@ -108,5 +108,31 @@ describe('lyrics timeline', () => {
     expect(activeIndex(entries, 10)).toBe(1);
     expect(activeIndex(entries, 500)).toBe(2);
     expect(activeIndex([{ time: 5 }], 1)).toBe(-1);
+  });
+});
+
+describe('estimated word timing', () => {
+  it('gives line-timed lyrics a word-by-word fill', () => {
+    const l = parseLrc('[00:10.00]I want you to stay\n[00:13.00]Til I am in the grave');
+    const line = l.lines[0];
+    expect(line.estimated).toBe(true);
+    expect(line.words!.map((w) => w.text).join('')).toBe('I want you to stay');
+    expect(line.words![0].time).toBe(10);
+    // Words follow each other and finish before the next line starts.
+    for (let i = 1; i < line.words!.length; i++) expect(line.words![i].time).toBeCloseTo(line.words![i - 1].end);
+    expect(line.words!.at(-1)!.end).toBeLessThanOrEqual(13);
+    // Longer words take longer.
+    const len = (w: { time: number; end: number }) => w.end - w.time;
+    expect(len(line.words![4])).toBeGreaterThan(len(line.words![0]));
+  });
+
+  it('does not stretch words across a long pause', () => {
+    const words = estimateWords('Hold on', 0, 30);
+    expect(words.at(-1)!.end).toBeLessThan(2);
+  });
+
+  it('does not invent instrumental breaks from estimated words', () => {
+    const t = lyricTimeline(parseLrc('[00:01.00]Short line\n[00:20.00]Next line'));
+    expect(t.filter((e) => e.kind === 'gap')).toHaveLength(0);
   });
 });
