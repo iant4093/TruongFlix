@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Music } from 'lucide-react';
-import { setVolume, useMusicPlayer } from '../player';
+import { setScrub, setVolume, useMusicPlayer } from '../player';
+import { musicLevels } from '../analyser';
 import { formatTime } from '../library';
 import '../music.css';
 
@@ -34,9 +35,41 @@ export function Mosaic({ arts, className = '' }: { arts: string[]; className?: s
   );
 }
 
+/**
+ * Now-playing bars. On the desktop they move with the music itself (bass, mids, treble); without
+ * live levels (the browser app, or silence) they fall back to a gentle animation.
+ */
 export function EqBars({ playing, className = '' }: { playing: boolean; className?: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [live, setLive] = useState(false);
+  useEffect(() => {
+    if (!playing) return setLive(false);
+    let raf = 0;
+    let shown = false;
+    const smooth = [0, 0, 0];
+    // Each band's recent loudest moment (fading over a few seconds): quiet treble still moves the bar.
+    const peak = [0.05, 0.05, 0.05];
+    const tick = () => {
+      const levels = musicLevels();
+      if (levels && !shown) setLive((shown = true));
+      if (!levels && shown) setLive((shown = false));
+      const bars = ref.current?.children;
+      if (levels && bars) {
+        levels.forEach((v, i) => {
+          peak[i] = Math.max(v, peak[i] * 0.996, 0.05);
+          // Mostly relative to the band's recent peak, partly absolute; quick to rise, slower to fall.
+          const target = Math.min(1, 0.65 * Math.pow(v / peak[i], 1.6) + 0.35 * Math.pow(v, 0.7));
+          smooth[i] = target > smooth[i] ? target : smooth[i] * 0.86 + target * 0.14;
+          (bars[i] as HTMLElement).style.height = `${Math.round(18 + smooth[i] * 82)}%`;
+        });
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing]);
   return (
-    <span className={`tfm-eq ${playing ? '' : 'tfm-eq-paused'} ${className}`} aria-hidden>
+    <span ref={ref} className={`tfm-eq ${playing && !live ? '' : 'tfm-eq-paused'} ${live ? 'tfm-eq-live' : ''} ${className}`} aria-hidden>
       <span />
       <span />
       <span />
@@ -44,39 +77,68 @@ export function EqBars({ playing, className = '' }: { playing: boolean; classNam
   );
 }
 
-/** Thin progress bar that grows when touched; drag to seek. */
+/**
+ * Thin progress bar that grows when touched; drag anywhere on it to seek. Pointer dragging (not a
+ * hidden range input, whose tiny thumb phones can barely grab) works the same with a finger or a
+ * mouse, and lyrics follow the finger while dragging. Arrow keys step 5 s.
+ */
 export function Scrubber({ time, duration, onSeek, className = '', showTimes = true, light = true }: { time: number; duration: number; onSeek: (t: number) => void; className?: string; showTimes?: boolean; light?: boolean }) {
   const [drag, setDrag] = useState<number | null>(null);
+  const track = useRef<HTMLDivElement>(null);
   const shown = drag ?? time;
   const pct = duration > 0 ? Math.min(100, (shown / duration) * 100) : 0;
+  const at = (clientX: number) => {
+    const r = track.current?.getBoundingClientRect();
+    if (!r || !duration) return 0;
+    return Math.min(duration, Math.max(0, ((clientX - r.left) / r.width) * duration));
+  };
+  const move = (t: number) => {
+    setDrag(t);
+    setScrub(t);
+  };
+  const finish = (t: number | null) => {
+    setScrub(null);
+    setDrag(null);
+    if (t != null) onSeek(t);
+  };
+  useEffect(() => () => setScrub(null), []);
   return (
     <div className={className}>
-      <div className="group relative flex h-5 items-center">
-        <div className={`h-1.5 w-full overflow-hidden rounded-full transition-[height] group-hover:h-2 ${light ? 'bg-white/25' : 'bg-white/15'} ${drag != null ? '!h-2.5' : ''}`}>
+      <div
+        ref={track}
+        role="slider"
+        tabIndex={0}
+        aria-label="Seek"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(duration)}
+        aria-valuenow={Math.round(shown)}
+        aria-valuetext={`${formatTime(shown)} of ${formatTime(duration)}`}
+        onPointerDown={(e) => {
+          if (!duration || e.button > 0) return;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          move(at(e.clientX));
+        }}
+        onPointerMove={(e) => {
+          if (drag != null) move(at(e.clientX));
+        }}
+        onPointerUp={(e) => {
+          if (drag != null) finish(at(e.clientX));
+        }}
+        onPointerCancel={() => finish(null)}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+          e.preventDefault();
+          e.stopPropagation();
+          onSeek(Math.min(duration, Math.max(0, time + (e.key === 'ArrowRight' ? 5 : -5))));
+        }}
+        className="group relative flex h-6 cursor-pointer touch-none select-none items-center outline-none"
+      >
+        <div className={`h-1.5 w-full overflow-hidden rounded-full transition-[height] duration-150 group-hover:h-2 group-focus-visible:h-2 ${light ? 'bg-white/25' : 'bg-white/15'} ${drag != null ? '!h-2.5' : ''}`}>
           <div className={`h-full rounded-full ${light ? 'bg-white/90' : 'bg-white/80'}`} style={{ width: `${pct}%` }} />
         </div>
-        <input
-          type="range"
-          aria-label="Seek"
-          min={0}
-          max={duration || 0}
-          step={0.1}
-          value={Math.min(shown, duration || 0)}
-          onChange={(e) => setDrag(Number(e.target.value))}
-          onPointerUp={() => {
-            if (drag != null) onSeek(drag);
-            setDrag(null);
-          }}
-          onKeyUp={() => {
-            if (drag != null) onSeek(drag);
-            setDrag(null);
-          }}
-          onBlur={() => setDrag(null)}
-          className="tfm-range absolute inset-0 h-full w-full opacity-0"
-        />
       </div>
       {showTimes && (
-        <div className="mt-1 flex justify-between text-[11px] font-medium tabular-nums text-white/55">
+        <div className="mt-0.5 flex justify-between text-[11px] font-medium tabular-nums text-white/55">
           <span>{formatTime(shown)}</span>
           <span>-{formatTime(Math.max(0, duration - shown))}</span>
         </div>

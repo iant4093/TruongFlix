@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { MusicApi } from './api';
 import type { MusicLibrary, MusicTrack } from './types';
 import * as Q from './queue';
+import { connectAnalyser, resumeAnalyser } from './analyser';
 
 /**
  * The music player, shared by the desktop and browser apps: an HTML `<audio>` element fed by the
@@ -76,7 +77,7 @@ interface Slot {
 let slots: [Slot, Slot] | null = null;
 let active = 0;
 let loadSeq = 0;
-let options = { mediaSession: false };
+let options = { mediaSession: false, visualizer: false };
 let listened = 0;
 let counted = false;
 let lastTick = 0;
@@ -92,7 +93,8 @@ function ensureSlots(): [Slot, Slot] {
   const make = (): Slot => {
     const el = new Audio();
     el.preload = 'auto';
-    el.crossOrigin = null;
+    // The visualizer reads the audio, which needs a CORS load (the media server allows it).
+    el.crossOrigin = options.visualizer ? 'anonymous' : null;
     return { el, key: null, trackId: null, url: null };
   };
   slots = [make(), make()];
@@ -136,6 +138,7 @@ function silence(): string {
 
 /** Called synchronously from a tap/click: lets both elements play later without another tap. */
 function unlock() {
+  if (options.visualizer) connectAnalyser(ensureSlots().map((s) => s.el));
   if (unlocked) return;
   unlocked = true;
   for (const s of ensureSlots()) {
@@ -167,7 +170,11 @@ function wire(slot: Slot) {
     if (mine() && Number.isFinite(el.duration) && el.duration > 0) set({ duration: el.duration });
   });
   el.addEventListener('playing', () => mine() && set({ playing: true, loading: false, error: null }));
-  el.addEventListener('play', () => mine() && set({ playing: true }));
+  el.addEventListener('play', () => {
+    if (!mine()) return;
+    resumeAnalyser();
+    set({ playing: true });
+  });
   el.addEventListener('pause', () => mine() && !el.ended && set({ playing: false }));
   el.addEventListener('waiting', () => mine() && set({ loading: true }));
   el.addEventListener('canplay', () => mine() && set({ loading: false }));
@@ -390,9 +397,10 @@ function installMediaSession() {
 // Public actions
 // ---------------------------------------------------------------------------
 
-export function initMusicPlayer(api: MusicApi, opts: { mediaSession?: boolean } = {}) {
+/** `visualizer` routes the audio through Web Audio for live now-playing bars (desktop only). */
+export function initMusicPlayer(api: MusicApi, opts: { mediaSession?: boolean; visualizer?: boolean } = {}) {
   const first = !get().api;
-  options = { mediaSession: !!opts.mediaSession };
+  options = { mediaSession: !!opts.mediaSession, visualizer: !!opts.visualizer && !slots };
   set({ api });
   if (first && options.mediaSession) installMediaSession();
 }
@@ -577,8 +585,16 @@ export function setPanel(panel: Panel) {
   set({ panel });
 }
 
+let scrubAt: number | null = null;
+
+/** While a seek bar is being dragged: lyrics follow the finger before the song actually jumps. */
+export function setScrub(t: number | null) {
+  scrubAt = t;
+}
+
 /** Precise playback time for animations (the store only updates a few times a second). */
 export function musicClock(): number {
+  if (scrubAt != null) return scrubAt;
   const slot = slots?.[active];
   return slot?.key ? slot.el.currentTime : get().time;
 }

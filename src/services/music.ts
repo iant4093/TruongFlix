@@ -159,10 +159,10 @@ export async function initDesktopMusic() {
       return data as T;
     }, { id: 1 });
     api.artUrl = mockArtUrl;
-    initMusicPlayer(api);
+    initMusicPlayer(api, { visualizer: true });
   } else {
     const dir = await invoke<string>('music_art_dir');
-    initMusicPlayer(localApi(dir));
+    initMusicPlayer(localApi(dir), { visualizer: true });
   }
   // A different profile has its own favourites, plays and playlists.
   useLibraryStore.subscribe((s, prev) => {
