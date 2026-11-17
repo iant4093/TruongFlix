@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Music } from 'lucide-react';
 import { setScrub, setVolume, useMusicPlayer } from '../player';
-import { musicLevels } from '../analyser';
+import { createBarMeter, musicLevels } from '../analyser';
 import { formatTime } from '../library';
 import '../music.css';
 
@@ -48,21 +48,15 @@ export function EqBars({ playing, className = '' }: { playing: boolean; classNam
     if (!playing) return setLive(false);
     let raf = 0;
     let shown = false;
-    const smooth = BARS.map(() => 0);
-    // Each band's recent loudest moment (fading over a few seconds): quiet treble still moves the bar.
-    const peak = BARS.map(() => 0.05);
+    const meter = createBarMeter(BARS.length);
     const tick = () => {
       const levels = musicLevels();
       if (levels && !shown) setLive((shown = true));
       if (!levels && shown) setLive((shown = false));
       const bars = ref.current?.children;
       if (levels && bars) {
-        levels.forEach((v, i) => {
-          peak[i] = Math.max(v, peak[i] * 0.996, 0.05);
-          // Mostly relative to the band's recent peak, partly absolute; quick to rise, slower to fall.
-          const target = Math.min(1, 0.65 * Math.pow(v / peak[i], 1.6) + 0.35 * Math.pow(v, 0.7));
-          smooth[i] = target > smooth[i] ? target : smooth[i] * 0.86 + target * 0.14;
-          (bars[i] as HTMLElement).style.height = `${Math.round(18 + smooth[i] * 82)}%`;
+        meter(levels).forEach((h, i) => {
+          if (bars[i]) (bars[i] as HTMLElement).style.height = `${Math.round(15 + h * 85)}%`;
         });
       }
       raf = requestAnimationFrame(tick);

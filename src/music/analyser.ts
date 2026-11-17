@@ -27,7 +27,10 @@ export function connectAnalyser(elements: HTMLMediaElement[]) {
       ctx = new Ctor();
       analyser = ctx.createAnalyser();
       analyser.fftSize = 128;
-      analyser.smoothingTimeConstant = 0.72;
+      analyser.smoothingTimeConstant = 0.6;
+      // A wider range than the default (-100…-30 dB), so loud bass doesn't sit at the top.
+      analyser.minDecibels = -85;
+      analyser.maxDecibels = -12;
       analyser.connect(ctx.destination);
       bins = new Uint8Array(analyser.frequencyBinCount);
     }
@@ -66,6 +69,28 @@ export function musicLevels(): number[] | null {
   };
   const levels = [band(0, 1), band(1, 3), band(3, 7), band(7, 14), band(14, 32)];
   return levels.some((v) => v > 0.01) ? levels : null;
+}
+
+/**
+ * Turns band levels into bar heights (0…1), one call per frame. Each bar is scaled between its band's
+ * recent quiet and loud points, so it moves with the beat rather than sitting at the top whenever a
+ * band is loud all the time (bass usually is). Quick to rise, slower to fall.
+ */
+export function createBarMeter(count: number) {
+  const floor = new Array<number>(count).fill(1);
+  const ceil = new Array<number>(count).fill(0);
+  const shown = new Array<number>(count).fill(0);
+  return (levels: number[]): number[] =>
+    shown.map((prev, i) => {
+      const v = levels[i] ?? 0;
+      // The quiet point drops at once and creeps back up; the loud point jumps up and fades.
+      floor[i] = v < floor[i] ? v : floor[i] + (v - floor[i]) * 0.02;
+      ceil[i] = v > ceil[i] ? v : ceil[i] + (v - ceil[i]) * 0.01;
+      const range = Math.max(ceil[i] - floor[i], 0.08);
+      const target = Math.min(1, Math.max(0, (v - floor[i]) / range)) ** 1.4;
+      shown[i] = target > prev ? prev + (target - prev) * 0.6 : prev * 0.82 + target * 0.18;
+      return shown[i];
+    });
 }
 
 export const analyserActive = () => !!analyser && !failed;
