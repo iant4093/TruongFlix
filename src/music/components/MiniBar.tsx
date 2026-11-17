@@ -1,7 +1,7 @@
 import { useLayoutEffect, useState } from 'react';
 import { formatTime } from '../library';
 import { ListMusic, MessageSquareQuote, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react';
-import { next, previous, seek, setBarHidden, setFull, setPanel, toggle, toggleMute, useMusicPlayer } from '../player';
+import { next, previous, seek, setBarHidden, setScrub, setFull, setPanel, toggle, toggleMute, useMusicPlayer } from '../player';
 import { Cover, RoundButton, VolumeSlider } from './ui';
 
 /** Space the bar takes at the bottom of the window; pages, toasts and the cast bar keep clear of it. */
@@ -32,6 +32,7 @@ function Progress({ seekable }: { seekable: boolean }) {
   const commit = () => {
     if (drag != null) seek(drag);
     setDrag(null);
+    setScrub(null);
   };
   if (!seekable) {
     return (
@@ -61,10 +62,16 @@ function Progress({ seekable }: { seekable: boolean }) {
         max={duration || 0}
         step={0.5}
         value={Math.min(shown, duration || 0)}
-        onChange={(e) => setDrag(Number(e.target.value))}
+        onChange={(e) => {
+          setDrag(Number(e.target.value));
+          setScrub(Number(e.target.value));
+        }}
         onPointerUp={commit}
         onKeyUp={commit}
-        onBlur={() => setDrag(null)}
+        onBlur={() => {
+          setDrag(null);
+          setScrub(null);
+        }}
         className="tfm-range absolute inset-0 h-full w-full cursor-pointer opacity-0"
       />
     </div>
