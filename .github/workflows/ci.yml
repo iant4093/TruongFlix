@@ -102,12 +102,20 @@ jobs:
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           foreach ($mode in 'panel', 'manual') {
             $panelReady = [IO.Path]::ChangeExtension($env:TRUONGFLIX_SOURCE_SMOKE_REPORT, "$mode-ready")
-            $panelDeadline = [DateTime]::UtcNow.AddSeconds(25)
+            # WebView2's first start on a fresh runner can take a while.
+            $panelDeadline = [DateTime]::UtcNow.AddSeconds(90)
             while (-not (Test-Path $panelReady) -and -not $probe.HasExited -and [DateTime]::UtcNow -lt $panelDeadline) {
               Start-Sleep -Milliseconds 100
               $probe.Refresh()
             }
-            if (-not (Test-Path $panelReady)) { throw "Source browser did not reach the $mode visual check" }
+            if (-not (Test-Path $panelReady)) {
+              # Show why: the probe's own report (written when it times out) and its output.
+              Start-Sleep -Seconds 2
+              foreach ($log in $env:TRUONGFLIX_SOURCE_SMOKE_REPORT, 'smoke/source-browser-stdout.log', 'smoke/source-browser-stderr.log') {
+                if (Test-Path $log) { Write-Output "--- $log"; Get-Content $log -Tail 40 }
+              }
+              throw "Source browser did not reach the $mode visual check"
+            }
             Start-Sleep -Milliseconds 400
             $panel = Get-Content $panelReady -Raw | ConvertFrom-Json
             $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -127,7 +135,7 @@ jobs:
               throw "The main window content disappeared while the $mode source view was visible"
             }
           }
-          if (-not $probe.WaitForExit(60000)) {
+          if (-not $probe.WaitForExit(120000)) {
             Stop-Process -Id $probe.Id -Force
             throw "Source browser smoke timed out"
           }

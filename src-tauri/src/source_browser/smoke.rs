@@ -182,7 +182,8 @@ pub fn run() {
     let stage = Arc::new(Mutex::new(String::from("creating application context")));
     let timeout_stage = stage.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(35));
+        // Ends the run (with a report saying where it got stuck) before CI stops waiting (90 s).
+        std::thread::sleep(Duration::from_secs(85));
         if !timeout_done.swap(true, Ordering::SeqCst) {
             let result = serde_json::json!({"passed":false,"message":format!("Native source browser smoke timed out at phase {}", timeout_phase.load(Ordering::SeqCst)),"stage":*timeout_stage.lock().unwrap(),"requests":*timeout_requests.lock().unwrap()});
             let _ = fs::write(timeout_output, result.to_string());
