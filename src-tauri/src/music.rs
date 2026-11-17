@@ -1,6 +1,6 @@
 //! Music library: walks the music folders, reads each audio file's tags (title, artists, album,
 //! track/disc, year, genre, duration, codec), caches embedded or folder cover art, and picks up
-//! embedded or sidecar `.lrc` lyrics. Synced lyrics can also be looked up online (NetEase Cloud Music, then LRCLIB).
+//! embedded or sidecar `.lrc` lyrics. Synced lyrics can also be looked up online (Kugou, NetEase Cloud Music, then LRCLIB).
 //!
 //! Covers are written to `<app cache>/music-art/<name>` where `name` is a keyed hash of the image
 //! (the key is random per install), so the media server can serve them to the browser app without
@@ -396,7 +396,7 @@ pub fn music_art_dir(app: AppHandle) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Online lyrics: NetEase Cloud Music and LRCLIB
+// Online lyrics: Kugou, NetEase Cloud Music and LRCLIB
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -404,7 +404,7 @@ pub struct OnlineLyrics {
     pub synced: Option<String>,
     pub plain: Option<String>,
     pub instrumental: bool,
-    /// Where they came from: "netease" or "lrclib" (shown as a credit under the lyrics).
+    /// Where they came from: "kugou", "netease" or "lrclib" (shown as a credit under the lyrics).
     pub provider: &'static str,
 }
 
@@ -424,18 +424,23 @@ fn best_search_hit(list: &[serde_json::Value], duration: f64) -> Option<&serde_j
         })
 }
 
-/// Looks up lyrics online: NetEase Cloud Music first (synced lyrics for most popular songs, many
-/// timed word by word), then LRCLIB (free, crowd-sourced). `None` = neither has them.
+/// Looks up lyrics online: Kugou (timed word by word), then NetEase Cloud Music (synced lyrics for
+/// most popular songs, many timed word by word), then LRCLIB (free, crowd-sourced). `None` = none
+/// of them has the song.
 #[tauri::command]
 pub async fn music_lyrics_fetch(artist: String, title: String, album: Option<String>, duration: f64) -> Result<Option<OnlineLyrics>, String> {
     if artist.trim().is_empty() || title.trim().is_empty() {
         return Ok(None);
     }
-    match netease_lookup(&artist, &title, duration).await {
-        Ok(Some(found)) => return Ok(Some(found)),
-        Ok(None) => {}
-        // NetEase being down or blocked isn't fatal: LRCLIB may still have the song.
-        Err(e) => eprintln!("[music] NetEase lyrics lookup failed: {e}"),
+    // Both asked at once. Kugou's word timing comes first, then NetEase's (word by word when it has
+    // it). Either one being down or blocked isn't fatal: the other, or LRCLIB, may have the song.
+    let (kugou, netease) = tokio::join!(kugou_lookup(&artist, &title, duration), netease_lookup(&artist, &title, duration));
+    for (name, found) in [("Kugou", kugou), ("NetEase", netease)] {
+        match found {
+            Ok(Some(found)) => return Ok(Some(found)),
+            Ok(None) => {}
+            Err(e) => eprintln!("[music] {name} lyrics lookup failed: {e}"),
+        }
     }
     lrclib_lookup(&artist, &title, album, duration).await
 }
@@ -535,37 +540,89 @@ fn is_credit(text: &str) -> bool {
     let t = text.trim();
     let Some(i) = t.find([':', '：']) else { return false };
     let label = t[..i].trim();
-    !label.is_empty() && label.chars().count() <= 12 && (label.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) || ["producer", "producers", "writer", "writers", "composer", "lyricist", "lyrics", "music", "arranger", "mixed by", "mastered by", "recorded by", "vocals", "vocal producer"].contains(&label.to_lowercase().as_str()))
+    let lower = label.to_lowercase();
+    !label.is_empty() && label.chars().count() <= 14 && (label.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) || lower.ends_with(" by") || ["producer", "producers", "writer", "writers", "composer", "lyricist", "lyrics", "music", "arranger", "mixed by", "mastered by", "recorded by", "vocals", "vocal producer"].contains(&lower.as_str()))
+}
+
+/// One sung line as enhanced LRC: `[line]<word>text<word>text<end>`. Whitespace-only words are
+/// folded into the word before, so the spaces survive.
+fn words_to_lrc(start: u64, words: &[(u64, u64, &str)]) -> Option<String> {
+    let plain: String = words.iter().map(|w| w.2).collect();
+    if plain.trim().is_empty() || is_credit(&plain) {
+        return None;
+    }
+    let mut out = format!("[{}]", lrc_stamp(start));
+    let mut end = start;
+    let mut any = false;
+    for &(at, len, text) in words {
+        if text.trim().is_empty() && any {
+            out.push_str(text);
+        } else {
+            out.push_str(&format!("<{}>{}", lrc_stamp(at), text));
+            any = true;
+        }
+        end = end.max(at + len);
+    }
+    out.push_str(&format!("<{}>", lrc_stamp(end)));
+    Some(out)
+}
+
+/// The numbers and text of `(a,b,c)text(a,b,c)text` (YRC) or `<a,b,c>text<a,b,c>text` (KRC).
+fn timed_words(mut body: &str, open: char, close: char) -> Vec<(u64, u64, &str)> {
+    let mut words = Vec::new();
+    while let Some(o) = body.find(open) {
+        let Some(c) = body[o..].find(close).map(|c| o + c) else { break };
+        let nums: Vec<u64> = body[o + 1..c].split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        let next = body[c + 1..].find(open).map(|n| c + 1 + n).unwrap_or(body.len());
+        let text = &body[c + 1..next];
+        if nums.len() >= 2 && !text.is_empty() {
+            words.push((nums[0], nums[1], text));
+        }
+        body = &body[next..];
+    }
+    words
+}
+
+/// The `[start,duration]` head of a YRC / KRC line and the rest of it.
+fn timed_line(line: &str) -> Option<(u64, &str)> {
+    let rest = line.trim().strip_prefix('[')?; // JSON credit lines start with '{'
+    let (head, body) = rest.split_once(']')?;
+    if !head.contains(',') {
+        return None; // a [tag:value] line
+    }
+    let start = head.split(',').next()?.trim().parse::<u64>().ok()?;
+    Some((start, body))
 }
 
 /// Word-timed YRC (`[start,dur](start,dur,0)word(start,dur,0)word`, ms) as enhanced LRC.
 fn yrc_to_lrc(yrc: &str) -> Option<String> {
-    let mut out = Vec::new();
-    for line in yrc.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix('[') else { continue }; // JSON credit lines start with '{'
-        let Some((head, mut body)) = rest.split_once(']') else { continue };
-        let Some(start) = head.split(',').next().and_then(|v| v.trim().parse::<u64>().ok()) else { continue };
-        let mut words = String::new();
-        let mut plain = String::new();
-        let mut end = 0u64;
-        while let Some(open) = body.find('(') {
-            let Some(close) = body[open..].find(')').map(|c| open + c) else { break };
-            let nums: Vec<u64> = body[open + 1..close].split(',').filter_map(|v| v.trim().parse().ok()).collect();
-            let next = body[close + 1..].find('(').map(|n| close + 1 + n).unwrap_or(body.len());
-            let text = &body[close + 1..next];
-            if nums.len() >= 2 && !text.is_empty() {
-                words.push_str(&format!("<{}>{}", lrc_stamp(nums[0]), text));
-                plain.push_str(text);
-                end = end.max(nums[0] + nums[1]);
+    let out: Vec<String> = yrc.lines().filter_map(timed_line).filter_map(|(start, body)| words_to_lrc(start, &timed_words(body, '(', ')'))).collect();
+    (!out.is_empty()).then(|| out.join("\n"))
+}
+
+/// Kugou's KRC (`[start,dur]<offset,dur,0>word…`, word times relative to the line) as enhanced LRC,
+/// without the "Title - Artist" line it often opens with.
+fn krc_to_lrc(krc: &str, artist: &str, title: &str) -> Option<String> {
+    let want = simplify(&bare_title(title));
+    let by = simplify(artist);
+    // "Title - Artist" or "Artist - Title", with or without a tag like "(Explicit)".
+    let is_heading = |line: &str| {
+        let Some((a, b)) = line.split_once(" - ") else { return false };
+        let (a, b) = (a.trim(), b.trim());
+        let names = |t: &str, n: &str| simplify(&bare_title(t)) == want && !by.is_empty() && simplify(n).contains(&by);
+        names(a, b) || names(b, a)
+    };
+    let out: Vec<String> = krc
+        .lines()
+        .filter_map(timed_line)
+        .filter_map(|(start, body)| {
+            let words: Vec<(u64, u64, &str)> = timed_words(body, '<', '>').into_iter().map(|(off, len, text)| (start + off, len, text)).collect();
+            if is_heading(&words.iter().map(|w| w.2).collect::<String>()) {
+                return None;
             }
-            body = &body[next..];
-        }
-        if plain.trim().is_empty() || is_credit(&plain) {
-            continue;
-        }
-        out.push(format!("[{}]{}<{}>", lrc_stamp(start), words, lrc_stamp(end)));
-    }
+            words_to_lrc(start, &words)
+        })
+        .collect();
     (!out.is_empty()).then(|| out.join("\n"))
 }
 
@@ -625,6 +682,111 @@ async fn netease_lookup(artist: &str, title: &str, duration: f64) -> Result<Opti
     }
     let synced = yrc_to_lrc(text("/yrc/lyric")).or_else(|| clean_netease_lrc(text("/lrc/lyric")));
     Ok(synced.map(|s| OnlineLyrics { synced: Some(s), plain: None, instrumental: false, provider: "netease" }))
+}
+
+// Kugou Music (no key): a karaoke-first service whose lyrics ("KRC") are timed word by word for
+// most songs, including English ones NetEase only times line by line.
+
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' | b'-' => Some(62),
+        b'/' | b'_' => Some(63),
+        _ => None,
+    };
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
+        acc = ((acc << 6) | u32::from(val(c)?)) & 0xFFFF;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// KRC files are "krc1" + zlib data XORed with a fixed key.
+fn decode_krc(content: &str) -> Option<String> {
+    use std::io::Read;
+    const KEY: [u8; 16] = [64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105];
+    let raw = base64_decode(content)?;
+    let body: Vec<u8> = raw.get(4..)?.iter().enumerate().map(|(i, b)| b ^ KEY[i % KEY.len()]).collect();
+    let mut text = String::new();
+    flate2::read::ZlibDecoder::new(&body[..]).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// The best Kugou candidate: same title (or bare title) by one of the artists, closest in length
+/// (within 3 s when known), then Kugou's own score.
+fn kugou_pick<'a>(list: &'a [serde_json::Value], artist: &str, title: &str, duration: f64) -> Option<&'a serde_json::Value> {
+    let want_exact = simplify(title);
+    let want_bare = simplify(&bare_title(title));
+    let our_artist = simplify(artist);
+    list.iter()
+        .filter_map(|c| {
+            let song = c.get("song")?.as_str()?;
+            let exact = simplify(song) == want_exact;
+            if !exact && simplify(&bare_title(song)) != want_bare {
+                return None;
+            }
+            let singer = c.get("singer").and_then(|s| s.as_str()).unwrap_or("");
+            let by = singer.split(['、', ',', '&', '/']).map(simplify).any(|a| !a.is_empty() && (our_artist.contains(&a) || a.contains(&our_artist)));
+            if !by {
+                return None;
+            }
+            let len = c.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0) / 1000.0;
+            let diff = if duration > 0.0 && len > 0.0 { (len - duration).abs() } else { 0.0 };
+            if diff > 3.0 {
+                return None;
+            }
+            let score = c.get("score").and_then(|s| s.as_i64()).unwrap_or(0);
+            Some(((!exact) as u8, (diff * 2.0) as u64, -score, c))
+        })
+        .min_by_key(|k| (k.0, k.1, k.2))
+        .map(|k| k.3)
+}
+
+/// Kugou's word-timed lyrics for the song. `Ok(None)` = not found there.
+async fn kugou_lookup(artist: &str, title: &str, duration: f64) -> Result<Option<OnlineLyrics>, String> {
+    let client = reqwest::Client::builder().user_agent(NETEASE_UA).timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
+    let get = |url: reqwest::Url| {
+        let req = client.get(url);
+        async move {
+            let res = req.send().await.map_err(|e| e.to_string())?;
+            if !res.status().is_success() {
+                return Err(format!("Kugou answered HTTP {}", res.status()));
+            }
+            serde_json::from_str::<serde_json::Value>(&res.text().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        }
+    };
+    let ms = if duration > 0.0 { format!("{}", (duration * 1000.0).round() as u64) } else { String::new() };
+    let mut titles = vec![title.to_string()];
+    let bare = bare_title(title);
+    if !bare.eq_ignore_ascii_case(title) {
+        titles.push(bare);
+    }
+    for name in titles {
+        let keyword = format!("{artist} - {name}");
+        let url = reqwest::Url::parse_with_params("https://krcs.kugou.com/search", &[("ver", "1"), ("man", "yes"), ("client", "mobi"), ("keyword", keyword.as_str()), ("duration", ms.as_str()), ("hash", "")]).map_err(|e| e.to_string())?;
+        let v = get(url).await?;
+        let list = v.get("candidates").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+        let Some(hit) = kugou_pick(&list, artist, title, duration) else { continue };
+        let id = match hit.get("id") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let Some(key) = hit.get("accesskey").and_then(|k| k.as_str()) else { continue };
+        let url = reqwest::Url::parse_with_params("https://lyrics.kugou.com/download", &[("ver", "1"), ("client", "pc"), ("id", id.as_str()), ("accesskey", key), ("fmt", "krc"), ("charset", "utf8")]).map_err(|e| e.to_string())?;
+        let v = get(url).await?;
+        let synced = v.get("content").and_then(|c| c.as_str()).and_then(decode_krc).and_then(|krc| krc_to_lrc(&krc, artist, title));
+        return Ok(synced.map(|s| OnlineLyrics { synced: Some(s), plain: None, instrumental: false, provider: "kugou" }));
+    }
+    Ok(None)
 }
 
 /// The title without a trailing version tag: "(Remastered 2011)", "[Live]", "- Radio Edit", "feat. X".
@@ -853,6 +1015,44 @@ mod tests {
         assert_eq!(netease_pick(&songs, "The Weeknd", "Blinding Lights (Remastered)", 200.0), Some(3));
         assert_eq!(netease_pick(&songs, "Someone Else", "Blinding Lights", 200.0), None);
     }
+
+    #[test]
+    fn converts_kugou_word_timing() {
+        let krc = "[ti:Anti-Hero]\n[0,1370]<0,152,0>Anti<152,152,0>-<304,152,0>Hero<456,152,0> <608,152,0>-<760,152,0> <912,152,0>Taylor<1064,152,0> <1216,152,0>Swift\n[1370,1370]<0,124,0>Lyrics<124,124,0> <248,124,0>by<372,124,0>：<496,124,0>Jack\n[5499,1000]<0,307,0>I <307,258,0>have<565,100,0> <665,272,0>this";
+        assert_eq!(krc_to_lrc(krc, "Taylor Swift", "Anti-Hero").unwrap(), "[00:05.49]<00:05.49>I <00:05.80>have <00:06.16>this<00:06.43>");
+    }
+
+    #[test]
+    fn decodes_krc_files() {
+        use std::io::Write;
+        const KEY: [u8; 16] = [64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105];
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all("[0,500]<0,500,0>Hi".as_bytes()).unwrap();
+        let mut raw = b"krc1".to_vec();
+        raw.extend(z.finish().unwrap().iter().enumerate().map(|(i, b)| b ^ KEY[i % 16]));
+        const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut b64 = String::new();
+        for chunk in raw.chunks(3) {
+            let n = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
+            for k in 0..4 {
+                b64.push(if k <= chunk.len() { ABC[((n >> (18 - 6 * k)) & 63) as usize] as char } else { '=' });
+            }
+        }
+        assert_eq!(decode_krc(&b64).as_deref(), Some("[0,500]<0,500,0>Hi"));
+    }
+
+    #[test]
+    fn picks_kugou_candidates() {
+        let list: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"id":"1","accesskey":"a","song":"Anti-Hero (Acoustic Version)","singer":"Taylor Swift","duration":196000,"score":90},
+                {"id":"2","accesskey":"b","song":"Anti-Hero","singer":"Taylor Swift","duration":200812,"score":50},
+                {"id":"3","accesskey":"c","song":"Anti-Hero","singer":"Taylor Swift","duration":200724,"score":60},
+                {"id":"4","accesskey":"d","song":"Anti-Hero","singer":"Someone Else","duration":200724,"score":99}]"#,
+        )
+        .unwrap();
+        assert_eq!(kugou_pick(&list, "Taylor Swift", "Anti-Hero", 200.6).unwrap()["id"], "3");
+        assert!(kugou_pick(&list, "Taylor Swift", "Anti-Hero", 230.0).is_none());
+    }
 }
 
 #[cfg(test)]
@@ -861,7 +1061,7 @@ mod online_tests {
     #[test]
     #[ignore]
     fn online_lyrics() {
-        for (artist, title, dur) in [("The Weeknd", "Blinding Lights", 200.0), ("Taylor Swift", "Anti-Hero", 200.0), ("Dua Lipa", "Levitating", 203.0), ("Queen", "Bohemian Rhapsody (Remastered 2011)", 355.0), ("Billie Eilish", "BIRDS OF A FEATHER", 210.0)] {
+        for (artist, title, dur) in [("The Weeknd", "Blinding Lights", 200.0), ("Taylor Swift", "Anti-Hero", 200.0), ("Dua Lipa", "Levitating", 203.0), ("Queen", "Bohemian Rhapsody (Remastered 2011)", 355.0), ("Billie Eilish", "BIRDS OF A FEATHER", 210.0), ("Sabrina Carpenter", "Espresso", 175.0)] {
             let r = tauri::async_runtime::block_on(super::music_lyrics_fetch(artist.into(), title.into(), None, dur)).unwrap();
             let r = r.expect(title);
             let s = r.synced.unwrap_or_default();

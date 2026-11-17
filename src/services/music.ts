@@ -9,7 +9,7 @@ import { registerStream, releaseStream, streamUrl } from './streaming';
 import * as mdb from './musicdb';
 
 /**
- * The desktop side of Music: scanning the music folders, lyrics (from the files, or NetEase / LRCLIB),
+ * The desktop side of Music: scanning the music folders, lyrics (from the files, or Kugou / NetEase / LRCLIB),
  * streams for the player, and the `MusicApi` the desktop screens use.
  */
 
@@ -22,13 +22,19 @@ interface OnlineLyrics {
   synced: string | null;
   plain: string | null;
   instrumental: boolean;
-  provider: 'netease' | 'lrclib';
+  provider: 'kugou' | 'netease' | 'lrclib';
 }
+
+/**
+ * Bumped when the online lookup gets better (1: NetEase added, 2: Kugou added), so songs looked up
+ * before are looked up again once.
+ */
+const LYRICS_LOOKUP = 2;
 
 const lyricsInFlight = new Map<number, Promise<MusicLyrics | null>>();
 
 function fromCache(c: mdb.CachedLyrics): MusicLyrics | null {
-  const source = c.provider === 'netease' ? 'netease' : 'lrclib';
+  const source = c.provider === 'kugou' || c.provider === 'netease' ? c.provider : 'lrclib';
   if (c.synced) return { text: c.synced, synced: true, source, instrumental: c.instrumental };
   if (c.instrumental) return { text: '', synced: false, source, instrumental: true };
   if (c.plain) return { text: c.plain, synced: false, source };
@@ -37,7 +43,7 @@ function fromCache(c: mdb.CachedLyrics): MusicLyrics | null {
 
 /**
  * Lyrics for a song: synced lyrics from the file (sidecar .lrc or embedded) first, then online
- * (NetEase, then LRCLIB; when allowed in Settings, looked up once and cached), then the file's plain lyrics.
+ * (Kugou, NetEase, then LRCLIB; when allowed in Settings, looked up once and cached), then the file's plain lyrics.
  */
 export function lyricsFor(trackId: number, online = useLibraryStore.getState().settings.music_lyrics_online, refresh = false): Promise<MusicLyrics | null> {
   const running = lyricsInFlight.get(trackId);
@@ -50,14 +56,15 @@ export function lyricsFor(trackId: number, online = useLibraryStore.getState().s
     const cached = await mdb.cachedLyrics(trackId);
     // `refresh` ("Search again") skips a remembered "not found".
     const missing = cached && !cached.synced && !cached.plain && !cached.instrumental;
-    // Rows from before NetEase was added (no provider) are looked up again once: LRCLIB's answer
-    // was often a poor match.
-    if (cached && cached.provider && !(refresh && missing) && (!missing || Date.now() - cached.fetched_at < LYRICS_RETRY_MS)) {
+    // Rows from an older lookup are looked up again once: the services asked now time more songs
+    // word by word.
+    const current = !!cached && (cached.lookup ?? 0) >= LYRICS_LOOKUP;
+    if (cached && current && !(refresh && missing) && (!missing || Date.now() - cached.fetched_at < LYRICS_RETRY_MS)) {
       const hit = fromCache(cached);
       return hit?.synced ? hit : own ?? hit;
     }
     // An older answer stays in use until the new lookup succeeds (offline, or the lookup fails).
-    const old = cached && !cached.provider ? fromCache(cached) : null;
+    const old = cached && !current ? fromCache(cached) : null;
     const fallback = old?.synced ? old : own ?? old;
     if (!online) return fallback;
     let found: OnlineLyrics | null;
@@ -67,8 +74,8 @@ export function lyricsFor(trackId: number, online = useLibraryStore.getState().s
       console.warn('[music] lyrics lookup failed', e);
       return fallback; // offline: try again next time
     }
-    await mdb.saveLyricsCache(trackId, found ?? { synced: null, plain: null, instrumental: false, provider: 'none' });
-    const hit = found ? fromCache({ ...found, fetched_at: Date.now(), provider: found.provider }) : null;
+    await mdb.saveLyricsCache(trackId, { ...(found ?? { synced: null, plain: null, instrumental: false, provider: 'none' }), lookup: LYRICS_LOOKUP });
+    const hit = found ? fromCache({ ...found, fetched_at: Date.now(), lookup: LYRICS_LOOKUP }) : null;
     return hit?.synced ? hit : own ?? hit;
   })().finally(() => lyricsInFlight.delete(trackId));
   lyricsInFlight.set(trackId, job);
