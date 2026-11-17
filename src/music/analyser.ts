@@ -53,17 +53,18 @@ export function resumeAnalyser() {
   if (ctx?.state === 'suspended') void ctx.resume();
 }
 
-/** Bass, mid and treble, each 0…1. Null when there's nothing to read (no analyser, or silence). */
-export function musicLevels(): [number, number, number] | null {
+/** Five bands from bass to treble, each 0…1. Null when there's nothing to read (no analyser, or silence). */
+export function musicLevels(): number[] | null {
   if (!analyser || !bins) return null;
   analyser.getByteFrequencyData(bins);
-  // 64 bins of ~350 Hz at 44.1/48 kHz: bass, mids and highs.
+  // 64 bins of ~350 Hz at 44.1/48 kHz: bass, low mids, mids, high mids and highs (wider going up,
+  // roughly how we hear pitch).
   const band = (from: number, to: number) => {
     let sum = 0;
     for (let i = from; i < to; i++) sum += bins![i];
     return sum / ((to - from) * 255);
   };
-  const levels: [number, number, number] = [band(0, 2), band(2, 10), band(10, 32)];
+  const levels = [band(0, 1), band(1, 3), band(3, 7), band(7, 14), band(14, 32)];
   return levels.some((v) => v > 0.01) ? levels : null;
 }
 

@@ -35,9 +35,11 @@ export function Mosaic({ arts, className = '' }: { arts: string[]; className?: s
   );
 }
 
+const BARS = [0, 1, 2, 3, 4];
+
 /**
- * Now-playing bars. On the desktop they move with the music itself (bass, mids, treble); without
- * live levels (the browser app, or silence) they fall back to a gentle animation.
+ * Five now-playing bars. On the desktop each one moves with its own slice of the music, from bass
+ * to treble; without live levels (the browser app, or silence) they fall back to a gentle animation.
  */
 export function EqBars({ playing, className = '' }: { playing: boolean; className?: string }) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -46,9 +48,9 @@ export function EqBars({ playing, className = '' }: { playing: boolean; classNam
     if (!playing) return setLive(false);
     let raf = 0;
     let shown = false;
-    const smooth = [0, 0, 0];
+    const smooth = BARS.map(() => 0);
     // Each band's recent loudest moment (fading over a few seconds): quiet treble still moves the bar.
-    const peak = [0.05, 0.05, 0.05];
+    const peak = BARS.map(() => 0.05);
     const tick = () => {
       const levels = musicLevels();
       if (levels && !shown) setLive((shown = true));
@@ -70,9 +72,9 @@ export function EqBars({ playing, className = '' }: { playing: boolean; classNam
   }, [playing]);
   return (
     <span ref={ref} className={`tfm-eq ${playing && !live ? '' : 'tfm-eq-paused'} ${live ? 'tfm-eq-live' : ''} ${className}`} aria-hidden>
-      <span />
-      <span />
-      <span />
+      {BARS.map((i) => (
+        <span key={i} />
+      ))}
     </span>
   );
 }
