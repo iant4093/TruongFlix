@@ -50,8 +50,9 @@ fn report(app: &tauri::AppHandle, path: &PathBuf, passed: bool, message: &str) {
     });
 }
 
+/// Waits up to 15 s for a page to load (CI runners can take several seconds per navigation).
 async fn wait_for_path(browser: &WebviewWindow, loaded: &Mutex<String>, path: &str) -> Result<(), String> {
-    for _ in 0..40 {
+    for _ in 0..150 {
         if loaded.lock().unwrap().as_str() == path && browser.url().is_ok_and(|url| url.path() == path) { return Ok(()); }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
