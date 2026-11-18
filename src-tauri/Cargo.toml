@@ -95,7 +95,9 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKSc
 codegen-units = 1
 lto = true
 opt-level = "s"
-panic = "abort"
+# "unwind" (Rust's default): a bug or a malformed file fails that one task (a command returns an
+# error, a file is skipped) instead of closing the whole app, which "abort" did.
+panic = "unwind"
 strip = true
 
 # Proc-macros (e.g. sqlx-macros) are dlopen'ed at compile time; stripping them breaks loading on macOS.

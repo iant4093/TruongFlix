@@ -381,7 +381,13 @@ fn walk(roots: &[String], known: &HashMap<String, i64>, force: bool, art: &mut A
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
             if force || known.get(&path) != Some(&mtime) {
-                changed.push(read_music_file(entry.path(), meta.len(), mtime, art));
+                // A file whose tags make the tag reader fail is skipped, not the whole scan (or the app).
+                let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read_music_file(entry.path(), meta.len(), mtime, art)));
+                match read {
+                    Ok(file) => changed.push(file),
+                    // Still counted as present: a song already in the library keeps its playlists.
+                    Err(_) => eprintln!("[music] skipped unreadable file {path}"),
+                }
             }
             seen.push(path);
         }

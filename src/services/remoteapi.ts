@@ -108,7 +108,7 @@ const waitLabel = (ms: number) => {
 type SessionKind = 'play' | 'download' | 'offline';
 const sessions = new Map<
   string,
-  { session: string; profile: number; type: 'movie' | 'episode'; id: number; lastProgress: number; lastSeen: number; kind: SessionKind; convert?: boolean }
+  { session: string; profile: number; type: 'movie' | 'episode'; id: number; lastProgress: number; lastSeen: number; kind: SessionKind; convert?: boolean; lastTime?: number }
 >();
 
 const activeStreams = () => [...sessions.values()].filter((s) => s.kind !== 'offline').length;
@@ -491,6 +491,8 @@ async function download(caller: Caller, profile: Profile, type: 'movie' | 'episo
   rateLimit(caller, 'download', 10, 60_000);
   const st = await limitStatus(profile);
   if (st.blocked) throw new ApiError(403, blockedMessage(profile, st.blocked));
+  // A saved copy plays without the PC, so its time can't count toward a daily limit or bedtime.
+  if (profile.daily_limit || profile.bedtime) throw new ApiError(403, 'Downloads aren’t available on profiles with a daily limit or bedtime.');
   const { movies, episodes, bySeries, items } = await libraryFor(profile);
   const row: MovieRow | EpisodeRow | undefined = type === 'movie' ? movies.find((m) => m.id === id) : episodes.find((e) => e.id === id);
   if (!row || !allowedTitle(items, episodes, type, id)) throw new ApiError(404, 'Not found');
@@ -572,7 +574,13 @@ async function progress(caller: Caller, profile: Profile, body: { type: 'movie' 
   let watched = 0;
   if (stream && stream.profile === profile.id && stream.type === type && stream.id === id) {
     const now = Date.now();
-    watched = Math.min(Math.max(0, Number(body.watched) || 0), (now - stream.lastProgress) / 1000 + 5, 120);
+    const cap = Math.min((now - stream.lastProgress) / 1000 + 5, 120);
+    // Credited from what the browser says it watched, or from how far the video actually moved,
+    // whichever is more: a browser reporting nothing no longer gets unlimited screen time.
+    const reported = Math.max(0, Number(body.watched) || 0);
+    const moved = stream.lastTime != null ? Math.abs(time - stream.lastTime) : 0;
+    watched = Math.min(Math.max(reported, moved), cap);
+    stream.lastTime = time;
     stream.lastProgress = now;
     stream.lastSeen = now;
   }
