@@ -3,6 +3,7 @@ import { AnimatePresence, LayoutGroup, motion, useDragControls, useReducedMotion
 import { AudioLines, ChevronDown, Heart, ListMusic, MessageSquareQuote, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { cycleRepeat, next, previous, seek, setFull, setPanel, toggle, toggleFavourite, toggleMute, toggleShuffle, useMusicPlayer } from '../player';
 import { musicToast } from '../nav';
+import { paintSoft, SOFT_SIZE } from '../softArt';
 import { lockPageScroll } from '../../lib/scrollLock';
 import { musicQuality } from '../library';
 import type { MusicTrack } from '../types';
@@ -45,47 +46,6 @@ function useSoftArt(url: string | null) {
     };
   }, [url]);
   return image;
-}
-
-/** The size the soft artwork is drawn at; the screen stretches it further, which stays smooth. */
-const SOFT_SIZE = 192;
-/** How small the artwork is shrunk to: only its broad colours survive. */
-const SOFT_CORE = 10;
-
-/**
- * Draws a very soft copy of the artwork: shrunk in halves (each step averages its pixels) to a
- * handful of pixels, given more colour and a little less light, then grown back in doubles (each
- * step smooths). That blurs as evenly as a huge Gaussian blur and works in every browser (Safari
- * ignores canvas filters, which left the old background blocky on iPhones).
- */
-function paintSoft(canvas: HTMLCanvasElement, image: HTMLImageElement) {
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  const step = (from: CanvasImageSource, size: number) => {
-    const c = document.createElement('canvas');
-    c.width = c.height = size;
-    const g = c.getContext('2d')!;
-    g.imageSmoothingEnabled = true;
-    g.imageSmoothingQuality = 'high';
-    g.drawImage(from, 0, 0, size, size);
-    return c;
-  };
-  let src: HTMLCanvasElement = step(image, 128);
-  for (let size = 64; src.width > SOFT_CORE; size = Math.floor(size / 2)) src = step(src, Math.max(size, SOFT_CORE));
-  // Richer colours (the image overlaid on itself) and a touch darker, like Apple Music.
-  const core = src.getContext('2d')!;
-  core.globalAlpha = 0.55;
-  core.globalCompositeOperation = 'overlay';
-  core.drawImage(src, 0, 0);
-  core.globalAlpha = 1;
-  core.globalCompositeOperation = 'source-over';
-  core.fillStyle = 'rgba(0, 0, 0, 0.22)';
-  core.fillRect(0, 0, src.width, src.height);
-  for (let size = src.width * 2; size < SOFT_SIZE; size *= 2) src = step(src, size);
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.clearRect(0, 0, SOFT_SIZE, SOFT_SIZE);
-  ctx.drawImage(src, 0, 0, SOFT_SIZE, SOFT_SIZE);
 }
 
 function SoftLayer({ image }: { image: HTMLImageElement }) {
