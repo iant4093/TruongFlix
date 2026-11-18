@@ -179,15 +179,21 @@ export async function deleteMedia(target: DeleteTarget): Promise<boolean> {
       const res = await invoke<TrashResult>('trash_media', {
         videoPaths: rows.map((r) => r.file_path), root, ...(filesOnly ? { filesOnly: true } : {}),
       });
-      await db.addTrash({
-        label,
-        kind: target.kind,
-        poster_path: poster,
-        entry_dir: res.entry_dir,
-        items: JSON.stringify(res.items),
-        snapshot: JSON.stringify(snapshot),
-        size_bytes: res.size_bytes,
-      });
+      try {
+        await db.addTrash({
+          label,
+          kind: target.kind,
+          poster_path: poster,
+          entry_dir: res.entry_dir,
+          items: JSON.stringify(res.items),
+          snapshot: JSON.stringify(snapshot),
+          size_bytes: res.size_bytes,
+        });
+      } catch (e) {
+        // Without its Recently deleted entry the files couldn't be restored or cleaned up: put them back.
+        await invoke('apply_moves', { moves: res.items.map((m) => ({ from: m.to, to: m.from })) }).catch(() => {});
+        throw e;
+      }
       await db.removeLibraryRows(gMovies, gEpisodes);
     }
   } catch (e) {

@@ -177,7 +177,7 @@ pub(crate) async fn library_folders(app: &AppHandle) -> Vec<PathBuf> {
         out.extend(serde_json::from_str::<Vec<String>>(&roots).unwrap_or_default());
     }
     let _ = db.close().await;
-    out.into_iter().filter(|p| !p.trim().is_empty() && Path::new(p).is_absolute()).map(PathBuf::from).collect()
+    out.into_iter().filter(|p| !p.trim().is_empty()).map(|p| crate::files::dir_path(&p)).filter(|p| p.is_absolute()).collect()
 }
 
 async fn copy_database(

@@ -363,8 +363,12 @@ export async function applyFixMatch(item: MediaItem, result: SearchResult): Prom
       for (const r of rows) {
         const { season, episode } = guessSeasonEpisode(toRawFile(r.file_path, r.file_mtime));
         const meta = await ctx.episodeMeta(series.tmdbId, season, [episode]);
-        await db.deleteMovie(r.id);
         await db.upsertEpisode(series.id, fileOf(r), meta, techOf(r));
+        // Progress and watched carry over to the episode; a movie on My List puts the show there.
+        const epId = await db.mediaIdByPath('episodes', r.file_path);
+        if (epId != null) await db.copyProfileState({ type: 'movie', id: r.id }, { type: 'episode', id: epId });
+        await db.copyProfileState({ type: 'movie', id: r.id }, { type: 'tv', id: series.id });
+        await db.deleteMovie(r.id);
       }
       newKey = `tv-${series.id}`;
     }
@@ -376,6 +380,8 @@ export async function applyFixMatch(item: MediaItem, result: SearchResult): Prom
       let targetId = item.id;
       if (existing != null && existing !== item.id) {
         await db.moveEpisodes(item.id, existing);
+        // The show's own My List and last-watched go with its episodes.
+        await db.copyProfileState({ type: 'tv', id: item.id }, { type: 'tv', id: existing });
         await db.deleteSeries(item.id);
         await db.upsertSeries(meta, null);
         targetId = existing;
@@ -386,7 +392,14 @@ export async function applyFixMatch(item: MediaItem, result: SearchResult): Prom
       newKey = `tv-${targetId}`;
     } else {
       const meta = await tmdb.getMovieDetails(result.id);
-      for (const ep of eps) await db.upsertMovie(fileOf(ep), meta, techOf(ep));
+      for (const ep of eps) {
+        await db.upsertMovie(fileOf(ep), meta, techOf(ep));
+        const movieId = await db.mediaIdByPath('movies', ep.file_path);
+        if (movieId != null) {
+          await db.copyProfileState({ type: 'episode', id: ep.id }, { type: 'movie', id: movieId });
+          await db.copyProfileState({ type: 'tv', id: item.id }, { type: 'movie', id: movieId });
+        }
+      }
       await db.deleteSeries(item.id);
     }
   }

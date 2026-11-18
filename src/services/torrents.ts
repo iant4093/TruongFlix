@@ -680,6 +680,35 @@ export async function resumeAllTorrents() {
   scheduleAdaptivePoll();
 }
 
+
+/**
+ * Where a torrent's files go when they move into the library: each keeps its place below the
+ * folder they share (a season pack with "Season 1/E01.mkv" and "Season 2/E01.mkv" used to be
+ * flattened into one folder, where the second move failed on the name clash).
+ */
+export function planTorrentMoves(paths: string[], targetDir: string): FileMove[] {
+  const split = (p: string) => p.split(/[\\/]/);
+  const dirs = paths.map((p) => split(p).slice(0, -1));
+  let common = dirs[0] ?? [];
+  for (const d of dirs) {
+    let i = 0;
+    while (i < common.length && i < d.length && common[i] === d[i]) i++;
+    common = common.slice(0, i);
+  }
+  return paths.map((from) => {
+    const rest = split(from).slice(common.length).filter(Boolean);
+    return { from, to: (rest.length ? rest : [basename(from) || 'video.mkv']).reduce((dir, part) => joinPath(dir, part), targetDir) };
+  });
+}
+
+/** Moves files, records only the moves that happened, and returns where each file now is. */
+async function moveTorrentFiles(moves: FileMove[]): Promise<{ paths: string[]; failed: string[] }> {
+  const res = await invoke<{ applied: FileMove[]; errors: string[] }>('apply_moves', { moves });
+  if (res.applied.length) await db.updateFilePaths(res.applied);
+  const moved = new Map(res.applied.map((m) => [m.from, m.to]));
+  return { paths: moves.map((m) => moved.get(m.from) ?? m.from), failed: res.errors };
+}
+
 /**
  * Promotes a temporary `Stream` item into a permanent `Download` in the user's library folder,
  * clearing its expiry countdown and moving completed files out of `stream-cache`.
@@ -709,22 +738,19 @@ export async function keepStreamPermanently(infoHash: string, explicitRoot?: str
     if (item.inSession) {
       await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' }).catch(() => {});
     }
-    const moves: FileMove[] = item.filePaths.map((from) => {
-      const leaf = basename(from) || 'video.mkv';
-      return { from, to: joinPath(targetDir, leaf) };
-    });
-    if (moves.length) {
-      await invoke('apply_moves', { moves });
-      await db.updateFilePaths(moves);
-    }
+    const moves = planTorrentMoves(item.filePaths, targetDir);
+    const result = moves.length ? await moveTorrentFiles(moves) : { paths: [], failed: [] };
+    // Kept either way (no expiry), with each file where it really is: any file that didn't move is
+    // moved again on a later check, never deleted with the stream cache.
     await db.updateTorrentRecord(hash, {
       mode: 'download',
       cache_hours: null,
       expires_at: null,
       save_path: targetDir,
-      file_paths: moves.map((m) => m.to),
+      file_paths: result.paths,
       seeding_stopped: true,
     });
+    if (result.failed.length) store.toast(`Some files couldn’t be moved yet; TruongFlix will try again. ${result.failed[0]}`, 'error');
   } else {
     // Remove expiry immediately; polling moves the files once complete and no longer playing.
     await db.updateTorrentRecord(hash, {
@@ -1170,13 +1196,10 @@ export function pollTorrents(): Promise<TorrentItem[]> {
       if (!isGame && completedAt && rec.mode === 'download' && savePath && filePaths.some((p) => !isUnder(p, savePath)) && !isPlayingTorrent(filePaths)) {
         try {
           await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' });
-          const moves: FileMove[] = filePaths.map((from) => ({
-            from,
-            to: joinPath(savePath, basename(from) || 'video.mkv'),
-          }));
-          await invoke('apply_moves', { moves });
-          await db.updateFilePaths(moves);
-          filePaths = moves.map((m) => m.to);
+          const pending = filePaths.filter((p) => !isUnder(p, savePath));
+          const { paths } = await moveTorrentFiles(planTorrentMoves(pending, savePath));
+          const now = new Map(pending.map((p, i) => [p, paths[i]]));
+          filePaths = filePaths.map((p) => now.get(p) ?? p);
           seedingStopped = true;
           needsLibraryReload = true;
           await db.updateTorrentRecord(hash, { file_paths: filePaths, seeding_stopped: true });

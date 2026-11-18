@@ -974,6 +974,33 @@ export async function pruneEmptySeries() {
   await exec('DELETE FROM tv_series WHERE id NOT IN (SELECT DISTINCT series_id FROM episodes)');
 }
 
+/** The id of the movie or episode row for a file, if there is one. */
+export async function mediaIdByPath(table: 'movies' | 'episodes', filePath: string): Promise<number | null> {
+  const rows = await select<{ id: number }[]>(`SELECT id FROM ${table} WHERE file_path = $1`, [filePath]);
+  return rows[0]?.id ?? null;
+}
+
+/**
+ * Carries every profile's progress, watched mark and My List from one title to another (Fix Match
+ * re-creates titles as movies or episodes with new ids; without this their history was dropped).
+ * Where the new title already has state, the furthest progress and any My List win.
+ */
+export async function copyProfileState(from: { type: 'movie' | 'episode' | 'tv'; id: number }, to: { type: 'movie' | 'episode' | 'tv'; id: number }) {
+  if (from.type === to.type && from.id === to.id) return;
+  await exec(
+    `INSERT INTO profile_state (profile_id, media_type, media_id, progress_seconds, duration_seconds, watched, my_list, last_watched_at)
+     SELECT profile_id, $3, $4, progress_seconds, duration_seconds, watched, my_list, last_watched_at
+       FROM profile_state WHERE media_type = $1 AND media_id = $2
+     ON CONFLICT(profile_id, media_type, media_id) DO UPDATE SET
+       progress_seconds = MAX(profile_state.progress_seconds, excluded.progress_seconds),
+       duration_seconds = MAX(profile_state.duration_seconds, excluded.duration_seconds),
+       watched = MAX(profile_state.watched, excluded.watched),
+       my_list = MAX(profile_state.my_list, excluded.my_list),
+       last_watched_at = MAX(COALESCE(profile_state.last_watched_at, ''), COALESCE(excluded.last_watched_at, ''))`,
+    [from.type, from.id, to.type, to.id],
+  );
+}
+
 export async function deleteMovie(id: number) {
   await exec('DELETE FROM movies WHERE id = $1', [id]);
   await pruneOrphanSubtitles();

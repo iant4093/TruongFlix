@@ -520,8 +520,13 @@ export async function setPlaylistTracks(profileId: number, id: number, trackIds:
   const db = await musicDb();
   await ownPlaylist(db, profileId, id);
   const ids = await existingIds(db, cleanTrackIds(trackIds));
-  await db.execute('DELETE FROM music_playlist_tracks WHERE playlist_id = $1', [id]);
-  await writeEntries(db, id, ids, 0);
+  // The new order is written after the old one before the old one goes, then moved into place: a
+  // failure (or quitting) half-way leaves extra entries, never an emptied playlist.
+  const [{ last }] = await db.select<{ last: number | null }[]>('SELECT MAX(position) AS last FROM music_playlist_tracks WHERE playlist_id = $1', [id]);
+  const base = (last ?? -1) + 1;
+  await writeEntries(db, id, ids, base);
+  await db.execute('DELETE FROM music_playlist_tracks WHERE playlist_id = $1 AND position < $2', [id, base]);
+  if (base) await db.execute('UPDATE music_playlist_tracks SET position = position - $2 WHERE playlist_id = $1', [id, base]);
   await db.execute('UPDATE music_playlists SET updated_at = $2 WHERE id = $1', [id, now]);
   return ids;
 }

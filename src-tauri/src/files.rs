@@ -339,7 +339,25 @@ pub async fn apply_moves(app: AppHandle, moves: Vec<FileMove>, with_sidecars: Op
 // ---------------------------------------------------------------------------
 
 fn strictly_inside(path: &Path, root: &Path) -> bool {
-    path != root && path.starts_with(root)
+    // Every path "starts with" an empty one: an unknown root must never count as containing anything.
+    !root.as_os_str().is_empty() && path != root && path.starts_with(root)
+}
+
+/// A folder as Windows needs it to count as a full path: `E:` becomes `E:\` and `\\nas\share`
+/// becomes `\\nas\share\` (without the trailing separator neither is absolute, so libraries at a
+/// drive root or on a share couldn't delete or rename anything).
+pub(crate) fn dir_path(s: &str) -> PathBuf {
+    let t = s.trim();
+    let b = t.as_bytes();
+    let bare_drive = b.len() == 2 && b[1] == b':' && b[0].is_ascii_alphabetic();
+    let unc_share = (t.starts_with("\\\\") || t.starts_with("//"))
+        && !t.ends_with(['\\', '/'])
+        && t.split(['\\', '/']).filter(|x| !x.is_empty()).count() == 2;
+    if bare_drive || unc_share {
+        PathBuf::from(format!("{t}{}", std::path::MAIN_SEPARATOR))
+    } else {
+        PathBuf::from(t)
+    }
 }
 
 fn videos_under(dir: &Path) -> Vec<PathBuf> {
@@ -418,6 +436,9 @@ fn trash_paths(videos: &[PathBuf], root: &Path, files_only: bool) -> Result<Tras
     let first = videos.first().ok_or("Nothing to delete")?;
     // Keep the trash on the same volume as the files so deleting is a rename, never a copy.
     let root = if strictly_inside(first, root) { root.to_path_buf() } else { first.parent().ok_or("Invalid path")?.to_path_buf() };
+    if !root.is_absolute() {
+        return Err("Couldn’t find the folder this file is in.".into());
+    }
     let targets = plan_trash(videos, &root, files_only);
     let entry = root.join(TRASH_DIR).join(entry_name());
     let mut items = Vec::new();
@@ -466,8 +487,9 @@ pub async fn trash_media(
             return Err("Only files in your library folders can be deleted.".into());
         }
         // Whole folders are only taken below a real library folder; otherwise just the files.
-        let root_known = resolve(Path::new(&root)).is_some_and(|r| allowed.contains(&r));
-        trash_paths(&videos, Path::new(if root_known { root.as_str() } else { "" }), files_only.unwrap_or(false))
+        let root_path = dir_path(&root);
+        let root_known = resolve(&root_path).is_some_and(|r| allowed.contains(&r));
+        trash_paths(&videos, if root_known { root_path.as_path() } else { Path::new("") }, files_only.unwrap_or(false) || !root_known)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -656,6 +678,16 @@ fn reveal_in_explorer(path: &Path, directory: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drive_roots_and_shares_count_as_full_paths() {
+        assert_eq!(dir_path("E:"), PathBuf::from(format!("E:{}", std::path::MAIN_SEPARATOR)));
+        assert_eq!(dir_path(r"\\nas\share"), PathBuf::from(format!(r"\\nas\share{}", std::path::MAIN_SEPARATOR)));
+        assert_eq!(dir_path(r"D:\Movies"), PathBuf::from(r"D:\Movies"));
+        assert_eq!(dir_path(r"\\nas\share\Movies"), PathBuf::from(r"\\nas\share\Movies"));
+        // An unknown (empty) root never contains anything.
+        assert!(!strictly_inside(Path::new(r"D:\Movies\a.mkv"), Path::new("")));
+    }
     use std::fs;
 
     const BIG: u64 = 100 * 1024 * 1024;

@@ -85,7 +85,10 @@ describe('torrent playback and completion', () => {
     expect(db.updateFilePaths).not.toHaveBeenCalled();
     expect(record.file_paths).toBe(JSON.stringify([movie.file_path]));
     live = [];
-    vi.mocked(invoke).mockImplementation(async (cmd) => cmd === 'torrent_list' ? live : undefined as never);
+    // Like the real command: it reports the moves it made.
+    vi.mocked(invoke).mockImplementation(async (cmd, args) =>
+      cmd === 'torrent_list' ? live : cmd === 'apply_moves' ? ({ applied: (args as { moves: unknown[] }).moves, errors: [] } as never) : (undefined as never),
+    );
     await pollTorrents();
     expect(db.updateFilePaths).toHaveBeenCalledWith([{ from: movie.file_path, to: '/Permanent/Sintel/Sintel.mp4' }]);
     warn.mockRestore();
