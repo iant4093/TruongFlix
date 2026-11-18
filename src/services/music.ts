@@ -200,6 +200,8 @@ export async function initDesktopMusic() {
 export interface MusicScanResult {
   seen: string[];
   changed: mdb.MusicFile[];
+  /** Folders and files that couldn't be read this time. */
+  unreadable?: string[];
 }
 
 const isUnder = (path: string, root: string) => {
@@ -210,12 +212,25 @@ const isUnder = (path: string, root: string) => {
 };
 
 /** Files to drop: gone from a reachable folder, or in a folder no longer in the list. */
-export function goneMusicPaths(indexed: string[], seen: Set<string>, dirs: string[], offline: string[]): string[] {
-  return indexed.filter((p) => {
+/**
+ * Songs to drop from the library: files no longer in a music folder, or not found in their folder.
+ * Never songs in an offline folder or one that couldn't be read this time, and never when a folder
+ * suddenly lost most of its songs (an empty mount point or a different disk on the same letter is
+ * far likelier than a real clear-out): dropping a song also drops its playlists and favourites.
+ */
+export function goneMusicPaths(indexed: string[], seen: Set<string>, dirs: string[], offline: string[], unreadable: string[] = []): string[] {
+  const missing = indexed.filter((p) => {
     if (!dirs.some((d) => isUnder(p, d))) return true;
     if (offline.some((d) => isUnder(p, d))) return false;
+    if (unreadable.some((u) => p === u || isUnder(p, u))) return false;
     return !seen.has(p);
   });
+  const suspicious = dirs.filter((d) => {
+    const had = indexed.filter((p) => isUnder(p, d)).length;
+    const lost = missing.filter((p) => isUnder(p, d)).length;
+    return had >= 20 && lost / had > 0.5;
+  });
+  return missing.filter((p) => !suspicious.some((d) => isUnder(p, d)));
 }
 
 let scanning = false;
@@ -259,11 +274,11 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
     // Songs imported before matching improved are matched again once, all together.
     const rematch = !!index.size && readMatchVersion() < MATCH_VERSION;
     const force = !!opts.force || rematch;
-    const res = roots.length ? await invoke<MusicScanResult>('music_scan', { paths: roots, known, force }) : { seen: [], changed: [] };
+    const res = roots.length ? await invoke<MusicScanResult>('music_scan', { paths: roots, known, force }) : { seen: [], changed: [], unreadable: [] };
     const added = res.changed.filter((f) => !index.has(f.file_path)).length;
     await mdb.upsertMusicFiles(res.changed, Date.now(), dirs);
     if (roots.length && !offline.length) writeMatchVersion();
-    const gone = goneMusicPaths([...index.keys()], new Set(res.seen), dirs, offline);
+    const gone = goneMusicPaths([...index.keys()], new Set(res.seen), dirs, offline, res.unreadable ?? []);
     await mdb.removeMusicPaths(gone);
     if (!gone.length && res.changed.length) await mdb.pruneMusic();
     if (res.changed.length || gone.length) await loadMusicLibrary(true);

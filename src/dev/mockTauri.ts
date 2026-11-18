@@ -1501,7 +1501,7 @@ export function installMocks() {
         case 'check_paths':
           return ((a.paths as string[]) ?? []).map(() => true);
         case 'scan_media_folders':
-          return new Promise((resolve) => setTimeout(() => resolve([]), 1500));
+          return new Promise((resolve) => setTimeout(() => resolve({ files: [], unreadable: [] }), 1500));
         case 'launch_vlc': {
           (window as unknown as { __lastLaunch: unknown }).__lastLaunch = a;
           // Simulate a short VLC session: two progress ticks, then exit.

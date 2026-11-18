@@ -57,13 +57,23 @@ fn folder_name(path: Option<&Path>) -> String {
         .unwrap_or_default()
 }
 
-fn walk_root(root: &str, seen: &mut HashSet<String>, out: &mut Vec<RawVideoFile>) {
+/// Walks one media folder. Folders (or files) that couldn't be read are added to `unreadable`: the
+/// app must not take their videos for deleted (a network share dropping out mid-scan used to erase
+/// the watch history of everything it hadn't reached yet).
+fn walk_root(root: &str, seen: &mut HashSet<String>, out: &mut Vec<RawVideoFile>, unreadable: &mut Vec<String>) {
     let walker = WalkDir::new(root)
         .follow_links(true)
         .into_iter()
         .filter_entry(|e| !is_hidden_or_system(e));
 
-    for entry in walker.filter_map(Result::ok) {
+    for entry in walker {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                unreadable.push(err.path().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| root.to_string()));
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -74,7 +84,10 @@ fn walk_root(root: &str, seen: &mut HashSet<String>, out: &mut Vec<RawVideoFile>
         let filename = entry.file_name().to_string_lossy().into_owned();
         let meta = match entry.metadata() {
             Ok(m) => m,
-            Err(_) => continue,
+            Err(_) => {
+                unreadable.push(path.to_string_lossy().into_owned());
+                continue;
+            }
         };
         let size = meta.len();
         if !is_library_video(path, size) {
@@ -102,17 +115,25 @@ fn walk_root(root: &str, seen: &mut HashSet<String>, out: &mut Vec<RawVideoFile>
     }
 }
 
+#[derive(Serialize)]
+pub struct ScanResult {
+    pub files: Vec<RawVideoFile>,
+    /// Folders and files that couldn't be read this time: nothing under them counts as deleted.
+    pub unreadable: Vec<String>,
+}
+
 /// Recursively walks every media directory and returns all playable video files.
 /// Runs on a blocking worker so large libraries never stall the UI thread.
 #[tauri::command]
-pub async fn scan_media_folders(paths: Vec<String>) -> Result<Vec<RawVideoFile>, String> {
+pub async fn scan_media_folders(paths: Vec<String>) -> Result<ScanResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut seen = HashSet::new();
-        let mut out = Vec::new();
+        let mut files = Vec::new();
+        let mut unreadable = Vec::new();
         for root in &paths {
-            walk_root(root, &mut seen, &mut out);
+            walk_root(root, &mut seen, &mut files, &mut unreadable);
         }
-        out
+        ScanResult { files, unreadable }
     })
     .await
     .map_err(|e| e.to_string())
@@ -144,7 +165,9 @@ mod tests {
 
         let mut seen = HashSet::new();
         let mut out = Vec::new();
-        walk_root(root.to_str().unwrap(), &mut seen, &mut out);
+        let mut unreadable = Vec::new();
+        walk_root(root.to_str().unwrap(), &mut seen, &mut out, &mut unreadable);
+        assert!(unreadable.is_empty());
         let mut names: Vec<_> = out.iter().map(|f| f.filename.as_str()).collect();
         names.sort();
         assert_eq!(names, ["Big.Trailer.Cut.2020.mkv", "S01E01.mkv", "d-dune2-2160p.mkv"]);

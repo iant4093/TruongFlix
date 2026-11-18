@@ -209,7 +209,9 @@ export async function runScan(opts: ScanOptions = {}) {
     // Music folders belong to Music, even when they sit inside a movie or TV folder.
     const musicDirs = settings.music_directories ?? [];
     const inMusic = (path: string) => musicDirs.some((m) => isUnderAny(path, m));
-    const files = (roots.length ? await invoke<RawVideoFile[]>('scan_media_folders', { paths: roots }) : []).filter((f) => !inMusic(f.file_path));
+    const walk = roots.length ? await invoke<{ files: RawVideoFile[]; unreadable: string[] }>('scan_media_folders', { paths: roots }) : { files: [], unreadable: [] };
+    const files = walk.files.filter((f) => !inMusic(f.file_path));
+    if (walk.unreadable.length) console.warn('[scan] could not read', walk.unreadable.slice(0, 20));
 
     setScan({ phase: 'diffing', message: `Found ${files.length} videos` });
     const [index, hints, protectedTorrentPaths] = await Promise.all([
@@ -221,10 +223,22 @@ export async function runScan(opts: ScanOptions = {}) {
 
     // Prune rows whose files vanished — but never for roots that are merely offline, nor for
     // stream-cached / still-downloading torrent files.
+    // Nor for files in a folder that couldn't be read this time (a share dropping out mid-scan).
     const goneMovies: string[] = [];
     const goneEpisodes: string[] = [];
-    for (const [path, rec] of index) {
-      if (onDisk.has(path) || protectedTorrentPaths.has(path) || offline.some((r) => isUnder(path, r))) continue;
+    const missing = [...index].filter(
+      ([path]) => !onDisk.has(path) && !protectedTorrentPaths.has(path) && !offline.some((r) => isUnder(path, r)) && !walk.unreadable.some((u) => path === u || isUnder(path, u)),
+    );
+    // A folder that suddenly lost most of its titles is far more likely an empty mount point or a
+    // different disk on the same letter than a real clear-out: leave it for the next scan.
+    const suspicious = roots.filter((r) => {
+      const had = [...index.keys()].filter((p) => isUnder(p, r)).length;
+      const lost = missing.filter(([p]) => isUnder(p, r)).length;
+      return had >= 20 && lost / had > 0.5;
+    });
+    if (suspicious.length) console.warn('[scan] not removing titles from', suspicious);
+    for (const [path, rec] of missing) {
+      if (suspicious.some((r) => isUnder(path, r))) continue;
       (rec.type === 'movie' ? goneMovies : goneEpisodes).push(path);
     }
     const removed = goneMovies.length + goneEpisodes.length;

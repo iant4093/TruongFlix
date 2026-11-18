@@ -82,4 +82,15 @@ describe('music scan', () => {
     const gone = goneMusicPaths(indexed, new Set(['D:\\Music\\a.mp3']), ['D:\\Music', '/nas/x'], ['/nas/x']);
     expect(gone).toEqual(['D:\\Music\\b.mp3', 'E:\\Old\\c.mp3']);
   });
+
+  it('keeps songs in folders that could not be read, and when a folder suddenly lost most songs', async () => {
+    const { goneMusicPaths } = await import('../src/services/music');
+    const album = Array.from({ length: 30 }, (_, i) => `D:\\Music\\Album\\${i}.flac`);
+    // A share dropping out mid-scan: the album folder couldn't be read, so nothing in it goes.
+    expect(goneMusicPaths(album, new Set(), ['D:\\Music'], [], ['D:\\Music\\Album'])).toEqual([]);
+    // Every song "gone" at once from a folder of 30: left for the next scan.
+    expect(goneMusicPaths(album, new Set(), ['D:\\Music'], [])).toEqual([]);
+    // A few really deleted: those go.
+    expect(goneMusicPaths(album, new Set(album.slice(3)), ['D:\\Music'], [])).toEqual(album.slice(0, 3));
+  });
 });

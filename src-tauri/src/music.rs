@@ -63,6 +63,8 @@ pub struct MusicScan {
     pub seen: Vec<String>,
     /// New or changed files with their tags.
     pub changed: Vec<MusicFile>,
+    /// Folders and files that couldn't be read this time: their songs aren't removed.
+    pub unreadable: Vec<String>,
 }
 
 pub(crate) fn has_audio_extension(path: &Path) -> bool {
@@ -347,16 +349,27 @@ fn walk(roots: &[String], known: &HashMap<String, i64>, force: bool, art: &mut A
     let mut seen_set = HashSet::new();
     let mut seen = Vec::new();
     let mut changed = Vec::new();
+    let mut unreadable = Vec::new();
     for root in roots {
         let walker = WalkDir::new(root).follow_links(true).into_iter().filter_entry(|e| !is_hidden_or_system(e));
-        for entry in walker.filter_map(Result::ok) {
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    unreadable.push(err.path().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| root.clone()));
+                    continue;
+                }
+            };
             if !entry.file_type().is_file() || !has_audio_extension(entry.path()) {
                 continue;
             }
             if entry.file_name().to_string_lossy().starts_with("._") {
                 continue;
             }
-            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(meta) = entry.metadata() else {
+                unreadable.push(entry.path().to_string_lossy().into_owned());
+                continue;
+            };
             let path = entry.path().to_string_lossy().into_owned();
             if !seen_set.insert(path.clone()) {
                 continue;
@@ -373,7 +386,7 @@ fn walk(roots: &[String], known: &HashMap<String, i64>, force: bool, art: &mut A
             seen.push(path);
         }
     }
-    MusicScan { seen, changed }
+    MusicScan { seen, changed, unreadable }
 }
 
 /// Walks the music folders. `known` maps already-imported files to their mtime; only new or
