@@ -17,11 +17,13 @@ export class ApiStatusError extends Error {
 export const getToken = () => localStorage.getItem(TOKEN) ?? '';
 export const setToken = (t: string) => (t ? localStorage.setItem(TOKEN, t) : localStorage.removeItem(TOKEN));
 
-export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+/** `keepalive`: the request still completes if the page is closing (saving progress on the way out). */
+export async function api<T>(path: string, init: { method?: string; body?: unknown; keepalive?: boolean } = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method: init.method ?? (init.body ? 'POST' : 'GET'),
     headers: { 'Content-Type': 'application/json', 'X-TF-Token': getToken() },
     body: init.body ? JSON.stringify(init.body) : undefined,
+    keepalive: init.keepalive,
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) {

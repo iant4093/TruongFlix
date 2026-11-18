@@ -293,6 +293,7 @@ export default function RemotePlayer({
     setCreditsDismissed(false);
     setCountdown(null);
     setPanel(null);
+    setStream(null);
     const prev = streamToken.current ?? undefined;
     streamToken.current = null;
     void loadStream({ start: target.resume >= 0 ? target.resume : undefined, prevToken: prev });
@@ -301,18 +302,27 @@ export default function RemotePlayer({
     };
   }, [target.type, target.id]);
 
+  // Leaving by any route (the phone's Back button, closing the tab, swiping the app away) saves the
+  // place first; only the player's own Back button used to.
+  useEffect(() => {
+    const save = () => void reportRef.current(true);
+    window.addEventListener('pagehide', save);
+    return () => window.removeEventListener('pagehide', save);
+  }, []);
+
   // Release any active stream on unmount.
   useEffect(() => {
     mounted.current = true;
     return () => {
+      // Save the place, then release the stream (in that order: the PC checks the stream with the save).
+      const token = streamToken.current;
+      const saved = token ? reportRef.current(true) : Promise.resolve();
+      streamToken.current = null;
       mounted.current = false;
       loadSeq.current++;
       hls.current?.destroy();
       hls.current = null;
-      if (streamToken.current) {
-        void api('/stop', { body: { token: streamToken.current } }).catch(() => {});
-        streamToken.current = null;
-      }
+      if (token) void saved.finally(() => api('/stop', { body: { token }, keepalive: true }).catch(() => {}));
       if (blobUrl.current) {
         URL.revokeObjectURL(blobUrl.current);
         blobUrl.current = null;
@@ -325,10 +335,11 @@ export default function RemotePlayer({
       if (!stream || !duration) return;
       const seconds = watched.current.total;
       watched.current.total = 0;
-      const cur = offset + (video.current?.currentTime ?? time);
+      const cur = offset + (video.current?.currentTime ?? 0);
       if (offline) void savePosition(offline.id, cur).catch(() => {});
       const res = await api<{ blocked: string | null }>('/progress', {
         body: { ...base, type: target.type, id: target.id, time: cur, duration, watched: seconds, token: streamToken.current },
+        keepalive: final,
       }).catch(() => null);
       // Saved copies keep their place for the PC until it can be reached again.
       if (offline && !res) void queueProgress({ profile: who.id, profileKey: who.key, type: target.type, id: target.id, time: cur, duration });
@@ -337,13 +348,17 @@ export default function RemotePlayer({
         setError(res.blocked);
       }
     },
-    [stream, offset, duration, target.type, target.id, time],
+    [stream, offset, duration, target.type, target.id],
   );
 
+  // One steady timer for the whole playback. (It used to be restarted with every time update, so it
+  // never fired: progress went unsaved and the PC closed the stream as idle after two minutes.)
+  const reportRef = useRef(report);
+  reportRef.current = report;
   useEffect(() => {
-    const t = window.setInterval(() => void report(), REPORT_MS);
+    const t = window.setInterval(() => void reportRef.current(), REPORT_MS);
     return () => window.clearInterval(t);
-  }, [report]);
+  }, []);
 
   const exit = useCallback(async () => {
     await report(true);
@@ -472,9 +487,9 @@ export default function RemotePlayer({
 
   const playNext = useCallback(async () => {
     if (!stream?.next) return;
-    await report(true);
+    await reportRef.current(true);
     onPlay(stream.next);
-  }, [onPlay, report, stream?.next]);
+  }, [onPlay, stream?.next]);
 
   // Active intro / recap / credits segments.
   const activeSkip = useMemo(() => {

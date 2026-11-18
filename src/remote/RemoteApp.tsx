@@ -99,6 +99,32 @@ export default function RemoteApp() {
   });
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
   const cameBack = screen.name === 'home' && (lastScreen === 'title' || lastScreen === 'downloads');
+
+  // The phone's own Back button (and the swipe-back gesture) goes back one screen, as in an app,
+  // instead of leaving the browser app: each screen away from Home has a history entry to return to.
+  const pushed = useRef(false);
+  const popped = useRef(false);
+  useEffect(() => {
+    const onPop = () => {
+      if (!pushed.current) return;
+      pushed.current = false;
+      popped.current = true;
+      setScreen((cur) => (cur.name === 'play' ? (cur.from ?? { name: 'home' }) : { name: 'home' }));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  useEffect(() => {
+    if (screen.name !== 'home' && !pushed.current) {
+      history.pushState({ tf: true }, '');
+      pushed.current = true;
+    } else if (screen.name === 'home' && pushed.current && !popped.current) {
+      // Back inside the app: drop the entry, so the phone's Back doesn't need pressing twice.
+      pushed.current = false;
+      history.back();
+    }
+    popped.current = false;
+  }, [screen.name]);
   useEffect(() => {
     lastScreen = screen.name;
   }, [screen.name]);
@@ -130,7 +156,7 @@ export default function RemoteApp() {
         target={screen.target}
         offline={screen.offline}
         onExit={() => setScreen(screen.from ?? { name: 'home' })}
-        onPlay={(t) => setScreen({ name: 'play', target: t })}
+        onPlay={(t) => setScreen({ name: 'play', target: t, from: screen.from })}
       />
     );
   if (screen.name === 'downloads')
@@ -154,7 +180,7 @@ export default function RemoteApp() {
       screen={screen}
       cameBack={cameBack}
       open={(key) => setScreen({ name: 'title', key })}
-      play={(target) => setScreen({ name: 'play', target })}
+      play={(target) => setScreen({ name: 'play', target, from: screen })}
       back={() => setScreen({ name: 'home' })}
       switchProfile={() => choose(null)}
       openDownloads={() => setScreen({ name: 'downloads' })}
