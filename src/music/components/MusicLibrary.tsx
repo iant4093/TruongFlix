@@ -10,6 +10,7 @@ import { askName } from './Overlays';
 import TrackList from './TrackList';
 import TrackMenu from './TrackMenu';
 import { Cover, Mosaic } from './ui';
+import { errorMessage } from '../../lib/errors';
 
 const ACCENT = 'bg-[#fa2d48] hover:bg-[#ff4560]';
 
@@ -385,7 +386,7 @@ function Playlists({ library }: { library: Library }) {
       const p = await createPlaylist(name);
       openRoute({ page: 'playlist', id: p.id });
     } catch (e) {
-      musicToast(String(e));
+      musicToast(errorMessage(e));
     }
   };
   return (
@@ -529,16 +530,16 @@ function PlaylistPage({ library, id, phone }: { library: Library; id: number; ph
   if (!playlist) return <p className="py-16 text-center text-white/50">This playlist was deleted.</p>;
   const tracks = playlist.trackIds.map((t) => byId.get(t)).filter((t): t is MusicTrack => !!t);
   const duration = tracks.reduce((s, t) => s + t.duration, 0);
-  const save = (ids: number[]) => void setPlaylistTracks(playlist.id, ids).catch((e) => musicToast(String(e)));
+  const save = (ids: number[]) => void setPlaylistTracks(playlist.id, ids).catch((e) => musicToast(errorMessage(e)));
   const move = (from: number, to: number) => save(moveInList(playlist.trackIds, from, to));
   const rename = async () => {
     const name = await askName('Rename Playlist', playlist.name);
-    if (name && name !== playlist.name) await renamePlaylist(playlist.id, name).catch((e) => musicToast(String(e)));
+    if (name && name !== playlist.name) await renamePlaylist(playlist.id, name).catch((e) => musicToast(errorMessage(e)));
   };
   const remove = async () => {
     if (!window.confirm(`Delete “${playlist.name}”? The songs stay in your library.`)) return;
     goBack();
-    await deletePlaylist(playlist.id).catch((e) => musicToast(String(e)));
+    await deletePlaylist(playlist.id).catch((e) => musicToast(errorMessage(e)));
   };
   const btn = 'flex h-11 items-center gap-2 rounded-lg bg-white/10 px-4 text-sm font-semibold hover:bg-white/15';
   return (

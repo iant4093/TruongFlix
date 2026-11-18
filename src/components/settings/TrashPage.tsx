@@ -8,6 +8,7 @@ import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import { BTN, BTN_DANGER, Group, Page, Row } from './ui';
 import Spinner from '../common/Spinner';
+import { errorMessage } from '../../lib/errors';
 
 const KIND_LABEL: Record<TrashRow['kind'], string> = { movie: 'Movie', tv: 'TV show', episode: 'Episode' };
 
@@ -28,7 +29,7 @@ export default function TrashPage() {
     try {
       await fn();
     } catch (e) {
-      toast(String(e), 'error');
+      toast(errorMessage(e), 'error');
     } finally {
       setBusy(null);
       await refresh();

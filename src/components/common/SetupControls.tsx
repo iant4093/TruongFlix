@@ -8,6 +8,7 @@ import { verifyOpenSubtitles } from '../../services/subtitles';
 import { IS_MAC } from '../../lib/platform';
 import { LanguageSelect } from './SubtitlesPanel';
 import Spinner from './Spinner';
+import { errorMessage } from '../../lib/errors';
 
 // ---------------------------------------------------------------------------
 // TMDB key
@@ -132,7 +133,7 @@ export function VlcSetup({ value, onChange }: VlcProps) {
       }
     } catch (e) {
       setStatus('missing');
-      setError(String(e));
+      setError(errorMessage(e));
     }
   };
 

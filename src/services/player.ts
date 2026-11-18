@@ -27,6 +27,7 @@ import { ensureReachable } from './nas';
 import { blockedMessage, formatLeft, limitStatus } from './limits';
 import { subtitlesEnabled } from './subtitles';
 import { canStreamTorrent, downloadBlockingPlayback, stillDownloadingMessage, torrentForFile } from './torrents';
+import { errorMessage } from '../lib/errors';
 
 interface ProgressPayload {
   media_type: PlayableType;
@@ -352,7 +353,7 @@ export async function playInVlc(target: PlayTarget) {
       'info',
     );
   } catch (e) {
-    store.toast(String(e), 'error');
+    store.toast(errorMessage(e), 'error');
   }
 }
 
@@ -439,14 +440,16 @@ export async function playBuiltin(target: PlayTarget) {
     const { settings } = useLibraryStore.getState();
     appliedAf = audioFilterChain(settings, mediaInfoFor(target)?.audio.find((a) => a.default)?.channels ?? 2);
     const [subtitlePath, sourcePath] = await Promise.all([subtitleFor(target), resolvePlaybackSource(target.filePath)]);
+    const langs = rememberedTracks(describe(target));
     await queueOpen(generation, {
       loadId,
       filePath: sourcePath,
       startTime: Math.max(0, target.startTime),
       subtitlePath,
-      audioLang: null,
-      subLang: null,
+      audioLang: langs.audioLang,
+      subLang: langs.subLang,
       options: [
+        ...langs.extra,
         ...subtitleOptions(settings.subtitle_style),
         ['af', appliedAf],
         ['audio-device', settings.audio_device || 'auto'],
@@ -462,7 +465,7 @@ export async function playBuiltin(target: PlayTarget) {
   } catch (e) {
     if (generation !== openGeneration) return;
     store.setPlayerSession(null);
-    store.toast(`Built-in player couldn’t start (${String(e)}). Opening in VLC instead.`, 'error');
+    store.toast(`Built-in player couldn’t start: ${errorMessage(e)} Opening in VLC instead.`, 'error');
     await playInVlc(target);
   }
 }
@@ -978,6 +981,56 @@ export async function playerCommand(...args: (string | number)[]) {
   if (useLibraryStore.getState().playerPrompt && (args[0] === 'seek' || (args[0] === 'cycle' && args[1] === 'pause'))) return;
   return invoke('player_command', { args: args.map(String) }).catch((e) => console.warn('[player]', e));
 }
+// ---------------------------------------------------------------------------
+// Remembered audio and subtitle languages
+// ---------------------------------------------------------------------------
+
+/**
+ * The audio and subtitle language picked for a show (or for movies), so the next episode starts
+ * the same way: turning on English subtitles used to last only until the next episode.
+ */
+type TrackPref = { audio?: string; sub?: string };
+const TRACK_PREFS = 'tf-track-langs';
+const readTrackPrefs = (): Record<string, TrackPref> => {
+  try {
+    return JSON.parse(localStorage.getItem(TRACK_PREFS) ?? '{}') as Record<string, TrackPref>;
+  } catch {
+    return {};
+  }
+};
+const trackScope = (session: PlayerSession) => (session.target.type === 'episode' ? session.itemKey ?? 'tv' : 'movies');
+
+/** Picks an audio or subtitle track (`'no'` turns subtitles off) and remembers its language. */
+export function chooseTrack(kind: 'aid' | 'sid', value: number | 'no') {
+  void playerSet(kind, value);
+  const { playerSession: live, playerTracks } = useLibraryStore.getState();
+  // Live TV has nothing to remember a language for.
+  if (!live || live.target.type === 'live') return;
+  const playerSession = live as PlayerSession;
+  const track = value === 'no' ? null : playerTracks.find((t) => t.id === value && t.type === (kind === 'aid' ? 'audio' : 'sub'));
+  const prefs = readTrackPrefs();
+  const scope = trackScope(playerSession);
+  const pref = { ...prefs[scope] };
+  if (kind === 'aid' && track?.lang) pref.audio = track.lang;
+  if (kind === 'sid') pref.sub = value === 'no' ? 'off' : track?.lang ?? pref.sub;
+  prefs[scope] = pref;
+  try {
+    localStorage.setItem(TRACK_PREFS, JSON.stringify(prefs));
+  } catch {
+    /* not remembered this time */
+  }
+}
+
+/** mpv language options for a title from what was picked before (subtitles off stays off). */
+function rememberedTracks(session: PlayerSession): { audioLang: string | null; subLang: string | null; extra: [string, string][] } {
+  const pref = readTrackPrefs()[trackScope(session)];
+  return {
+    audioLang: pref?.audio ?? null,
+    subLang: pref?.sub && pref.sub !== 'off' ? pref.sub : null,
+    extra: pref?.sub === 'off' ? [['sid', 'no']] : [],
+  };
+}
+
 export async function playerSet(name: string, value: string | number) {
   if (name === 'pause' && value === 'no' && useLibraryStore.getState().playerPrompt) return;
   return invoke('player_set', { name, value: String(value) }).catch((e) => console.warn('[player]', e));

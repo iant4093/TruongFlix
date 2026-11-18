@@ -7,6 +7,7 @@ import Modal from './LiveDialog';
 import Spinner from '../common/Spinner';
 import SegmentedControl from '../common/SegmentedControl';
 import { button, sourceKind } from './ui';
+import { errorMessage } from '../../lib/errors';
 
 type Kind = 'm3u' | 'web';
 
@@ -34,7 +35,7 @@ export default function Sources({ onClose }: { onClose: () => void }) {
       await importPlaylist(name, input, editing, kind);
       reset();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -77,7 +78,7 @@ export default function Sources({ onClose }: { onClose: () => void }) {
                     await cancelChecks();
                     await importPlaylist(p.name, p.input, p.id, p.kind ?? 'm3u');
                   } catch (e) {
-                    setError(String(e));
+                    setError(errorMessage(e));
                   } finally {
                     setBusy(false);
                   }

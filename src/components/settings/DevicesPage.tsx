@@ -40,7 +40,7 @@ export default function DevicesPage() {
     try {
       setInfo(await applyRemoteAccess());
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   };
   useEffect(() => {

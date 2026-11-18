@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useLibraryStore } from '../store/useLibraryStore';
 import type { ShareInfo } from '../types/media';
 import { rootFor } from './files';
+import { errorMessage } from '../lib/errors';
 
 /**
  * Records which media folders live on network shares (and the NAS's Wake-on-LAN address) while
@@ -59,7 +60,7 @@ export async function connectShare(dir: string, opts: { wake: boolean; quiet?: b
     await invoke('connect_share', { share, wake: opts.wake });
     return true;
   } catch (e) {
-    if (!opts.quiet) toast(String(e), 'error');
+    if (!opts.quiet) toast(errorMessage(e), 'error');
     return false;
   } finally {
     off();

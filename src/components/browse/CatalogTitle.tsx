@@ -75,7 +75,7 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
     void getCatalogDetail(item).then((d) => {
       if (!alive) return;
       setDetail(d);
-    }).catch((e) => { if (alive) setDetailError(String(e)); });
+    }).catch((e) => { if (alive) setDetailError(errorMessage(e)); });
     return () => { alive = false; };
   }, [item.id, item.kind, retry]);
   useEffect(() => {
@@ -84,7 +84,7 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
     void getCatalogSeason(detail, season).then((data) => {
       if (!alive) return;
       setLoadedSeason({ number: season, data });
-    }).catch((e) => { if (alive) setSeasonError(String(e)); });
+    }).catch((e) => { if (alive) setSeasonError(errorMessage(e)); });
     return () => { alive = false; };
   }, [detail, season, retry]);
   useEffect(() => { active.current = true; return () => { active.current = false; controller.current?.abort(); cancelSourceBrowser(); }; }, []);

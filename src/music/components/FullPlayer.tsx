@@ -11,6 +11,7 @@ import Lyrics from './Lyrics';
 import QueuePanel from './QueuePanel';
 import TrackMenu from './TrackMenu';
 import { Cover, PlayPauseIcon, RoundButton, Scrubber, VolumeSlider } from './ui';
+import { errorMessage } from '../../lib/errors';
 
 /** Wide enough for artwork and lyrics side by side. */
 function useWide() {
@@ -154,7 +155,7 @@ function Sheet() {
   }, []);
 
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
-  const fav = () => void toggleFavourite(track).catch((e) => musicToast(String(e)));
+  const fav = () => void toggleFavourite(track).catch((e) => musicToast(errorMessage(e)));
   const showPanel = panel != null;
 
   const controls = (big: boolean) => (

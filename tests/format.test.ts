@@ -85,3 +85,13 @@ describe('helpers', () => {
     expect(basename('file.torrent')).toBe('file.torrent');
   });
 });
+
+describe('plain error messages', () => {
+  it('turns common system failures into plain words', async () => {
+    const { errorMessage } = await import('../src/lib/errors');
+    expect(errorMessage(new Error('File not found: D:\Movies\a.mkv'))).toMatch(/couldn’t be found/);
+    expect(errorMessage('Error: Access is denied. (os error 5)')).toMatch(/isn’t allowed/);
+    expect(errorMessage(new TypeError('Failed to fetch'))).toMatch(/Couldn’t connect/);
+    expect(errorMessage('Error: Too many wrong PINs.')).toBe('Too many wrong PINs.');
+  });
+});

@@ -9,6 +9,7 @@ import { formatSize } from '../../services/mediainfo';
 import { languageName } from '../../services/subtitles';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
+import { errorMessage } from '../../lib/errors';
 
 type Tab = 'overview' | 'duplicates' | 'problems' | 'upgrades' | 'subtitles';
 
@@ -269,7 +270,7 @@ function FileRow({ file, badge, allowDelete, showTitle }: { file: HealthFile; ba
       </div>
       <span className="w-16 shrink-0 text-right tabular-nums text-nf-secondary">{formatSize(file.size)}</span>
       <button
-        onClick={() => revealInFileManager(file.path).catch((e) => toast(String(e), 'error'))}
+        onClick={() => revealInFileManager(file.path).catch((e) => toast(errorMessage(e), 'error'))}
         title={`Show in ${FILE_MANAGER_NAME}`}
           aria-label={`Show ${file.title} in ${FILE_MANAGER_NAME}`}
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-white/50 hover:bg-white/10 hover:text-white"

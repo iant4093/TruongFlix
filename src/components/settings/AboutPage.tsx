@@ -7,6 +7,7 @@ import { engineStatus } from '../../services/player';
 import { formatBytes } from '../../lib/format';
 import { Block, BTN, BTN_PRIMARY, Group, Page, Row, StatusText, ToggleRow } from './ui';
 import { closeSettingsAnd } from './nav';
+import { errorMessage } from '../../lib/errors';
 
 export default function AboutPage() {
   const autoCheck = useLibraryStore((s) => s.settings.updates_auto_check);
@@ -34,7 +35,7 @@ export default function AboutPage() {
       setUpdate(u);
       setPhase(u ? 'idle' : 'uptodate');
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       setPhase('error');
     }
   };
@@ -44,7 +45,7 @@ export default function AboutPage() {
     try {
       await installUpdate((done, total) => setProgress({ done, total }));
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       setPhase('error');
     }
   };

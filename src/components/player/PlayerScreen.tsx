@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useTvMode } from '../../lib/tvMode';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowLeft,
@@ -45,7 +46,7 @@ import {
   openCurrentInVlc,
   playBuiltin,
   playerCommand,
-  playerSet,
+  chooseTrack, playerSet,
   syncAudioFilters,
   toggleFullscreen,
 } from '../../services/player';
@@ -398,6 +399,7 @@ function TrackRow({ selected, main, detail, onClick }: { selected: boolean; main
   return (
     <button
       type="button"
+      aria-pressed={selected}
       onClick={onClick}
       className={`flex w-full items-start gap-3 rounded px-3 py-2 text-left transition-colors hover:bg-white/10 ${
         selected ? 'text-white' : 'text-nf-dim'
@@ -451,7 +453,7 @@ function TracksPanel({ tracks, state }: { tracks: PlayerTrack[]; state: BuiltinP
             {audio.length ? (
               audio.map((t) => {
                 const l = audioLabel(t);
-                return <TrackRow key={t.id} selected={!!t.selected} main={l.main} detail={l.detail} onClick={() => void playerSet('aid', t.id)} />;
+                return <TrackRow key={t.id} selected={!!t.selected} main={l.main} detail={l.detail} onClick={() => chooseTrack('aid', t.id)} />;
               })
             ) : (
               <p className="px-3 text-sm text-nf-faint">No audio tracks</p>
@@ -461,10 +463,10 @@ function TracksPanel({ tracks, state }: { tracks: PlayerTrack[]; state: BuiltinP
         <div className="min-w-0">
           <h3 className="mb-2 px-3 text-2xl font-bold">Subtitles</h3>
           <div className="max-h-[38vh] overflow-y-auto">
-            <TrackRow selected={subsOff} main="Off" onClick={() => void playerSet('sid', 'no')} />
+            <TrackRow selected={subsOff} main="Off" onClick={() => chooseTrack('sid', 'no')} />
             {subs.map((t) => {
               const l = subLabel(t);
-              return <TrackRow key={t.id} selected={!!t.selected} main={l.main} detail={l.detail} onClick={() => void playerSet('sid', t.id)} />;
+              return <TrackRow key={t.id} selected={!!t.selected} main={l.main} detail={l.detail} onClick={() => chooseTrack('sid', t.id)} />;
             })}
           </div>
         </div>
@@ -893,6 +895,17 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
   );
   const [visible, setVisible] = useState(true);
   const [panel, setPanel] = useState<Panel>(null);
+  // Using a TV remote, keyboard or gamepad: Skip Intro and Next Episode take focus when they appear.
+  const tvKeys = useTvMode((s) => s.keyboard);
+  // A menu opened from the remote starts on its current choice.
+  useEffect(() => {
+    if (!panel || !useTvMode.getState().keyboard) return;
+    const id = requestAnimationFrame(() => {
+      const menu = document.querySelector<HTMLElement>('[data-player-menu]');
+      (menu?.querySelector<HTMLElement>('[aria-pressed="true"], [aria-checked="true"]') ?? menu?.querySelector<HTMLElement>('button'))?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [panel]);
   const [fullscreen, setFullscreen] = useState(false);
   const [pausedIdle, setPausedIdle] = useState(false);
   const [nextDismissed, setNextDismissed] = useState(false);
@@ -1012,6 +1025,8 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         e.stopImmediatePropagation();
         return;
       }
+      // With a menu open, arrows move between its options (TV remotes and gamepads have no mouse).
+      if (useLibraryStore.getState().playerSession && document.querySelector('[data-player-menu]') && e.key.startsWith('Arrow')) return;
       let handled = true;
       switch (e.key) {
         case ' ':
@@ -1267,6 +1282,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
               <AnimatePresence>
                 {panel && !prompt && (
                   <motion.div
+                    data-player-menu=""
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 10 }}
@@ -1314,6 +1330,8 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
           <motion.button
             key={skippable.kind}
             type="button"
+            data-player-focus=""
+            autoFocus={tvKeys}
             title={skippable.kind === 'intro' ? playerControlTitles.skipIntro : playerControlTitles.skipRecap}
             initial={{ opacity: 0, x: 30 }}
             animate={{ opacity: 1, x: 0 }}
@@ -1350,6 +1368,8 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
             </button>
             <button
               type="button"
+              data-player-focus=""
+              autoFocus={tvKeys}
               onClick={() => {
                 noteUserActivity();
                 void playBuiltin(session.next!);

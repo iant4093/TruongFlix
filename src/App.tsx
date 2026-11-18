@@ -32,6 +32,7 @@ import { reconnectOfflineShares, refreshShares } from './services/nas';
 import { initDesktopMusic } from './services/music';
 import MusicMiniBar from './music/components/MiniBar';
 import MusicOverlays from './music/components/Overlays';
+import { errorMessage } from './lib/errors';
 
 // Windows-only; other builds compile this to null and drop the Games code.
 const GamesView = __GAMES__ ? lazy(() => import('./games/components/GamesView')) : null;
@@ -131,7 +132,7 @@ export default function App() {
         const label = basename(path).replace(/\.[^.]+$/, '');
         setTimeout(() => void playBuiltin({ type: 'movie', id: -1, filePath: path, startTime: 0, label }), 1500);
       })
-      .catch((e) => setFatal(String(e)));
+      .catch((e) => setFatal(errorMessage(e)));
     // Warm up the player engine so the first Play starts instantly.
     void engineStatus();
     initPlayerEvents().catch((e) => console.warn('Player events unavailable', e));

@@ -27,6 +27,7 @@ import { play } from './player';
 import * as tmdb from './tmdb';
 import { basename } from '../lib/path';
 import type { SearchResult } from './tmdb';
+import { errorMessage } from '../lib/errors';
 
 const SEASON_PACK_RE = /\bS(\d{1,2})\b(?![ ._-]?E\d)|\bSeason[ ._-]*(\d{1,2})\b|\bComplete[ ._-]*(?:Series|Season|Collection)\b/i;
 
@@ -808,7 +809,7 @@ export async function playTorrentByHash(infoHash: string) {
       label: t.name,
     });
   } catch (e) {
-    store.toast(String(e), 'error');
+    store.toast(errorMessage(e), 'error');
   }
 }
 

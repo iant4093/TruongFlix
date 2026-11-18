@@ -29,6 +29,12 @@ const playerOpen = () => {
   return !!s.playerSession && !s.playerMini;
 };
 
+/**
+ * The player's open menu (Audio & Subtitles, chapters, speed…): while one is open, a TV remote's
+ * or gamepad's arrows move between its options instead of seeking or changing the volume.
+ */
+const playerMenu = () => (playerOpen() ? document.querySelector<HTMLElement>('[data-player-menu]') : null);
+
 /** Keydown as if from a keyboard, so every existing shortcut and dialog handles controller input too. */
 export function sendKey(key: string, target: EventTarget = document.activeElement ?? document.body) {
   const event = new KeyboardEvent('keydown', { key, code: CODES[key] ?? key, bubbles: true, cancelable: true, composed: true });
@@ -144,9 +150,13 @@ function handlePlayerPad(action: PadAction) {
     case 'right': case 'seekForward': sendKey('ArrowRight', body); break;
     case 'up': sendKey('ArrowUp', body); break;
     case 'down': sendKey('ArrowDown', body); break;
-    case 'accept':
-      sendKey(useLibraryStore.getState().playerPrompt ? 'Enter' : ' ', body);
+    case 'accept': {
+      // OK presses a focused player button (Skip Intro, Next Episode); otherwise play/pause.
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && focused.closest('[data-player-focus]')) focused.click();
+      else sendKey(useLibraryStore.getState().playerPrompt ? 'Enter' : ' ', body);
       break;
+    }
     case 'start': sendKey(' ', body); break;
     case 'back': case 'select': sendKey('Escape', body); break;
     case 'secondary': sendKey('a', body); break;
@@ -157,7 +167,7 @@ function handlePlayerPad(action: PadAction) {
 function handlePad(action: PadAction) {
   useTvMode.setState({ keyboard: true, controller: true });
   engageAuto();
-  if (playerOpen()) {
+  if (playerOpen() && !playerMenu()) {
     handlePlayerPad(action);
     return;
   }
@@ -197,7 +207,7 @@ export default function TvNavigation() {
   useEffect(() => {
     applyClasses();
     const unsubscribe = useTvMode.subscribe(applyClasses);
-    configureSpatialNav({ scope: topDialogRoot, closeHover: closeHovers });
+    configureSpatialNav({ scope: () => playerMenu() ?? topDialogRoot(), closeHover: closeHovers });
     return () => {
       unsubscribe();
       root().classList.remove('tv-mode', 'tv-focus', 'tv-cursor-hidden');
@@ -212,7 +222,7 @@ export default function TvNavigation() {
       const target = e.target instanceof Element ? e.target : null;
       const dir = ARROWS[e.key];
       if (dir) {
-        if (e.defaultPrevented || playerOpen() || !arrowLeavesElement(document.activeElement, dir)) return;
+        if (e.defaultPrevented || (playerOpen() && !playerMenu()) || !arrowLeavesElement(document.activeElement, dir)) return;
         if (!useTvMode.getState().keyboard) useTvMode.setState({ keyboard: true });
         const current = document.activeElement;
         if ((!current || current === document.body) && lastFocused && scopeRoot().contains(lastFocused) && isNavigable(lastFocused)) {

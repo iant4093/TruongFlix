@@ -8,6 +8,7 @@ import type { TorrentItem, TorrentStatus } from '../types/media';
 import { buildInstallJob, buildOptions, chooseLanguage, defaultChoices, resolvePath } from './installerOptions';
 import * as lib from './library';
 import type { GameDetail, GameSettings, InstallChoices, InstallerInfo, KnownFolders, LibraryGame } from './types';
+import { errorMessage } from '../lib/errors';
 
 export type JobPhase = 'starting' | 'installing' | 'finalizing' | 'afterInstall' | 'cleanup' | 'verifying' | 'uninstalling' | 'finishing';
 
@@ -208,7 +209,7 @@ async function onDownloadComplete(t: TorrentItem) {
   const installerDir = installerFolder(t);
   await patchGame(game.id, { status: 'downloaded', installerDir, error: null });
   if (game.autoInstall) {
-    void installGame(game.id).catch((e) => toast(String(e), 'error'));
+    void installGame(game.id).catch((e) => toast(errorMessage(e), 'error'));
   } else {
     toast(`“${game.title}” finished downloading and is ready to install.`, 'success');
   }

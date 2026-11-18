@@ -10,6 +10,7 @@ import { resize } from './tmdb';
 import { ensureReachable } from './nas';
 import { blockedMessage, limitStatus } from './limits';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
+import { errorMessage } from '../lib/errors';
 
 export type { CastDevice, CastState } from '../types/media';
 
@@ -76,7 +77,7 @@ export async function castTo(device: CastDevice, target: PlayTarget, start = tar
       media: { url: url.url, content_type: contentType, title: info.title, subtitle: info.subtitle, image: info.image, start: seekable ? start : 0, duration: duration - url.offset },
     });
   } catch (e) {
-    useLibraryStore.getState().patchCast({ state: 'error', message: String(e) });
+    useLibraryStore.getState().patchCast({ state: 'error', message: errorMessage(e) });
   }
 }
 

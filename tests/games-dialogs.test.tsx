@@ -146,7 +146,7 @@ describe('DownloadDialog', () => {
   it('offers to download everything when the file list fails', async () => {
     vi.mocked(inspectTorrentFilesLive).mockRejectedValue(new Error('timed out'));
     render(<DownloadDialog detail={detail} onClose={() => {}} />);
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('timed out'));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('took too long'));
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Download everything' }));
     await waitFor(() => expect(downloadGame).toHaveBeenCalled());

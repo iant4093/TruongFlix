@@ -18,6 +18,7 @@ import {
   type SubtitleTarget,
 } from '../../services/subtitles';
 import Spinner from './Spinner';
+import { errorMessage } from '../../lib/errors';
 
 const LANGUAGE_OPTIONS = SUBTITLE_LANGUAGES.map((l) => ({ value: l.code, label: l.name }));
 
@@ -133,7 +134,7 @@ export default function SubtitlesPanel({ target }: { target: SubtitleTarget }) {
       await fn();
       await refresh();
     } catch (e) {
-      toast(String(e), 'error');
+      toast(errorMessage(e), 'error');
     }
   };
 
@@ -143,7 +144,7 @@ export default function SubtitlesPanel({ target }: { target: SubtitleTarget }) {
     try {
       setResults(await searchSubtitles(settings, target, language));
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       setResults(null);
     } finally {
       setSearching(false);

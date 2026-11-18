@@ -9,6 +9,7 @@ import { addToQueue, playNext, setFull, toggleFavourite, useMusicPlayer } from '
 import type { MusicTrack } from '../types';
 import { askName } from './Overlays';
 import { useDismiss } from './ui';
+import { errorMessage } from '../../lib/errors';
 
 export interface MenuContext {
   /** Shown inside this playlist: offers "Remove from Playlist" for this position. */
@@ -92,7 +93,7 @@ function Menu({ anchor, point, tracks, context, close, closing = false }: { anch
     close();
     void Promise.resolve()
       .then(fn)
-      .catch((e) => musicToast(e instanceof Error ? e.message : String(e)));
+      .catch((e) => musicToast(errorMessage(e)));
   };
   const go = (route: Parameters<typeof openRoute>[0]) => run(() => {
     setFull(false);
