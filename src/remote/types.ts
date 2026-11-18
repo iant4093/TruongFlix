@@ -30,6 +30,23 @@ export interface RemoteItem {
   progress?: number;
   /** e.g. "S1:E3 · 12 min left". */
   hint?: string;
+  tagline?: string | null;
+  myList?: boolean;
+  watched?: boolean;
+  imdbVotes?: number | null;
+  /** The best file's picture and sound: "4K", "Dolby Vision", "Atmos", "5.1"… */
+  badges?: string[];
+  /** TV: "Returning Series", "Ended"… */
+  status?: string | null;
+  /** TV: the next episode to air, e.g. "S3:E2 · Mar 4". */
+  nextAir?: string | null;
+}
+
+export interface RemotePerson {
+  name: string;
+  /** The character (cast) or the job (crew). */
+  role: string | null;
+  photo: string | null;
 }
 
 export interface RemoteRow {
@@ -67,6 +84,16 @@ export interface RemoteTitle {
   cast: string[];
   play: RemotePlayable | null;
   episodes: RemoteEpisode[];
+  /** Cast with photos and characters (newer PCs only). */
+  people?: RemotePerson[];
+  /** Directors (movies) or creators (TV). */
+  crew?: RemotePerson[];
+  /** IMDb's average for each season. */
+  seasonRatings?: Record<number, number>;
+  /** Titles in your library like this one. */
+  similar?: RemoteItem[];
+  /** The other films of its collection that you have. */
+  collection?: { name: string; items: RemoteItem[] } | null;
 }
 
 export interface RemoteAudioTrack {

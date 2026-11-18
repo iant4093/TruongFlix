@@ -42,6 +42,7 @@ import {
 import { estimateBytes, isQualityLevel, isQualityRes, QUALITY_LEVELS, resLabel, type Quality } from '../lib/quality';
 import type { RemoteDownload, RemoteDownloadStatus, RemoteQualities, RemoteQualityOption } from '../remote/types';
 import { languageName } from './subtitles';
+import { techBadgeList } from '../components/common/TechBadges';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
 import { endMusicSession, musicRoute } from './musicroute';
 import { togetherRoute } from './watchparty';
@@ -180,6 +181,15 @@ export function endRemoteSession(session: string) {
   endMusicSession(session);
 }
 
+/** "S3:E2 · Mar 4" for the next episode to air (today or later). */
+function nextAirLabel(i: MediaItem): string | null {
+  const n = i.nextEpisode;
+  if (!n?.air_date) return null;
+  const when = new Date(`${n.air_date}T12:00:00`);
+  if (Number.isNaN(when.getTime())) return null;
+  return `S${n.season}:E${n.episode} · ${when.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+
 function lite(i: MediaItem, extra: Partial<RemoteItem> = {}): RemoteItem {
   return {
     key: i.key,
@@ -198,8 +208,28 @@ function lite(i: MediaItem, extra: Partial<RemoteItem> = {}): RemoteItem {
     runtime: i.runtime,
     seasonCount: i.seasonCount,
     genres: i.genres,
+    tagline: i.tagline,
+    myList: i.myList,
+    watched: i.watched,
+    imdbVotes: i.imdbVotes,
+    badges: techBadgeList(i.tech, false, true),
+    status: i.kind === 'tv' ? i.tmdbStatus : null,
+    nextAir: i.kind === 'tv' ? nextAirLabel(i) : null,
     ...extra,
   };
+}
+
+/** Up to nine titles from the library that share this one's genres (the desktop's More Like This). */
+function similarTo(item: MediaItem, items: MediaItem[]): MediaItem[] {
+  const mine = new Set(genreBuckets(item.genres));
+  if (!mine.size) return [];
+  return items
+    .filter((i) => i.key !== item.key && i.matched)
+    .map((i) => ({ i, score: genreBuckets(i.genres).filter((g) => mine.has(g)).length * 10 + (i.kind === item.kind ? 3 : 0) + i.voteAverage / 2 }))
+    .filter((x) => x.score >= 10)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 9)
+    .map((x) => x.i);
 }
 
 async function library(profile: Profile): Promise<RemoteLibrary> {
@@ -251,11 +281,21 @@ async function title(profile: Profile, itemKey: string): Promise<RemoteTitle> {
       watched: !!e.watched,
     };
   });
+  const cast = item.cast.filter((c) => !c.job);
+  const crew = item.cast.filter((c) => c.job === 'Director' || c.job === 'Creator');
+  const parts = item.kind === 'movie' && item.collectionId ? items.filter((i) => i.kind === 'movie' && i.collectionId === item.collectionId) : [];
+  const ratings: Record<number, number> = {};
+  for (const [season, r] of Object.entries(item.imdbSeasons ?? {})) if (r?.rating) ratings[Number(season)] = r.rating;
   return {
     item: lite(item),
-    cast: item.cast.filter((c) => !c.job).slice(0, 6).map((c) => c.name),
+    cast: cast.slice(0, 6).map((c) => c.name),
     play: playable(playTargetFor(item, bySeries)),
     episodes,
+    people: cast.slice(0, 16).map((c) => ({ name: c.name, role: c.character || null, photo: c.profile_path ?? null })),
+    crew: crew.map((c) => ({ name: c.name, role: c.job ?? null, photo: c.profile_path ?? null })),
+    seasonRatings: ratings,
+    similar: similarTo(item, items).map((i) => lite(i)),
+    collection: parts.length > 1 ? { name: item.collectionName ?? 'Collection', items: parts.sort((a, b) => (a.year ?? 0) - (b.year ?? 0)).map((i) => lite(i)) } : null,
   };
 }
 
