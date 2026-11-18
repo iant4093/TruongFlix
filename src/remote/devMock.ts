@@ -14,23 +14,53 @@ const profiles: RemoteProfile[] = [
   { id: 2, name: 'Kids', color: '#F5B70A', maturity: 'kids', locked: false },
 ];
 
-const item = (n: number, kind: 'movie' | 'tv', title: string): RemoteItem => ({
-  key: `${kind}-${n}`,
-  kind,
-  title,
-  year: 2020 + n,
-  overview: `${title} — a preview title for the browser app.`,
-  poster: null,
-  backdrop: null,
-  logo: null,
-  certification: 'PG',
-  imdbRating: 7.5,
-  runtime: 112,
-  seasonCount: kind === 'tv' ? 2 : 0,
-  genres: ['Drama'],
-});
+const IMG = 'https://image.tmdb.org/t/p';
+/** Preview titles with real TMDB art, so the browser app's screens look like they will. */
+const art: Record<string, [string, string, string]> = {
+  'The Matrix': ['tlm8UkiQsitc8rSuIAscQDCnP8d.jpg', 'dXNAPwY7VrqMAo51EKhhCJfaGb5.jpg', 'xslT5YyQOaqcVKAZxcoq2YbcbEf.png'],
+  'Dune: Part Two': ['eZ239CUp1d6OryZEBPnO2n87gMG.jpg', '6izwz7rsy95ARzTR3poZ8H6c5pp.jpg', 'ofo16Av8ssvqmGauI2kZsdiBbm2.png'],
+  Dune: ['jYEW5xZkZk2WTrdbMGAPFuBqbDc.jpg', 'd5NXSklXo0qyIYkgV94XAgMIckC.jpg', 'ofo16Av8ssvqmGauI2kZsdiBbm2.png'],
+  Oppenheimer: ['neeNHeXjMF5fXoCJRsOmkNGC7q.jpg', '8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg', 'zl0j2MSHkAzBI773TBrycw5q20D.png'],
+  Interstellar: ['8sNiAPPYU14PUepFNeSNGUTiHW.jpg', 'yQvGrMoipbRoddT0ZR8tPoR7NfX.jpg', 'yLPDadMcGXjlNZHzW4RMYAuackd.png'],
+  'Blade Runner 2049': ['gNdLJU9TxrpGx4dkZidjys3fyy0.jpg', 'gajva2L0rPYkEWjzgFlBXCAVBE5.jpg', 'yAL84wOHAMRBbNI6YfHoV52yeyP.png'],
+  Inception: ['8ZTVqvKDQ8emSGUEMjsS4yHAwrp.jpg', 'xlaY2zyzMfkhk0HSC5VUwzoZPU1.jpg', 'pVcoUkWWUwSXcJIEAeqlRa2q9KS.png'],
+};
 
-const items = [item(1, 'movie', 'The Long Weekend'), item(2, 'tv', 'Harbor Lights'), item(3, 'movie', 'Night Shift')];
+const item = (n: number, kind: 'movie' | 'tv', title: string, extra: Partial<RemoteItem> = {}): RemoteItem => {
+  const a = art[title];
+  return {
+    key: `${kind}-${n}`,
+    kind,
+    title,
+    year: 2010 + n,
+    overview: `${title}: a preview title for the browser app, with enough of an overview to wrap onto a few lines like a real one does.`,
+    poster: a ? `${IMG}/w500/${a[1]}` : null,
+    backdrop: a ? `${IMG}/w1280/${a[0]}` : null,
+    logo: a ? `${IMG}/w500/${a[2]}` : null,
+    certification: 'PG-13',
+    imdbRating: 8.1,
+    rtScore: 92,
+    metacritic: 81,
+    runtime: 152,
+    seasonCount: kind === 'tv' ? 2 : 0,
+    genres: ['Science Fiction', 'Adventure'],
+    tagline: 'Long live the fighters.',
+    myList: n % 2 === 0,
+    badges: ['4K', 'Dolby Vision', 'Atmos', '5.1'],
+    ...extra,
+  };
+};
+
+const items = [
+  item(1, 'movie', 'Dune: Part Two', { progress: 0.42, hint: '1h 15m left' }),
+  item(2, 'tv', 'Harbor Lights', { status: 'Returning Series', nextAir: 'S3:E2 · Mar 4', badges: ['1080p', '5.1'] }),
+  item(3, 'movie', 'The Matrix'),
+  item(4, 'movie', 'Oppenheimer'),
+  item(5, 'movie', 'Interstellar'),
+  item(6, 'movie', 'Blade Runner 2049'),
+  item(7, 'movie', 'Inception'),
+  item(8, 'movie', 'Dune'),
+];
 
 const audio = [
   { id: 1, label: 'English', detail: '5.1', selected: true },
@@ -101,17 +131,41 @@ function answer(method: string, path: string, body: Record<string, unknown>): [n
   if (path === '/login') return [200, { token: 'dev' }];
   if (path === '/profiles') return [200, profiles];
   if (path === '/library') {
-    const lib: RemoteLibrary = { featured: null, rows: [{ title: 'Recently Added', items }], all: items };
+    const lib: RemoteLibrary = {
+      featured: items[0],
+      rows: [
+        { title: 'Continue Watching', items: [items[0], { ...items[1], progress: 0.3, hint: 'S1:E3 · 22 min left' }] },
+        { title: 'Recently Added', items },
+        { title: 'My List', items: items.filter((i) => i.myList) },
+        { title: 'Science Fiction', items: [...items].reverse() },
+      ],
+      all: items,
+    };
     return [200, lib];
   }
   if (path === '/title') {
+    const key = String((body as { item?: string }).item ?? '');
+    const it = items.find((i) => i.key === key) ?? items[1];
+    const tv = it.kind === 'tv';
     const t: RemoteTitle = {
-      item: items[1],
+      item: it,
       cast: ['A. Actor', 'B. Actor'],
-      play: { type: 'episode', id: 1, label: 'S1:E1 · Pilot', resume: 0 },
-      episodes: [1, 2, 3].map((e) => ({ id: e, season: 1, episode: e, title: `Episode ${e}`, overview: null, still: null, runtime: 45, progress: 0, watched: false })),
+      play: tv ? { type: 'episode', id: 1, label: 'S1:E1 · Pilot', resume: 0 } : { type: 'movie', id: 1, label: it.title, resume: it.progress ? 4000 : 0 },
+      episodes: tv
+        ? [1, 2].flatMap((season) => [1, 2, 3, 4].map((e) => ({ id: season * 10 + e, season, episode: e, title: `Episode ${e}`, overview: 'Something happens at the harbour that nobody saw coming, and the town has to decide what to do about it.', still: `${IMG}/w300/${art.Interstellar[0]}`, runtime: 45, progress: season === 1 && e === 1 ? 1 : season === 1 && e === 2 ? 0.4 : 0, watched: season === 1 && e === 1 })))
+        : [],
+      people: ['Timothée Chalamet', 'Zendaya', 'Rebecca Ferguson', 'Josh Brolin', 'Austin Butler', 'Florence Pugh'].map((name, i) => ({ name, role: ['Paul Atreides', 'Chani', 'Jessica', 'Gurney Halleck', 'Feyd-Rautha', 'Irulan'][i], photo: null })),
+      crew: [{ name: 'Denis Villeneuve', role: tv ? 'Creator' : 'Director', photo: null }],
+      seasonRatings: tv ? { 1: 8.4, 2: 8.9 } : {},
+      similar: items.filter((i) => i.key !== it.key).slice(0, 6),
+      collection: it.title.startsWith('Dune') ? { name: 'Dune Collection', items: [items[7], items[0]] } : null,
     };
     return [200, t];
+  }
+  if (method === 'POST' && path === '/mylist') {
+    const it = items.find((i) => i.kind === body.kind && Number(i.key.split('-')[1]) === Number(body.id));
+    if (it) it.myList = !!body.value;
+    return [200, { ok: true }];
   }
   if (path === '/live') {
     const web = { playlistId: 'w', id: 'abc', name: 'ABC', group: 'Sports', source: 'My web TV', kind: 'web' as const, web: 'https://example.com/embed/abc' };
@@ -196,7 +250,7 @@ export function installRemoteMock() {
       return new Response(new Uint8Array(end - start + 1), { status: 206, headers: { 'Content-Range': `bytes ${start}-${end}/${MOCK_BYTES}` } });
     }
     if (!url.pathname.startsWith('/api/')) return real(input, init);
-    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    const body = { ...Object.fromEntries(url.searchParams), ...(init?.body ? JSON.parse(String(init.body)) : {}) };
     const path = url.pathname.slice(4);
     const [status, data] = path.startsWith('/music/') ? mockMusicRoute(init?.method ?? 'GET', path, url.searchParams, body) : answer(init?.method ?? 'GET', path, body);
     return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });

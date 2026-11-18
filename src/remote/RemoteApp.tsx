@@ -1,22 +1,22 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { restoreScroll, saveScroll, useRowScroll } from './scrollMemory';
-import { ArrowLeft, Download, Lock, Monitor, Play, Search, Sparkles, X } from 'lucide-react';
-import CriticScores from '../components/common/CriticScores';
+import { restoreScroll, saveScroll } from './scrollMemory';
+import { Download, Lock, Search, X } from 'lucide-react';
+import { motion } from 'framer-motion';
 import ProfileAvatar from '../components/common/ProfileAvatar';
-import ProgressBar from '../components/common/ProgressBar';
 import type { RemoteItem, RemoteLibrary, RemotePlayable, RemoteProfile, RemoteTitle } from './types';
+import { Featured, Poster, Row } from './RemoteBits';
+import TitlePage from './RemoteTitle';
 import { api, AuthError, getToken, login, qs } from './api';
 import RemotePlayer from './RemotePlayer';
-import { NowPlayingBar, RemoteSheet, useNowPlaying, type NowPlaying } from './RemoteControl';
+import { NowPlayingBar, RemoteSheet, useNowPlaying } from './RemoteControl';
 import { errorMessage } from '../lib/errors';
 import RemoteLiveSection from './RemoteLive';
 import { RemoteMusicPlayer, RemoteMusicSection, useRemoteMusic } from './RemoteMusic';
 import { pause as pauseMusic } from '../music/player';
 import type { RemoteRow } from './types';
-import { DownloadButton, DownloadsPage } from './RemoteDownloads';
+import { DownloadsPage } from './RemoteDownloads';
 import { initOffline } from './offline';
 import type { OfflineItem } from './offlineLogic';
-import { backdropSrcSet } from '../lib/images';
 
 type Tab = 'home' | 'tv' | 'movies' | 'live' | 'music' | 'mylist';
 const TABS: { tab: Tab; label: string }[] = [
@@ -217,57 +217,6 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
   );
 }
 
-function Poster({ item, onClick }: { item: RemoteItem; onClick: () => void }) {
-  const art = item.poster ?? item.backdrop;
-  return (
-    <button onClick={onClick} className="w-28 shrink-0 text-left sm:w-36">
-      <div className="relative aspect-[2/3] overflow-hidden rounded bg-white/10">
-        {art ? <img src={art} alt={item.title} loading="lazy" className="h-full w-full object-cover" /> : <div className="flex h-full items-center p-2 text-sm font-bold">{item.title}</div>}
-        {item.progress != null && (
-          <ProgressBar value={item.progress} height={4} className="absolute inset-x-0 bottom-0" />
-        )}
-      </div>
-      {item.hint && <div className="mt-1 truncate text-xs text-nf-secondary">{item.hint}</div>}
-    </button>
-  );
-}
-
-/**
- * The billboard. Portrait phones get the poster (a widescreen still cropped to a phone looks odd);
- * wider screens get the backdrop. It's tall enough that the title never runs into the navigation.
- */
-function Featured({ item, open }: { item: RemoteItem; open: (key: string) => void }) {
-  const wide = item.backdrop ?? item.poster ?? '';
-  return (
-    <section className="relative -mt-36 mb-6 aspect-[2/3] max-h-[78vh] min-h-[26rem] w-full overflow-hidden sm:aspect-video md:-mt-[5.5rem] md:max-h-[80vh] md:min-h-[30rem]">
-      <picture>
-        {item.poster && <source media="(max-aspect-ratio: 4/5)" srcSet={item.poster} />}
-        <img src={wide} srcSet={item.backdrop ? backdropSrcSet(item.backdrop) : undefined} sizes="100vw" alt="" className="absolute inset-0 h-full w-full object-cover object-top" />
-      </picture>
-      <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/70 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-t from-nf-bg via-nf-bg/30 to-transparent" />
-      <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-4 px-6 pb-6 text-center">
-        {item.logo ? <img src={item.logo} alt={item.title} className="max-h-[min(6rem,16vh)] max-w-[70%] object-contain drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)]" /> : <h1 className="text-4xl font-black">{item.title}</h1>}
-        <button onClick={() => open(item.key)} className="nf-btn-play px-8">
-          <Play className="h-5 w-5 fill-black" strokeWidth={0} /> Play
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function Row({ row, open, scope }: { row: RemoteRow; open: (key: string) => void; scope: string }) {
-  const memory = useRowScroll(`${scope}:${row.title}`);
-  return (
-    <section className="mb-6">
-      <h2 className="mb-2 px-4 text-lg font-semibold">{row.title}</h2>
-      <div ref={memory.ref} onScroll={memory.onScroll} className="flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
-        {row.items.map((i) => <Poster key={`${row.title}-${i.key}`} item={i} onClick={() => open(i.key)} />)}
-      </div>
-    </section>
-  );
-}
-
 function Browse({
   who,
   screen,
@@ -318,6 +267,24 @@ function Browse({
     if (screen.name === 'home') saveScroll(page);
     showDownloads();
   };
+  const playKey = async (key: string) => {
+    try {
+      const t = await api<RemoteTitle>(`/title${qs({ profile: who.id, key: who.key, item: key })}`);
+      if (t.play) play(t.play);
+      else open(key);
+    } catch (e) {
+      onAuthError(e);
+      open(key);
+    }
+  };
+  // The header turns solid once the page scrolls, like the desktop navbar.
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const on = () => setScrolled(window.scrollY > 24);
+    on();
+    window.addEventListener('scroll', on, { passive: true });
+    return () => window.removeEventListener('scroll', on);
+  }, []);
   const now = useNowPlaying(who, true, onAuthError);
   const [remoteOpen, setRemoteOpen] = useState(false);
   const closeRemote = useCallback(() => setRemoteOpen(false), []);
@@ -366,14 +333,18 @@ function Browse({
   if (screen.name === 'title')
     return (
       <>
-        <TitlePage who={who} itemKey={screen.key} back={back} play={play} now={now} pad={pad} openRemote={() => setRemoteOpen(true)} openDownloads={openDownloads} />
+        <TitlePage who={who} itemKey={screen.key} back={back} open={open} play={play} now={now} pad={pad} openRemote={() => setRemoteOpen(true)} openDownloads={openDownloads} />
         {remote}
       </>
     );
 
   return (
     <div className={`min-h-[100dvh] ${pad}`}>
-      <header className="sticky top-0 z-30 flex flex-wrap items-center gap-x-6 gap-y-2 bg-gradient-to-b from-black/90 via-black/60 to-transparent px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))]">
+      <header
+        className={`sticky top-0 z-30 flex flex-wrap items-center gap-x-6 gap-y-2 px-4 pt-[max(1rem,env(safe-area-inset-top))] transition-[background-color,padding,box-shadow] duration-300 ${
+          scrolled ? 'bg-[#141414]/95 pb-3 shadow-[0_4px_20px_rgba(0,0,0,0.5)] backdrop-blur-md' : 'bg-gradient-to-b from-black/90 via-black/60 to-transparent pb-6'
+        }`}
+      >
         <button onClick={() => setTab('home')} aria-label="TruongFlix home">
           <Wordmark className="text-3xl" />
         </button>
@@ -388,11 +359,19 @@ function Browse({
               key={t}
               onClick={() => setTab(t)}
               aria-current={tab === t && query == null ? 'page' : undefined}
-              className={`shrink-0 whitespace-nowrap text-sm transition-colors max-md:rounded-full max-md:border max-md:px-3 max-md:py-1 ${
-                tab === t && query == null ? 'font-semibold text-white max-md:border-white max-md:bg-white/15' : 'text-white/70 hover:text-white max-md:border-white/30'
+              className={`relative shrink-0 whitespace-nowrap text-sm transition-colors [-webkit-tap-highlight-color:transparent] max-md:rounded-full max-md:border max-md:px-3 max-md:py-1 ${
+                tab === t && query == null ? 'font-semibold text-white max-md:border-transparent' : 'text-white/70 hover:text-white max-md:border-white/30'
               }`}
             >
-              {label}
+              {/* The current section's highlight slides from tab to tab (a pill on phones, a line on wider screens). */}
+              {tab === t && query == null && (
+                <motion.span
+                  layoutId="nf-tab"
+                  transition={{ type: 'spring', stiffness: 500, damping: 40 }}
+                  className="absolute inset-0 rounded-full border border-white bg-white/15 md:inset-x-0 md:-bottom-1.5 md:top-auto md:h-0.5 md:rounded-none md:border-0 md:bg-white"
+                />
+              )}
+              <span className="relative">{label}</span>
             </button>
           ))}
         </nav>
@@ -422,13 +401,14 @@ function Browse({
           />
           <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-5 lg:grid-cols-7">
             {results.map((i) => (
-              <Poster key={i.key} item={i} onClick={() => open(i.key)} />
+              <Poster key={i.key} item={i} onClick={() => open(i.key)} className="w-full" />
             ))}
           </div>
           {query.trim() && lib && !results.length && <p className="py-10 text-center text-nf-secondary">Nothing in your library matches “{query.trim()}”.</p>}
         </div>
       )}
       {error && <p className="px-4 text-nf-red">{error}</p>}
+      <div key={query == null ? tab : 'search'} className="nf-fade">
       {query == null && tab === 'live' && (
         <RemoteLiveSection who={who} onAuthError={onAuthError} onPlayedOnPc={() => { now.refresh(); setRemoteOpen(true); }} />
       )}
@@ -438,7 +418,7 @@ function Browse({
           <h1 className="mb-4 text-2xl font-bold">My List</h1>
           {(lib.rows.find((r) => r.title === 'My List')?.items.length ?? 0) > 0 ? (
             <div className="grid grid-cols-3 gap-3 sm:grid-cols-5 lg:grid-cols-7">
-              {lib.rows.find((r) => r.title === 'My List')!.items.map((i) => <Poster key={i.key} item={i} onClick={() => open(i.key)} />)}
+              {lib.rows.find((r) => r.title === 'My List')!.items.map((i) => <Poster key={i.key} item={i} onClick={() => open(i.key)} className="w-full" />)}
             </div>
           ) : (
             <p className="py-10 text-center text-nf-secondary">Titles you add to My List show up here.</p>
@@ -451,170 +431,20 @@ function Browse({
         const featured = pool.length ? pool[featuredSeed % pool.length] : null;
         return (
           <>
-            {featured && <Featured item={featured} open={open} />}
+            {featured && <Featured who={who} item={featured} open={open} play={(k) => void playKey(k)} />}
             {!featured && <h1 className="mb-4 px-4 text-2xl font-bold">{tab === 'tv' ? 'TV Shows' : 'Movies'}</h1>}
-            {sectionRows(lib, kind).map((row) => <Row key={row.title} row={row} open={open} scope={tab} />)}
+            {sectionRows(lib, kind).map((row, i) => <Row key={row.title} row={row} open={open} scope={tab} index={i} />)}
           </>
         );
       })()}
       {query == null && lib && tab === 'home' && (
         <>
-          {lib.featured && <Featured item={lib.featured} open={open} />}
-          {lib.rows.map((row) => <Row key={row.title} row={row} open={open} scope="home" />)}
+          {lib.featured && <Featured who={who} item={lib.featured} open={open} play={(k) => void playKey(k)} />}
+          {lib.rows.map((row, i) => <Row key={row.title} row={row} open={open} scope="home" index={i} />)}
         </>
       )}
+      </div>
       {remote}
-    </div>
-  );
-}
-
-function TitlePage({
-  who,
-  itemKey,
-  back,
-  play,
-  now,
-  pad,
-  openRemote,
-  openDownloads,
-}: {
-  who: Who;
-  itemKey: string;
-  back: () => void;
-  play: (t: RemotePlayable) => void;
-  now: NowPlaying;
-  pad: string;
-  openRemote: () => void;
-  openDownloads: () => void;
-}) {
-  const [data, setData] = useState<RemoteTitle | null>(null);
-  const [season, setSeason] = useState<number | null>(null);
-  const [pcBusy, setPcBusy] = useState(false);
-  const [pcError, setPcError] = useState('');
-  const playOnPc = async (t: RemotePlayable) => {
-    setPcBusy(true);
-    setPcError('');
-    try {
-      await api('/remote/play', { body: { profile: who.id, key: who.key, type: t.type, id: t.id } });
-      now.refresh();
-      openRemote();
-    } catch (e) {
-      setPcError(errorMessage(e));
-    } finally {
-      setPcBusy(false);
-    }
-  };
-  useEffect(() => {
-    api<RemoteTitle>(`/title${qs({ profile: who.id, key: who.key, item: itemKey })}`).then((d) => {
-      setData(d);
-      const current = d.episodes.find((e) => e.id === d.play?.id);
-      setSeason(current?.season ?? d.episodes[0]?.season ?? null);
-    });
-  }, [who, itemKey]);
-  if (!data) return <div className="flex min-h-[100dvh] items-center justify-center text-nf-secondary">Loading…</div>;
-  const { item } = data;
-  const seasons = [...new Set(data.episodes.map((e) => e.season))];
-  const list = data.episodes.filter((e) => e.season === season);
-  return (
-    <div className={`min-h-[100dvh] ${pad}`}>
-      <div className="relative aspect-video max-h-[60vh] w-full overflow-hidden">
-        {item.backdrop && <img src={item.backdrop} alt="" className="h-full w-full object-cover" />}
-        <div className="absolute inset-0 bg-gradient-to-t from-nf-bg to-transparent" />
-        <button onClick={back} aria-label="Back" className="absolute left-3 top-[max(0.75rem,env(safe-area-inset-top))] rounded-full bg-black/60 p-2">
-          <ArrowLeft className="h-6 w-6" />
-        </button>
-      </div>
-      <div className="mx-auto max-w-3xl space-y-4 px-4">
-        {item.logo ? <img src={item.logo} alt={item.title} className="max-h-20 max-w-[70%] object-contain" /> : <h1 className="text-3xl font-black">{item.title}</h1>}
-        <div className="flex flex-wrap items-center gap-2 text-sm text-nf-secondary">
-          {item.year && <span>{item.year}</span>}
-          {item.certification && <span className="border border-white/40 px-1 text-xs">{item.certification}</span>}
-          {item.kind === 'tv' ? <span>{item.seasonCount} Season{item.seasonCount === 1 ? '' : 's'}</span> : item.runtime ? <span>{Math.floor(item.runtime / 60)}h {item.runtime % 60}m</span> : null}
-          {item.imdbRating != null && <span className="font-semibold text-[#f5c518]">IMDb {item.imdbRating.toFixed(1)}</span>}
-          <CriticScores rt={item.rtScore ?? null} metacritic={item.metacritic ?? null} />
-          {item.stinger && (
-            <span className="flex items-center gap-1 text-xs text-[#ffd76a]">
-              <Sparkles className="h-3.5 w-3.5" />
-              {item.stinger === 'during' ? 'Scene during the credits' : item.stinger === 'after' ? 'Scene after the credits' : 'Scenes during & after the credits'}
-            </span>
-          )}
-        </div>
-        {data.play && (
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <button onClick={() => play(data.play!)} className="nf-btn-play w-full justify-center py-3 text-lg sm:w-auto sm:px-10">
-              <Play className="h-6 w-6 fill-black" strokeWidth={0} />
-              {data.play.resume > 0 ? 'Resume' : 'Play'}
-              {item.kind === 'tv' && <span className="text-base font-medium text-black/60">{data.play.label.match(/S\d+:E\d+/)?.[0]}</span>}
-            </button>
-            <button onClick={() => void playOnPc(data.play!)} disabled={pcBusy} className="nf-btn-info w-full justify-center py-3 text-lg disabled:opacity-60 sm:w-auto sm:px-8">
-              <Monitor className="h-6 w-6" />
-              {pcBusy ? 'Starting…' : `Play on ${now.pc ?? 'PC'}`}
-            </button>
-            {item.kind === 'movie' && data.play.type === 'movie' && (
-              <DownloadButton
-                who={who}
-                target={{ type: 'movie', id: data.play.id, title: item.title, subtitle: null, itemKey: item.key }}
-                onOpenDownloads={openDownloads}
-              />
-            )}
-          </div>
-        )}
-        {pcError && <p className="text-sm text-nf-red">{pcError}</p>}
-        <p className="leading-relaxed">{item.overview}</p>
-        {data.cast.length > 0 && <p className="text-sm text-nf-secondary">Cast: {data.cast.join(', ')}</p>}
-        {seasons.length > 0 && (
-          <section className="pt-4">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-xl font-bold">Episodes</h2>
-              {seasons.length > 1 && (
-                <select value={season ?? ''} onChange={(e) => setSeason(Number(e.target.value))} className="rounded border border-white/30 bg-[#242424] px-3 py-2">
-                  {seasons.map((s) => (
-                    <option key={s} value={s}>
-                      {s === 0 ? 'Specials' : `Season ${s}`}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-            <div className="divide-y divide-white/10">
-              {list.map((e) => (
-                <div key={e.id} className="flex items-center">
-                <button onClick={() => play({ type: 'episode', id: e.id, label: `S${e.season}:E${e.episode} · ${e.title}`, resume: -1 })} className="flex min-w-0 flex-1 gap-3 py-3 text-left">
-                  <div className="relative aspect-video w-32 shrink-0 overflow-hidden rounded bg-white/10">
-                    {e.still && <img src={e.still} alt="" loading="lazy" className="h-full w-full object-cover" />}
-                    {e.progress > 0 && (
-                      <ProgressBar value={e.progress} height={4} className="absolute inset-x-0 bottom-0" />
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="font-semibold">
-                      {e.episode}. {e.title}
-                    </div>
-                    <div className="text-xs text-nf-muted">{e.runtime ? `${e.runtime}m` : ''}{e.watched ? ' · Watched' : ''}</div>
-                    {e.overview && <p className="mt-1 line-clamp-2 text-sm text-nf-secondary">{e.overview}</p>}
-                  </div>
-                </button>
-                <DownloadButton
-                  compact
-                  who={who}
-                  target={{ type: 'episode', id: e.id, title: item.title, subtitle: `S${e.season}:E${e.episode} · ${e.title}`, itemKey: item.key }}
-                  onOpenDownloads={openDownloads}
-                />
-                <button
-                  onClick={() => void playOnPc({ type: 'episode', id: e.id, label: `S${e.season}:E${e.episode} · ${e.title}`, resume: -1 })}
-                  disabled={pcBusy}
-                  aria-label={`Play episode ${e.episode} on ${now.pc ?? 'PC'}`}
-                  title={`Play on ${now.pc ?? 'PC'}`}
-                  className="ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-nf-secondary active:bg-white/10 disabled:opacity-40"
-                >
-                  <Monitor className="h-5 w-5" />
-                </button>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-      </div>
     </div>
   );
 }

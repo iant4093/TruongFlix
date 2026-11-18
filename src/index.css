@@ -75,6 +75,22 @@
 }
 .nf-menu-enter { animation: nf-menu-enter 0.15s ease-out; }
 .nf-dialog-enter { animation: nf-dialog-enter 0.2s ease-out; }
+/* Browser app motion: images fade in once loaded, content rises in, pressed cards dip. Transform
+   and opacity only (GPU), and `backwards` so nothing keeps a transform after it has played. */
+@keyframes nf-rise { from { opacity: 0; transform: translateY(18px); } }
+@keyframes nf-zoom-in { from { opacity: 0; transform: scale(1.06); } }
+@keyframes nf-fade { from { opacity: 0; } }
+.nf-rise { animation: nf-rise 0.5s cubic-bezier(0.22, 0.9, 0.28, 1) backwards; }
+.nf-zoom-in { animation: nf-zoom-in 1.2s cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
+.nf-fade { animation: nf-fade 0.3s ease-out backwards; }
+.nf-img { opacity: 0; transition: opacity 0.4s ease; }
+.nf-img.nf-loaded { opacity: 1; }
+.nf-press { transition: transform 0.18s ease; -webkit-tap-highlight-color: transparent; }
+.nf-press:active { transform: scale(0.96); }
+@media (prefers-reduced-motion: reduce) {
+  .nf-rise, .nf-zoom-in, .nf-fade { animation: none; }
+  .nf-press:active { transform: none; }
+}
 /* A scroll lock (src/lib/scrollLock.ts) keeps the scrollbar's width, so the page doesn't widen. */
 html.nf-scroll-locked { overflow-y: hidden; padding-right: var(--nf-scroll-gap, 0px); }
 html.nf-scroll-locked [data-nav-fixed],
