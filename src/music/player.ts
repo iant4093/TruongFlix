@@ -169,14 +169,24 @@ function wire(slot: Slot) {
   el.addEventListener('durationchange', () => {
     if (mine() && Number.isFinite(el.duration) && el.duration > 0) set({ duration: el.duration });
   });
-  el.addEventListener('playing', () => mine() && set({ playing: true, loading: false, error: null }));
+  el.addEventListener('playing', () => {
+    if (!mine()) return;
+    stalledAt = null;
+    set({ playing: true, loading: false, error: null });
+  });
   el.addEventListener('play', () => {
     if (!mine()) return;
     resumeAnalyser();
     set({ playing: true });
   });
   el.addEventListener('pause', () => mine() && !el.ended && set({ playing: false }));
-  el.addEventListener('waiting', () => mine() && set({ loading: true }));
+  el.addEventListener('waiting', () => {
+    if (!mine()) return;
+    // Safari can keep counting time while it waits for audio: the lyrics hold here until it plays.
+    stalledAt = el.currentTime;
+    set({ loading: true });
+  });
+  el.addEventListener('seeking', () => mine() && (stalledAt = null));
   el.addEventListener('canplay', () => mine() && set({ loading: false }));
   el.addEventListener('ended', () => mine() && onEnded());
   el.addEventListener('error', () => mine() && el.src !== silentUrl && onError());
@@ -233,6 +243,7 @@ async function load(item: Q.QueueItem | null, autoplay: boolean, startAt = 0) {
   counted = false;
   lastTick = startAt;
   retried = false;
+  stalledAt = null;
   if (!item || !track) {
     prev.el.pause();
     set({ track: null, playing: false, loading: false, time: 0, duration: 0 });
@@ -587,6 +598,8 @@ export function setPanel(panel: Panel) {
 }
 
 let scrubAt: number | null = null;
+/** Where the song was when it stopped to wait for audio (until it plays again). */
+let stalledAt: number | null = null;
 
 /** While a seek bar is being dragged: lyrics follow the finger before the song actually jumps. */
 export function setScrub(t: number | null) {
@@ -597,7 +610,8 @@ export function setScrub(t: number | null) {
 export function musicClock(): number {
   if (scrubAt != null) return scrubAt;
   const slot = slots?.[active];
-  return slot?.key ? slot.el.currentTime : get().time;
+  if (!slot?.key) return get().time;
+  return stalledAt != null ? Math.min(slot.el.currentTime, stalledAt) : slot.el.currentTime;
 }
 
 export async function toggleFavourite(track: MusicTrack) {
