@@ -16,14 +16,19 @@
   transform-origin: 50% 50%;
   will-change: transform;
 }
+/* Plain see-through layers (no blend modes): blending three screen-sized layers every frame is what
+   made the player stutter on phones. */
 .tfm-bg canvas:nth-child(1) { animation: tfm-drift-a 48s linear infinite; }
-.tfm-bg canvas:nth-child(2) { mix-blend-mode: screen; opacity: 0.55; animation: tfm-drift-b 62s linear infinite; }
-.tfm-bg canvas:nth-child(3) { mix-blend-mode: overlay; opacity: 0.6; animation: tfm-drift-c 37s linear infinite; }
+.tfm-bg canvas:nth-child(2) { opacity: 0.5; animation: tfm-drift-b 62s linear infinite; }
+.tfm-bg canvas:nth-child(3) { opacity: 0.35; animation: tfm-drift-c 37s linear infinite; }
+/* Shade, plus a faint grain so the dark gradients don't show steps (banding). */
 .tfm-bg::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(120% 90% at 30% 20%, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.45));
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0.09 0 0 0 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    radial-gradient(120% 90% at 30% 20%, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.45));
 }
 .tfm-paused .tfm-bg canvas { animation-play-state: paused; }
 
