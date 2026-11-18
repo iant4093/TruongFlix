@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, type MouseEvent, type RefObject } from 'react';
+import { lockPageScroll } from '../lib/scrollLock';
 
 type DialogOptions = {
   onClose: () => void;
@@ -18,6 +19,8 @@ type DialogLayer = {
 };
 
 const layers: DialogLayer[] = [];
+/** Releases the page scroll lock taken while any dialog is open. */
+let unlockScroll: (() => void) | null = null;
 const focusable = 'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable="true"]';
 
 function topLayer(visibleOnly = false) {
@@ -108,7 +111,7 @@ export function useModalDialog(
     };
 
     if (!layers.length) {
-      document.documentElement.classList.add('nf-modal-open');
+      unlockScroll = lockPageScroll();
       // Portalled menus handle their own Escape first, in the capture phase.
       document.addEventListener('keydown', handleKey);
       document.addEventListener('focusin', handleFocus);
@@ -120,7 +123,8 @@ export function useModalDialog(
       const wasTop = topLayer() === layer;
       layers.splice(layers.indexOf(layer), 1);
       if (!layers.length) {
-        document.documentElement.classList.remove('nf-modal-open');
+        unlockScroll?.();
+        unlockScroll = null;
         document.removeEventListener('keydown', handleKey);
         document.removeEventListener('focusin', handleFocus);
       }

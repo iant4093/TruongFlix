@@ -75,7 +75,10 @@
 }
 .nf-menu-enter { animation: nf-menu-enter 0.15s ease-out; }
 .nf-dialog-enter { animation: nf-dialog-enter 0.2s ease-out; }
-html.nf-modal-open { overflow-y: hidden; }
+/* A scroll lock (src/lib/scrollLock.ts) keeps the scrollbar's width, so the page doesn't widen. */
+html.nf-scroll-locked { overflow-y: hidden; padding-right: var(--nf-scroll-gap, 0px); }
+html.nf-scroll-locked [data-nav-fixed],
+html.nf-scroll-locked [data-music-bar] { right: var(--nf-scroll-gap, 0px); }
 @media (prefers-reduced-motion: reduce) {
   .nf-menu-enter, .nf-dialog-enter { animation: none; }
 }

@@ -53,11 +53,11 @@ it('keeps focus and backdrop dismissal on the top dialog and restores each opene
   fireEvent.keyDown(close!, { key: 'Escape' });
   expect(inner.isConnected).toBe(false);
   expect(document.activeElement).toBe(sourceButton);
-  expect(document.documentElement.classList.contains('nf-modal-open')).toBe(true);
+  expect(document.documentElement.classList.contains('nf-scroll-locked')).toBe(true);
   fireEvent.mouseDown(outer.parentElement!);
   expect(outer.isConnected).toBe(false);
   expect(document.activeElement).toBe(titleButton);
-  expect(document.documentElement.classList.contains('nf-modal-open')).toBe(false);
+  expect(document.documentElement.classList.contains('nf-scroll-locked')).toBe(false);
 });
 
 it('gives a portalled dropdown the first Escape', () => {
