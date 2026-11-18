@@ -241,21 +241,12 @@ function toneFor(track: MusicTrack): string {
 
 export const mockArtUrl = (art: string | null | undefined) => (art ? mock().covers.get(art) ?? null : null);
 
-const mockOffsets = new Map<number, number>();
-
 /** Answers a `/music/…` request like the PC would. */
 export function mockMusicRoute(method: string, path: string, query: URLSearchParams, body: Record<string, unknown>): [number, unknown] {
   const s = mock();
   const id = Number(body.id ?? query.get('id'));
   if (method === 'GET' && path === '/music/library') return [200, assembleLibrary(s.tracks, s.playlists)];
-  if (method === 'GET' && path === '/music/lyrics') {
-    const l = s.lyrics.get(id);
-    return [200, l ? { ...l, offset: mockOffsets.get(id) ?? 0 } : null];
-  }
-  if (method === 'POST' && path === '/music/lyrics/offset') {
-    mockOffsets.set(id, Number(body.offset) || 0);
-    return [200, { ok: true }];
-  }
+  if (method === 'GET' && path === '/music/lyrics') return [200, s.lyrics.get(id) ?? null];
   if (method === 'POST' && path === '/music/stream') {
     const t = s.tracks.find((x) => x.id === id);
     return t ? [200, { url: toneFor(t), transcoded: false }] : [404, { error: 'Not found' }];

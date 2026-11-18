@@ -41,23 +41,11 @@ function fromCache(c: mdb.CachedLyrics): MusicLyrics | null {
   return null;
 }
 
-/** Lyrics for a song (see `findLyrics`) with the song's timing adjustment. */
-export async function lyricsFor(trackId: number, online = useLibraryStore.getState().settings.music_lyrics_online, refresh = false): Promise<MusicLyrics | null> {
-  const [lyrics, offset] = await Promise.all([findLyrics(trackId, online, refresh), mdb.lyricsOffset(trackId).catch(() => 0)]);
-  return lyrics && offset ? { ...lyrics, offset } : lyrics;
-}
-
-/** Keeps a timing adjustment within ±10 s, in steps of 0.05 s. */
-export const cleanLyricsOffset = (seconds: unknown) => {
-  const n = Number(seconds);
-  return Number.isFinite(n) ? Math.round(Math.max(-10, Math.min(10, n)) * 20) / 20 : 0;
-};
-
 /**
  * Lyrics for a song: synced lyrics from the file (sidecar .lrc or embedded) first, then online
  * (Kugou, NetEase, then LRCLIB; when allowed in Settings, looked up once and cached), then the file's plain lyrics.
  */
-function findLyrics(trackId: number, online: boolean, refresh: boolean): Promise<MusicLyrics | null> {
+export function lyricsFor(trackId: number, online = useLibraryStore.getState().settings.music_lyrics_online, refresh = false): Promise<MusicLyrics | null> {
   const running = lyricsInFlight.get(trackId);
   if (running && !refresh) return running;
   const job = (async (): Promise<MusicLyrics | null> => {
@@ -149,7 +137,6 @@ function localApi(artDir: string): MusicApi {
   return {
     library: () => mdb.loadMusic(profileId()),
     lyrics: (id, refresh) => lyricsFor(id, undefined, refresh),
-    setLyricsOffset: (id, seconds) => mdb.setLyricsOffset(id, cleanLyricsOffset(seconds)),
     stream: (track) => desktopStream(track.id),
     played: async (id) => {
       await mdb.recordPlay(profileId(), id);

@@ -5,7 +5,19 @@ import { activeIndex, lyricTimeline, parseLrc, progressOf, type LyricEntry } fro
 import { musicClock, useMusicPlayer } from '../player';
 import type { MusicLyrics } from '../types';
 
-const cache = new Map<number, MusicLyrics>();
+/**
+ * Lyrics fetched this session. They're asked for again after a while: a phone can keep the browser
+ * app open for days, and the PC may have found better lyrics since (a new lookup, a new service).
+ */
+const cache = new Map<number, { lyrics: MusicLyrics; at: number }>();
+const CACHE_MS = 15 * 60_000;
+const cached = (trackId: number) => {
+  const hit = cache.get(trackId);
+  return hit && Date.now() - hit.at < CACHE_MS ? hit.lyrics : null;
+};
+const remember = (trackId: number, lyrics: MusicLyrics | null) => {
+  if (lyrics) cache.set(trackId, { lyrics, at: Date.now() });
+};
 const pending = new Map<number, Promise<MusicLyrics | null>>();
 
 /**
@@ -13,7 +25,7 @@ const pending = new Map<number, Promise<MusicLyrics | null>>();
  * takes a second or so the first time.
  */
 export function prefetchLyrics(trackId: number): Promise<MusicLyrics | null> {
-  const hit = cache.get(trackId);
+  const hit = cached(trackId);
   if (hit) return Promise.resolve(hit);
   const running = pending.get(trackId);
   if (running) return running;
@@ -22,19 +34,13 @@ export function prefetchLyrics(trackId: number): Promise<MusicLyrics | null> {
   const job = api
     .lyrics(trackId)
     .then((l) => {
-      if (l) cache.set(trackId, l);
+      remember(trackId, l);
       return l;
     })
     .catch(() => null)
     .finally(() => pending.delete(trackId));
   pending.set(trackId, job);
   return job;
-}
-
-/** Keeps a timing change in this session's copy, so reopening the lyrics shows it straight away. */
-function rememberOffset(trackId: number, offset: number) {
-  const hit = cache.get(trackId);
-  if (hit) cache.set(trackId, { ...hit, offset });
 }
 
 // The current song's lyrics as soon as it starts, and the next song's while this one plays.
@@ -48,21 +54,21 @@ useMusicPlayer.subscribe((s) => {
   for (const id of ids) void prefetchLyrics(id);
 });
 
-/** Lyrics for a song, fetched once per session (a miss is asked again next time). `retry` searches online again. */
+/** Lyrics for a song (kept for a while; a miss is asked again next time). `retry` searches online again. */
 export function useLyrics(trackId: number | null) {
   const api = useMusicPlayer((s) => s.api);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<{ id: number | null; lyrics: MusicLyrics | null; loading: boolean }>({ id: null, lyrics: null, loading: false });
   useEffect(() => {
     if (trackId == null || !api) return setState({ id: null, lyrics: null, loading: false });
-    const hit = cache.get(trackId);
+    const hit = cached(trackId);
     if (!attempt && hit) return setState({ id: trackId, lyrics: hit, loading: false });
     let live = true;
     setState({ id: trackId, lyrics: null, loading: true });
     const job = attempt > 0 ? api.lyrics(trackId, true) : prefetchLyrics(trackId);
     job
       .then((l) => {
-        if (l) cache.set(trackId, l);
+        remember(trackId, l);
         if (live) setState({ id: trackId, lyrics: l, loading: false });
       })
       .catch(() => live && setState({ id: trackId, lyrics: null, loading: false }));
@@ -112,7 +118,7 @@ export default function Lyrics({ trackId, duration, onSeek, compact = false, cla
       </div>
     );
   if (!parsed.synced) return <PlainLyrics lines={entries} compact={compact} className={className} source={lyrics?.source} />;
-  return <SyncedLyrics key={trackId} trackId={trackId} entries={entries} onSeek={onSeek} compact={compact} className={className} source={lyrics?.source} offset={lyrics?.offset ?? 0} />;
+  return <SyncedLyrics key={trackId} entries={entries} onSeek={onSeek} compact={compact} className={className} source={lyrics?.source} />;
 }
 
 function Credit({ source }: { source?: string }) {
@@ -139,18 +145,14 @@ function PlainLyrics({ lines, compact, className, source }: { lines: LyricEntry[
   );
 }
 
-function SyncedLyrics({ trackId, entries, onSeek, compact, className, source, offset = 0 }: { trackId: number; entries: LyricEntry[]; onSeek: (t: number) => void; compact: boolean; className: string; source?: string; offset?: number }) {
+function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries: LyricEntry[]; onSeek: (t: number) => void; compact: boolean; className: string; source?: string }) {
   const reduce = useReducedMotion() ?? false;
   const viewport = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
   const wordRefs = useRef<Map<number, (HTMLSpanElement | null)[]>>(new Map());
   const dotRefs = useRef<Map<number, (HTMLSpanElement | null)[]>>(new Map());
-  // This song's timing adjustment: the lyrics run this many seconds later (negative: earlier).
-  const [delay, setDelay] = useState(offset);
-  const delayRef = useRef(delay);
-  delayRef.current = delay;
-  const [idx, setIdx] = useState(() => activeIndex(entries, musicClock() - offset));
+  const [idx, setIdx] = useState(() => activeIndex(entries, musicClock()));
   const [target, setTarget] = useState(0);
   const targetRef = useRef(0);
   targetRef.current = target;
@@ -190,7 +192,7 @@ function SyncedLyrics({ trackId, entries, onSeek, compact, className, source, of
   useEffect(() => {
     let raf = 0;
     const tick = () => {
-      const t = musicClock() - delayRef.current;
+      const t = musicClock();
       const i = activeIndex(entries, t);
       if (i !== idxRef.current) {
         idxRef.current = i;
@@ -287,32 +289,14 @@ function SyncedLyrics({ trackId, entries, onSeek, compact, className, source, of
   const seekTo = useCallback(
     (t: number) => {
       release();
-      onSeekRef.current(Math.max(0, t + delayRef.current));
+      onSeekRef.current(t);
     },
     [release],
   );
 
-  // The timing adjustment is saved (on the PC, for every device) a moment after the last tap.
-  const api = useMusicPlayer((s) => s.api);
-  const saveTimer = useRef<number | null>(null);
-  /** `step` seconds later (negative: earlier), or back to none with null. */
-  const changeDelay = (step: number | null) => {
-    const value = step == null ? 0 : delayRef.current + step;
-    const next = Math.round(Math.max(-10, Math.min(10, value)) * 20) / 20;
-    delayRef.current = next;
-    setDelay(next);
-    rememberOffset(trackId, next);
-    if (manualRef.current) keepManual();
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => void api?.setLyricsOffset(trackId, next).catch(() => {}), 600);
-  };
-  useEffect(() => () => {
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-  }, []);
-
   const y = manual ? 0 : base - target;
   return (
-    <div className={`group relative ${className}`}>
+    <div className={`relative ${className}`}>
       <div
         ref={viewport}
         className="tfm-scroll h-full select-none overflow-y-auto overscroll-contain"
@@ -340,30 +324,6 @@ function SyncedLyrics({ trackId, entries, onSeek, compact, className, source, of
           </div>
         </div>
       </div>
-      <TimingControl delay={delay} visible={manual || delay !== 0} onChange={changeDelay} />
-    </div>
-  );
-}
-
-/**
- * Moves this song's lyrics earlier or later in quarter seconds (tap the middle to reset). It shows
- * while the lyrics are being scrolled or once a song has an adjustment (and on hover with a mouse).
- */
-function TimingControl({ delay, visible, onChange }: { delay: number; visible: boolean; onChange: (step: number | null) => void }) {
-  const label = delay ? `${delay > 0 ? '+' : '−'}${Math.abs(delay).toFixed(2)} s` : 'Timing';
-  return (
-    <div
-      className={`absolute bottom-3 right-3 z-10 flex items-center rounded-full bg-black/40 text-xs font-semibold text-white/85 transition-opacity duration-300 [@media(hover:hover)]:group-hover:opacity-100 ${visible ? 'opacity-100' : 'pointer-events-none opacity-0 [@media(hover:hover)]:group-hover:pointer-events-auto'}`}
-    >
-      <button type="button" aria-label="Show lyrics earlier" title="Lyrics earlier" onClick={() => onChange(-0.25)} className="flex h-9 w-9 items-center justify-center rounded-full text-base hover:bg-white/10">
-        −
-      </button>
-      <button type="button" title={delay ? 'Reset lyrics timing' : 'Lyrics timing'} aria-label={delay ? `Lyrics timing ${label}. Reset` : 'Lyrics timing'} onClick={() => onChange(null)} className="min-w-[4.25rem] px-1 tabular-nums">
-        {label}
-      </button>
-      <button type="button" aria-label="Show lyrics later" title="Lyrics later" onClick={() => onChange(0.25)} className="flex h-9 w-9 items-center justify-center rounded-full text-base hover:bg-white/10">
-        +
-      </button>
     </div>
   );
 }

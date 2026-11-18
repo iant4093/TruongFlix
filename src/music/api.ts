@@ -8,8 +8,6 @@ export interface MusicApi {
   library(): Promise<MusicLibrary>;
   /** `refresh` looks online again even if the song wasn't found last time. */
   lyrics(trackId: number, refresh?: boolean): Promise<MusicLyrics | null>;
-  /** Moves this song's lyrics `seconds` later (negative: earlier), for every device. */
-  setLyricsOffset(trackId: number, seconds: number): Promise<void>;
   /** A URL the player can load for this song. */
   stream(track: MusicTrack): Promise<MusicStream>;
   /** The song was listened to (counts toward Listen Now and plays). */
@@ -52,7 +50,6 @@ export function httpMusicApi(fetcher: Fetcher, who: { id: number; key?: string }
   return {
     library: () => fetcher<MusicLibrary>(`/music/library${query}`),
     lyrics: (trackId, refresh) => fetcher<MusicLyrics | null>(`/music/lyrics${query}&id=${trackId}${refresh ? '&refresh=1' : ''}`),
-    setLyricsOffset: (trackId, seconds) => post<unknown>('/music/lyrics/offset', { id: trackId, offset: seconds }).then(() => undefined),
     stream: (track) => post<MusicStream>('/music/stream', { id: track.id, codecs: (codecs ??= playableCodecs()) }),
     played: (trackId) => post<unknown>('/music/played', { id: trackId }).then(() => undefined),
     setFavourite: (trackId, value) => post<unknown>('/music/favourite', { id: trackId, value }).then(() => undefined),
