@@ -1,3 +1,4 @@
+import { leavingClass, useLeaving } from '../lib/leaving';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import {
@@ -97,6 +98,8 @@ export default function RemotePlayer({
   const [controls, setControls] = useState(true);
   const [ended, setEnded] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
+  // The open menu, kept for a moment after it closes so it can animate out.
+  const menu = useLeaving(panel, 220);
   const [showRemaining, setShowRemaining] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -761,22 +764,22 @@ export default function RemotePlayer({
       )}
 
       {/* Audio & Subtitles / Speed / Chapters popovers */}
-      {panel && stream && (
+      {menu.shown && stream && (
         <div
-          key={panel}
-          className="nf-pop-in absolute inset-x-3 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-white/15 bg-[#181818]/95 p-4 shadow-2xl backdrop-blur max-[539px]:bottom-[calc(8.75rem+env(safe-area-inset-bottom))] max-[539px]:max-h-[calc(100dvh-10rem-env(safe-area-inset-bottom))] max-[539px]:overflow-y-auto sm:inset-x-auto sm:right-6 sm:w-[440px]"
+          key={menu.shown}
+          className={`nf-pop-in ${leavingClass(menu.closing)} absolute inset-x-3 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-white/15 bg-[#181818]/95 p-4 shadow-2xl backdrop-blur max-[539px]:bottom-[calc(8.75rem+env(safe-area-inset-bottom))] max-[539px]:max-h-[calc(100dvh-10rem-env(safe-area-inset-bottom))] max-[539px]:overflow-y-auto sm:inset-x-auto sm:right-6 sm:w-[440px]`}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="mb-3 flex items-center justify-between border-b border-white/10 pb-2">
             <h3 className="text-sm font-bold uppercase tracking-wider text-white/90">
-              {panel === 'tracks' ? 'Audio & Subtitles' : panel === 'speed' ? 'Playback Speed' : panel === 'quality' ? 'Quality' : 'Chapters'}
+              {menu.shown === 'tracks' ? 'Audio & Subtitles' : menu.shown === 'speed' ? 'Playback Speed' : menu.shown === 'quality' ? 'Quality' : 'Chapters'}
             </h3>
             <button onClick={() => setPanel(null)} aria-label="Close menu" className="rounded-full p-1 text-white/70 hover:bg-white/10 hover:text-white">
               <X className="h-4 w-4" />
             </button>
           </div>
 
-          {panel === 'tracks' && (
+          {menu.shown === 'tracks' && (
             <div className="space-y-4">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
@@ -876,7 +879,7 @@ export default function RemotePlayer({
             </div>
           )}
 
-          {panel === 'quality' && (
+          {menu.shown === 'quality' && (
             <div className="space-y-1">
               {stream.qualities.map((o) => {
                 const active = stream.quality.res === o.res;
@@ -922,7 +925,7 @@ export default function RemotePlayer({
             </div>
           )}
 
-          {panel === 'speed' && (
+          {menu.shown === 'speed' && (
             <div className="grid grid-cols-4 gap-2 sm:grid-cols-7">
               {SPEEDS.map((s) => (
                 <button
@@ -941,7 +944,7 @@ export default function RemotePlayer({
             </div>
           )}
 
-          {panel === 'chapters' && (
+          {menu.shown === 'chapters' && (
             <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
               {stream.chapters.map((c, idx) => (
                 <button

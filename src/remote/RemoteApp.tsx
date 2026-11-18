@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { restoreScroll, saveScroll } from './scrollMemory';
+import { leavingClass, useLeaving } from '../lib/leaving';
 import { Download, Lock, Search, X } from 'lucide-react';
 import SlidingPill from '../components/common/SlidingPill';
 import ProfileAvatar from '../components/common/ProfileAvatar';
@@ -50,6 +51,15 @@ type Screen =
   | { name: 'downloads' }
   | { name: 'play'; target: RemotePlayable; offline?: OfflineItem; from?: Screen };
 
+/** The last screen shown, so coming back from a title or Downloads slides in like Back (not a fade). */
+let lastScreen: Screen['name'] = 'home';
+
+/** A section's content: slides in from the left when you came back to it, else fades in (decided once, as it appears). */
+function Entrance({ back, children }: { back: boolean; children: React.ReactNode }) {
+  const [className] = useState(back ? 'nf-pop' : 'nf-fade');
+  return <div className={className}>{children}</div>;
+}
+
 function Wordmark({ className = '' }: { className?: string }) {
   return <span className={`nf-wordmark ${className}`}>TRUONGFLIX</span>;
 }
@@ -65,6 +75,10 @@ export default function RemoteApp() {
     }
   });
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
+  const cameBack = screen.name === 'home' && (lastScreen === 'title' || lastScreen === 'downloads');
+  useEffect(() => {
+    lastScreen = screen.name;
+  }, [screen.name]);
   // A video takes over from the music.
   useEffect(() => {
     if (screen.name === 'play') pauseMusic();
@@ -115,6 +129,7 @@ export default function RemoteApp() {
     <Browse
       who={who}
       screen={screen}
+      cameBack={cameBack}
       open={(key) => setScreen({ name: 'title', key })}
       play={(target) => setScreen({ name: 'play', target })}
       back={() => setScreen({ name: 'home' })}
@@ -165,6 +180,7 @@ function Login({ onDone }: { onDone: () => void }) {
 function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthError: (e: unknown) => void }) {
   const [profiles, setProfiles] = useState<RemoteProfile[] | null>(null);
   const [locked, setLocked] = useState<RemoteProfile | null>(null);
+  const pinFor = useLeaving(locked, 240);
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   useEffect(() => {
@@ -193,10 +209,10 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
           </button>
         ))}
       </div>
-      {locked && (
-        <div className="nf-fade fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-6" onClick={() => setLocked(null)}>
+      {pinFor.shown && (
+        <div className={`nf-fade fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-6 ${leavingClass(pinFor.closing)}`} onClick={() => setLocked(null)}>
           <div className="nf-pop-in w-full max-w-xs text-center" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-2xl font-medium">Enter {locked.name}’s PIN</h2>
+            <h2 className="text-2xl font-medium">Enter {pinFor.shown.name}’s PIN</h2>
             <input
               value={pin}
               autoFocus
@@ -205,7 +221,7 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
               onChange={(e) => {
                 const v = e.target.value.replace(/\D/g, '').slice(0, 4);
                 setPin(v);
-                if (v.length === 4) void unlock(locked, v);
+                if (v.length === 4 && locked) void unlock(locked, v);
               }}
               className="mt-6 w-40 rounded border border-white/30 bg-black/50 px-4 py-3 text-center text-3xl tracking-[0.5em] outline-none focus:border-white"
             />
@@ -220,6 +236,7 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
 function Browse({
   who,
   screen,
+  cameBack,
   open: openTitle,
   play: playTitle,
   back,
@@ -229,6 +246,7 @@ function Browse({
 }: {
   who: Who;
   screen: Screen;
+  cameBack: boolean;
   open: (key: string) => void;
   play: (t: RemotePlayable) => void;
   back: () => void;
@@ -288,11 +306,12 @@ function Browse({
   const now = useNowPlaying(who, true, onAuthError);
   const [remoteOpen, setRemoteOpen] = useState(false);
   const closeRemote = useCallback(() => setRemoteOpen(false), []);
+  const remoteSheet = useLeaving(remoteOpen);
   const musicPlaying = useRemoteMusic(who);
   const remote = (
     <>
       {!remoteOpen && <NowPlayingBar now={now} onOpen={() => setRemoteOpen(true)} />}
-      {remoteOpen && <RemoteSheet now={now} onClose={closeRemote} />}
+      {remoteSheet.shown && <RemoteSheet now={now} onClose={closeRemote} closing={remoteSheet.closing} />}
       <RemoteMusicPlayer lifted={!!now.np && !remoteOpen} />
     </>
   );
@@ -403,7 +422,7 @@ function Browse({
         </div>
       )}
       {error && <p className="px-4 text-nf-red">{error}</p>}
-      <div key={query == null ? tab : 'search'} className="nf-fade">
+      <Entrance key={query == null ? tab : 'search'} back={cameBack}>
       {query == null && tab === 'live' && (
         <RemoteLiveSection who={who} onAuthError={onAuthError} onPlayedOnPc={() => { now.refresh(); setRemoteOpen(true); }} />
       )}
@@ -438,7 +457,7 @@ function Browse({
           {lib.rows.map((row, i) => <Row key={row.title} row={row} open={open} scope="home" index={i} />)}
         </>
       )}
-      </div>
+      </Entrance>
       {remote}
     </div>
   );

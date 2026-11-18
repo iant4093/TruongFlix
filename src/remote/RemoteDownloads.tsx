@@ -1,3 +1,4 @@
+import { leavingClass, useLeaving } from '../lib/leaving';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Check, CircleCheck, Download, Loader2, Pause, Play, RotateCcw, Trash2, X } from 'lucide-react';
 import ProgressBar from '../components/common/ProgressBar';
@@ -26,7 +27,7 @@ export function useOfflineItem(who: Who, type: 'movie' | 'episode', id: number):
 }
 
 /** Picks a quality and adds the title to this browser's downloads. */
-export function DownloadSheet({ who, target, onClose }: { who: Who; target: DownloadTarget; onClose: () => void }) {
+export function DownloadSheet({ who, target, onClose, closing = false }: { who: Who; target: DownloadTarget; onClose: () => void; closing?: boolean }) {
   const [data, setData] = useState<RemoteQualities | null>(null);
   const [error, setError] = useState('');
   const [pick, setPick] = useState<Quality | null>(null);
@@ -58,7 +59,7 @@ export function DownloadSheet({ who, target, onClose }: { who: Who; target: Down
   };
 
   return (
-    <div className="nf-fade fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center" onClick={onClose}>
+    <div className={`nf-fade fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center ${leavingClass(closing)}`} onClick={onClose}>
       <div
         role="dialog"
         aria-label="Download"
@@ -135,6 +136,7 @@ export function DownloadButton({
 }) {
   const item = useOfflineItem(who, target.type, target.id);
   const [sheet, setSheet] = useState(false);
+  const picker = useLeaving(sheet);
   const pct = item ? Math.round(downloadFraction(item) * 100) : 0;
   const busy = item && item.state !== 'done' && item.state !== 'failed';
   const label = !item || item.state === 'failed' ? 'Download' : item.state === 'done' ? 'Downloaded' : `${pct}%`;
@@ -157,7 +159,7 @@ export function DownloadButton({
           {label}
         </button>
       )}
-      {sheet && <DownloadSheet who={who} target={target} onClose={() => setSheet(false)} />}
+      {picker.shown && <DownloadSheet who={who} target={target} onClose={() => setSheet(false)} closing={picker.closing} />}
     </>
   );
 }

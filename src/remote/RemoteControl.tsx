@@ -1,3 +1,4 @@
+import { leavingClass, useLeaving } from '../lib/leaving';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check,
@@ -260,7 +261,7 @@ function Volume({ np, send }: { np: RemoteNowPlaying; send: NowPlaying['send'] }
   );
 }
 
-function TrackSheet({ np, send, onClose }: { np: RemoteNowPlaying; send: NowPlaying['send']; onClose: () => void }) {
+function TrackSheet({ np, send, onClose, closing = false }: { np: RemoteNowPlaying; send: NowPlaying['send']; onClose: () => void; closing?: boolean }) {
   const row = (selected: boolean, label: string, detail: string | null, onClick: () => void, key: string) => (
     <button
       key={key}
@@ -279,7 +280,7 @@ function TrackSheet({ np, send, onClose }: { np: RemoteNowPlaying; send: NowPlay
   );
   const subsOff = !np.subTracks?.some((s) => s.selected);
   return (
-    <div className="nf-fade fixed inset-0 z-[60] flex items-end bg-black/60" onClick={onClose}>
+    <div className={`nf-fade fixed inset-0 z-[60] flex items-end bg-black/60 ${leavingClass(closing)}`} onClick={onClose}>
       <div
         className="nf-sheet-up max-h-[80dvh] w-full overflow-y-auto rounded-t-2xl border-t border-white/10 bg-[#181818] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:mx-auto sm:max-w-xl"
         onClick={(e) => e.stopPropagation()}
@@ -303,14 +304,14 @@ function TrackSheet({ np, send, onClose }: { np: RemoteNowPlaying; send: NowPlay
 const round = 'flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/20 disabled:opacity-30';
 
 /** The full remote: artwork, scrubbing, transport, volume, tracks and full screen on the PC. */
-export function RemoteSheet({ now, onClose }: { now: NowPlaying; onClose: () => void }) {
+export function RemoteSheet({ now, onClose, closing = false }: { now: NowPlaying; onClose: () => void; closing?: boolean }) {
   const { np, at, send, error } = now;
   const [tracks, setTracks] = useState(false);
   useEffect(() => {
     if (!np) onClose();
   }, [np, onClose]);
   if (!np) return null;
-  return <Sheet np={np} at={at} send={send} error={error} onClose={onClose} tracks={tracks} setTracks={setTracks} />;
+  return <Sheet np={np} at={at} send={send} error={error} onClose={onClose} tracks={tracks} setTracks={setTracks} closing={closing} />;
 }
 
 function Sheet({
@@ -321,7 +322,9 @@ function Sheet({
   onClose,
   tracks,
   setTracks,
+  closing,
 }: {
+  closing: boolean;
   np: RemoteNowPlaying;
   at: number;
   send: NowPlaying['send'];
@@ -330,11 +333,12 @@ function Sheet({
   tracks: boolean;
   setTracks: (v: boolean) => void;
 }) {
+  const trackSheet = useLeaving(tracks);
   const time = useLiveTime(np, at);
   const can = np.can ?? { seek: false, skip: false, volume: false, tracks: false, next: false, fullscreen: false };
   const hasTracks = can.tracks && ((np.audioTracks?.length ?? 0) > 1 || (np.subTracks?.length ?? 0) > 0);
   return (
-    <div className="nf-sheet-up fixed inset-0 z-50 flex flex-col overflow-y-auto bg-nf-bg">
+    <div className={`nf-sheet-up fixed inset-0 z-50 flex flex-col overflow-y-auto bg-nf-bg ${leavingClass(closing)}`}>
       {np.art && <img src={np.art} alt="" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-30 blur-2xl" />}
       <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-nf-bg/80 to-nf-bg" />
       <div className="relative mx-auto flex w-full max-w-xl flex-1 flex-col px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(0.75rem,env(safe-area-inset-top))]">
@@ -408,7 +412,7 @@ function Sheet({
           {error && <p className="text-center text-sm text-nf-red">{error}</p>}
         </div>
       </div>
-      {tracks && <TrackSheet np={np} send={send} onClose={() => setTracks(false)} />}
+      {trackSheet.shown && <TrackSheet np={np} send={send} onClose={() => setTracks(false)} closing={trackSheet.closing} />}
     </div>
   );
 }

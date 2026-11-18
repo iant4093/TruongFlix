@@ -92,12 +92,21 @@
 .nf-pop-in { animation: nf-pop-in 0.24s cubic-bezier(0.22, 0.9, 0.28, 1) backwards; }
 .nf-push { animation: nf-push 0.36s cubic-bezier(0.22, 0.9, 0.28, 1) backwards; }
 .nf-pop { animation: nf-pop 0.36s cubic-bezier(0.22, 0.9, 0.28, 1) backwards; }
+@keyframes nf-fade-out { to { opacity: 0; } }
+@keyframes nf-sheet-down { to { transform: translateY(100%); } }
+@keyframes nf-pop-out { to { opacity: 0; transform: translateY(8px) scale(0.97); } }
+/* Closing (src/lib/leaving.ts): each entrance plays out in reverse, a little quicker. */
+.nf-closing { pointer-events: none; }
+.nf-closing.nf-fade, .nf-closing .nf-fade, .nf-closing.nf-rise, .nf-closing .nf-rise { animation: nf-fade-out 0.24s ease-in forwards; }
+.nf-closing.nf-sheet-up, .nf-closing .nf-sheet-up { animation: nf-sheet-down 0.28s cubic-bezier(0.4, 0, 1, 1) forwards; }
+.nf-closing.nf-pop-in, .nf-closing .nf-pop-in { animation: nf-pop-out 0.2s ease-in forwards; }
 .nf-img { opacity: 0; transition: opacity 0.4s ease; }
 .nf-img.nf-loaded { opacity: 1; }
 .nf-press { transition: transform 0.18s ease; -webkit-tap-highlight-color: transparent; }
 .nf-press:active { transform: scale(0.96); }
 @media (prefers-reduced-motion: reduce) {
   .nf-rise, .nf-zoom-in, .nf-fade, .nf-sheet-up, .nf-pop-in, .nf-push, .nf-pop { animation: none; }
+  .nf-closing, .nf-closing * { animation-duration: 1ms !important; }
   .nf-press:active { transform: none; }
 }
 /* A scroll lock (src/lib/scrollLock.ts) keeps the scrollbar's width, so the page doesn't widen. */

@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { leavingClass, useLeaving } from '../../lib/leaving';
 import { create } from 'zustand';
 import { ChevronLeft, Disc3, Heart, ListEnd, ListMusic, ListPlus, ListStart, MicVocal, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 import { addToPlaylist, createPlaylist, setPlaylistTracks } from '../actions';
@@ -26,10 +27,11 @@ export function openTrackMenuAt(event: { clientX: number; clientY: number; preve
 
 /** Rendered once by each app (see `MusicOverlays`). */
 export function TrackPointMenu() {
-  const at = usePointMenu((s) => s.at);
+  const live = usePointMenu((s) => s.at);
   const close = useCallback(() => usePointMenu.setState({ at: null }), []);
+  const { shown: at, closing } = useLeaving(live, 240);
   if (!at) return null;
-  return <Menu key={`${at.x}:${at.y}`} anchor={null} point={at} tracks={at.tracks} context={at.context} close={close} />;
+  return <Menu key={`${at.x}:${at.y}`} anchor={null} point={at} tracks={at.tracks} context={at.context} close={close} closing={closing} />;
 }
 
 const ITEM = 'flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] hover:bg-white/10 focus-visible:bg-white/10 focus-visible:outline-none sm:py-2 sm:text-sm';
@@ -37,6 +39,7 @@ const ITEM = 'flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] h
 /** The "…" menu for a song: queue, playlists, favourite, go to album/artist. */
 export default function TrackMenu({ tracks, context, className = '', label = 'More', children }: { tracks: MusicTrack[]; context?: MenuContext; className?: string; label?: string; children?: ReactNode }) {
   const [open, setOpen] = useState(false);
+  const leaving = useLeaving(open, 280);
   const button = useRef<HTMLButtonElement>(null);
   return (
     <>
@@ -55,12 +58,12 @@ export default function TrackMenu({ tracks, context, className = '', label = 'Mo
       >
         {children ?? <MoreHorizontal className="h-5 w-5" />}
       </button>
-      {open && <Menu anchor={button.current} tracks={tracks} context={context} close={() => setOpen(false)} />}
+      {leaving.shown && <Menu anchor={button.current} tracks={tracks} context={context} close={() => setOpen(false)} closing={leaving.closing} />}
     </>
   );
 }
 
-function Menu({ anchor, point, tracks, context, close }: { anchor: HTMLElement | null; point?: { x: number; y: number }; tracks: MusicTrack[]; context?: MenuContext; close: () => void }) {
+function Menu({ anchor, point, tracks, context, close, closing = false }: { anchor: HTMLElement | null; point?: { x: number; y: number }; tracks: MusicTrack[]; context?: MenuContext; close: () => void; closing?: boolean }) {
   const playlists = useMusicPlayer((s) => s.library?.playlists ?? []);
   const byId = useMusicPlayer((s) => s.byId);
   const [page, setPage] = useState<'main' | 'playlists'>('main');
@@ -184,7 +187,7 @@ function Menu({ anchor, point, tracks, context, close }: { anchor: HTMLElement |
 
   return createPortal(
     sheet ? (
-      <div className="nf-fade fixed inset-0 z-[250] bg-black/50" onClick={(e) => e.stopPropagation()}>
+      <div className={`nf-fade fixed inset-0 z-[250] bg-black/50 ${leavingClass(closing)}`} onClick={(e) => e.stopPropagation()}>
         <div ref={ref} role="menu" className="nf-sheet-up absolute inset-x-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] overflow-hidden rounded-2xl border border-white/10 bg-[#2c2c2e]/95 py-2 shadow-2xl backdrop-blur-xl">
           {body}
           <div className="mt-1 border-t border-white/10 px-2 pt-2">
@@ -200,7 +203,7 @@ function Menu({ anchor, point, tracks, context, close }: { anchor: HTMLElement |
         role="menu"
         onClick={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.preventDefault()}
-        className="nf-pop-in fixed z-[250] w-60 overflow-hidden rounded-xl border border-white/10 bg-[#2c2c2e]/95 py-1.5 shadow-2xl backdrop-blur-xl"
+        className={`nf-pop-in fixed z-[250] w-60 overflow-hidden rounded-xl border border-white/10 bg-[#2c2c2e]/95 py-1.5 shadow-2xl backdrop-blur-xl ${leavingClass(closing)}`}
         style={pos ? { top: pos.top, left: pos.left } : { visibility: 'hidden', top: 0, left: 0 }}
       >
         {body}

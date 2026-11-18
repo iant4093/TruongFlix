@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useMusicNav } from '../nav';
 import { TrackPointMenu } from './TrackMenu';
+import { leavingClass, useLeaving } from '../../lib/leaving';
 
 interface Prompt {
   title: string;
@@ -19,7 +20,7 @@ export function askName(title: string, value = '', action = 'Save'): Promise<str
   return new Promise((resolve) => usePrompt.setState({ prompt: { title, value, action, resolve } }));
 }
 
-function NamePrompt({ prompt }: { prompt: Prompt }) {
+function NamePrompt({ prompt, closing }: { prompt: Prompt; closing: boolean }) {
   const [value, setValue] = useState(prompt.value);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -31,7 +32,7 @@ function NamePrompt({ prompt }: { prompt: Prompt }) {
     prompt.resolve(v);
   };
   return (
-    <div className="nf-fade fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-6" onPointerDown={(e) => e.target === e.currentTarget && done(null)}>
+    <div className={`nf-fade fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-6 ${leavingClass(closing)}`} onPointerDown={(e) => e.target === e.currentTarget && done(null)}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -69,11 +70,11 @@ function NamePrompt({ prompt }: { prompt: Prompt }) {
 
 /** Toasts and the name prompt; rendered once by each app. */
 export default function MusicOverlays() {
-  const prompt = usePrompt((s) => s.prompt);
+  const prompt = useLeaving(usePrompt((s) => s.prompt), 240);
   const toast = useMusicNav((s) => s.toast);
   return createPortal(
     <>
-      {prompt && <NamePrompt prompt={prompt} />}
+      {prompt.shown && <NamePrompt prompt={prompt.shown} closing={prompt.closing} />}
       <TrackPointMenu />
       <AnimatePresence>
         {toast && (
