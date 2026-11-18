@@ -260,7 +260,7 @@ function ListenNow({ library }: { library: Library }) {
         {ln.added.map((a) => <AlbumCard key={a.id} album={a} />)}
       </Shelf>
       {ln.topSongs.length > 0 && (
-        <section className="mb-9 max-w-4xl">
+        <section className="mb-9">
           <h2 className="mb-2 text-xl font-bold">Top Songs</h2>
           <TrackList tracks={ln.topSongs} />
         </section>
@@ -306,7 +306,7 @@ function Albums({ library }: { library: Library }) {
 function Artists({ artists }: { artists: MusicArtist[] }) {
   const { shown, sentinel } = useIncremental(artists, 200);
   return (
-    <div className="max-w-4xl divide-y divide-white/[0.07]">
+    <div className="divide-y divide-white/[0.07]">
       {shown.map((a) => (
         <button key={a.id} type="button" onClick={() => openRoute({ page: 'artist', id: a.id })} className="flex w-full items-center gap-4 rounded-lg px-2 py-2 text-left hover:bg-white/[0.06]">
           <Cover art={a.art} className="h-14 w-14 shrink-0" rounded="rounded-full" />
@@ -328,7 +328,7 @@ function Songs({ tracks }: { tracks: MusicTrack[] }) {
   const { shown, sentinel } = useIncremental(tracks, 250);
   const ids = useMemo(() => tracks.map((t) => t.id), [tracks]);
   return (
-    <div className="max-w-5xl">
+    <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <span className="text-sm text-white/50">{tracks.length} songs</span>
         <PlayButtons ids={ids} />
@@ -342,7 +342,7 @@ function Songs({ tracks }: { tracks: MusicTrack[] }) {
 function Favourites({ tracks }: { tracks: MusicTrack[] }) {
   const favs = useMemo(() => tracks.filter((t) => t.favourite), [tracks]);
   return (
-    <div className="max-w-5xl">
+    <div>
       <div className="mb-5 flex flex-wrap items-center gap-5">
         <div className="flex h-28 w-28 items-center justify-center rounded-xl bg-gradient-to-br from-[#fa2d48] to-[#7a1530] shadow-lg">
           <Heart className="h-12 w-12 fill-white" />
@@ -408,7 +408,7 @@ function SearchResults({ library, query }: { library: Library; query: string }) 
       )}
       {r.albums.length > 0 && <Shelf title="Albums">{r.albums.map((a) => <AlbumCard key={a.id} album={a} />)}</Shelf>}
       {r.tracks.length > 0 && (
-        <section className="max-w-5xl">
+        <section>
           <h2 className="mb-2 text-xl font-bold">Songs</h2>
           <TrackList tracks={r.tracks} />
         </section>
@@ -452,7 +452,7 @@ function AlbumPage({ library, id, phone }: { library: Library; id: number; phone
   const tracks = album.trackIds.map((t) => byId.get(t)).filter((t): t is MusicTrack => !!t);
   const variousArtists = tracks.some((t) => t.artist !== album.artist);
   return (
-    <div className="max-w-5xl">
+    <div>
       <DetailHeader
         art={album.art}
         title={album.title}
@@ -496,7 +496,7 @@ function ArtistPage({ library, id }: { library: Library; id: number }) {
           </div>
         </section>
       )}
-      <section className="max-w-5xl">
+      <section>
         <h3 className="mb-2 text-xl font-bold">Songs</h3>
         <TrackList tracks={songs.slice(0, 50)} />
       </section>
@@ -524,7 +524,7 @@ function PlaylistPage({ library, id, phone }: { library: Library; id: number; ph
   };
   const btn = 'flex h-11 items-center gap-2 rounded-lg bg-white/10 px-4 text-sm font-semibold hover:bg-white/15';
   return (
-    <div className="max-w-5xl">
+    <div>
       <DetailHeader
         mosaic={playlistArt(byId, playlist)}
         title={playlist.name}
