@@ -5,6 +5,41 @@ import { musicClock, useMusicPlayer } from '../player';
 import type { MusicLyrics } from '../types';
 
 const cache = new Map<number, MusicLyrics>();
+const pending = new Map<number, Promise<MusicLyrics | null>>();
+
+/**
+ * Starts fetching a song's lyrics (once), so they're ready when the lyrics open: an online lookup
+ * takes a second or so the first time.
+ */
+export function prefetchLyrics(trackId: number): Promise<MusicLyrics | null> {
+  const hit = cache.get(trackId);
+  if (hit) return Promise.resolve(hit);
+  const running = pending.get(trackId);
+  if (running) return running;
+  const api = useMusicPlayer.getState().api;
+  if (!api) return Promise.resolve(null);
+  const job = api
+    .lyrics(trackId)
+    .then((l) => {
+      if (l) cache.set(trackId, l);
+      return l;
+    })
+    .catch(() => null)
+    .finally(() => pending.delete(trackId));
+  pending.set(trackId, job);
+  return job;
+}
+
+// The current song's lyrics as soon as it starts, and the next song's while this one plays.
+let prefetched = '';
+useMusicPlayer.subscribe((s) => {
+  if (!s.api) return;
+  const ids = [s.queue.items[s.queue.index]?.id, s.queue.items[s.queue.index + 1]?.id].filter((id): id is number => id != null);
+  const key = ids.join(',');
+  if (key === prefetched) return;
+  prefetched = key;
+  for (const id of ids) void prefetchLyrics(id);
+});
 
 /** Lyrics for a song, fetched once per session (a miss is asked again next time). `retry` searches online again. */
 export function useLyrics(trackId: number | null) {
@@ -17,8 +52,8 @@ export function useLyrics(trackId: number | null) {
     if (!attempt && hit) return setState({ id: trackId, lyrics: hit, loading: false });
     let live = true;
     setState({ id: trackId, lyrics: null, loading: true });
-    api
-      .lyrics(trackId, attempt > 0)
+    const job = attempt > 0 ? api.lyrics(trackId, true) : prefetchLyrics(trackId);
+    job
       .then((l) => {
         if (l) cache.set(trackId, l);
         if (live) setState({ id: trackId, lyrics: l, loading: false });
