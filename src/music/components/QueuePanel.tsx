@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowUp, GripVertical, Repeat, Repeat1, Shuffle, X } from 'lucide-react';
 import { clearQueue, cycleRepeat, jumpTo, moveInQueue, removeFromQueue, toggleShuffle, useMusicPlayer } from '../player';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Cover } from './ui';
 
 /** Playing Next: reorder (drag, or the arrows on touch screens), remove, clear, shuffle and repeat. */
@@ -7,6 +8,7 @@ export default function QueuePanel({ className = '' }: { className?: string }) {
   const queue = useMusicPlayer((s) => s.queue);
   const byId = useMusicPlayer((s) => s.byId);
   const next = queue.items.map((item, index) => ({ item, index })).slice(queue.index + 1);
+  const reduce = useReducedMotion() ?? false;
   return (
     <div className={`flex min-h-0 flex-col ${className}`}>
       <div className="flex items-center gap-2 px-5 pb-3 pt-1">
@@ -42,12 +44,22 @@ export default function QueuePanel({ className = '' }: { className?: string }) {
       )}
       <div className="tfm-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-6">
         {!next.length && <p className="px-2 py-8 text-center text-sm text-white/50">Nothing else is queued.</p>}
+        {/* Moved songs glide to their new place; removed ones fold away. */}
+        <AnimatePresence initial={false}>
         {next.map(({ item, index }, n) => {
           const t = byId.get(item.id);
           if (!t) return null;
           return (
-            <div
+            <motion.div
               key={item.key}
+              layout={reduce ? false : 'position'}
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: reduce ? 0 : 0.25, layout: { type: 'spring', stiffness: 420, damping: 38 } }}
+              className="overflow-hidden"
+            >
+            <div
               draggable
               onDragStart={(e) => {
                 e.dataTransfer.setData('text/x-tf-queue', String(index));
@@ -80,8 +92,10 @@ export default function QueuePanel({ className = '' }: { className?: string }) {
                 </button>
               </div>
             </div>
+            </motion.div>
           );
         })}
+        </AnimatePresence>
       </div>
     </div>
   );

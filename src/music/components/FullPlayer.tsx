@@ -301,42 +301,58 @@ function Sheet() {
               )}
             </AnimatePresence>
           </div>
-        ) : panel ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center gap-3 px-6 pb-2" onPointerDown={(e) => drag.start(e)}>
-              <motion.div layoutId="tfm-art" layout transition={{ layout: layoutSpring }} className="h-14 w-14 shrink-0">
-                <Cover art={track.art} className="h-full w-full shadow-lg" rounded="rounded-md" />
-              </motion.div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-bold">{track.title}</div>
-                <div className="truncate text-white/60">{track.artist}</div>
-              </div>
-              <RoundButton label={track.favourite ? 'Remove from Favourites' : 'Favourite'} onClick={fav} className="h-9 w-9 bg-white/10">
-                <Heart className={`h-4 w-4 ${track.favourite ? 'fill-[#fa2d48] text-[#fa2d48]' : ''}`} />
-              </RoundButton>
-            </div>
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div key={panel} className="min-h-0 flex-1" {...panelIn}>
-                {side}
-              </motion.div>
-            </AnimatePresence>
-            <div className="space-y-2 px-7 pt-2">
-              {scrubber}
-              {controls(false)}
-              {panelButtons}
-            </div>
-          </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col justify-between gap-4 px-7 pb-1">
-            {/* Sized to the space it has (width and height), so it never runs into the title below. */}
-            <div className="flex min-h-0 flex-1 items-center justify-center py-2 [container-type:size]">{artwork('aspect-square w-[min(100cqw,100cqh)]')}</div>
-            <div className="space-y-4">
-              {info}
-              {scrubber}
-              {controls(true)}
-              {volumeRow}
+          // Phones: one layout that changes shape. Opening lyrics or Up Next shrinks the artwork into
+          // the header (title and heart fade in beside it), the panel rises in, the song details and
+          // volume fold away and the controls glide down; closing it plays the same in reverse.
+          <div className="flex min-h-0 flex-1 flex-col">
+            {panel ? (
+              <div className="flex items-center gap-3 px-6 pb-2" onPointerDown={(e) => drag.start(e)}>
+                <motion.div layoutId="tfm-art" layout transition={{ layout: layoutSpring }} className="h-14 w-14 shrink-0">
+                  <Cover art={track.art} className="h-full w-full shadow-lg" rounded="rounded-md" />
+                </motion.div>
+                <motion.div className="min-w-0 flex-1" initial={reduce ? false : { opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.08, duration: 0.28 }}>
+                  <div key={track.id} className="tfm-fadein">
+                    <div className="truncate font-bold">{track.title}</div>
+                    <div className="truncate text-white/60">{track.artist}</div>
+                  </div>
+                </motion.div>
+                <motion.div initial={reduce ? false : { opacity: 0, scale: 0.7 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.12, duration: 0.25 }}>
+                  <RoundButton label={track.favourite ? 'Remove from Favourites' : 'Favourite'} onClick={fav} className="h-9 w-9 bg-white/10">
+                    <Heart className={`h-4 w-4 ${track.favourite ? 'fill-[#fa2d48] text-[#fa2d48]' : ''}`} />
+                  </RoundButton>
+                </motion.div>
+              </div>
+            ) : (
+              /* Sized to the space it has (width and height), so it never runs into the title below. */
+              <div className="flex min-h-0 flex-1 items-center justify-center px-7 py-2 [container-type:size]">{artwork('aspect-square w-[min(100cqw,100cqh)]')}</div>
+            )}
+            {panel && (
+              <AnimatePresence mode="wait">
+                <motion.div key={panel} className="min-h-0 flex-1" {...panelIn}>
+                  {side}
+                </motion.div>
+              </AnimatePresence>
+            )}
+            <motion.div layout="position" transition={layoutSpring} className="px-7 pb-1 pt-2">
+              <AnimatePresence initial={false}>
+                {!panel && (
+                  <motion.div key="info" className="overflow-hidden" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: reduce ? 0 : 0.28 }}>
+                    <div className="pb-4">{info}</div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <div className="pb-3">{scrubber}</div>
+              <div className="pb-3">{controls(true)}</div>
+              <AnimatePresence initial={false}>
+                {!panel && (
+                  <motion.div key="volume" className="overflow-hidden" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: reduce ? 0 : 0.28 }}>
+                    <div className="pb-4">{volumeRow}</div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
               {panelButtons}
-            </div>
+            </motion.div>
           </div>
         )}
         </LayoutGroup>
