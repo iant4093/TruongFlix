@@ -95,8 +95,30 @@
 .tfm-range::-webkit-slider-thumb { -webkit-appearance: none; width: 0; height: 0; }
 .tfm-range::-moz-range-thumb { width: 0; height: 0; border: 0; }
 
+/* Page and control transitions (transform and opacity only, so phones run them on the GPU).
+   `backwards` leaves no transform behind afterwards, so fixed menus inside aren't affected. */
+@keyframes tfm-push { from { opacity: 0; transform: translateX(32px); } }
+@keyframes tfm-pop { from { opacity: 0; transform: translateX(-32px); } }
+@keyframes tfm-fade { from { opacity: 0; transform: translateY(8px); } }
+@keyframes tfm-fadein { from { opacity: 0; } }
+@keyframes tfm-rise { from { opacity: 0; transform: translateY(24px) scale(0.98); } }
+.tfm-push { animation: tfm-push 0.34s cubic-bezier(0.22, 0.9, 0.28, 1) backwards; }
+.tfm-pop { animation: tfm-pop 0.34s cubic-bezier(0.22, 0.9, 0.28, 1) backwards; }
+.tfm-fade { animation: tfm-fade 0.28s ease-out backwards; }
+.tfm-fadein { animation: tfm-fadein 0.35s ease-out backwards; }
+.tfm-rise { animation: tfm-rise 0.38s cubic-bezier(0.22, 0.9, 0.28, 1) backwards; }
+/* A slight dip when a card or row is pressed, like iOS lists. */
+.tfm-press { transition: transform 0.18s ease, background-color 0.15s ease; -webkit-tap-highlight-color: transparent; }
+.tfm-press:active { transform: scale(0.97); }
+.tfm-press-row { -webkit-tap-highlight-color: transparent; transition: background-color 0.15s ease; }
+.tfm-press-row:active { background-color: rgba(255, 255, 255, 0.08); }
+/* The backdrop's old colours fade out under the new song's. */
+.tfm-bg-set { position: absolute; inset: 0; overflow: hidden; }
+.tfm-bg-set.tfm-bg-new { animation: tfm-fadein 0.9s ease-out backwards; }
+
 @media (prefers-reduced-motion: reduce) {
-  .tfm-bg canvas, .tfm-eq > span, .tfm-dots.tfm-dots-active { animation: none !important; }
+  .tfm-bg canvas, .tfm-eq > span, .tfm-dots.tfm-dots-active, .tfm-push, .tfm-pop, .tfm-fade, .tfm-fadein, .tfm-rise, .tfm-bg-set { animation: none !important; }
+  .tfm-press:active { transform: none; }
   .tfm-word { transition: none; }
   .tfm-word.tfm-lift { transform: none; }
 }

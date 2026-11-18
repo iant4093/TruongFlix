@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { motion } from 'framer-motion';
 import { ArrowDown, ArrowUp, ChevronLeft, Heart, ListMusic, Music2, Pencil, Play, Plus, Search, Shuffle, Trash2, X } from 'lucide-react';
 import { createPlaylist, deletePlaylist, loadMusicLibrary, moveInList, renamePlaylist, setPlaylistTracks, useMusicLoad } from '../actions';
 import { byName, formatTotal, listenNow, playlistArt, searchMusic } from '../library';
@@ -47,6 +48,15 @@ export default function MusicLibrary({ variant, emptyAction, headerExtra }: Prop
   }, [route]);
 
   const tab = 'id' in route ? null : route.page;
+  // Pages slide in from the right when opened and from the left on Back; tabs and search fade.
+  const stack = useMusicNav((s) => s.stack);
+  const last = useRef({ depth, route });
+  const prev = last.current;
+  const motionClass = prev.route === route ? '' : depth > prev.depth ? 'tfm-push' : depth < prev.depth ? 'tfm-pop' : 'tfm-fade';
+  useEffect(() => {
+    last.current = { depth, route };
+  }, [depth, route]);
+  const pageKey = query.trim() ? 'search' : `${stack.length}:${JSON.stringify(route)}`;
   const body = !library ? (
     <div className="py-24 text-center text-white/50">{error ? `Couldn’t load your music: ${error}` : 'Loading your music…'}</div>
   ) : !library.tracks.length ? (
@@ -79,14 +89,18 @@ export default function MusicLibrary({ variant, emptyAction, headerExtra }: Prop
               type="button"
               onClick={() => openTab(t.tab)}
               aria-current={tab === t.tab && !query ? 'page' : undefined}
-              className={`shrink-0 rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${tab === t.tab && !query ? 'bg-white text-black' : 'bg-white/10 text-white/80 hover:bg-white/15'}`}
+              className={`relative shrink-0 rounded-full bg-white/10 px-4 py-1.5 text-sm font-semibold transition-colors [-webkit-tap-highlight-color:transparent] ${tab === t.tab && !query ? 'text-black' : 'text-white/80 hover:bg-white/15'}`}
             >
-              {t.label}
+              {/* The white highlight slides from tab to tab. */}
+              {tab === t.tab && !query && <motion.span layoutId="tfm-tab" className="absolute inset-0 rounded-full bg-white" transition={{ type: 'spring', stiffness: 520, damping: 40 }} />}
+              <span className="relative">{t.label}</span>
             </button>
           ))}
         </nav>
       </header>
-      <div className={phone ? 'px-4' : ''}>{body}</div>
+      <div key={pageKey} className={`${phone ? 'px-4' : ''} ${query.trim() ? '' : motionClass}`}>
+        {body}
+      </div>
     </div>
   );
 }
@@ -190,7 +204,7 @@ export function AlbumCard({ album, className = 'w-40 sm:w-44 shrink-0' }: { albu
   return (
     <div className={`group text-left ${className}`}>
       <div className="relative">
-        <button type="button" onClick={() => openRoute({ page: 'album', id: album.id })} className="block w-full" aria-label={`${album.title} by ${album.artist}`}>
+        <button type="button" onClick={() => openRoute({ page: 'album', id: album.id })} className="tfm-press block w-full" aria-label={`${album.title} by ${album.artist}`}>
           <Cover art={album.art} alt="" className="w-full shadow-lg transition group-hover:brightness-90" rounded="rounded-lg" />
         </button>
         <button
@@ -308,7 +322,7 @@ function Artists({ artists }: { artists: MusicArtist[] }) {
   return (
     <div className="divide-y divide-white/[0.07]">
       {shown.map((a) => (
-        <button key={a.id} type="button" onClick={() => openRoute({ page: 'artist', id: a.id })} className="flex w-full items-center gap-4 rounded-lg px-2 py-2 text-left hover:bg-white/[0.06]">
+        <button key={a.id} type="button" onClick={() => openRoute({ page: 'artist', id: a.id })} className="tfm-press-row flex w-full items-center gap-4 rounded-lg px-2 py-2 text-left hover:bg-white/[0.06]">
           <Cover art={a.art} className="h-14 w-14 shrink-0" rounded="rounded-full" />
           <div className="min-w-0">
             <div className="truncate font-medium">{a.name}</div>
@@ -372,14 +386,14 @@ function Playlists({ library }: { library: Library }) {
   };
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-      <button type="button" onClick={() => void create()} className="group min-w-0 text-left">
+      <button type="button" onClick={() => void create()} className="tfm-press group min-w-0 text-left">
         <div className="flex aspect-square items-center justify-center rounded-lg border border-dashed border-white/25 bg-white/[0.04] text-white/60 transition group-hover:bg-white/[0.08] group-hover:text-white">
           <Plus className="h-10 w-10" />
         </div>
         <div className="mt-2 text-sm font-medium">New Playlist</div>
       </button>
       {library.playlists.map((p) => (
-        <button key={p.id} type="button" onClick={() => openRoute({ page: 'playlist', id: p.id })} className="min-w-0 text-left">
+        <button key={p.id} type="button" onClick={() => openRoute({ page: 'playlist', id: p.id })} className="tfm-press min-w-0 text-left">
           <Mosaic arts={playlistArt(byId, p)} className="w-full shadow-lg" />
           <div className="mt-2 truncate text-sm font-medium">{p.name}</div>
           <div className="text-sm text-white/50">
@@ -399,7 +413,7 @@ function SearchResults({ library, query }: { library: Library; query: string }) 
       {r.artists.length > 0 && (
         <Shelf title="Artists">
           {r.artists.map((a) => (
-            <button key={a.id} type="button" onClick={() => openRoute({ page: 'artist', id: a.id })} className="w-32 shrink-0 text-center">
+            <button key={a.id} type="button" onClick={() => openRoute({ page: 'artist', id: a.id })} className="tfm-press w-32 shrink-0 text-center">
               <Cover art={a.art} rounded="rounded-full" className="w-full shadow-lg" />
               <div className="mt-2 truncate text-sm font-medium">{a.name}</div>
             </button>

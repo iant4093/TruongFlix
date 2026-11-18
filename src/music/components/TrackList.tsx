@@ -47,7 +47,7 @@ export default function TrackList({ tracks, lead = 'art', showAlbum = true, show
               }}
               onClick={() => (isCurrent ? toggle() : playTracks(ids, i))}
               onContextMenu={(e) => openTrackMenuAt(e, [t], context)}
-              className={`group flex cursor-default items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.06] ${isCurrent ? 'text-[#fa2d48]' : ''}`}
+              className={`tfm-press-row group flex cursor-default items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.06] ${isCurrent ? 'text-[#fa2d48]' : ''}`}
             >
               {lead === 'number' ? (
                 <div className="flex w-7 shrink-0 justify-center text-sm tabular-nums text-white/45">

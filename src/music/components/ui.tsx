@@ -1,25 +1,58 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Music } from 'lucide-react';
+import { Music, Pause, Play } from 'lucide-react';
 import { setScrub, setVolume, useMusicPlayer } from '../player';
 import { createBarMeter, musicLevels } from '../analyser';
 import { formatTime } from '../library';
 import '../music.css';
 
-/** Album art, or a soft gradient with a note when the album has none. */
+/**
+ * Album art, or a soft gradient with a note when the album has none. A new cover (the next song)
+ * fades in over the old one instead of blinking through the placeholder.
+ */
 export function Cover({ art, alt = '', className = '', rounded = 'rounded-md', icon = 'h-1/3 w-1/3' }: { art: string | null | undefined; alt?: string; className?: string; rounded?: string; icon?: string }) {
   const url = useMusicPlayer((s) => s.api?.artUrl(art) ?? null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [url]);
+  const [failed, setFailed] = useState<string | null>(null);
+  // The cover on screen, and the one fading in over it.
+  const [shown, setShown] = useState<string | null>(url);
+  const [incoming, setIncoming] = useState(false);
+  useEffect(() => setIncoming(false), [url]);
+  const usable = url && failed !== url ? url : null;
+  const under = shown && failed !== shown ? shown : null;
   return (
     <div className={`relative aspect-square overflow-hidden bg-gradient-to-br from-[#3a3a3c] to-[#1f1f21] ${rounded} ${className}`}>
-      {url && !failed ? (
-        <img src={url} alt={alt} loading="lazy" draggable={false} onError={() => setFailed(true)} className="absolute inset-0 h-full w-full object-cover" />
-      ) : (
+      {!usable && !under && (
         <div className="absolute inset-0 flex items-center justify-center text-white/30">
           <Music className={icon} strokeWidth={1.5} />
         </div>
       )}
+      {under && <img src={under} alt={under === usable ? alt : ''} loading="lazy" draggable={false} onError={() => setFailed(under)} className="absolute inset-0 h-full w-full object-cover" />}
+      {usable && usable !== under && (
+        <img
+          key={usable}
+          src={usable}
+          alt={alt}
+          draggable={false}
+          onLoad={() => setIncoming(true)}
+          onError={() => {
+            setFailed(usable);
+            setShown(usable);
+          }}
+          onTransitionEnd={() => setShown(usable)}
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${incoming ? 'opacity-100' : 'opacity-0'}`}
+        />
+      )}
     </div>
+  );
+}
+
+/** Play and pause morph into each other (a quick scale and fade), like Apple Music's button. */
+export function PlayPauseIcon({ playing, className = 'h-7 w-7' }: { playing: boolean; className?: string }) {
+  const swap = 'absolute inset-0 h-full w-full fill-current transition-[opacity,transform] duration-200 ease-out';
+  return (
+    <span className={`relative inline-block ${className}`} aria-hidden>
+      <Pause className={`${swap} ${playing ? 'scale-100 opacity-100' : 'scale-50 opacity-0'}`} strokeWidth={0} />
+      <Play className={`${swap} translate-x-[6%] ${playing ? 'scale-50 opacity-0' : 'scale-100 opacity-100'}`} strokeWidth={0} />
+    </span>
   );
 }
 

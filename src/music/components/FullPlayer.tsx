@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useDragControls, useReducedMotion } from 'framer-motion';
-import { AudioLines, ChevronDown, Heart, ListMusic, MessageSquareQuote, Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX } from 'lucide-react';
+import { AudioLines, ChevronDown, Heart, ListMusic, MessageSquareQuote, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { cycleRepeat, next, previous, seek, setFull, setPanel, toggle, toggleFavourite, toggleMute, toggleShuffle, useMusicPlayer } from '../player';
 import { musicToast } from '../nav';
 import { paintSoft, SOFT_SIZE } from '../softArt';
@@ -10,7 +10,7 @@ import type { MusicTrack } from '../types';
 import Lyrics from './Lyrics';
 import QueuePanel from './QueuePanel';
 import TrackMenu from './TrackMenu';
-import { Cover, RoundButton, Scrubber, VolumeSlider } from './ui';
+import { Cover, PlayPauseIcon, RoundButton, Scrubber, VolumeSlider } from './ui';
 
 /** Wide enough for artwork and lyrics side by side. */
 function useWide() {
@@ -59,14 +59,25 @@ function SoftLayer({ image }: { image: HTMLImageElement }) {
 /** Blurred, slowly drifting copies of the artwork: the colours of the album fill the screen. */
 function Backdrop({ url }: { url: string | null }) {
   const image = useSoftArt(url);
+  // The next song's colours fade in over the last song's, which stay until they're covered.
+  const [sets, setSets] = useState<{ image: HTMLImageElement; fresh: boolean }[]>([]);
+  useEffect(() => {
+    if (!image) return;
+    // Songs from the same album share a cover: nothing to fade.
+    setSets((list) => (list.at(-1)?.image.src === image.src ? list : [...list.slice(-1).map((s) => ({ ...s, fresh: false })), { image, fresh: list.length > 0 }]));
+    const t = window.setTimeout(() => setSets((list) => list.filter((s) => s.image.src === image.src)), 1000);
+    return () => window.clearTimeout(t);
+  }, [image]);
   return (
     <div className="tfm-bg" aria-hidden>
-      {image ? (
-        <>
-          <SoftLayer image={image} />
-          <SoftLayer image={image} />
-          <SoftLayer image={image} />
-        </>
+      {sets.length ? (
+        sets.map((s) => (
+          <div key={s.image.src} className={`tfm-bg-set ${s.fresh ? 'tfm-bg-new' : ''}`}>
+            <SoftLayer image={s.image} />
+            <SoftLayer image={s.image} />
+            <SoftLayer image={s.image} />
+          </div>
+        ))
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-[#5b2333] via-[#2a2440] to-[#13243b]" />
       )}
@@ -155,7 +166,7 @@ function Sheet() {
         <SkipBack className={big ? 'h-9 w-9 fill-current' : 'h-7 w-7 fill-current'} />
       </RoundButton>
       <RoundButton label={playing ? 'Pause' : 'Play'} onClick={toggle} className={`${big ? 'h-20 w-20' : 'h-14 w-14'} text-white hover:bg-white/10`}>
-        {playing ? <Pause className={big ? 'h-12 w-12 fill-current' : 'h-9 w-9 fill-current'} strokeWidth={0} /> : <Play className={big ? 'ml-1 h-12 w-12 fill-current' : 'ml-1 h-9 w-9 fill-current'} strokeWidth={0} />}
+        <PlayPauseIcon playing={playing} className={big ? 'h-12 w-12' : 'h-9 w-9'} />
       </RoundButton>
       <RoundButton label="Next" onClick={next} className={`${big ? 'h-16 w-16' : 'h-12 w-12'} text-white hover:bg-white/10`}>
         <SkipForward className={big ? 'h-9 w-9 fill-current' : 'h-7 w-7 fill-current'} />
@@ -168,7 +179,7 @@ function Sheet() {
 
   const info = (
     <div className="flex items-center gap-3">
-      <div className="min-w-0 flex-1">
+      <div key={track.id} className="tfm-fadein min-w-0 flex-1">
         <div className="truncate text-xl font-bold leading-tight sm:text-[1.35rem]">{track.title}</div>
         <div className="truncate text-lg text-white/60 sm:text-[1.15rem]">
           {track.artist}
