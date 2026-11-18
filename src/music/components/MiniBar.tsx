@@ -1,8 +1,8 @@
 import { useLayoutEffect } from 'react';
 import { formatTime } from '../library';
-import { ListMusic, MessageSquareQuote, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react';
+import { ListMusic, MessageSquareQuote, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react';
 import { next, previous, seek, setBarHidden, setFull, setPanel, toggle, toggleMute, useMusicPlayer } from '../player';
-import { Cover, RoundButton, useSeekDrag, VolumeSlider } from './ui';
+import { Cover, PlayPauseIcon, RoundButton, useSeekDrag, VolumeSlider } from './ui';
 
 /** Space the bar takes at the bottom of the window; pages, toasts and the cast bar keep clear of it. */
 export const MUSIC_BAR_INSET = '5.75rem';
@@ -80,9 +80,9 @@ export default function MiniBar({ compact = false, className = '' }: { compact?:
   const track = useMusicPlayer((s) => s.track);
   const playing = useMusicPlayer((s) => s.playing);
   const muted = useMusicPlayer((s) => s.muted);
-  const full = useMusicPlayer((s) => s.full);
   const hidden = useMusicPlayer((s) => s.barHidden);
-  const visible = !!track && !full && !hidden;
+  // It stays under the full-screen player, so closing that slides down onto the bar (no pop-in).
+  const visible = !!track && !hidden;
   useBottomInset(visible && !compact);
   if (!visible) return null;
   const open = (panel?: 'lyrics' | 'queue' | null) => {
@@ -93,11 +93,11 @@ export default function MiniBar({ compact = false, className = '' }: { compact?:
   return (
     // Under dialogs and Settings (z-60 and up), over the page, the navbar and hover cards.
     <div data-music-bar="" className={`pointer-events-none fixed inset-x-0 bottom-0 z-[55] px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] ${className}`}>
-      <div className={`pointer-events-auto relative mx-auto flex max-w-5xl items-center gap-3 overflow-hidden rounded-2xl ${compact ? 'h-16' : 'h-[4.5rem] pb-2'} border border-white/10 bg-[#2a2a2c]/95 pl-2 pr-2 shadow-[0_10px_40px_rgba(0,0,0,0.6)] sm:pr-3`}>
+      <div className={`tfm-rise pointer-events-auto relative mx-auto flex max-w-5xl items-center gap-3 overflow-hidden rounded-2xl ${compact ? 'h-16' : 'h-[4.5rem] pb-2'} border border-white/10 bg-[#2a2a2c]/95 pl-2 pr-2 shadow-[0_10px_40px_rgba(0,0,0,0.6)] sm:pr-3`}>
         <Progress seekable={!compact} />
         <button type="button" onClick={() => open(compact ? null : undefined)} className="flex min-w-0 flex-1 items-center gap-3 text-left" aria-label={`Now playing: ${track.title} by ${track.artist}. Open the player`}>
           <Cover art={track.art} className="h-12 w-12 shrink-0 shadow-md" rounded="rounded-lg" />
-          <div className="min-w-0">
+          <div key={track.id} className="tfm-fadein min-w-0">
             <div className="truncate text-[15px] font-semibold">{track.title}</div>
             <div className="truncate text-[13px] text-white/55">{track.artist}</div>
           </div>
@@ -108,7 +108,7 @@ export default function MiniBar({ compact = false, className = '' }: { compact?:
           </RoundButton>
         )}
         <RoundButton label={playing ? 'Pause' : 'Play'} onClick={toggle} className="h-11 w-11 shrink-0 text-white hover:bg-white/10">
-          {playing ? <Pause className="h-7 w-7 fill-current" strokeWidth={0} /> : <Play className="ml-0.5 h-7 w-7 fill-current" strokeWidth={0} />}
+          <PlayPauseIcon playing={playing} className="h-7 w-7" />
         </RoundButton>
         <RoundButton label="Next" onClick={next} className="h-10 w-10 shrink-0 text-white hover:bg-white/10">
           <SkipForward className="h-5 w-5 fill-current" />
@@ -129,13 +129,16 @@ export default function MiniBar({ compact = false, className = '' }: { compact?:
             </RoundButton>
           </>
         )}
-        <RoundButton
-          label={playing ? 'Close player (music keeps playing)' : 'Close player'}
-          onClick={() => setBarHidden(true)}
-          className="h-8 w-8 shrink-0 text-white/50 hover:bg-white/10 hover:text-white"
-        >
-          <X className="h-4 w-4" />
-        </RoundButton>
+        {/* No close on phones (like Apple Music): there's nowhere else to bring the player back from. */}
+        {!compact && (
+          <RoundButton
+            label={playing ? 'Close player (music keeps playing)' : 'Close player'}
+            onClick={() => setBarHidden(true)}
+            className="h-8 w-8 shrink-0 text-white/50 hover:bg-white/10 hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </RoundButton>
+        )}
       </div>
     </div>
   );
