@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type Ref } from 'react';
 import { motion } from 'framer-motion';
 import { RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import type { useBannerTrailer } from './useBannerTrailer';
+import { backdropSrcSet } from '../../lib/images';
 
 type Trailer = ReturnType<typeof useBannerTrailer>;
 
@@ -24,6 +25,8 @@ export function BillboardMedia({ title, backdrop, trailer }: { title: string; ba
           ref={image}
           key={backdrop}
           src={backdrop}
+          srcSet={backdropSrcSet(backdrop)}
+          sizes="100vw"
           alt=""
           draggable={false}
           onLoad={() => setLoadedBackdrop(backdrop)}

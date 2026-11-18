@@ -40,6 +40,7 @@ import ImdbRating from '../common/ImdbRating';
 import MaturityRating from '../common/MaturityRating';
 import { CastLinks, StreamInfo } from '../common/StreamInfo';
 import { parseMediaInfo, parseSegments } from '../../services/mediainfo';
+import { backdropSrcSet } from '../../lib/images';
 
 interface Props {
   series: MediaItem;
@@ -104,7 +105,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
   return (
     <>
       <div className="relative aspect-video w-full">
-        <Artwork src={heroImage} alt={ep.title} fallbackTitle={ep.title} className="h-full w-full" eager />
+        <Artwork src={heroImage} srcSet={backdropSrcSet(heroImage)} sizes="min(100vw, 1100px)" alt={ep.title} fallbackTitle={ep.title} className="h-full w-full" eager />
         <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-nf-surface/20 to-transparent" />
         <div className="absolute inset-0 bg-gradient-to-r from-black/50 via-transparent to-transparent" />
 

@@ -3,6 +3,9 @@ import { Film } from 'lucide-react';
 
 interface FadeImageProps {
   src: string;
+  /** Other sizes of the same image (`srcSet`), with how wide it's shown (`sizes`). */
+  srcSet?: string;
+  sizes?: string;
   alt: string;
   className?: string;
   eager?: boolean;
@@ -14,7 +17,7 @@ interface FadeImageProps {
  * An image that fades in once decoded. Images already in the cache show at once (no fade), so
  * revisiting a page never flickers. Size it with the caller's classes (aspect ratio or h/w).
  */
-export function FadeImage({ src, alt, className = '', eager, onError, fit = 'cover' }: FadeImageProps) {
+export function FadeImage({ src, srcSet, sizes, alt, className = '', eager, onError, fit = 'cover' }: FadeImageProps) {
   const ref = useRef<HTMLImageElement>(null);
   const [loaded, setLoaded] = useState<string | null>(null);
   const [instant, setInstant] = useState(false);
@@ -30,6 +33,8 @@ export function FadeImage({ src, alt, className = '', eager, onError, fit = 'cov
     <img
       ref={ref}
       src={src}
+      srcSet={srcSet}
+      sizes={srcSet ? sizes : undefined}
       alt={alt}
       draggable={false}
       loading={eager ? 'eager' : 'lazy'}
@@ -43,6 +48,8 @@ export function FadeImage({ src, alt, className = '', eager, onError, fit = 'cov
 
 interface Props {
   src: string | null;
+  srcSet?: string;
+  sizes?: string;
   alt: string;
   className?: string;
   /** Shown when there is no image (unmatched files). */
@@ -53,7 +60,7 @@ interface Props {
 }
 
 /** Artwork with a soft fade-in over a neutral tile, and a stylised title card fallback. */
-export default function Artwork({ src, alt, className = '', fallbackTitle, fallback, eager }: Props) {
+export default function Artwork({ src, srcSet, sizes, alt, className = '', fallbackTitle, fallback, eager }: Props) {
   const [failed, setFailed] = useState<string | null>(null);
 
   if (!src || failed === src) {
@@ -72,5 +79,5 @@ export default function Artwork({ src, alt, className = '', fallbackTitle, fallb
       </div>
     );
   }
-  return <FadeImage src={src} alt={alt} eager={eager} onError={() => setFailed(src)} className={`bg-nf-hover ${className}`} />;
+  return <FadeImage src={src} srcSet={srcSet} sizes={sizes} alt={alt} eager={eager} onError={() => setFailed(src)} className={`bg-nf-hover ${className}`} />;
 }

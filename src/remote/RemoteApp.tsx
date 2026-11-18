@@ -16,6 +16,7 @@ import type { RemoteRow } from './types';
 import { DownloadButton, DownloadsPage } from './RemoteDownloads';
 import { initOffline } from './offline';
 import type { OfflineItem } from './offlineLogic';
+import { backdropSrcSet } from '../lib/images';
 
 type Tab = 'home' | 'tv' | 'movies' | 'live' | 'music' | 'mylist';
 const TABS: { tab: Tab; label: string }[] = [
@@ -241,7 +242,7 @@ function Featured({ item, open }: { item: RemoteItem; open: (key: string) => voi
     <section className="relative -mt-36 mb-6 aspect-[2/3] max-h-[78vh] min-h-[26rem] w-full overflow-hidden sm:aspect-video md:-mt-[5.5rem] md:max-h-[80vh] md:min-h-[30rem]">
       <picture>
         {item.poster && <source media="(max-aspect-ratio: 4/5)" srcSet={item.poster} />}
-        <img src={wide} alt="" className="absolute inset-0 h-full w-full object-cover object-top" />
+        <img src={wide} srcSet={item.backdrop ? backdropSrcSet(item.backdrop) : undefined} sizes="100vw" alt="" className="absolute inset-0 h-full w-full object-cover object-top" />
       </picture>
       <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/70 to-transparent" />
       <div className="absolute inset-0 bg-gradient-to-t from-nf-bg via-nf-bg/30 to-transparent" />

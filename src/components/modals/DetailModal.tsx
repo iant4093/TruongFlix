@@ -71,6 +71,7 @@ import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
 import ProgressBar from '../common/ProgressBar';
 import TechBadges from '../common/TechBadges';
+import { backdropSrcSet } from '../../lib/images';
 
 export default function DetailModal() {
   const detailKey = useLibraryStore((s) => s.detailKey);
@@ -199,6 +200,8 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
       <div className="relative aspect-video w-full">
         <Artwork
           src={resize(item.backdrop, 'w1280')}
+          srcSet={backdropSrcSet(item.backdrop)}
+          sizes="min(100vw, 1100px)"
           alt={item.title}
           fallbackTitle={item.title}
           className={`h-full w-full ${isDownloading ? 'opacity-65 grayscale-[50%]' : ''}`}
