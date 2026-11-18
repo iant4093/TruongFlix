@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { restoreScroll, saveScroll } from './scrollMemory';
 import { Download, Lock, Search, X } from 'lucide-react';
-import { motion } from 'framer-motion';
+import SlidingPill from '../components/common/SlidingPill';
 import ProfileAvatar from '../components/common/ProfileAvatar';
 import type { RemoteItem, RemoteLibrary, RemotePlayable, RemoteProfile, RemoteTitle } from './types';
 import { Featured, Poster, Row } from './RemoteBits';
@@ -142,7 +142,7 @@ function Login({ onDone }: { onDone: () => void }) {
     }
   };
   return (
-    <div className="flex min-h-[100dvh] flex-col items-center justify-center px-6 text-center">
+    <div className="nf-fade flex min-h-[100dvh] flex-col items-center justify-center px-6 text-center">
       <Wordmark className="text-5xl" />
       <p className="mt-6 max-w-sm text-nf-secondary">Enter the access code shown in TruongFlix on your computer, under Settings › Devices.</p>
       <input
@@ -180,7 +180,7 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
     }
   };
   return (
-    <div className="flex min-h-[100dvh] flex-col items-center justify-center px-6">
+    <div className="nf-fade flex min-h-[100dvh] flex-col items-center justify-center px-6">
       <h1 className="mb-10 text-3xl font-medium sm:text-5xl">Who’s watching?</h1>
       <div className="flex flex-wrap justify-center gap-6">
         {profiles?.map((p) => (
@@ -194,8 +194,8 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
         ))}
       </div>
       {locked && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-6" onClick={() => setLocked(null)}>
-          <div className="w-full max-w-xs text-center" onClick={(e) => e.stopPropagation()}>
+        <div className="nf-fade fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-6" onClick={() => setLocked(null)}>
+          <div className="nf-pop-in w-full max-w-xs text-center" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-2xl font-medium">Enter {locked.name}’s PIN</h2>
             <input
               value={pin}
@@ -354,6 +354,9 @@ function Browse({
           aria-label="Sections"
           className="relative order-last -mx-4 flex w-[calc(100%+2rem)] scroll-px-4 gap-2 overflow-x-auto px-4 pr-8 [scrollbar-width:none] max-md:[mask-image:linear-gradient(to_right,#000_calc(100%-2.5rem),transparent)] md:order-none md:mx-0 md:w-auto md:gap-5 md:px-0"
         >
+          {/* The current section's highlight slides sideways from tab to tab (a pill on phones, a line on wider screens). */}
+          <SlidingPill row={tabsRef} watch={`${tab}:${query == null}`} className="rounded-full border border-white bg-white/15 md:hidden" />
+          <SlidingPill row={tabsRef} watch={`${tab}:${query == null}`} line className="hidden bg-white md:block" />
           {TABS.map(({ tab: t, label }) => (
             <button
               key={t}
@@ -363,14 +366,6 @@ function Browse({
                 tab === t && query == null ? 'font-semibold text-white max-md:border-transparent' : 'text-white/70 hover:text-white max-md:border-white/30'
               }`}
             >
-              {/* The current section's highlight slides from tab to tab (a pill on phones, a line on wider screens). */}
-              {tab === t && query == null && (
-                <motion.span
-                  layoutId="nf-tab"
-                  transition={{ type: 'spring', stiffness: 500, damping: 40 }}
-                  className="absolute inset-0 rounded-full border border-white bg-white/15 md:inset-x-0 md:-bottom-1.5 md:top-auto md:h-0.5 md:rounded-none md:border-0 md:bg-white"
-                />
-              )}
               <span className="relative">{label}</span>
             </button>
           ))}
@@ -387,7 +382,7 @@ function Browse({
         </button>
       </header>
       {query != null && (
-        <div className="px-4">
+        <div className="nf-fade px-4">
           <input
             autoFocus
             type="search"

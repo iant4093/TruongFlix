@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { motion } from 'framer-motion';
+import SlidingPill from '../../components/common/SlidingPill';
 import { ArrowDown, ArrowUp, ChevronLeft, Heart, ListMusic, Music2, Pencil, Play, Plus, Search, Shuffle, Trash2, X } from 'lucide-react';
 import { createPlaylist, deletePlaylist, loadMusicLibrary, moveInList, renamePlaylist, setPlaylistTracks, useMusicLoad } from '../actions';
 import { byName, formatTotal, listenNow, playlistArt, searchMusic } from '../library';
@@ -32,6 +32,7 @@ export default function MusicLibrary({ variant, emptyAction, headerExtra }: Prop
   const depth = useMusicNav((s) => s.stack.length);
   const hasTrack = useMusicPlayer((s) => !!s.track);
   const phone = variant === 'phone';
+  const tabRow = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (api) void loadMusicLibrary();
@@ -82,17 +83,17 @@ export default function MusicLibrary({ variant, emptyAction, headerExtra }: Prop
           {headerExtra}
         </div>
         {/* On narrow screens the row scrolls; its right edge fades so the hidden tabs read as more. */}
-        <nav aria-label="Music sections" className="tfm-scroll -mx-1 mt-4 flex gap-2 overflow-x-auto px-1 max-sm:-mr-4 max-sm:pr-8 max-sm:[mask-image:linear-gradient(to_right,#000_calc(100%-2.5rem),transparent)]">
+        <nav ref={tabRow} aria-label="Music sections" className="tfm-scroll relative -mx-1 mt-4 flex gap-2 overflow-x-auto px-1 max-sm:-mr-4 max-sm:pr-8 max-sm:[mask-image:linear-gradient(to_right,#000_calc(100%-2.5rem),transparent)]">
+          {/* The white highlight slides sideways from tab to tab. */}
+          <SlidingPill row={tabRow} watch={`${tab}:${!!query}`} className="rounded-full bg-white" />
           {MUSIC_TABS.map((t) => (
             <button
               key={t.tab}
               type="button"
               onClick={() => openTab(t.tab)}
               aria-current={tab === t.tab && !query ? 'page' : undefined}
-              className={`relative shrink-0 rounded-full bg-white/10 px-4 py-1.5 text-sm font-semibold transition-colors [-webkit-tap-highlight-color:transparent] ${tab === t.tab && !query ? 'text-black' : 'text-white/80 hover:bg-white/15'}`}
+              className={`relative shrink-0 rounded-full px-4 py-1.5 text-sm font-semibold transition-colors duration-300 [-webkit-tap-highlight-color:transparent] ${tab === t.tab && !query ? 'text-black' : 'bg-white/10 text-white/80 hover:bg-white/15'}`}
             >
-              {/* The white highlight slides from tab to tab. */}
-              {tab === t.tab && !query && <motion.span layoutId="tfm-tab" className="absolute inset-0 rounded-full bg-white" transition={{ type: 'spring', stiffness: 520, damping: 40 }} />}
               <span className="relative">{t.label}</span>
             </button>
           ))}
@@ -116,7 +117,7 @@ function SearchBox({ phone }: { phone: boolean }) {
       </button>
     );
   return (
-    <div className={`flex h-10 items-center gap-2 rounded-xl bg-white/10 px-3 ${phone ? 'absolute inset-x-4 top-1 z-10 bg-[#2c2c2e]' : 'w-72'}`}>
+    <div className={`flex h-10 items-center gap-2 rounded-xl bg-white/10 px-3 ${phone ? 'nf-fade absolute inset-x-4 top-1 z-10 bg-[#2c2c2e]' : 'w-72'}`}>
       <Search className="h-4 w-4 shrink-0 text-white/50" />
       <input
         ref={input}
