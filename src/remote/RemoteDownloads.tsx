@@ -58,11 +58,11 @@ export function DownloadSheet({ who, target, onClose }: { who: Who; target: Down
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center" onClick={onClose}>
+    <div className="nf-fade fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center" onClick={onClose}>
       <div
         role="dialog"
         aria-label="Download"
-        className="w-full max-w-md rounded-t-2xl border border-white/15 bg-[#181818] p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-2xl"
+        className="nf-sheet-up w-full max-w-md rounded-t-2xl border border-white/15 bg-[#181818] p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-1 flex items-center justify-between">
@@ -182,7 +182,7 @@ export function DownloadsPage({ who, back, play }: { who: Who; back: () => void;
   }, []);
 
   return (
-    <div className="min-h-[100dvh] pb-16">
+    <div className="nf-push min-h-[100dvh] pb-16">
       <header className="sticky top-0 z-30 flex items-center gap-3 bg-gradient-to-b from-black/90 to-transparent px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))]">
         <button onClick={back} aria-label="Back" className="rounded-full p-1.5 hover:bg-white/10">
           <ArrowLeft className="h-6 w-6" />

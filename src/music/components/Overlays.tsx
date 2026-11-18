@@ -31,13 +31,13 @@ function NamePrompt({ prompt }: { prompt: Prompt }) {
     prompt.resolve(v);
   };
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-6" onPointerDown={(e) => e.target === e.currentTarget && done(null)}>
+    <div className="nf-fade fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-6" onPointerDown={(e) => e.target === e.currentTarget && done(null)}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           if (value.trim()) done(value.trim());
         }}
-        className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#2c2c2e] p-5 shadow-2xl"
+        className="nf-pop-in w-full max-w-sm rounded-2xl border border-white/10 bg-[#2c2c2e] p-5 shadow-2xl"
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
             e.stopPropagation();

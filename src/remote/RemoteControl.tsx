@@ -137,7 +137,7 @@ function Bar({ np, at, send, onOpen }: { np: RemoteNowPlaying; at: number; send:
   const ratio = np.duration ? Math.min(1, time / np.duration) : 0;
   return (
     <div className="fixed inset-x-0 bottom-0 z-40 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-      <div className="mx-auto max-w-xl overflow-hidden rounded-lg border border-white/10 bg-[#232323]/95 shadow-2xl backdrop-blur">
+      <div className="nf-rise mx-auto max-w-xl overflow-hidden rounded-lg border border-white/10 bg-[#232323]/95 shadow-2xl backdrop-blur">
         <div className="flex items-center gap-3 p-2">
           <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-left" aria-label="Open remote">
             <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded bg-white/10">
@@ -279,9 +279,9 @@ function TrackSheet({ np, send, onClose }: { np: RemoteNowPlaying; send: NowPlay
   );
   const subsOff = !np.subTracks?.some((s) => s.selected);
   return (
-    <div className="fixed inset-0 z-[60] flex items-end bg-black/60" onClick={onClose}>
+    <div className="nf-fade fixed inset-0 z-[60] flex items-end bg-black/60" onClick={onClose}>
       <div
-        className="max-h-[80dvh] w-full overflow-y-auto rounded-t-2xl border-t border-white/10 bg-[#181818] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:mx-auto sm:max-w-xl"
+        className="nf-sheet-up max-h-[80dvh] w-full overflow-y-auto rounded-t-2xl border-t border-white/10 bg-[#181818] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:mx-auto sm:max-w-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-2 flex items-center justify-between">
@@ -334,7 +334,7 @@ function Sheet({
   const can = np.can ?? { seek: false, skip: false, volume: false, tracks: false, next: false, fullscreen: false };
   const hasTracks = can.tracks && ((np.audioTracks?.length ?? 0) > 1 || (np.subTracks?.length ?? 0) > 0);
   return (
-    <div className="fixed inset-0 z-50 flex flex-col overflow-y-auto bg-nf-bg">
+    <div className="nf-sheet-up fixed inset-0 z-50 flex flex-col overflow-y-auto bg-nf-bg">
       {np.art && <img src={np.art} alt="" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-30 blur-2xl" />}
       <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-nf-bg/80 to-nf-bg" />
       <div className="relative mx-auto flex w-full max-w-xl flex-1 flex-col px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(0.75rem,env(safe-area-inset-top))]">

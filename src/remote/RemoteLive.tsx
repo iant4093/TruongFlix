@@ -190,7 +190,7 @@ function GameCard({ event, onWatch }: { event: RemoteLiveEvent; onWatch: (c: Rem
 function WebChannelPlayer({ watching, onBack }: { watching: Watching; onBack: () => void }) {
   const box = useRef<HTMLDivElement>(null);
   return (
-    <div ref={box} className="fixed inset-0 z-50 flex flex-col bg-black">
+    <div ref={box} className="nf-fade fixed inset-0 z-50 flex flex-col bg-black">
       <header className="flex items-center gap-3 px-3 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))]">
         <button onClick={onBack} aria-label="Back to Live TV" className="rounded-full p-2 active:bg-white/10">
           <ArrowLeft className="h-6 w-6" />

@@ -86,7 +86,7 @@ export default function TitlePage({
   const delay = (n: number) => ({ animationDelay: `${120 + n * 70}ms` });
 
   return (
-    <div key={itemKey} className={`min-h-[100dvh] ${pad}`}>
+    <div key={itemKey} className={`nf-push min-h-[100dvh] ${pad}`}>
       <div className="relative aspect-video max-h-[62vh] w-full overflow-hidden md:max-h-[70vh]">
         {item.backdrop && <img src={item.backdrop} srcSet={backdropSrcSet(item.backdrop)} sizes="100vw" alt="" className="nf-zoom-in h-full w-full object-cover object-top" />}
         <div className="absolute inset-0 bg-gradient-to-t from-nf-bg via-nf-bg/10 to-black/30" />

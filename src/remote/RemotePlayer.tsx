@@ -618,7 +618,7 @@ export default function RemotePlayer({
   const chromePointer = controlsShown ? 'pointer-events-auto' : 'group-has-[:focus-visible]/player-chrome:pointer-events-auto';
 
   return (
-    <div ref={container} className="fixed inset-0 select-none bg-black text-white" onPointerMove={(event) => { if (event.pointerType === 'mouse') poke(); }}>
+    <div ref={container} className="nf-fade fixed inset-0 select-none bg-black text-white" onPointerMove={(event) => { if (event.pointerType === 'mouse') poke(); }}>
       <video
         ref={video}
         playsInline
@@ -763,7 +763,8 @@ export default function RemotePlayer({
       {/* Audio & Subtitles / Speed / Chapters popovers */}
       {panel && stream && (
         <div
-          className="absolute inset-x-3 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-white/15 bg-[#181818]/95 p-4 shadow-2xl backdrop-blur max-[539px]:bottom-[calc(8.75rem+env(safe-area-inset-bottom))] max-[539px]:max-h-[calc(100dvh-10rem-env(safe-area-inset-bottom))] max-[539px]:overflow-y-auto sm:inset-x-auto sm:right-6 sm:w-[440px]"
+          key={panel}
+          className="nf-pop-in absolute inset-x-3 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-white/15 bg-[#181818]/95 p-4 shadow-2xl backdrop-blur max-[539px]:bottom-[calc(8.75rem+env(safe-area-inset-bottom))] max-[539px]:max-h-[calc(100dvh-10rem-env(safe-area-inset-bottom))] max-[539px]:overflow-y-auto sm:inset-x-auto sm:right-6 sm:w-[440px]"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="mb-3 flex items-center justify-between border-b border-white/10 pb-2">

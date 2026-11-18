@@ -184,8 +184,8 @@ function Menu({ anchor, point, tracks, context, close }: { anchor: HTMLElement |
 
   return createPortal(
     sheet ? (
-      <div className="fixed inset-0 z-[250] bg-black/50" onClick={(e) => e.stopPropagation()}>
-        <div ref={ref} role="menu" className="absolute inset-x-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] overflow-hidden rounded-2xl border border-white/10 bg-[#2c2c2e]/95 py-2 shadow-2xl backdrop-blur-xl">
+      <div className="nf-fade fixed inset-0 z-[250] bg-black/50" onClick={(e) => e.stopPropagation()}>
+        <div ref={ref} role="menu" className="nf-sheet-up absolute inset-x-2 bottom-[max(0.5rem,env(safe-area-inset-bottom))] overflow-hidden rounded-2xl border border-white/10 bg-[#2c2c2e]/95 py-2 shadow-2xl backdrop-blur-xl">
           {body}
           <div className="mt-1 border-t border-white/10 px-2 pt-2">
             <button onClick={close} className="h-11 w-full rounded-xl text-[15px] font-semibold text-white/80 active:bg-white/10">
@@ -200,7 +200,7 @@ function Menu({ anchor, point, tracks, context, close }: { anchor: HTMLElement |
         role="menu"
         onClick={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.preventDefault()}
-        className="fixed z-[250] w-60 overflow-hidden rounded-xl border border-white/10 bg-[#2c2c2e]/95 py-1.5 shadow-2xl backdrop-blur-xl"
+        className="nf-pop-in fixed z-[250] w-60 overflow-hidden rounded-xl border border-white/10 bg-[#2c2c2e]/95 py-1.5 shadow-2xl backdrop-blur-xl"
         style={pos ? { top: pos.top, left: pos.left } : { visibility: 'hidden', top: 0, left: 0 }}
       >
         {body}
