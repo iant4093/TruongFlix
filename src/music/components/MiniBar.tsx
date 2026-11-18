@@ -1,8 +1,8 @@
-import { useLayoutEffect, useState } from 'react';
+import { useLayoutEffect } from 'react';
 import { formatTime } from '../library';
 import { ListMusic, MessageSquareQuote, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X } from 'lucide-react';
-import { next, previous, seek, setBarHidden, setScrub, setFull, setPanel, toggle, toggleMute, useMusicPlayer } from '../player';
-import { Cover, RoundButton, VolumeSlider } from './ui';
+import { next, previous, seek, setBarHidden, setFull, setPanel, toggle, toggleMute, useMusicPlayer } from '../player';
+import { Cover, RoundButton, useSeekDrag, VolumeSlider } from './ui';
 
 /** Space the bar takes at the bottom of the window; pages, toasts and the cast bar keep clear of it. */
 export const MUSIC_BAR_INSET = '5.75rem';
@@ -26,14 +26,9 @@ function useBottomInset(active: boolean) {
 function Progress({ seekable }: { seekable: boolean }) {
   const time = useMusicPlayer((s) => s.time);
   const duration = useMusicPlayer((s) => s.duration || s.track?.duration || 0);
-  const [drag, setDrag] = useState<number | null>(null);
+  const { drag, track, handlers } = useSeekDrag(duration, seek);
   const shown = drag ?? time;
   const pct = duration ? Math.min(100, (shown / duration) * 100) : 0;
-  const commit = () => {
-    if (drag != null) seek(drag);
-    setDrag(null);
-    setScrub(null);
-  };
   if (!seekable) {
     return (
       <div className="absolute inset-x-0 bottom-0 h-[3px] bg-white/10">
@@ -42,7 +37,24 @@ function Progress({ seekable }: { seekable: boolean }) {
     );
   }
   return (
-    <div className="group/seek absolute inset-x-3 bottom-0 h-4">
+    <div
+      ref={track}
+      role="slider"
+      tabIndex={0}
+      aria-label="Seek"
+      aria-valuemin={0}
+      aria-valuemax={Math.round(duration)}
+      aria-valuenow={Math.round(shown)}
+      aria-valuetext={`${formatTime(shown)} of ${formatTime(duration)}`}
+      {...handlers}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        e.stopPropagation();
+        seek(Math.min(duration, Math.max(0, time + (e.key === 'ArrowRight' ? 5 : -5))));
+      }}
+      className="group/seek absolute inset-x-3 bottom-0 h-4 cursor-pointer touch-none select-none outline-none"
+    >
       <div className={`absolute inset-x-0 bottom-1.5 rounded-full bg-white/15 transition-[height] duration-150 group-hover/seek:h-1.5 ${drag != null ? 'h-1.5' : 'h-1'}`}>
         <div className="h-full rounded-full bg-white/80" style={{ width: `${pct}%` }} />
         <div
@@ -55,25 +67,6 @@ function Progress({ seekable }: { seekable: boolean }) {
           {formatTime(drag)}
         </div>
       )}
-      <input
-        type="range"
-        aria-label="Seek"
-        min={0}
-        max={duration || 0}
-        step={0.5}
-        value={Math.min(shown, duration || 0)}
-        onChange={(e) => {
-          setDrag(Number(e.target.value));
-          setScrub(Number(e.target.value));
-        }}
-        onPointerUp={commit}
-        onKeyUp={commit}
-        onBlur={() => {
-          setDrag(null);
-          setScrub(null);
-        }}
-        className="tfm-range absolute inset-0 h-full w-full cursor-pointer opacity-0"
-      />
     </div>
   );
 }

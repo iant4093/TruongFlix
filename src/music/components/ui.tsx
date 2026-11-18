@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Music } from 'lucide-react';
 import { setScrub, setVolume, useMusicPlayer } from '../player';
 import { createBarMeter, musicLevels } from '../analyser';
@@ -74,30 +74,67 @@ export function EqBars({ playing, className = '' }: { playing: boolean; classNam
 }
 
 /**
+ * Dragging along a seek bar with a finger or a mouse. Lyrics follow while dragging, and the song
+ * jumps when the drag ends. However the drag ends (lifted, cancelled by the system, or the capture
+ * lost), it always lets go, so the lyrics never stay stuck at the dragged time.
+ */
+export function useSeekDrag(duration: number, onSeek: (t: number) => void) {
+  const [drag, setDrag] = useState<number | null>(null);
+  const track = useRef<HTMLDivElement>(null);
+  const pointer = useRef<number | null>(null);
+  const last = useRef(0);
+  const at = (clientX: number) => {
+    const r = track.current?.getBoundingClientRect();
+    if (!r || !r.width || !duration) return 0;
+    return Math.min(duration, Math.max(0, ((clientX - r.left) / r.width) * duration));
+  };
+  const move = (t: number) => {
+    last.current = t;
+    setDrag(t);
+    setScrub(t);
+  };
+  const end = () => {
+    if (pointer.current == null) return;
+    pointer.current = null;
+    setScrub(null);
+    setDrag(null);
+    onSeek(last.current);
+  };
+  useEffect(() => () => setScrub(null), []);
+  const handlers = {
+    onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
+      if (!duration || e.button > 0) return;
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture isn't essential */
+      }
+      pointer.current = e.pointerId;
+      move(at(e.clientX));
+    },
+    onPointerMove: (e: ReactPointerEvent<HTMLElement>) => {
+      if (pointer.current === e.pointerId) move(at(e.clientX));
+    },
+    onPointerUp: (e: ReactPointerEvent<HTMLElement>) => {
+      if (pointer.current !== e.pointerId) return;
+      last.current = at(e.clientX);
+      end();
+    },
+    onPointerCancel: end,
+    onLostPointerCapture: end,
+  };
+  return { drag, track, handlers };
+}
+
+/**
  * Thin progress bar that grows when touched; drag anywhere on it to seek. Pointer dragging (not a
  * hidden range input, whose tiny thumb phones can barely grab) works the same with a finger or a
  * mouse, and lyrics follow the finger while dragging. Arrow keys step 5 s.
  */
 export function Scrubber({ time, duration, onSeek, className = '', showTimes = true, light = true }: { time: number; duration: number; onSeek: (t: number) => void; className?: string; showTimes?: boolean; light?: boolean }) {
-  const [drag, setDrag] = useState<number | null>(null);
-  const track = useRef<HTMLDivElement>(null);
+  const { drag, track, handlers } = useSeekDrag(duration, onSeek);
   const shown = drag ?? time;
   const pct = duration > 0 ? Math.min(100, (shown / duration) * 100) : 0;
-  const at = (clientX: number) => {
-    const r = track.current?.getBoundingClientRect();
-    if (!r || !duration) return 0;
-    return Math.min(duration, Math.max(0, ((clientX - r.left) / r.width) * duration));
-  };
-  const move = (t: number) => {
-    setDrag(t);
-    setScrub(t);
-  };
-  const finish = (t: number | null) => {
-    setScrub(null);
-    setDrag(null);
-    if (t != null) onSeek(t);
-  };
-  useEffect(() => () => setScrub(null), []);
   return (
     <div className={className}>
       <div
@@ -109,18 +146,7 @@ export function Scrubber({ time, duration, onSeek, className = '', showTimes = t
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(shown)}
         aria-valuetext={`${formatTime(shown)} of ${formatTime(duration)}`}
-        onPointerDown={(e) => {
-          if (!duration || e.button > 0) return;
-          e.currentTarget.setPointerCapture(e.pointerId);
-          move(at(e.clientX));
-        }}
-        onPointerMove={(e) => {
-          if (drag != null) move(at(e.clientX));
-        }}
-        onPointerUp={(e) => {
-          if (drag != null) finish(at(e.clientX));
-        }}
-        onPointerCancel={() => finish(null)}
+        {...handlers}
         onKeyDown={(e) => {
           if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
           e.preventDefault();

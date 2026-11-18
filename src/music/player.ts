@@ -484,6 +484,7 @@ export function seek(t: number) {
   const to = Math.max(0, Math.min(t, duration ? duration - 0.25 : t));
   const el = activeSlot().el;
   lastTick = to;
+  scrubAt = null;
   if (activeSlot().key) el.currentTime = to;
   set({ time: to });
   if (options.mediaSession) positionState(true);
