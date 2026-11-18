@@ -75,6 +75,9 @@
 }
 .nf-menu-enter { animation: nf-menu-enter 0.15s ease-out; }
 .nf-dialog-enter { animation: nf-dialog-enter 0.2s ease-out; }
+/* No grey flash over tapped buttons on iPhones (pressed states are drawn by the app itself). */
+html { -webkit-tap-highlight-color: transparent; }
+
 /* Browser app motion: images fade in once loaded, content rises in, pressed cards dip. Transform
    and opacity only (GPU), and `backwards` so nothing keeps a transform after it has played. */
 @keyframes nf-rise { from { opacity: 0; transform: translateY(18px); } }

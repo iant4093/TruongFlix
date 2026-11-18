@@ -129,16 +129,14 @@ export default function MiniBar({ compact = false, className = '' }: { compact?:
             </RoundButton>
           </>
         )}
-        {/* No close on phones (like Apple Music): there's nowhere else to bring the player back from. */}
-        {!compact && (
-          <RoundButton
-            label={playing ? 'Close player (music keeps playing)' : 'Close player'}
-            onClick={() => setBarHidden(true)}
-            className="h-8 w-8 shrink-0 text-white/50 hover:bg-white/10 hover:text-white"
-          >
-            <X className="h-4 w-4" />
-          </RoundButton>
-        )}
+        {/* Closing keeps the music playing; the header's now-playing pill brings the bar back. */}
+        <RoundButton
+          label={playing ? 'Close player (music keeps playing)' : 'Close player'}
+          onClick={() => setBarHidden(true)}
+          className="h-8 w-8 shrink-0 text-white/50 hover:bg-white/10 hover:text-white"
+        >
+          <X className="h-4 w-4" />
+        </RoundButton>
       </div>
     </div>
   );

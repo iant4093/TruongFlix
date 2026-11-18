@@ -173,6 +173,7 @@ function answer(method: string, path: string, body: Record<string, unknown>): [n
     const team = (name: string, abbreviation: string, score: string, color: string, rank?: number) => ({ name, abbreviation, score, color, logo: '', rank });
     const live: RemoteLive = {
       partial: false,
+      leagues: [['football/nfl', 'NFL'], ['football/college-football', 'College football'], ['basketball/nba', 'NBA'], ['baseball/mlb', 'MLB'], ['hockey/nhl', 'NHL'], ['soccer/eng.1', 'Premier League']],
       channels: [web, m3u],
       events: [
         { id: '1', name: 'Texas Tech Red Raiders at Oklahoma State Cowboys', league: 'football/college-football', leagueLabel: 'College football', date: new Date().toISOString(), status: 'live', detail: 'Halftime', broadcasts: ['ESPN'], teams: [team('Oklahoma State', 'OKST', '20', '#ff7300', 25), team('Texas Tech', 'TTU', '28', '#cc0000', 12)], channels: [m3u, web] },

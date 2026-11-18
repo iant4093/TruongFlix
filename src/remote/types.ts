@@ -269,4 +269,6 @@ export interface RemoteLive {
   channels: RemoteLiveChannel[];
   /** Some leagues could not be refreshed. */
   partial: boolean;
+  /** Every league the PC follows ([id, name]), with or without games today. */
+  leagues?: [string, string][];
 }

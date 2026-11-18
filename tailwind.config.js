@@ -1,6 +1,9 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
+  // Hover styles only where there's a real pointer: on phones a tapped button kept its hover look
+  // (highlighted, or darkened) until you tapped somewhere else.
+  future: { hoverOnlyWhenSupported: true },
   theme: {
     extend: {
       colors: {

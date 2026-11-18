@@ -13,7 +13,8 @@ import { NowPlayingBar, RemoteSheet, useNowPlaying } from './RemoteControl';
 import { errorMessage } from '../lib/errors';
 import RemoteLiveSection from './RemoteLive';
 import { RemoteMusicPlayer, RemoteMusicSection, useRemoteMusic } from './RemoteMusic';
-import { pause as pauseMusic } from '../music/player';
+import { pause as pauseMusic, setBarHidden, useMusicPlayer } from '../music/player';
+import { EqBars } from '../music/components/ui';
 import type { RemoteRow } from './types';
 import { DownloadsPage } from './RemoteDownloads';
 import { initOffline } from './offline';
@@ -53,6 +54,28 @@ type Screen =
 
 /** The last screen shown, so coming back from a title or Downloads slides in like Back (not a fade). */
 let lastScreen: Screen['name'] = 'home';
+
+/**
+ * While the music bar is closed (music still playing or paused on a song), a small pill in the
+ * header shows the song with its now-playing bars; tapping it brings the bar back. Like the
+ * desktop's navbar pill.
+ */
+function MusicPill() {
+  const track = useMusicPlayer((s) => (s.barHidden ? s.track : null));
+  const playing = useMusicPlayer((s) => s.playing);
+  if (!track) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setBarHidden(false)}
+      aria-label={`Music: ${track.title} by ${track.artist}. Show the music player`}
+      className="nf-pop-in nf-press flex max-w-[9rem] items-center gap-2 rounded-full border border-white/15 bg-black/50 px-3 py-1.5 text-xs text-white/85 sm:max-w-[14rem]"
+    >
+      <EqBars playing={playing} className="shrink-0 text-[#fa2d48]" />
+      <span className="min-w-0 truncate">{track.title}</span>
+    </button>
+  );
+}
 
 /** A section's content: slides in from the left when you came back to it, else fades in (decided once, as it appears). */
 function Entrance({ back, children }: { back: boolean; children: React.ReactNode }) {
@@ -264,6 +287,7 @@ function Browse({
   // player or Downloads.
   const page = `tab:${tab}`;
   const setTab = (next: Tab) => {
+    if (next === 'music') setBarHidden(false);
     saveScroll(page);
     setTabState(next);
     sessionStorage.setItem('tf-remote-tab', next);
@@ -390,6 +414,7 @@ function Browse({
           ))}
         </nav>
         <div className="flex-1" />
+        <MusicPill />
         <button onClick={() => setQuery(query == null ? '' : null)} aria-label={query == null ? 'Search' : 'Close search'} className="p-2">
           {query == null ? <Search className="h-6 w-6" /> : <X className="h-6 w-6" />}
         </button>

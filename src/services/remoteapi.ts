@@ -655,6 +655,7 @@ async function live(profile: Profile): Promise<RemoteLive> {
       .flatMap((playlist) => playlist.channels.filter((c) => playlist.health[c.id]?.state !== 'unavailable').map((c) => liveChannel(playlist, c)))
       .slice(0, 1000),
     partial: schedule.partial,
+    leagues: LEAGUES.map(([id, label]) => [id, label] as [string, string]),
   };
 }
 

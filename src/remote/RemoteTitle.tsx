@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { ArrowLeft, CheckCircle2, Monitor, Play, Star } from 'lucide-react';
 import ProgressBar from '../components/common/ProgressBar';
 import { backdropSrcSet } from '../lib/images';
@@ -64,6 +64,11 @@ export default function TitlePage({
       })
       .catch((e) => setError(errorMessage(e)));
   }, [who.id, who.key, itemKey]);
+
+  // A title always opens at its top (the page you came from may have been scrolled far down).
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }, [itemKey, !!data]);
 
   const seasons = useMemo(() => [...new Set((data?.episodes ?? []).map((e) => e.season))], [data]);
 
