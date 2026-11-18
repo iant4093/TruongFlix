@@ -4,7 +4,7 @@ import { useLibraryStore } from '../store/useLibraryStore';
 import type { CastDevice, CastState, EpisodeRow, MovieRow, PlayTarget } from '../types/media';
 import { epLabel, episodeTarget } from '../store/selectors';
 import { logWatchTime, recordProgress } from './db';
-import { closeBuiltin } from './player';
+import { closeBuiltin, startLimitWatch } from './player';
 import { durationOf, planStream, registerStream, releaseStream, streamUrl, type StreamClient } from './streaming';
 import { resize } from './tmdb';
 import { ensureReachable } from './nas';
@@ -55,6 +55,8 @@ export async function castTo(device: CastDevice, target: PlayTarget, start = tar
   const row = rowFor(target);
   if (!row) return store.toast('That file isn’t in the library anymore', 'error');
   if (store.playerSession) await closeBuiltin();
+  // The daily limit and bedtime are checked while it plays on the TV too, not only when it starts.
+  startLimitWatch();
   if (token) releaseStream(token);
   if (!client) triedCompat = false;
 

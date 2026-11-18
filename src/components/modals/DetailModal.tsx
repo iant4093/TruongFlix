@@ -146,6 +146,7 @@ interface ContentProps {
 }
 
 function DetailContent({ item, season, onSeasonChange }: ContentProps) {
+  const adultTools = useLibraryStore((s) => s.activeProfile?.maturity === 'all');
   const openDetail = useLibraryStore((s) => s.openDetail);
   const openFixMatch = useLibraryStore((s) => s.openFixMatch);
   const toggleMyList = useLibraryStore((s) => s.toggleMyList);
@@ -261,10 +262,13 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                 <Cast className="h-4 w-4" />
               </button>
             )}
+            {/* Library housekeeping is for adult profiles: a kid could otherwise delete files or open the media folder. */}
+            {adultTools && (
             <button onClick={() => openFixMatch(item.key)} title="Fix match" aria-label="Fix match" className="nf-circle-btn h-11 w-11">
               <Wrench className="h-4 w-4" />
             </button>
-            {revealPath && (
+            )}
+            {adultTools && revealPath && (
               <button
                 onClick={() => revealInFileManager(revealPath).catch((e) => toast(errorMessage(e), 'error'))}
                 title={`Show in ${FILE_MANAGER_NAME}`}
@@ -273,7 +277,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                 <FolderOpen className="h-4 w-4" />
               </button>
             )}
-            <DeleteMediaButton target={{ kind: item.kind, item }} versionId={versionId} onDeleted={() => openDetail(null)} />
+            {adultTools && <DeleteMediaButton target={{ kind: item.kind, item }} versionId={versionId} onDeleted={() => openDetail(null)} />}
           </div>
         </div>
       </div>

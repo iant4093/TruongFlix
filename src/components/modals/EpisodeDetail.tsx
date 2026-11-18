@@ -58,6 +58,8 @@ function formatAirDate(date: string | null): string | null {
 
 /** Full page for a single episode, shown inside the series detail modal. */
 export default function EpisodeDetail({ series, episode: ep, episodes }: Props) {
+  // Showing the file or deleting it is for adult profiles only.
+  const adultTools = useLibraryStore((s) => s.activeProfile?.maturity === 'all');
   const openEpisode = useLibraryStore((s) => s.openEpisode);
   const openDetail = useLibraryStore((s) => s.openDetail);
   const reload = useLibraryStore((s) => s.reload);
@@ -164,6 +166,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
             >
               {ep.watched ? <Check className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
             </button>
+            {adultTools && (
             <button
               onClick={() => revealInFileManager(ep.file_path).catch((e) => toast(errorMessage(e), 'error'))}
               title={`Show in ${FILE_MANAGER_NAME}`}
@@ -171,7 +174,8 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
             >
               <FolderOpen className="h-5 w-5" />
             </button>
-            <DeleteMediaButton target={{ kind: 'episode', episode: ep, series }} episodes={episodes} onDeleted={() => openEpisode(null)} />
+            )}
+            {adultTools && <DeleteMediaButton target={{ kind: 'episode', episode: ep, series }} episodes={episodes} onDeleted={() => openEpisode(null)} />}
           </div>
         </div>
       </div>

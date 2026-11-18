@@ -898,17 +898,19 @@ let warnedFor = '';
 const LIMIT_CHECK_MS = 20_000;
 
 /** While something plays on a profile with limits: warn at 5 minutes left, stop when time's up. */
-function startLimitWatch() {
+export function startLimitWatch() {
   if (limitTick != null) return;
   limitTick = window.setInterval(async () => {
     const store = useLibraryStore.getState();
     const profile = store.activeProfile;
-    const playing = !!store.playerSession || store.playback.active;
+    const casting = store.cast?.state === 'playing';
+    const playing = !!store.playerSession || store.playback.active || casting;
     if (!playing || !profile || (!profile.daily_limit && !profile.bedtime) || store.playerPrompt === 'limit' || store.playerPrompt === 'bedtime') return;
     const st = await limitStatus(profile, pendingSeconds + liveSeconds);
     if (st.blocked) {
       store.toast(blockedMessage(profile, st.blocked), 'info');
       if (store.playerSession) void pauseForPrompt(st.blocked);
+      else if (casting) void import('./cast').then((m) => m.stopCasting());
       else void stopPlayback();
       return;
     }

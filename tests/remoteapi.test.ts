@@ -66,6 +66,8 @@ const play = (caller = A, profile = 1, id = 2) => remote.route(caller, 'POST', '
 
 beforeEach(async () => {
   vi.resetModules();
+  // Wrong-PIN lockouts are kept across restarts (in storage); each test starts without one.
+  localStorage.removeItem('tf-pin-lockouts');
   vi.useRealTimers();
   streamCount = 0;
   db = await import('../src/services/db');

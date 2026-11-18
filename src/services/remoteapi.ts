@@ -62,7 +62,44 @@ export const STREAM_IDLE_MS = 2 * 60_000;
 
 /** Unlock keys for PIN-protected profiles: valid for 12 hours and only while the PIN is unchanged. */
 const unlocked = new Map<number, Map<string, { pin: string; expires: number }>>();
-const pinFailures = new Map<number, number[]>();
+/**
+ * Wrong-PIN lockouts per profile, kept across restarts. Each lockout lasts four times longer than
+ * the last (15 min, 1 h, 4 h, 16 h, then a day), so guessing a 4-digit PIN from a paired device
+ * would take years instead of days.
+ */
+interface PinLock {
+  fails: number[];
+  strikes: number;
+  until: number;
+}
+const PIN_LOCKS = 'tf-pin-lockouts';
+const PIN_MAX_LOCK = 24 * 3600_000;
+function readPinLocks(): Record<string, PinLock> {
+  try {
+    return JSON.parse(localStorage.getItem(PIN_LOCKS) ?? '{}') as Record<string, PinLock>;
+  } catch {
+    return {};
+  }
+}
+function pinLock(profile: number): PinLock {
+  return readPinLocks()[profile] ?? { fails: [], strikes: 0, until: 0 };
+}
+function savePinLock(profile: number, lock: PinLock | null) {
+  const all = readPinLocks();
+  if (lock) all[profile] = lock;
+  else delete all[profile];
+  try {
+    localStorage.setItem(PIN_LOCKS, JSON.stringify(all));
+  } catch {
+    /* kept in memory only this session */
+  }
+}
+const waitLabel = (ms: number) => {
+  const minutes = Math.max(1, Math.ceil(ms / 60_000));
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} hour${hours === 1 ? '' : 's'}`;
+};
 /**
  * Browser playbacks, downloads and offline viewings by token. Only the signed-in browser that
  * started one may control it. Offline viewings play a saved copy, so only they don't count
@@ -560,22 +597,27 @@ async function unlock(body: Record<string, unknown>) {
   const profile = useLibraryStore.getState().profiles.find((x) => x.id === Number(body.profile));
   if (!profile) throw new ApiError(404, 'Unknown profile');
   const now = Date.now();
-  const failures = (pinFailures.get(profile.id) ?? []).filter((t) => now - t < PIN_LOCKOUT);
-  if (failures.length >= PIN_TRIES) {
-    const minutes = Math.max(1, Math.ceil((PIN_LOCKOUT - (now - failures[0])) / 60_000));
-    throw new ApiError(429, `Too many wrong PINs. Try again in ${minutes} minutes.`);
-  }
+  const lock = pinLock(profile.id);
+  if (lock.until > now) throw new ApiError(429, `Too many wrong PINs. Try again in ${waitLabel(lock.until - now)}.`);
   if (profile.pin) {
     // Counted before the (slow, async) check so parallel guesses can't slip past the lockout.
-    failures.push(now);
-    pinFailures.set(profile.id, failures);
+    lock.fails = lock.fails.filter((t) => now - t < PIN_LOCKOUT).concat(now);
+    if (lock.fails.length >= PIN_TRIES) {
+      lock.strikes += 1;
+      lock.until = now + Math.min(PIN_MAX_LOCK, PIN_LOCKOUT * 4 ** (lock.strikes - 1));
+      lock.fails = [];
+    }
+    savePinLock(profile.id, lock);
     if (!(await verifyPin(profile.pin, String(body.pin ?? '')))) {
       await new Promise((r) => setTimeout(r, 600));
-      const left = PIN_TRIES - failures.length;
-      throw new ApiError(403, left > 0 ? `Wrong PIN. ${left} ${left === 1 ? 'try' : 'tries'} left.` : 'Too many wrong PINs. Try again in 15 minutes.');
+      // The PC owner hears about it: a child guessing a parent's PIN shouldn't go unnoticed.
+      useLibraryStore.getState().toast(`A wrong PIN was entered for ${profile.name} on a connected device`, 'info');
+      if (lock.until > now) throw new ApiError(403, `Too many wrong PINs. Try again in ${waitLabel(lock.until - now)}.`);
+      const left = PIN_TRIES - lock.fails.length;
+      throw new ApiError(403, `Wrong PIN. ${left} ${left === 1 ? 'try' : 'tries'} left.`);
     }
   }
-  pinFailures.delete(profile.id);
+  savePinLock(profile.id, null);
   const keys = unlocked.get(profile.id) ?? new Map<string, { pin: string; expires: number }>();
   for (const [k, v] of keys) if (v.expires < now) keys.delete(k);
   const k = key();

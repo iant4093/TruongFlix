@@ -105,7 +105,7 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
                   </button>
                 ))}
                 {profiles.length < 6 && (
-                  <button onClick={() => setEditing('new')} className="group flex w-[clamp(84px,10vw,160px)] flex-col items-center gap-3">
+                  <button onClick={() => guardAdult(() => setEditing('new'), { atGate: true })} className="group flex w-[clamp(84px,10vw,160px)] flex-col items-center gap-3">
                     <span className="flex h-[clamp(84px,10vw,150px)] w-[clamp(84px,10vw,150px)] items-center justify-center rounded text-nf-muted transition group-hover:bg-white/10 group-hover:text-white">
                       <Plus className="h-16 w-16" strokeWidth={1.5} />
                     </span>
@@ -235,6 +235,12 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
               ))}
             </div>
             <p className="mt-2 text-xs text-nf-muted">{MATURITY_HINT[maturity]}</p>
+            {/* Restrictions only hold while the grown-up profiles are locked: otherwise a child just switches profile. */}
+            {maturity !== 'all' && !profiles.some((p) => p.maturity === 'all' && p.pin) && (
+              <p role="note" className="mt-2 rounded border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                Add a PIN to an All Maturity Ratings profile too. Without one, this profile’s limits can be skipped by switching to that profile.
+              </p>
+            )}
           </div>
           <div>
             <div className="mb-2 text-sm text-nf-secondary">Daily viewing limit</div>
