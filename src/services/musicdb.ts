@@ -182,19 +182,32 @@ async function ensureAlbum(db: Database, cache: Map<string, number>, title: stri
   return row.id;
 }
 
-/** Album artists of songs already in the library from the same album folder (not in this batch), so new songs join their album. */
-async function folderArtists(db: Database, folder: string, album: string, skip: Set<string>): Promise<string[]> {
-  if (!folder) return [];
-  // `albumFolder` is lower-case with forward slashes; char(92) is a backslash.
-  const like = `${folder.replace(/[!%_]/g, (c) => `!${c}`)}/%`;
-  const rows = await db.select<{ file_path: string; artist: string; album: string }[]>(
+type FolderSong = { file_path: string; artist: string; album: string };
+
+/**
+ * Songs already in the library by album folder, loaded with one query per import (a search over
+ * every song for each album made big imports and rescans crawl).
+ */
+async function songsByFolder(db: Database): Promise<Map<string, FolderSong[]>> {
+  const rows = await db.select<FolderSong[]>(
     `SELECT t.file_path, aa.name AS artist, al.title AS album FROM music_tracks t
-     JOIN music_albums al ON al.id = t.album_id JOIN music_artists aa ON aa.id = al.artist_id
-     WHERE lower(replace(t.file_path, char(92), '/')) LIKE $1 ESCAPE '!' LIMIT 400`,
-    [like],
+     JOIN music_albums al ON al.id = t.album_id JOIN music_artists aa ON aa.id = al.artist_id`,
   );
+  const byFolder = new Map<string, FolderSong[]>();
+  for (const r of rows) {
+    const folder = albumFolder(r.file_path);
+    const list = byFolder.get(folder);
+    if (list) list.push(r);
+    else byFolder.set(folder, [r]);
+  }
+  return byFolder;
+}
+
+/** Album artists of songs already in the library from the same album folder (not in this batch), so new songs join their album. */
+function folderArtists(byFolder: Map<string, FolderSong[]>, folder: string, album: string, skip: Set<string>): string[] {
+  if (!folder) return [];
   const k = albumKey(album);
-  return rows.filter((r) => !skip.has(r.file_path) && albumFolder(r.file_path) === folder && albumKey(r.album) === k).map((r) => r.artist);
+  return (byFolder.get(folder) ?? []).filter((r) => !skip.has(r.file_path) && albumKey(r.album) === k).map((r) => r.artist);
 }
 
 /**
@@ -217,9 +230,10 @@ export async function upsertMusicFiles(files: MusicFile[], now = Date.now(), roo
     groups.set(g, [...(groups.get(g) ?? []), r]);
   }
   const batch = new Set(files.map((f) => f.file_path));
+  const byFolder = groups.size ? await songsByFolder(db) : new Map<string, FolderSong[]>();
   for (const list of groups.values()) {
     const first = list[0];
-    const others = first.tags.album === 'Unknown Album' ? [] : await folderArtists(db, first.folder, first.tags.album, batch);
+    const others = first.tags.album === 'Unknown Album' ? [] : folderArtists(byFolder, first.folder, first.tags.album, batch);
     const folderArtist = guessFromPath(first.f.file_path, roots).albumArtist;
     const albumArtist = first.tags.album === 'Unknown Album' ? null : settleAlbumArtist(list.map((r) => r.tags.artist), others, folderArtist);
     for (const r of list) r.tags.albumArtist = albumArtist ?? primaryArtist(r.tags.artist);

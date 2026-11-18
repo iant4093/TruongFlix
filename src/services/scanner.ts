@@ -255,7 +255,8 @@ export async function runScan(opts: ScanOptions = {}) {
     let done = 0;
     let failures = 0;
     let networkFailures = 0;
-    const reloads = createReloadThrottle(RELOAD_INTERVAL_MS, reload);
+    // Bigger libraries take longer to reload: space reloads out so matching doesn't stutter.
+    const reloads = createReloadThrottle(Math.max(RELOAD_INTERVAL_MS, Math.min(15_000, store.items.length * 2)), reload);
     await pool(todo, CONCURRENCY, async (file) => {
       if (networkFailures >= 6) return; // TMDB unreachable — leave the rest for next scan.
       try {

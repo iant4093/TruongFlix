@@ -29,9 +29,17 @@ const touched = <T,>(value: T): T => {
   changed = true;
   return value;
 };
-async function reloadIfChanged() {
-  if (!changed) return;
+/**
+ * Shows analysis results in the library. A reload reads and rebuilds the whole library, so during a
+ * long analysis it happens at most every 30 s (it used to run after every 30 files, which made big
+ * libraries stutter for the whole analysis); the end of a run always shows everything.
+ */
+let lastReload = 0;
+const RELOAD_EVERY_MS = 30_000;
+async function reloadIfChanged(final = false) {
+  if (!changed || (!final && Date.now() - lastReload < RELOAD_EVERY_MS)) return;
   changed = false;
+  lastReload = Date.now();
   await useLibraryStore.getState().reload();
 }
 
@@ -63,7 +71,7 @@ export async function startBackgroundAnalysis() {
   } finally {
     running = false;
     useLibraryStore.getState().setAnalysis({ running: false, message: '' });
-    await reloadIfChanged();
+    await reloadIfChanged(true);
   }
 }
 

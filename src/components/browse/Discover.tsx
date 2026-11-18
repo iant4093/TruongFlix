@@ -52,6 +52,8 @@ export default function Discover() {
 function BrowseCatalog({ profileId }: { profileId: number }) {
   const settings = useLibraryStore((s) => s.settings);
   const items = useLibraryStore((s) => s.items);
+  // Which feed titles are already in the library, looked up by TMDB id (not a search per card).
+  const ownedByTmdb = useMemo(() => new Map(items.filter((i) => i.tmdbId != null).map((i) => [`${i.kind}:${i.tmdbId}`, i])), [items]);
   const episodes = useLibraryStore((s) => s.episodesBySeries);
   const browseEntry = useLibraryStore((s) => s.browseEntry);
   // Coming back to Browse returns to the same list, search and view.
@@ -194,7 +196,7 @@ function BrowseCatalog({ profileId }: { profileId: number }) {
         ? <SkeletonStatus label="Loading titles…"><PosterGridSkeleton count={14} className={GRID} /></SkeletonStatus>
         : <div aria-busy={stale || undefined} className={`${GRID} transition-opacity duration-300 ${stale ? 'opacity-50' : ''}`}>
           {visibleFeed && data.map((item) => {
-            const owned = items.find((entry) => entry.kind === item.kind && entry.tmdbId === item.id);
+            const owned = ownedByTmdb.get(`${item.kind}:${item.id}`);
             const selection = savedOnly ? item.selection : undefined;
             const target = savedOnly && owned && !selection ? playTargetFor(owned, episodes) : null;
             const releaseDate = savedOnly ? upcomingDate(item.releaseDate) : null;

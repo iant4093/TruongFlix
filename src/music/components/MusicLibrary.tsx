@@ -242,7 +242,10 @@ function PlayButtons({ ids, className = '' }: { ids: number[]; className?: strin
 function useIncremental<T>(list: T[], step = 200) {
   const [count, setCount] = useState(step);
   const sentinel = useRef<HTMLDivElement>(null);
-  useEffect(() => setCount(step), [list, step]);
+  // Start over only when the songs themselves change: a play count or a favourite updates the list
+  // too, and used to jump a deep-scrolled list back to the first rows.
+  const ids = list.map((x) => (x as { id?: unknown }).id ?? x).join(',');
+  useEffect(() => setCount(step), [ids, step]);
   useEffect(() => {
     const el = sentinel.current;
     if (!el || count >= list.length || typeof IntersectionObserver === 'undefined') return;

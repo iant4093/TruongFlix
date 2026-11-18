@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { FolderOpen, Magnet, RefreshCw } from 'lucide-react';
 import type { MediaItem, TorrentItem } from '../../types/media';
 import { useLibraryStore, type View } from '../../store/useLibraryStore';
@@ -14,6 +14,24 @@ const SESSION_SEED = Math.floor(Math.random() * 100000);
 const PRIORITY_GENRES = ['Action & Adventure', 'Sci-Fi', 'Drama', 'Comedy'];
 const wrap = (items: MediaItem[]): RowEntry[] => items.map((item) => ({ item }));
 const byNewest = (a: MediaItem, b: MediaItem) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id;
+
+/** Fields that change while something plays (every few seconds): no row but Continue Watching uses them. */
+const PROGRESS_FIELDS = new Set(['progressSeconds', 'durationSeconds', 'watched', 'lastWatchedAt']);
+function sameExceptProgress(a: MediaItem, b: MediaItem) {
+  if (a === b) return true;
+  for (const k of Object.keys(a) as (keyof MediaItem)[]) if (!PROGRESS_FIELDS.has(k) && a[k] !== b[k]) return false;
+  return true;
+}
+/**
+ * The library as the rows see it: the same array until something besides watch progress changes.
+ * Progress updates every few seconds during playback used to rebuild and re-render every row.
+ */
+function useCatalog(items: MediaItem[]): MediaItem[] {
+  const last = useRef(items);
+  const prev = last.current;
+  if (prev !== items && (prev.length !== items.length || prev.some((p, i) => !sameExceptProgress(p, items[i])))) last.current = items;
+  return last.current;
+}
 
 function pickFeatured(items: MediaItem[], seed: number): MediaItem | null {
   const withArt = items.filter((i) => i.backdrop && i.overview);
@@ -96,14 +114,23 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
     [allItems, view],
   );
 
-  const featured = useMemo(() => pickFeatured(items, SESSION_SEED + view.length), [items, view]);
+  const catalog = useCatalog(items);
+  const featured = useMemo(() => pickFeatured(catalog, SESSION_SEED + view.length), [catalog, view]);
 
-  const rows = useMemo(() => {
+  // Continue Watching follows progress live; it's the only row that shows it.
+  const continueRow = useMemo(
+    (): { title: string; entries: RowEntry[]; top10?: MediaItem[] } => ({
+      title: 'Continue Watching for You',
+      entries: continueWatching(items, episodesBySeries).map((entry) => ({ item: entry.item, entry })),
+    }),
+    [items, episodesBySeries],
+  );
+
+  const catalogRows = useMemo(() => {
+    const items = catalog;
     const out: { title: string; entries: RowEntry[]; top10?: MediaItem[] }[] = [];
     const noun = view === 'tv' ? 'TV Shows' : view === 'movies' ? 'Movies' : '';
 
-    const cw = continueWatching(items, episodesBySeries);
-    out.push({ title: 'Continue Watching for You', entries: cw.map((entry) => ({ item: entry.item, entry })) });
     out.push({ title: view === 'home' ? 'Recently Added' : `New ${noun} in Your Library`, entries: wrap([...items].sort(byNewest).slice(0, 24)) });
 
     const score = (i: MediaItem) => (imdbEnabled && i.imdbRating != null ? i.imdbRating : i.voteAverage);
@@ -175,8 +202,9 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
     if (genreNames.length < 2) out.push({ title: '4K Ultra HD & HDR Collection', entries: wrap(uhd) });
 
     out.push({ title: 'Unidentified Files · Fix Match', entries: wrap(items.filter((i) => !i.matched)) });
-    return out.filter((r) => r.entries.length || r.top10?.length);
-  }, [items, episodesBySeries, view, imdbEnabled, collections]);
+    return out;
+  }, [catalog, view, imdbEnabled, collections]);
+  const rows = useMemo(() => [continueRow, ...catalogRows].filter((r) => r.entries.length || r.top10?.length), [continueRow, catalogRows]);
 
   if (!items.length) return <EmptyLibrary />;
 
@@ -194,20 +222,34 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
 }
 
 /** Grid layout used by My List and Search. */
+/** Cards are added a few rows at a time as you scroll (a one-letter search matched thousands at once). */
+const GRID_STEP = 60;
+
 export function GridView({ title, items, empty }: { title: string; items: MediaItem[]; empty: string }) {
   const perRow = useItemsPerRow();
+  const [count, setCount] = useState(GRID_STEP);
+  useEffect(() => setCount(GRID_STEP), [items]);
+  const more = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = more.current;
+    if (!el || count >= items.length || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((e) => e[0]?.isIntersecting && setCount((c) => c + GRID_STEP), { rootMargin: '800px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [count, items.length]);
   return (
     <div className="min-h-screen px-[4%] pb-16 pt-28">
       <h1 className="mb-6 text-[clamp(1.4rem,2.2vw,2.2rem)] font-semibold text-white">{title}</h1>
       {items.length ? (
         <div className="grid gap-x-[0.4vw] gap-y-[3.5vw]" style={{ gridTemplateColumns: `repeat(${perRow}, minmax(0, 1fr))` }}>
-          {items.map((item) => (
+          {items.slice(0, count).map((item) => (
             <MediaCard key={item.key} item={item} />
           ))}
         </div>
       ) : (
         <p className="pt-10 text-center text-lg text-nf-secondary">{empty}</p>
       )}
+      {count < items.length && <div ref={more} className="h-px" aria-hidden />}
     </div>
   );
 }
@@ -218,20 +260,24 @@ export function MyListView() {
   return <GridView title="My List" items={list} empty="You haven’t added any titles to your list yet. Hover a title and press +." />;
 }
 
-export function SearchView({ query }: { query: string }) {
+export function SearchView({ query: typed }: { query: string }) {
   const items = useLibraryStore((s) => s.items);
+  // Typing stays responsive: results follow the search when the app has a moment.
+  const query = useDeferredValue(typed);
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
+    // One or two letters only match titles, genres and years (as text they appear in every story).
+    const deep = q.length >= 3;
     const score = (i: MediaItem) => {
       const t = i.title.toLowerCase();
       if (t === q) return 100;
       if (t.startsWith(q)) return 80;
       if (t.includes(q)) return 60;
-      if (i.cast.some((c) => c.name.toLowerCase().includes(q))) return 40;
+      if (deep && i.cast.some((c) => c.name.toLowerCase().includes(q))) return 40;
       if (i.genres.some((g) => g.toLowerCase().includes(q))) return 30;
       if (String(i.year ?? '') === q) return 20;
-      if (i.overview.toLowerCase().includes(q)) return 10;
+      if (deep && i.overview.toLowerCase().includes(q)) return 10;
       return 0;
     };
     return items

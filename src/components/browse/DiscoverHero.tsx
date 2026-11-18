@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
 import { getCatalogDetail, type SearchResult } from '../../services/tmdb';
@@ -58,7 +58,9 @@ function FeaturedSlide({ item, blocked, multiple, rotating, move, onSelect }: {
   const titleActions = useRef<HTMLDivElement>(null);
   const trailerActions = useRef<HTMLDivElement>(null);
   const tmdbKey = useLibraryStore((s) => s.settings.tmdb_api_key);
-  const owned = useLibraryStore((s) => s.items.find((entry) => entry.kind === item.kind && entry.tmdbId === item.id));
+  // Looked up when the library or the title changes, not on every store update.
+  const libraryItems = useLibraryStore((s) => s.items);
+  const owned = useMemo(() => libraryItems.find((entry) => entry.kind === item.kind && entry.tmdbId === item.id), [libraryItems, item.kind, item.id]);
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const [detail, setDetail] = useState<CatalogDetail | null>(null);
   const enabled = useLibraryStore((s) => s.settings.trailers_autoplay);

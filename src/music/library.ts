@@ -44,7 +44,14 @@ export function assembleLibrary(tracks: MusicTrack[], playlists: MusicPlaylist[]
   }
   const albumList = [...albums.values()].sort((a, b) => byName(a.title, b.title));
   const artistList = [...artists.values()]
-    .map(({ albums: set, ...a }) => ({ ...a, albumIds: albumList.filter((al) => set.has(al.id)).sort((x, y) => (y.year ?? 0) - (x.year ?? 0)).map((al) => al.id) }))
+    .map(({ albums: set, ...a }) => ({
+      ...a,
+      albumIds: [...set]
+        .map((id) => albums.get(id))
+        .filter((al): al is NonNullable<typeof al> => !!al)
+        .sort((x, y) => (y.year ?? 0) - (x.year ?? 0) || byName(x.title, y.title))
+        .map((al) => al.id),
+    }))
     .sort((a, b) => byName(a.name, b.name));
   return {
     tracks: [...tracks].sort((a, b) => byName(a.title, b.title)),
