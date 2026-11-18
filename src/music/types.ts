@@ -80,6 +80,11 @@ export interface MusicLyrics {
   synced: boolean;
   source: 'sidecar' | 'embedded' | 'lrclib' | 'netease' | 'kugou';
   instrumental?: boolean;
+  /**
+   * Seconds the lyrics are moved for this song (+ later, - earlier), set from the lyrics view. Some
+   * copies of a song start a little earlier or later than the release the lyrics were timed to.
+   */
+  offset?: number;
 }
 
 export interface MusicStream {

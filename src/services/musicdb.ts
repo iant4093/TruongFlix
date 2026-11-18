@@ -52,6 +52,11 @@ export const MUSIC_SCHEMA = [
     instrumental INTEGER NOT NULL DEFAULT 0,
     fetched_at INTEGER NOT NULL
   )`,
+  // Per-song lyrics timing (seconds later; negative is earlier), kept apart so new lookups keep it.
+  `CREATE TABLE IF NOT EXISTS music_lyrics_offsets (
+    track_id INTEGER PRIMARY KEY,
+    offset_s REAL NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS music_playlists (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     profile_id INTEGER NOT NULL,
@@ -271,7 +276,7 @@ export async function removeMusicPaths(paths: string[]) {
     const ids = (await db.select<{ id: number }[]>(`SELECT id FROM music_tracks WHERE file_path IN (${placeholders(batch.length)})`, batch)).map((r) => r.id);
     if (!ids.length) continue;
     const list = placeholders(ids.length);
-    for (const table of ['music_playlist_tracks', 'music_plays', 'music_favourites', 'music_lyrics_cache']) await db.execute(`DELETE FROM ${table} WHERE track_id IN (${list})`, ids);
+    for (const table of ['music_playlist_tracks', 'music_plays', 'music_favourites', 'music_lyrics_cache', 'music_lyrics_offsets']) await db.execute(`DELETE FROM ${table} WHERE track_id IN (${list})`, ids);
     await db.execute(`DELETE FROM music_tracks WHERE id IN (${list})`, ids);
   }
   await pruneMusic();
@@ -393,6 +398,22 @@ export async function cachedLyrics(trackId: number): Promise<CachedLyrics | null
   const db = await musicDb();
   const rows = await db.select<(Omit<CachedLyrics, 'instrumental'> & { instrumental: number })[]>('SELECT synced, plain, instrumental, fetched_at, provider, lookup FROM music_lyrics_cache WHERE track_id = $1', [trackId]);
   return rows[0] ? { ...rows[0], instrumental: !!rows[0].instrumental } : null;
+}
+
+export async function lyricsOffset(trackId: number): Promise<number> {
+  const db = await musicDb();
+  const rows = await db.select<{ offset_s: number }[]>('SELECT offset_s FROM music_lyrics_offsets WHERE track_id = $1', [trackId]);
+  return rows[0]?.offset_s ?? 0;
+}
+
+export async function setLyricsOffset(trackId: number, seconds: number) {
+  const db = await musicDb();
+  if (!seconds) await db.execute('DELETE FROM music_lyrics_offsets WHERE track_id = $1', [trackId]);
+  else
+    await db.execute(
+      `INSERT INTO music_lyrics_offsets (track_id, offset_s) VALUES ($1, $2) ON CONFLICT(track_id) DO UPDATE SET offset_s = excluded.offset_s`,
+      [trackId, seconds],
+    );
 }
 
 export async function saveLyricsCache(trackId: number, l: { synced: string | null; plain: string | null; instrumental: boolean; provider: string; lookup: number }, now = Date.now()) {

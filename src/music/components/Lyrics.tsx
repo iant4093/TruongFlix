@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useReducedMotion } from 'framer-motion';
 import { activeIndex, lyricTimeline, parseLrc, progressOf, type LyricEntry } from '../lrc';
 import { musicClock, useMusicPlayer } from '../player';
@@ -28,6 +29,12 @@ export function prefetchLyrics(trackId: number): Promise<MusicLyrics | null> {
     .finally(() => pending.delete(trackId));
   pending.set(trackId, job);
   return job;
+}
+
+/** Keeps a timing change in this session's copy, so reopening the lyrics shows it straight away. */
+function rememberOffset(trackId: number, offset: number) {
+  const hit = cache.get(trackId);
+  if (hit) cache.set(trackId, { ...hit, offset });
 }
 
 // The current song's lyrics as soon as it starts, and the next song's while this one plays.
@@ -105,7 +112,7 @@ export default function Lyrics({ trackId, duration, onSeek, compact = false, cla
       </div>
     );
   if (!parsed.synced) return <PlainLyrics lines={entries} compact={compact} className={className} source={lyrics?.source} />;
-  return <SyncedLyrics key={trackId} entries={entries} onSeek={onSeek} compact={compact} className={className} source={lyrics?.source} />;
+  return <SyncedLyrics key={trackId} trackId={trackId} entries={entries} onSeek={onSeek} compact={compact} className={className} source={lyrics?.source} offset={lyrics?.offset ?? 0} />;
 }
 
 function Credit({ source }: { source?: string }) {
@@ -132,20 +139,27 @@ function PlainLyrics({ lines, compact, className, source }: { lines: LyricEntry[
   );
 }
 
-function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries: LyricEntry[]; onSeek: (t: number) => void; compact: boolean; className: string; source?: string }) {
+function SyncedLyrics({ trackId, entries, onSeek, compact, className, source, offset = 0 }: { trackId: number; entries: LyricEntry[]; onSeek: (t: number) => void; compact: boolean; className: string; source?: string; offset?: number }) {
   const reduce = useReducedMotion() ?? false;
   const viewport = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
-  const drag = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
   const wordRefs = useRef<Map<number, (HTMLSpanElement | null)[]>>(new Map());
   const dotRefs = useRef<Map<number, (HTMLSpanElement | null)[]>>(new Map());
-  const [idx, setIdx] = useState(() => activeIndex(entries, musicClock()));
+  // This song's timing adjustment: the lyrics run this many seconds later (negative: earlier).
+  const [delay, setDelay] = useState(offset);
+  const delayRef = useRef(delay);
+  delayRef.current = delay;
+  const [idx, setIdx] = useState(() => activeIndex(entries, musicClock() - offset));
   const [target, setTarget] = useState(0);
   const targetRef = useRef(0);
   targetRef.current = target;
+  // While following, the list sits at a fixed scroll position (`base`) and the rows glide by
+  // transforms on top of it. Touching it hands over to the browser's own scrolling (momentum,
+  // rubber-banding), which is what a phone's lists feel like.
   const [manual, setManual] = useState(false);
-  const offset = useRef(0);
+  const manualRef = useRef(false);
+  const [base, setBase] = useState(0);
   const idleTimer = useRef<number | null>(null);
   const idxRef = useRef(idx);
   idxRef.current = idx;
@@ -176,7 +190,7 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
   useEffect(() => {
     let raf = 0;
     const tick = () => {
-      const t = musicClock();
+      const t = musicClock() - delayRef.current;
       const i = activeIndex(entries, t);
       if (i !== idxRef.current) {
         idxRef.current = i;
@@ -227,128 +241,83 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
     return () => ro.disconnect();
   }, [measure]);
 
-  // Wheel / finger scrolling moves one layer directly (no re-render per move) and pauses following.
-  const applyOffset = useCallback((animate: boolean) => {
-    const el = drag.current;
-    if (!el) return;
-    el.style.transition = animate ? `transform 0.6s ${EASE}` : 'none';
-    el.style.transform = `translate3d(0, ${-offset.current}px, 0)`;
-  }, []);
-  const manualRef = useRef(false);
-  const fling = useRef(0);
-  const stopFling = () => {
-    if (fling.current) cancelAnimationFrame(fling.current);
-    fling.current = 0;
-  };
+  /** Back to following the song, gliding from wherever the list was scrolled to. */
   const release = useCallback(() => {
-    stopFling();
-    offset.current = 0;
-    applyOffset(true);
+    if (idleTimer.current) window.clearTimeout(idleTimer.current);
+    idleTimer.current = null;
+    if (!manualRef.current) return;
     manualRef.current = false;
+    setBase(viewport.current?.scrollTop ?? 0);
     setManual(false);
-  }, [applyOffset]);
-  /** Moves the lyrics by `delta` px (clamped); false when it hit an end. */
-  const nudge = useCallback((delta: number) => {
-    const box = inner.current;
-    const max = box ? box.scrollHeight : 10000;
-    const t = targetRef.current;
-    const want = offset.current + delta;
-    offset.current = Math.max(-t - 200, Math.min(max - t, want));
-    applyOffset(false);
-    if (!manualRef.current) {
-      manualRef.current = true;
-      setManual(true);
-    }
+  }, []);
+  const keepManual = useCallback(() => {
     if (idleTimer.current) window.clearTimeout(idleTimer.current);
     idleTimer.current = window.setTimeout(release, MANUAL_IDLE_MS);
-    return offset.current === want;
-  }, [applyOffset, release]);
+  }, [release]);
   useEffect(() => {
     const view = viewport.current;
     if (!view) return;
-    // Finger scrolling like a native list: moves are applied once per frame, and a flick keeps
-    // gliding and slows down the way iOS lists do.
-    let lastY: number | null = null;
-    let pending = 0;
-    let frame = 0;
-    let samples: { t: number; y: number }[] = [];
-    const flush = () => {
-      frame = 0;
-      if (pending) nudge(pending);
-      pending = 0;
+    /** The user takes over: the rows drop their transforms and the list is scrolled to where they were, so nothing moves. */
+    const grab = () => {
+      if (!manualRef.current) {
+        manualRef.current = true;
+        flushSync(() => setManual(true));
+        view.scrollTop = targetRef.current;
+      }
+      keepManual();
     };
-    const wheel = (e: WheelEvent) => {
-      e.preventDefault();
-      stopFling();
-      nudge(e.deltaY);
+    const scrolled = () => {
+      if (manualRef.current) keepManual();
     };
-    const start = (e: TouchEvent) => {
-      stopFling();
-      lastY = e.touches[0]?.clientY ?? null;
-      samples = lastY == null ? [] : [{ t: performance.now(), y: lastY }];
-    };
-    const moveT = (e: TouchEvent) => {
-      const y = e.touches[0]?.clientY;
-      if (lastY == null || y == null) return;
-      e.preventDefault();
-      pending += lastY - y;
-      lastY = y;
-      const now = performance.now();
-      samples.push({ t: now, y });
-      while (samples.length > 2 && now - samples[0].t > 100) samples.shift();
-      if (!frame) frame = requestAnimationFrame(flush);
-    };
-    const end = () => {
-      if (frame) cancelAnimationFrame(frame);
-      flush();
-      lastY = null;
-      const first = samples[0];
-      const last = samples[samples.length - 1];
-      samples = [];
-      if (!first || !last || last.t - first.t < 10 || performance.now() - last.t > 80) return;
-      let v = (first.y - last.y) / (last.t - first.t); // px per ms, positive = scrolling down
-      if (Math.abs(v) < 0.15) return;
-      let prev = performance.now();
-      const glide = (now: number) => {
-        const dt = Math.min(32, now - prev);
-        prev = now;
-        if (!nudge(v * dt)) return stopFling();
-        v *= Math.pow(0.998, dt);
-        fling.current = Math.abs(v) > 0.02 ? requestAnimationFrame(glide) : 0;
-      };
-      fling.current = requestAnimationFrame(glide);
-    };
-    view.addEventListener('wheel', wheel, { passive: false });
-    view.addEventListener('touchstart', start, { passive: true });
-    view.addEventListener('touchmove', moveT, { passive: false });
-    view.addEventListener('touchend', end);
-    view.addEventListener('touchcancel', end);
+    view.addEventListener('touchstart', grab, { passive: true });
+    view.addEventListener('wheel', grab, { passive: true });
+    view.addEventListener('scroll', scrolled, { passive: true });
     return () => {
-      if (frame) cancelAnimationFrame(frame);
-      stopFling();
-      view.removeEventListener('wheel', wheel);
-      view.removeEventListener('touchstart', start);
-      view.removeEventListener('touchmove', moveT);
-      view.removeEventListener('touchend', end);
-      view.removeEventListener('touchcancel', end);
+      view.removeEventListener('touchstart', grab);
+      view.removeEventListener('wheel', grab);
+      view.removeEventListener('scroll', scrolled);
     };
-  }, [nudge]);
+  }, [keepManual]);
   useEffect(() => () => {
     if (idleTimer.current) window.clearTimeout(idleTimer.current);
   }, []);
 
   const onSeekRef = useRef(onSeek);
   onSeekRef.current = onSeek;
-  const seekTo = useCallback((t: number) => {
-    if (idleTimer.current) window.clearTimeout(idleTimer.current);
-    release();
-    onSeekRef.current(t);
-  }, [release]);
+  const seekTo = useCallback(
+    (t: number) => {
+      release();
+      onSeekRef.current(Math.max(0, t + delayRef.current));
+    },
+    [release],
+  );
 
-  const y = -target;
+  // The timing adjustment is saved (on the PC, for every device) a moment after the last tap.
+  const api = useMusicPlayer((s) => s.api);
+  const saveTimer = useRef<number | null>(null);
+  /** `step` seconds later (negative: earlier), or back to none with null. */
+  const changeDelay = (step: number | null) => {
+    const value = step == null ? 0 : delayRef.current + step;
+    const next = Math.round(Math.max(-10, Math.min(10, value)) * 20) / 20;
+    delayRef.current = next;
+    setDelay(next);
+    rememberOffset(trackId, next);
+    if (manualRef.current) keepManual();
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => void api?.setLyricsOffset(trackId, next).catch(() => {}), 600);
+  };
+  useEffect(() => () => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+  }, []);
+
+  const y = manual ? 0 : base - target;
   return (
-    <div ref={viewport} className={`relative select-none overflow-hidden ${className}`} style={{ maskImage: 'linear-gradient(transparent 0, #000 9%, #000 82%, transparent 100%)', WebkitMaskImage: 'linear-gradient(transparent 0, #000 9%, #000 82%, transparent 100%)' }}>
-      <div ref={drag} style={{ transform: 'translate3d(0, 0, 0)' }}>
+    <div className={`group relative ${className}`}>
+      <div
+        ref={viewport}
+        className="tfm-scroll h-full select-none overflow-y-auto overscroll-contain"
+        style={{ maskImage: 'linear-gradient(transparent 0, #000 9%, #000 82%, transparent 100%)', WebkitMaskImage: 'linear-gradient(transparent 0, #000 9%, #000 82%, transparent 100%)' }}
+      >
         <div ref={inner} className={`relative ${compact ? 'px-6' : 'px-8'} pb-[70vh] pt-[6vh]`}>
           {entries.map((e, i) => (
             <LyricRow
@@ -366,11 +335,35 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
               dotRef={rowRefs[i].dot}
             />
           ))}
-          <div style={{ transform: `translate3d(0, ${y}px, 0)`, transition: reduce ? 'none' : `transform ${MOVE_S}s ${EASE}` }}>
+          <div style={{ transform: `translate3d(0, ${y}px, 0)`, transition: reduce || manual ? 'none' : `transform ${MOVE_S}s ${EASE}` }}>
             <Credit source={source} />
           </div>
         </div>
       </div>
+      <TimingControl delay={delay} visible={manual || delay !== 0} onChange={changeDelay} />
+    </div>
+  );
+}
+
+/**
+ * Moves this song's lyrics earlier or later in quarter seconds (tap the middle to reset). It shows
+ * while the lyrics are being scrolled or once a song has an adjustment (and on hover with a mouse).
+ */
+function TimingControl({ delay, visible, onChange }: { delay: number; visible: boolean; onChange: (step: number | null) => void }) {
+  const label = delay ? `${delay > 0 ? '+' : '−'}${Math.abs(delay).toFixed(2)} s` : 'Timing';
+  return (
+    <div
+      className={`absolute bottom-3 right-3 z-10 flex items-center rounded-full bg-black/40 text-xs font-semibold text-white/85 transition-opacity duration-300 [@media(hover:hover)]:group-hover:opacity-100 ${visible ? 'opacity-100' : 'pointer-events-none opacity-0 [@media(hover:hover)]:group-hover:pointer-events-auto'}`}
+    >
+      <button type="button" aria-label="Show lyrics earlier" title="Lyrics earlier" onClick={() => onChange(-0.25)} className="flex h-9 w-9 items-center justify-center rounded-full text-base hover:bg-white/10">
+        −
+      </button>
+      <button type="button" title={delay ? 'Reset lyrics timing' : 'Lyrics timing'} aria-label={delay ? `Lyrics timing ${label}. Reset` : 'Lyrics timing'} onClick={() => onChange(null)} className="min-w-[4.25rem] px-1 tabular-nums">
+        {label}
+      </button>
+      <button type="button" aria-label="Show lyrics later" title="Lyrics later" onClick={() => onChange(0.25)} className="flex h-9 w-9 items-center justify-center rounded-full text-base hover:bg-white/10">
+        +
+      </button>
     </div>
   );
 }
@@ -400,7 +393,8 @@ const LyricRow = memo(function LyricRow({ entry, distance, y, reduce, blurOk, ma
   const near = distance >= -NEAR_ABOVE && distance <= NEAR_BELOW;
   // Lines below the current one follow a beat later, which gives the scroll its ripple.
   const delay = reduce || manual ? 0 : Math.max(0, Math.min(distance, 8)) * 0.045;
-  const move = reduce ? 'transform 0.15s linear' : near ? `transform ${MOVE_S}s ${EASE} ${delay}s` : 'transform 0s';
+  // While the list is being scrolled by hand the rows sit still (the scroll moves them).
+  const move = manual ? 'none' : reduce ? 'transform 0.15s linear' : near ? `transform ${MOVE_S}s ${EASE} ${delay}s` : 'transform 0s';
   const blur = !blurOk || manual || active || Math.abs(distance) > NEAR_ABOVE ? 0 : Math.min(Math.abs(distance), 4) * 0.6;
   const opacity = manual ? (active ? 1 : 0.55) : active ? 1 : past ? 0.28 : Math.abs(distance) === 1 ? 0.42 : 0.32;
   const scale = active || reduce ? 1 : 0.965;

@@ -1,7 +1,7 @@
 import type { Profile } from '../types/media';
 import { ApiError, rateLimit, type Caller } from './remotecontrol';
 import * as mdb from './musicdb';
-import { lyricsFor, registerMusicStream, StreamRing } from './music';
+import { cleanLyricsOffset, lyricsFor, registerMusicStream, StreamRing } from './music';
 import { streamUrl } from './streaming';
 
 /**
@@ -52,6 +52,10 @@ export async function musicRoute(caller: Caller, profile: Profile, method: strin
       const url = await streamUrl(reg.token, 0);
       return { url: url.path, transcoded: reg.transcoded };
     }
+    case '/music/lyrics/offset':
+      rateLimit(caller, 'music-lyrics-offset', 60, 60_000);
+      await mdb.setLyricsOffset(id(body.id), cleanLyricsOffset(body.offset));
+      return { ok: true };
     case '/music/played':
       rateLimit(caller, 'music-played', 30, 60_000);
       if (!(await mdb.recordPlay(profile.id, id(body.id)))) throw new ApiError(404, 'Not found');
