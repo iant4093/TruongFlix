@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import RemoteApp from './RemoteApp';
+import { startUpdateCheck } from './updateCheck';
 import '../index.css';
 
 // `npm run dev` → /remote.html?mock previews the browser app without the desktop app.
@@ -13,3 +14,5 @@ void ready.then(() =>
     </React.StrictMode>,
   ),
 );
+
+startUpdateCheck();
