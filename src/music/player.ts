@@ -344,7 +344,23 @@ function onError() {
 
 let lastPosition = 0;
 
+/**
+ * While a video plays in the browser app, it owns the lock screen and headphone controls (music
+ * kept them, so Pause on the lock screen paused the music instead of the movie).
+ */
+let videoOwnsSession = false;
+
+export function setVideoOwnsMediaSession(owns: boolean) {
+  if (videoOwnsSession === owns) return;
+  videoOwnsSession = owns;
+  if (!owns && options.mediaSession) {
+    setMusicHandlers();
+    updateMediaSession();
+  }
+}
+
 function positionState(force = false) {
+  if (videoOwnsSession) return;
   const ms = typeof navigator !== 'undefined' ? navigator.mediaSession : undefined;
   const { duration, time } = get();
   if (!ms?.setPositionState || !duration) return;
@@ -359,7 +375,7 @@ function positionState(force = false) {
 }
 
 function updateMediaSession() {
-  if (!options.mediaSession || typeof navigator === 'undefined' || !navigator.mediaSession) return;
+  if (videoOwnsSession || !options.mediaSession || typeof navigator === 'undefined' || !navigator.mediaSession) return;
   const { track, api } = get();
   const ms = navigator.mediaSession;
   if (!track) {
@@ -380,7 +396,7 @@ function updateMediaSession() {
   positionState(true);
 }
 
-function installMediaSession() {
+function setMusicHandlers() {
   const ms = typeof navigator !== 'undefined' ? navigator.mediaSession : undefined;
   if (!ms) return;
   const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
@@ -399,8 +415,14 @@ function installMediaSession() {
       /* unsupported action */
     }
   }
+}
+
+function installMediaSession() {
+  const ms = typeof navigator !== 'undefined' ? navigator.mediaSession : undefined;
+  if (!ms) return;
+  setMusicHandlers();
   useMusicPlayer.subscribe((s, p) => {
-    if (s.playing !== p.playing) ms.playbackState = s.track ? (s.playing ? 'playing' : 'paused') : 'none';
+    if (!videoOwnsSession && s.playing !== p.playing) ms.playbackState = s.track ? (s.playing ? 'playing' : 'paused') : 'none';
   });
 }
 

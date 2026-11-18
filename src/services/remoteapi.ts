@@ -208,8 +208,11 @@ function stopStream(token: string) {
 }
 
 /** Releases playback nobody has reported progress for in a while (abandoned tabs). */
+/** Downloads wait longer: a phone that's locked mid-download stops checking in for a while. */
+export const DOWNLOAD_IDLE_MS = 30 * 60_000;
+
 export function sweepIdleStreams(now = Date.now()) {
-  for (const [token, s] of [...sessions]) if (now - s.lastSeen > STREAM_IDLE_MS) stopStream(token);
+  for (const [token, s] of [...sessions]) if (now - s.lastSeen > (s.kind === 'download' ? DOWNLOAD_IDLE_MS : STREAM_IDLE_MS)) stopStream(token);
 }
 
 /** Ends playback that belonged to a browser that was signed out. */
@@ -553,13 +556,17 @@ async function offlineStart(caller: Caller, profile: Profile, type: 'movie' | 'e
   return { token };
 }
 
-async function progress(caller: Caller, profile: Profile, body: { type: 'movie' | 'episode'; id: number; time: number; duration: number; watched?: number; token?: string }) {
+async function progress(caller: Caller, profile: Profile, body: { type: 'movie' | 'episode'; id: number; time: number; duration: number; watched?: number; token?: string; at?: number }) {
   const type = body.type === 'episode' ? 'episode' : 'movie';
   const id = Number(body.id);
   if (!(await allowedRow(profile, type, id))) throw new ApiError(404, 'Not found');
   const time = Math.max(0, Number(body.time) || 0);
   const duration = Math.max(0, Number(body.duration) || 0);
-  await db.recordProgress(type, id, time, duration, profile.id);
+  // Progress saved offline arrives later, stamped with when it happened: it never replaces anything
+  // watched since (finishing a film on the PC, then reconnecting the phone, used to un-finish it).
+  const at = Number(body.at);
+  const newer = Number.isFinite(at) && at > 0 ? await db.lastWatchedAt(profile.id, type, id) : null;
+  if (newer == null || newer <= at) await db.recordProgress(type, id, time, duration, profile.id);
   // Watch time counts toward daily limits; credit no more than the real time since the last report.
   const stream = ownedStream(body.token, caller);
   let watched = 0;

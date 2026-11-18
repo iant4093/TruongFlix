@@ -1,4 +1,5 @@
 import { useMusicPlayer } from '../music/player';
+import { downloading } from './offline';
 
 /**
  * Picks up a new version of the browser app after the PC's TruongFlix updates.
@@ -25,7 +26,8 @@ export async function serverHasNewVersion(): Promise<boolean> {
   return !!theirs && theirs !== mine;
 }
 
-const busy = () => useMusicPlayer.getState().playing || [...document.querySelectorAll('video, audio')].some((m) => !(m as HTMLMediaElement).paused);
+// Busy: music playing, any video open (even paused: reloading would close it), or a download running.
+const busy = () => useMusicPlayer.getState().playing || !!document.querySelector('video') || [...document.querySelectorAll('audio')].some((m) => !(m as HTMLAudioElement).paused) || downloading();
 
 let checking = false;
 async function check() {

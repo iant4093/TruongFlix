@@ -974,6 +974,14 @@ export async function pruneEmptySeries() {
   await exec('DELETE FROM tv_series WHERE id NOT IN (SELECT DISTINCT series_id FROM episodes)');
 }
 
+/** When a profile last watched a title (ms since 1970), or null. */
+export async function lastWatchedAt(profileId: number, type: 'movie' | 'episode', id: number): Promise<number | null> {
+  const rows = await select<{ at: string | null }[]>('SELECT last_watched_at AS at FROM profile_state WHERE profile_id = $1 AND media_type = $2 AND media_id = $3', [profileId, type, id]);
+  const at = rows[0]?.at;
+  // Stored by SQLite as UTC "YYYY-MM-DD HH:MM:SS".
+  return at ? Date.parse(`${at.replace(' ', 'T')}Z`) || null : null;
+}
+
 /** The id of the movie or episode row for a file, if there is one. */
 export async function mediaIdByPath(table: 'movies' | 'episodes', filePath: string): Promise<number | null> {
   const rows = await select<{ id: number }[]>(`SELECT id FROM ${table} WHERE file_path = $1`, [filePath]);

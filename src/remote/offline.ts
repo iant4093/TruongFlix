@@ -108,9 +108,11 @@ export async function runDownload(start: OfflineItem, deps: EngineDeps): Promise
           misses = 0;
         } catch (e) {
           check();
-          if (e instanceof ApiStatusError || ++misses > RETRIES) {
+          // The PC ended the conversion (e.g. it went idle while the phone slept): resumable, not failed.
+          const gone = e instanceof ApiStatusError && e.status === 404;
+          if ((e instanceof ApiStatusError && !gone) || ++misses > RETRIES || gone) {
             stop();
-            return save({ state: 'paused', error: e instanceof ApiStatusError ? e.message : INTERRUPTED });
+            return save({ state: 'paused', error: e instanceof ApiStatusError && !gone ? e.message : INTERRUPTED });
           }
           await deps.sleep(retryDelay(misses));
           continue;
@@ -194,6 +196,9 @@ const getStore = () => (store ??= idbStore());
 let items: OfflineItem[] = [];
 const listeners = new Set<() => void>();
 let current: { id: string; ctrl: AbortController; finished: Promise<void> } | null = null;
+
+/** Whether a download is running right now (a reload would cut it off). */
+export const downloading = () => current != null;
 let started = false;
 
 function emit() {
@@ -270,9 +275,15 @@ export async function initOffline() {
   } catch (e) {
     console.warn('[offline]', e);
   }
-  window.addEventListener('online', () => {
+  // Interrupted downloads carry on when the connection comes back, and when the app comes back to
+  // the front (a locked phone stops them).
+  const carryOn = () => {
     void flushProgress();
     for (const i of items) if (i.state === 'paused' && i.error === INTERRUPTED) void resumeDownload(i.id);
+  };
+  window.addEventListener('online', carryOn);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') carryOn();
   });
   void flushProgress();
   pump();
@@ -363,7 +374,7 @@ export async function flushProgress() {
     for (const p of stored) pendingQueue = mergeProgress(pendingQueue, p);
     for (const p of [...pendingQueue].sort((a, b) => a.at - b.at)) {
       try {
-        await api('/progress', { body: { profile: p.profile, key: p.profileKey, type: p.type, id: p.id, time: p.time, duration: p.duration } });
+        await api('/progress', { body: { profile: p.profile, key: p.profileKey, type: p.type, id: p.id, time: p.time, duration: p.duration, at: p.at } });
       } catch (e) {
         if (!(e instanceof ApiStatusError)) break; // still offline
       }

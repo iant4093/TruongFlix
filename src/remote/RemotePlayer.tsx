@@ -33,6 +33,7 @@ import { savedQuality, saveQuality } from './qualityPref';
 import type { OfflineItem } from './offlineLogic';
 import { offlineUrl, queueProgress, savePosition } from './offline';
 import WatchTogether from './WatchTogether';
+import { setVideoOwnsMediaSession } from '../music/player';
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
 type Panel = 'tracks' | 'speed' | 'chapters' | 'quality' | null;
@@ -302,6 +303,36 @@ export default function RemotePlayer({
     };
   }, [target.type, target.id]);
 
+  // The lock screen, Control Center and headphones control this video (not the music it paused).
+  useEffect(() => {
+    const ms = navigator.mediaSession;
+    if (!ms || !stream) return;
+    setVideoOwnsMediaSession(true);
+    try {
+      ms.metadata = new MediaMetadata({
+        title: stream.subtitle ?? stream.title,
+        artist: stream.subtitle ? stream.title : '',
+      });
+    } catch {
+      /* MediaMetadata missing */
+    }
+    const set = (action: MediaSessionAction, fn: MediaSessionActionHandler | null) => {
+      try {
+        ms.setActionHandler(action, fn);
+      } catch {
+        /* unsupported action */
+      }
+    };
+    set('play', () => void video.current?.play());
+    set('pause', () => video.current?.pause());
+    set('seekto', (d) => d.seekTime != null && seekRef.current(d.seekTime));
+    set('seekbackward', (d) => seekRef.current(offset + (video.current?.currentTime ?? 0) - (d.seekOffset ?? 10)));
+    set('seekforward', (d) => seekRef.current(offset + (video.current?.currentTime ?? 0) + (d.seekOffset ?? 10)));
+    set('previoustrack', null);
+    set('nexttrack', stream.next ? () => void playNextRef.current() : null);
+  }, [stream, offset]);
+  useEffect(() => () => setVideoOwnsMediaSession(false), []);
+
   // Leaving by any route (the phone's Back button, closing the tab, swiping the app away) saves the
   // place first; only the player's own Back button used to.
   useEffect(() => {
@@ -382,6 +413,9 @@ export default function RemotePlayer({
     },
     [duration, offset, stream],
   );
+
+  const seekRef = useRef(seekTo);
+  seekRef.current = seekTo;
 
   const changeTracks = async (next: { aid?: number; sid?: number; subStyle?: Partial<RemoteSubStyle> }) => {
     const baseChoice = choiceRef.current ?? (stream ? { aid: stream.aid, sid: stream.sid, subStyle: stream.subStyle } : null);
@@ -490,6 +524,9 @@ export default function RemotePlayer({
     await reportRef.current(true);
     onPlay(stream.next);
   }, [onPlay, stream?.next]);
+
+  const playNextRef = useRef(playNext);
+  playNextRef.current = playNext;
 
   // Active intro / recap / credits segments.
   const activeSkip = useMemo(() => {
