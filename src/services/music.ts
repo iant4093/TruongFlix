@@ -82,6 +82,7 @@ export function lyricsFor(trackId: number, online = useLibraryStore.getState().s
   return job;
 }
 
+const LOSSLESS = new Set(['flac', 'alac', 'wav', 'aiff', 'wavpack', 'ape']);
 const CONVERTIBLE = new Set(['mp3', 'flac', 'aac', 'alac', 'vorbis', 'opus', 'wav', 'aiff', 'wavpack', 'ape', 'musepack', 'speex']);
 
 /** Registers a song with the media server: the original file, or an AAC conversion when `codecs` can't play it. */
@@ -90,7 +91,9 @@ export async function registerMusicStream(trackId: number, codecs: string[]): Pr
   if (!row) return null;
   const codec = row.codec ?? '';
   const transcoded = !codecs.includes(codec) && (CONVERTIBLE.has(codec) || !codec || codec === 'unknown');
-  const token = await registerStream(row.file_path, { format: transcoded ? 'aac' : 'direct', width: 0, height: 0, tone_map: false, aid: null, sid: null, sub_style: [] });
+  // Lossless songs stay lossless for players that take ALAC (Safari); the rest get AAC.
+  const lossless = transcoded && LOSSLESS.has(codec) && codecs.includes('alac');
+  const token = await registerStream(row.file_path, { format: !transcoded ? 'direct' : lossless ? 'alac' : 'aac', width: 0, height: 0, tone_map: false, aid: null, sid: null, sub_style: [] });
   return { token, transcoded };
 }
 

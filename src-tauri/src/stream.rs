@@ -45,6 +45,7 @@ const AUDIO_ENCODE_WAIT: Duration = Duration::from_secs(90);
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct StreamOptions {
     /// "direct" | "hls" | "ts" | "mp4" (a single progressive MP4 for saving offline) | "aac" (audio-only, for music)
+    /// | "alac" (lossless audio-only, for Safari: it seeks inside FLAC files only roughly)
     pub format: String,
     /// Output size for conversions (even numbers; 0 = keep).
     #[serde(default)]
@@ -74,7 +75,7 @@ pub struct StreamOptions {
     pub length: f64,
 }
 
-const FORMATS: [&str; 5] = ["direct", "hls", "ts", "mp4", "aac"];
+const FORMATS: [&str; 6] = ["direct", "hls", "ts", "mp4", "aac", "alac"];
 const MAX_BITRATE_KBPS: u32 = 80_000;
 const MAX_WIDTH: u32 = 7680;
 const MAX_HEIGHT: u32 = 4320;
@@ -1551,8 +1552,10 @@ fn spawn_mp4_job(path: &Path, opts: &StreamOptions, dir: &Path, prev_done: Optio
     Ok(job)
 }
 
-/// Audio-only conversion to AAC in MP4 (for music a browser can't play, e.g. ALAC outside Safari).
-fn spawn_audio_job(path: &Path, root: &Path) -> Job {
+/// Audio-only conversion to MP4: AAC for music a browser can't play (e.g. ALAC outside Safari), or
+/// lossless ALAC for Safari, which plays FLAC but seeks inside it only roughly (the song and its
+/// lyrics drifted apart after every seek). An MP4 has an exact index, so seeking is exact.
+fn spawn_audio_job(path: &Path, root: &Path, lossless: bool) -> Job {
     let id = random_token()[..12].to_string();
     let dir = root.join(&id);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1571,7 +1574,7 @@ fn spawn_audio_job(path: &Path, root: &Path) -> Job {
     };
     let path = path.to_path_buf();
     std::thread::spawn(move || {
-        let result = run_audio_encode(&path, &dir.join("audio.m4a"), &cancel);
+        let result = run_audio_encode(&path, &dir.join("audio.m4a"), &cancel, lossless);
         if let Err(e) = result {
             let _ = std::fs::remove_file(dir.join("audio.m4a"));
             *error.lock().unwrap() = Some(e);
@@ -1581,22 +1584,19 @@ fn spawn_audio_job(path: &Path, root: &Path) -> Job {
     job
 }
 
-fn run_audio_encode(path: &Path, out: &Path, cancel: &AtomicBool) -> Result<(), String> {
+fn run_audio_encode(path: &Path, out: &Path, cancel: &AtomicBool, lossless: bool) -> Result<(), String> {
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let out_s = out.to_string_lossy().into_owned();
-    let core = Core::new(&[
-        ("o", out_s.as_str()),
-        ("of", "mp4"),
-        ("ofopts", "movflags=+faststart"),
-        ("oac", "aac"),
-        ("oacopts", "b=256k"),
-        ("audio-samplerate", "48000"),
-        ("vid", "no"),
-        ("sid", "no"),
-        ("keep-open", "no"),
-    ])?;
+    let mut opts = vec![("o", out_s.as_str()), ("of", "ipod"), ("ofopts", "movflags=+faststart"), ("vid", "no"), ("sid", "no"), ("keep-open", "no")];
+    if lossless {
+        // Same samples, same rate and bit depth: only the container and codec change.
+        opts.push(("oac", "alac"));
+    } else {
+        opts.extend([("oac", "aac"), ("oacopts", "b=256k"), ("audio-samplerate", "48000")]);
+    }
+    let core = Core::new(&opts)?;
     let file = path.to_string_lossy().into_owned();
     core.api.command(core.h, &["loadfile", &file, "replace"])?;
     let deadline = Instant::now() + AUDIO_ENCODE_WAIT;
@@ -2016,14 +2016,14 @@ pub async fn stream_url(_app: AppHandle, token: String, start: f64, host: Option
                 }
                 (format!("/stream/{token}/index.m3u8"), 0.0)
             }
-            "aac" => {
+            "aac" | "alac" => {
                 // One conversion per stream: the finished file serves every seek.
                 let reuse = st.job.as_ref().is_some_and(|j| j.error.lock().unwrap().is_none() && !j.cancel.load(Ordering::Acquire));
                 if !reuse {
                     if let Some(old) = st.job.take() {
                         old.stop();
                     }
-                    st.job = Some(spawn_audio_job(&st.path, &st.dir));
+                    st.job = Some(spawn_audio_job(&st.path, &st.dir, st.opts.format == "alac"));
                 }
                 let job = st.job.as_ref().unwrap();
                 (format!("/stream/{token}/{}/audio.m4a", job.id), 0.0)
@@ -2235,11 +2235,20 @@ mod tests {
         assert_eq!(src.properties().codec(), Some(lofty::mp4::Mp4Codec::ALAC));
 
         let out = root.join("job/audio.m4a");
-        run_audio_encode(&alac, &out, &AtomicBool::new(false)).expect("converted");
+        run_audio_encode(&alac, &out, &AtomicBool::new(false), false).expect("converted");
         let mut f = std::fs::File::open(&out).unwrap();
         let aac = lofty::mp4::Mp4File::read_from(&mut f, lofty::config::ParseOptions::new()).unwrap();
         assert_eq!(aac.properties().codec(), Some(lofty::mp4::Mp4Codec::AAC));
         let secs = aac.properties().duration().as_secs_f64();
+        assert!((secs - 4.0).abs() < 0.3, "duration {secs}");
+
+        // Lossless for Safari: ALAC in an indexed MP4, same length.
+        let out = root.join("lossless/audio.m4a");
+        run_audio_encode(&alac, &out, &AtomicBool::new(false), true).expect("converted losslessly");
+        let mut f = std::fs::File::open(&out).unwrap();
+        let lossless = lofty::mp4::Mp4File::read_from(&mut f, lofty::config::ParseOptions::new()).unwrap();
+        assert_eq!(lossless.properties().codec(), Some(lofty::mp4::Mp4Codec::ALAC));
+        let secs = lossless.properties().duration().as_secs_f64();
         assert!((secs - 4.0).abs() < 0.3, "duration {secs}");
         std::fs::remove_dir_all(&root).unwrap();
     }

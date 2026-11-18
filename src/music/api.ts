@@ -24,7 +24,15 @@ export interface MusicApi {
 }
 
 /** Codecs `audio` can decode here (the PC converts anything else to AAC). */
-export function playableCodecs(audio: Pick<HTMLAudioElement, 'canPlayType'> = typeof Audio !== 'undefined' ? new Audio() : { canPlayType: () => '' }) {
+/**
+ * Safari (every iPhone and iPad browser, and the Mac desktop app's web view): it plays FLAC, but
+ * seeks inside it only roughly, so after a seek the song and its lyrics drifted apart. It gets the
+ * same music as lossless ALAC instead, which it seeks in exactly.
+ */
+export const roughFlacSeeking = (ua = typeof navigator !== 'undefined' ? navigator.userAgent : '', touch = typeof navigator !== 'undefined' ? navigator.maxTouchPoints : 0) =>
+  /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && touch > 1) || (/AppleWebKit/.test(ua) && !/Chrome|Chromium|Edg\/|Android/.test(ua));
+
+export function playableCodecs(audio: Pick<HTMLAudioElement, 'canPlayType'> = typeof Audio !== 'undefined' ? new Audio() : { canPlayType: () => '' }, roughFlac = roughFlacSeeking()) {
   const tests: Record<string, string> = {
     mp3: 'audio/mpeg',
     flac: 'audio/flac',
@@ -35,7 +43,7 @@ export function playableCodecs(audio: Pick<HTMLAudioElement, 'canPlayType'> = ty
     wav: 'audio/wav',
   };
   return Object.entries(tests)
-    .filter(([, mime]) => audio.canPlayType(mime) !== '')
+    .filter(([codec, mime]) => audio.canPlayType(mime) !== '' && !(codec === 'flac' && roughFlac))
     .map(([codec]) => codec);
 }
 
