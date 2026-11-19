@@ -583,6 +583,8 @@ async function progress(caller: Caller, profile: Profile, body: { type: 'movie' 
     stream.lastTime = time;
     stream.lastProgress = now;
     stream.lastSeen = now;
+    // A paused browser fetches nothing: its reports keep the PC from expiring the stream.
+    void invoke('stream_touch', { token: body.token }).catch(() => {});
   }
   body = { ...body, type, id, watched };
   if (body.watched && body.watched > 0) {

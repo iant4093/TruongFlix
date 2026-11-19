@@ -334,7 +334,9 @@ pub async fn extract_frames(
             ("hwdec", "auto-copy-safe"),
             ("vf", &scale),
         ])?;
-        let tmp = dir.join(format!(".tmp-{lane}"));
+        // Each request gets its own scratch folder: overlapping requests used to share one, and an
+        // older request could save a newer one's frame under its own (wrong) time, cached for good.
+        let tmp = dir.join(format!(".tmp-{lane}-{generation}"));
         for i in missing {
             if !lane_is(&lane, generation) {
                 break; // superseded by a newer request

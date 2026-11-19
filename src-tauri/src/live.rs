@@ -333,6 +333,8 @@ pub async fn live_import(input: String) -> Result<Vec<Channel>, String> {
     let url = http_url(input)?;
     let response = client()?
         .get(url.clone())
+        // Big playlists from slow providers need longer than the usual 12 s to arrive.
+        .timeout(Duration::from_secs(90))
         .send()
         .await
         .map_err(|_| "Could not download this source. Check your connection and source URL.")?;
@@ -660,7 +662,12 @@ pub async fn live_artwork(app: tauri::AppHandle, url: String) -> Result<String, 
         return Err("Unsupported artwork format".into());
     }
     let body = bytes(response, 512 * 1024, false).await?;
-    tokio::fs::write(&path, body)
+    // Written whole, then put in place: an interrupted write left a broken image cached for good.
+    let partial = path.with_extension("part");
+    tokio::fs::write(&partial, body)
+        .await
+        .map_err(|_| "Could not cache artwork")?;
+    tokio::fs::rename(&partial, &path)
         .await
         .map_err(|_| "Could not cache artwork")?;
     if WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 32 == 0 {

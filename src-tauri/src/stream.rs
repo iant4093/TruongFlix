@@ -27,6 +27,19 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const IDLE_STREAM: Duration = Duration::from_secs(15 * 60);
+/// A growing stream that hasn't grown for this long is ended (its conversion stalled or died).
+const STALLED_STREAM: Duration = Duration::from_secs(120);
+/// A client that accepts no data for this long is dropped, freeing its connection slot.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Marks a conversion finished when its thread ends, however it ends (a panic too): waiters on a
+/// conversion that never set `done` used to wait forever.
+struct DoneOnDrop(Arc<AtomicBool>);
+impl Drop for DoneOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
 const API_TIMEOUT: Duration = Duration::from_secs(20);
 /// Whole request (headers and body) must arrive within this time.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
@@ -463,7 +476,12 @@ fn lan_addresses() -> Vec<String> {
 }
 
 /// Starts the server if it isn't running (`port` 0 = any free port). Returns the port.
+/// One server start at a time: two first-time starts at once used to bind two ports, and the second
+/// closed the first, breaking the links already handed out for it.
+static SERVER_START: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn ensure_server(port: u16) -> Result<u16, String> {
+    let _starting = SERVER_START.lock().await;
     let s = shared()?;
     {
         let inner = s.inner.lock().unwrap();
@@ -1239,15 +1257,19 @@ async fn serve_growing(conn: &mut TcpStream, path: &Path, done: &AtomicBool, hea
         }
     };
     let mut buf = vec![0u8; 188 * 1024];
+    let mut grew = Instant::now();
+    let timed_out = || std::io::Error::new(std::io::ErrorKind::TimedOut, "client stopped reading");
     loop {
         let n = file.read(&mut buf).await?;
         if n > 0 {
-            conn.write_all(format!("{n:X}\r\n").as_bytes()).await?;
-            conn.write_all(&buf[..n]).await?;
-            conn.write_all(b"\r\n").await?;
+            grew = Instant::now();
+            let mut chunk = format!("{n:X}\r\n").into_bytes();
+            chunk.extend_from_slice(&buf[..n]);
+            chunk.extend_from_slice(b"\r\n");
+            tokio::time::timeout(WRITE_TIMEOUT, conn.write_all(&chunk)).await.map_err(|_| timed_out())??;
             continue;
         }
-        if done.load(Ordering::Acquire) {
+        if done.load(Ordering::Acquire) || grew.elapsed() > STALLED_STREAM {
             break;
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1488,6 +1510,7 @@ fn spawn_hls_job(
     };
     let (path, opts, plan, dir) = (path.to_path_buf(), opts.clone(), plan.clone(), dir.to_path_buf());
     std::thread::spawn(move || {
+        let _done = DoneOnDrop(done.clone());
         run_encode(path, opts, Output::Hls(plan, start_seg, frontier), start, dir, prev_done, cancel, done, eof, error);
     });
     Ok(job)
@@ -1520,6 +1543,7 @@ fn spawn_ts_job(
     };
     let (path, opts) = (path.to_path_buf(), opts.clone());
     std::thread::spawn(move || {
+        let _done = DoneOnDrop(done.clone());
         run_encode(path, opts, Output::Ts, start, dir, prev_done, cancel, done, eof, error);
     });
     Ok(job)
@@ -1547,6 +1571,7 @@ fn spawn_mp4_job(path: &Path, opts: &StreamOptions, dir: &Path, prev_done: Optio
     };
     let (path, opts, dir) = (path.to_path_buf(), opts.clone(), dir.to_path_buf());
     std::thread::spawn(move || {
+        let _done = DoneOnDrop(done.clone());
         run_encode(path, opts, Output::Mp4(progress), 0.0, dir, prev_done, cancel, done, eof, error);
     });
     Ok(job)
@@ -1574,6 +1599,7 @@ fn spawn_audio_job(path: &Path, root: &Path, lossless: bool) -> Job {
     };
     let path = path.to_path_buf();
     std::thread::spawn(move || {
+        let _done = DoneOnDrop(done.clone());
         let result = run_audio_encode(&path, &dir.join("audio.m4a"), &cancel, lossless);
         if let Err(e) = result {
             let _ = std::fs::remove_file(dir.join("audio.m4a"));
@@ -2105,6 +2131,21 @@ pub fn stream_download_status(token: String) -> Result<DownloadStatus, String> {
     }
     st.touched = Instant::now();
     Ok(download_status(st.job.as_ref(), &st.dir.join(MP4_READY)))
+}
+
+/// Keeps a stream from expiring while it's in use but quiet: a paused TV or browser asks for nothing,
+/// and was cut off after 15 minutes (resuming then failed). False when the stream is already gone.
+#[tauri::command]
+pub fn stream_touch(token: String) -> bool {
+    let Ok(s) = shared() else { return false };
+    let mut inner = s.inner.lock().unwrap();
+    match inner.streams.get_mut(&token) {
+        Some(st) => {
+            st.touched = Instant::now();
+            true
+        }
+        None => false,
+    }
 }
 
 /// Stops a stream's conversion and deletes its temporary segments.

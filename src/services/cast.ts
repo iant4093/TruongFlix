@@ -15,6 +15,11 @@ import { errorMessage } from '../lib/errors';
 export type { CastDevice, CastState } from '../types/media';
 
 let token: string | null = null;
+// A TV paused for a while asks the PC for nothing; this keeps its stream from expiring meanwhile.
+const KEEPALIVE_MS = 5 * 60_000;
+window.setInterval(() => {
+  if (token) void invoke('stream_touch', { token }).catch(() => {});
+}, KEEPALIVE_MS);
 let triedCompat = false;
 let lastSaved = 0;
 let lastTick: { time: number; at: number } | null = null;
