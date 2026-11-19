@@ -762,6 +762,17 @@ async fn handle(mut conn: TcpStream, peer: SocketAddr) -> std::io::Result<()> {
     if !remote_guard::host_allowed(host) {
         return respond(&mut conn, 421, "text/plain", "", b"Not found", false).await;
     }
+    // Tailscale Serve and Funnel both arrive from this computer itself. Funnel is the public
+    // internet: refused, so the server stays "home network and Tailscale only" even if Funnel
+    // gets turned on (Tailscale marks those requests, and the real client must be on the tailnet).
+    if peer.ip().is_loopback() {
+        let funnel = req.headers.contains_key("tailscale-funnel-request");
+        let outside = remote_guard::forwarded_ip(peer.ip(), req.headers.get("x-forwarded-for").map(String::as_str))
+            .is_some_and(|ip| !remote_guard::peer_allowed(ip));
+        if funnel || outside {
+            return respond(&mut conn, 403, "text/plain", "", b"Not available from the internet", false).await;
+        }
+    }
     if let Some(rest) = req.path.strip_prefix("/stream/") {
         if req.method == "OPTIONS" {
             return MEDIA_RESPONSE

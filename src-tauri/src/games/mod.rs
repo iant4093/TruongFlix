@@ -82,6 +82,36 @@ async fn download_root(app: &AppHandle) -> Result<String, String> {
         .ok_or_else(|| "Choose a folder for game downloads in Settings › Games.".to_string())
 }
 
+/// Download folders a game's files may be in: the current setting, and the folder its torrent was
+/// downloaded to (picking another folder for one download changes the setting, which used to
+/// strand every earlier download: "the installer is missing", and it couldn't be deleted either).
+async fn download_roots(app: &AppHandle, game: &store::GameRecord) -> Result<Vec<String>, String> {
+    let mut roots = Vec::new();
+    let setting = download_root(app).await;
+    if let Ok(root) = &setting {
+        roots.push(root.clone());
+    }
+    if let Some(hash) = &game.info_hash {
+        if let Some(saved) = store::torrent_save_path(app, hash).await? {
+            if let Some(parent) = Path::new(&saved).parent() {
+                roots.push(parent.to_string_lossy().into_owned());
+            }
+        }
+    }
+    if roots.is_empty() {
+        return Err(setting.err().unwrap_or_default());
+    }
+    Ok(roots)
+}
+
+/// The first of `roots` (a valid games download folder) that holds `path`.
+fn root_holding(roots: &[String], path: &Path, protected: &Protected) -> Option<PathBuf> {
+    roots.iter().find_map(|r| {
+        let root = guard::download_root(Path::new(r), protected).ok()?;
+        guard::existing_inside(path, &root).ok().map(|_| root)
+    })
+}
+
 /// The install dialog's choices. Everything else comes from the library and the installer.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,14 +131,15 @@ pub struct InstallRequest {
 pub async fn games_install(app: AppHandle, job_id: String, game_id: i64, job: InstallRequest) -> Result<bool, String> {
     safe_job_id(&job_id)?;
     let game = store::game(&app, game_id).await?;
+    let roots = download_roots(&app, &game).await?;
     let installer_dir = game.installer_dir.ok_or("The installer for this game was not found.")?;
-    let root = download_root(&app).await?;
     let job = blocking(move || {
         let setup_exe = installer::find_setup(Path::new(&installer_dir))
             .ok_or("The installer is missing from the games download folder.")?;
+        let root = root_holding(&roots, &setup_exe, &Protected::system()).ok_or("The installer is missing from the games download folder.")?;
         let job = InstallJob {
             setup_exe,
-            download_root: PathBuf::from(root),
+            download_root: root,
             install_dir: job.install_dir,
             language: job.language,
             components: job.components,
@@ -261,17 +292,17 @@ pub async fn games_delete_folder(app: AppHandle, game_id: i64) -> Result<(), Str
         Some(hash) => store::torrent_save_path(&app, hash).await?,
         None => None,
     };
+    let roots = download_roots(&app, &game).await?;
     let Some(target) = saved.or(game.installer_dir) else {
         return Ok(());
     };
-    let root = download_root(&app).await?;
     let dir = blocking(move || {
         if !Path::new(&target).exists() {
             return Ok(None);
         }
         let refused = "Only installers inside the games download folder can be deleted.";
         let protected = Protected::system();
-        let root = guard::download_root(Path::new(&root), &protected)?;
+        let root = root_holding(&roots, Path::new(&target), &protected).ok_or(refused)?;
         let dir = guard::existing_inside(Path::new(&target), &root).map_err(|_| refused)?;
         if !dir.is_dir() || protected.covers(&dir) {
             return Err(refused.to_string());

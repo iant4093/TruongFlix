@@ -431,7 +431,9 @@ fn run_uninstall(job: &UninstallJob, protected: &Protected, reporter: &mut Repor
             return false;
         }
     }
-    if dir.exists() {
+    // What the uninstaller left (saves, settings, logs) goes too, unless another program installed
+    // into the same folder still has its uninstaller there: its files aren't this game's to delete.
+    if dir.exists() && !guard::has_uninstaller(&dir) {
         if let Err(e) = std::fs::remove_dir_all(&dir) {
             reporter.send(HelperEvent::Error { message: format!("Could not delete '{}': {e}", dir.display()) });
             return false;

@@ -117,6 +117,20 @@ describe('browser API rules', () => {
     expect(db.logWatchTime).not.toHaveBeenCalled();
   });
 
+  it('doesn’t save a paused browser’s unchanged position over newer progress', async () => {
+    const { token } = (await play(A)) as { token: string };
+    const report = (time: number) => remote.route(A, 'POST', '/progress', {}, { profile: 1, type: 'movie', id: 2, time, duration: 100, watched: 0, token });
+    await report(20);
+    expect(db.recordProgress).toHaveBeenCalledTimes(1);
+    // Paused: the same place again (the film may have been finished on the PC meanwhile).
+    await report(20);
+    await report(20.4);
+    expect(db.recordProgress).toHaveBeenCalledTimes(1);
+    // Playing or seeking again is saved.
+    await report(35);
+    expect(db.recordProgress).toHaveBeenCalledTimes(2);
+  });
+
   it('checks the rating of just the reported title and patches the desktop rows in place', async () => {
     const { useLibraryStore } = await import('../src/store/useLibraryStore');
     const patchProgress = vi.fn();

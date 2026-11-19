@@ -235,10 +235,20 @@ pub fn align(speech: &[f32], cues: &[(f64, f64)]) -> Option<Alignment> {
     }
     let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
     let a_mean = mean(speech);
-    let last_cue = cues.iter().map(|c| c.1).fold(0.0, f64::max);
-    let sub_len = ((last_cue * RATIOS.iter().cloned().fold(1.0, f64::max) * STEPS_PER_SEC) as usize + 100).max(speech.len());
-    let n = (speech.len() + sub_len).next_power_of_two();
     let max_shift = (MAX_OFFSET_S * STEPS_PER_SEC) as isize;
+    // Cues past the end of the audio can't be matched anyway; one broken timestamp
+    // (99:59:59) used to size the buffers for it: gigabytes, or a failed allocation and a crash.
+    let limit = speech.len() as f64 / STEPS_PER_SEC + MAX_OFFSET_S;
+    let cues: Vec<(f64, f64)> = cues.iter().copied().filter(|c| c.0.is_finite() && c.1.is_finite() && c.0 <= limit).map(|(s, e)| (s, e.min(limit))).collect();
+    if cues.len() < 5 {
+        return None;
+    }
+    let cues = cues.as_slice();
+    let last_cue = cues.iter().map(|c| c.1).fold(0.0, f64::max);
+    let sub_len = ((last_cue * RATIOS.iter().cloned().fold(1.0, f64::max) * STEPS_PER_SEC) as usize + 100)
+        .max(speech.len())
+        .min(speech.len() + 2 * max_shift as usize + 100);
+    let n = (speech.len() + sub_len).next_power_of_two();
 
     let (mut are, mut aim) = (vec![0f32; n], vec![0f32; n]);
     for (i, x) in speech.iter().enumerate() {
@@ -382,12 +392,16 @@ fn sync_inner(app: Option<&AppHandle>, video: &str, sub: &Path, tmp: &Path) -> R
 /// Lines a subtitle file up with the video's dialogue (rewriting it in place, with a backup).
 #[tauri::command]
 pub async fn sync_subtitle(app: AppHandle, video_path: String, subtitle_path: String) -> Result<SyncResult, String> {
-    let tmp = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("subsync.pcm");
+    // One file per run: an automatic sync and one started in the player used to share (and
+    // truncate) the same decoded audio.
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let tmp = app.path().app_cache_dir().map_err(|e| e.to_string())?.join(format!("subsync-{stamp}.pcm"));
     if let Some(dir) = tmp.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     tauri::async_runtime::spawn_blocking(move || {
         let res = sync_inner(Some(&app), &video_path, Path::new(&subtitle_path), &tmp);
+        let _ = std::fs::remove_file(&tmp); // also when decoding failed (it can be ~100 MB)
         let _ = app.emit("subsync-progress", Progress { fraction: 1.0 });
         res
     })
@@ -396,8 +410,16 @@ pub async fn sync_subtitle(app: AppHandle, video_path: String, subtitle_path: St
 }
 
 /// Restores the subtitle file as it was before the first sync.
+// Runs off the UI thread: a sleeping NAS can take a minute to answer, and a plain command
+// would freeze the whole window meanwhile.
 #[tauri::command]
-pub fn undo_subtitle_sync(subtitle_path: String) -> Result<bool, String> {
+pub async fn undo_subtitle_sync(subtitle_path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || undo_sync_blocking(subtitle_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn undo_sync_blocking(subtitle_path: String) -> Result<bool, String> {
     let sub = Path::new(&subtitle_path);
     let backup = backup_path(sub);
     if !backup.exists() {
@@ -407,8 +429,16 @@ pub fn undo_subtitle_sync(subtitle_path: String) -> Result<bool, String> {
     Ok(true)
 }
 
+// Runs off the UI thread: a sleeping NAS can take a minute to answer, and a plain command
+// would freeze the whole window meanwhile.
 #[tauri::command]
-pub fn subtitle_sync_backup_exists(subtitle_path: String) -> bool {
+pub async fn subtitle_sync_backup_exists(subtitle_path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || backup_exists_blocking(subtitle_path))
+        .await
+        .unwrap_or(false)
+}
+
+fn backup_exists_blocking(subtitle_path: String) -> bool {
     backup_path(Path::new(&subtitle_path)).exists()
 }
 

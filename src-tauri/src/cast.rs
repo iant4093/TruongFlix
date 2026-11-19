@@ -689,6 +689,7 @@ async fn dlna_session(app: Reporter, device: CastDevice, media: CastMedia, rx: m
 
     let started = Instant::now();
     let (mut played, mut sought, mut last_time) = (false, media.start <= 1.0, media.start);
+    let mut unanswered = 0u32;
     loop {
         // Commands.
         while let Ok(cmd) = rx.try_recv() {
@@ -717,6 +718,16 @@ async fn dlna_session(app: Reporter, device: CastDevice, media: CastMedia, rx: m
         let transport = soap(&av, "AVTransport", "GetTransportInfo", "<InstanceID>0</InstanceID>").await.ok();
         let position = soap(&av, "AVTransport", "GetPositionInfo", "<InstanceID>0</InstanceID>").await.ok();
         let state = transport.as_deref().and_then(|x| tag(x, "CurrentTransportState")).unwrap_or("").to_string();
+        // The TV turned off or left the network mid-film: it stops answering, which used to keep
+        // the cast "playing" (and this loop running) until Stop was pressed.
+        if transport.is_none() && position.is_none() {
+            unanswered += 1;
+            if played && unanswered >= 5 {
+                return emit(&app, "idle", last_time, media.duration, Some("Lost connection to the TV".into()));
+            }
+        } else {
+            unanswered = 0;
+        }
         if let Some(p) = position.as_deref() {
             last_time = tag(p, "RelTime").map(parse_hms).unwrap_or(last_time);
         }

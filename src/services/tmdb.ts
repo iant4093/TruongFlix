@@ -77,7 +77,8 @@ async function request<T>(path: string, params: Record<string, string | number |
     await acquire();
     let res: Response;
     try {
-      res = await fetch(url.toString(), { headers });
+      // A hung request would hold one of the few request slots for good (and stall every scan).
+      res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(20_000) });
     } catch (e) {
       release();
       if (attempt === 3) throw new TmdbError(`Network error: ${String(e)}`, null, true);
@@ -99,7 +100,12 @@ async function request<T>(path: string, params: Record<string, string | number |
       }
       throw new TmdbError(msg, res.status);
     }
-    return (await res.json()) as T;
+    try {
+      return (await res.json()) as T;
+    } catch (e) {
+      // The answer stopped partway (timed out, connection dropped): a network error, retried later.
+      throw new TmdbError(`Network error: ${String(e)}`, null, true);
+    }
   }
   throw new TmdbError('TMDB rate limit exceeded', 429);
 }

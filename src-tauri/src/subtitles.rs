@@ -329,8 +329,16 @@ fn is_subtitle(path: &Path) -> bool {
 }
 
 /// Finds subtitle files next to a video (matching its name) or in a Subs/Subtitles folder beside it.
+// Runs off the UI thread: a sleeping NAS can take a minute to answer, and a plain command
+// would freeze the whole window meanwhile.
 #[tauri::command]
-pub fn list_local_subtitles(video_path: String) -> Vec<LocalSubtitle> {
+pub async fn list_local_subtitles(video_path: String) -> Vec<LocalSubtitle> {
+    tauri::async_runtime::spawn_blocking(move || local_subtitles(video_path))
+        .await
+        .unwrap_or_default()
+}
+
+fn local_subtitles(video_path: String) -> Vec<LocalSubtitle> {
     let video = Path::new(&video_path);
     let (Some(dir), Some(stem)) = (video.parent(), video.file_stem()) else {
         return Vec::new();
@@ -383,7 +391,7 @@ pub async fn sidecar_subtitle_languages(video_paths: Vec<String>) -> Vec<Vec<Str
     tauri::async_runtime::spawn_blocking(move || {
         video_paths
             .into_iter()
-            .map(|p| list_local_subtitles(p).into_iter().map(|s| s.language.unwrap_or_default()).collect())
+            .map(|p| local_subtitles(p).into_iter().map(|s| s.language.unwrap_or_default()).collect())
             .collect()
     })
     .await
@@ -391,8 +399,16 @@ pub async fn sidecar_subtitle_languages(video_paths: Vec<String>) -> Vec<Vec<Str
 }
 
 /// Deletes a subtitle file TruongFlix downloaded. Refuses anything that isn't a subtitle file.
+// Runs off the UI thread: a sleeping NAS can take a minute to answer, and a plain command
+// would freeze the whole window meanwhile.
 #[tauri::command]
-pub fn delete_subtitle_file(path: String) -> Result<(), String> {
+pub async fn delete_subtitle_file(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || delete_subtitle_blocking(path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn delete_subtitle_blocking(path: String) -> Result<(), String> {
     let p = Path::new(&path);
     if !is_subtitle(p) {
         return Err("Not a subtitle file".into());
@@ -442,7 +458,7 @@ mod tests {
         for f in ["Show.S01E01.mkv", "Show.S01E01.en.srt", "Show.S01E01.eng.forced.srt", "Other.S01E02.en.srt", "Subs/English.srt"] {
             std::fs::write(dir.join(f), b"1").unwrap();
         }
-        let found = list_local_subtitles(dir.join("Show.S01E01.mkv").to_string_lossy().into_owned());
+        let found = local_subtitles(dir.join("Show.S01E01.mkv").to_string_lossy().into_owned());
         let names: Vec<_> = found.iter().map(|s| (s.file_name.as_str(), s.language.as_deref())).collect();
         assert_eq!(
             names,

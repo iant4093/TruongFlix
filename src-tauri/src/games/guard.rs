@@ -191,6 +191,17 @@ fn is_uninstaller_name(name: &str) -> bool {
         && name[5..8].bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Whether a folder still holds an Inno uninstaller: another program (an update, DLC, another game)
+/// installed into the same folder, whose files must not be deleted with this one's.
+pub fn has_uninstaller(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .any(|p| p.is_file() && p.file_name().is_some_and(|n| is_uninstaller_name(&n.to_string_lossy())) && p.with_extension("dat").is_file())
+    })
+}
+
 /// An installed game's folder and its Inno uninstaller (`unins###.exe` with its `.dat`).
 pub fn uninstall_target(dir: &Path, protected: &Protected) -> Result<(PathBuf, PathBuf), String> {
     let dir = std::fs::canonicalize(clean_absolute(dir)?).map_err(|_| "The game's folder is missing.".to_string())?;

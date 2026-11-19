@@ -106,8 +106,10 @@ export async function applyRenames(plan: RenamePlanItem[], label: string) {
   const roots = store.settings.media_directories;
   const res = await invoke<MoveResult>('apply_moves', { moves: plan.map(({ from, to }) => ({ from, to })), withSidecars: true, roots });
   if (res.applied.length) {
-    await db.updateFilePaths(res.applied);
+    // The undo record first: the files have already moved, so it must exist even if updating the
+    // library fails (database busy).
     await db.saveRenameBatch(label, res.applied, roots);
+    await db.updateFilePaths(res.applied);
   }
   await store.reload();
   return { renamed: res.applied.filter((m) => plan.some((p) => p.to === m.to)).length, errors: res.errors };
@@ -120,7 +122,15 @@ export async function undoRename(batch: db.RenameBatch) {
   const reverse = [...applied].reverse().map((m) => ({ from: m.to, to: m.from }));
   const res = await invoke<MoveResult>('apply_moves', { moves: reverse, withSidecars: false, roots });
   if (res.applied.length) await db.updateFilePaths(res.applied);
-  await db.markRenameUndone(batch.id);
+  // Files that couldn't be moved back (an offline share, a file in use) keep an undo record, so
+  // their original names aren't lost: the batch is only finished once everything is back.
+  const back = new Set(res.applied.map((m) => `${m.from}\n${m.to}`));
+  const left = applied.filter((m) => !back.has(`${m.to}\n${m.from}`));
+  if (!left.length) await db.markRenameUndone(batch.id);
+  else if (res.applied.length) {
+    await db.saveRenameBatch(batch.label ?? 'Rename', left, roots);
+    await db.markRenameUndone(batch.id);
+  }
   await useLibraryStore.getState().reload();
   return res;
 }

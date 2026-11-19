@@ -289,6 +289,10 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
 
 ADDED_COLUMNS.torrents = [['purpose', "TEXT NOT NULL DEFAULT 'media'"]];
 
+// Today's entries removed from Viewing activity are hidden, not deleted: they still count toward
+// the profile's daily limit (deleting them used to reset it).
+ADDED_COLUMNS.watch_log = [['hidden', 'INTEGER NOT NULL DEFAULT 0']];
+
 // Profile limits (added after profiles shipped).
 ADDED_COLUMNS.profiles = [
   ['daily_limit', 'INTEGER NOT NULL DEFAULT 0'],
@@ -1184,18 +1188,22 @@ export async function logWatchTime(
     `INSERT INTO watch_log (profile_id, media_type, media_id, day, seconds, title, series_id, series_title, genres,
        season_number, episode_number, poster)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-     ON CONFLICT(profile_id, media_type, media_id, day) DO UPDATE SET seconds = watch_log.seconds + excluded.seconds,
+     ON CONFLICT(profile_id, media_type, media_id, day) DO UPDATE SET seconds = watch_log.seconds + excluded.seconds, hidden = 0,
        title = excluded.title, series_title = excluded.series_title, genres = excluded.genres, poster = excluded.poster`,
     [profileId, type, id, day, seconds, meta.title, meta.series_id, meta.series_title, json(meta.genres), meta.season, meta.episode, meta.poster],
   );
 }
 
 export async function listWatchLog(profileId = activeProfile) {
-  return select<WatchLogRow[]>('SELECT * FROM watch_log WHERE profile_id = $1 ORDER BY day DESC', [profileId]);
+  return select<WatchLogRow[]>('SELECT * FROM watch_log WHERE profile_id = $1 AND hidden = 0 ORDER BY day DESC', [profileId]);
 }
 
+const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+/** Removes an entry from Viewing activity. Today's time still counts toward the daily limit. */
 export async function deleteWatchLogEntry(type: 'movie' | 'episode', id: number, day: string) {
-  await exec('DELETE FROM watch_log WHERE profile_id = $1 AND media_type = $2 AND media_id = $3 AND day = $4', [activeProfile, type, id, day]);
+  if (day === localDay()) await exec('UPDATE watch_log SET hidden = 1 WHERE profile_id = $1 AND media_type = $2 AND media_id = $3 AND day = $4', [activeProfile, type, id, day]);
+  else await exec('DELETE FROM watch_log WHERE profile_id = $1 AND media_type = $2 AND media_id = $3 AND day = $4', [activeProfile, type, id, day]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,6 +1244,12 @@ export async function setEpisodesWatched(ids: number[], watched: boolean) {
 
 export async function markSubtitleAttempt(table: 'movies' | 'episodes', id: number, result: 'found' | 'none') {
   await exec(`UPDATE ${table} SET subs_auto_at = CURRENT_TIMESTAMP, subs_auto_result = $2 WHERE id = $1`, [id, result]);
+}
+
+/** A title's markers as stored now (analysis runs for minutes; markers set by hand meanwhile must survive). */
+export async function currentSegments(table: 'movies' | 'episodes', id: number): Promise<string | null | undefined> {
+  const rows = await select<{ segments: string | null }[]>(`SELECT segments FROM ${table === 'movies' ? 'movies' : 'episodes'} WHERE id = $1`, [id]);
+  return rows.length ? rows[0].segments : undefined;
 }
 
 export async function saveSegments(id: number, segments: Segment[]) {

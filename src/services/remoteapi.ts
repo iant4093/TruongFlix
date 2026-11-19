@@ -569,11 +569,15 @@ async function progress(caller: Caller, profile: Profile, body: { type: 'movie' 
   // watched since (finishing a film on the PC, then reconnecting the phone, used to un-finish it).
   const at = Number(body.at);
   const newer = Number.isFinite(at) && at > 0 ? await db.lastWatchedAt(profile.id, type, id) : null;
-  if (newer == null || newer <= at) await db.recordProgress(type, id, time, duration, profile.id);
-  // Watch time counts toward daily limits; credit no more than the real time since the last report.
   const stream = ownedStream(body.token, caller);
+  // A paused browser keeps reporting the same place every few seconds: that isn't new progress, and
+  // saving it undid whatever happened since (finishing the film on the PC un-finished it).
+  const sameTitle = !!stream && stream.profile === profile.id && stream.type === type && stream.id === id;
+  const still = sameTitle && stream!.lastTime != null && Math.abs(time - stream!.lastTime) < 1;
+  if (!still && (newer == null || newer <= at)) await db.recordProgress(type, id, time, duration, profile.id);
+  // Watch time counts toward daily limits; credit no more than the real time since the last report.
   let watched = 0;
-  if (stream && stream.profile === profile.id && stream.type === type && stream.id === id) {
+  if (stream && sameTitle) {
     const now = Date.now();
     const cap = Math.min((now - stream.lastProgress) / 1000 + 5, 120);
     // Credited from what the browser says it watched, or from how far the video actually moved,
@@ -604,7 +608,7 @@ async function progress(caller: Caller, profile: Profile, body: { type: 'movie' 
     await db.logWatchTime(body.type, body.id, Math.min(body.watched, 120), meta, profile.id);
   }
   // Keep the desktop app's rows current when the same profile is open there.
-  if (useLibraryStore.getState().activeProfile?.id === profile.id) useLibraryStore.getState().patchProgress(type, id, time, duration);
+  if (!still && useLibraryStore.getState().activeProfile?.id === profile.id) useLibraryStore.getState().patchProgress(type, id, time, duration);
   const st = await limitStatus(profile);
   // A limit reached during playback stops the stream here too, not just in the browser.
   if (st.blocked) for (const [token, s] of [...sessions]) if (s.profile === profile.id) stopStream(token);

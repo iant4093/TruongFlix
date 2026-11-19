@@ -414,9 +414,22 @@ export async function setGameExe(gameId: number, exePath: string) {
   await patchGame(gameId, { exePath });
 }
 
+const samePlace = (a: string, b: string) => {
+  const norm = (p: string) => p.replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase() + '\\';
+  const [x, y] = [norm(a), norm(b)];
+  return x.startsWith(y) || y.startsWith(x);
+};
+
 export async function uninstallGame(gameId: number) {
   const game = gameById(gameId);
   if (!game?.installDir) return;
+  // An update or DLC installed as its own entry often shares the game's folder: uninstalling one
+  // would delete the other's files.
+  const sharing = useGamesStore.getState().games.find((g) => g.id !== gameId && g.installDir && samePlace(g.installDir, game.installDir!));
+  if (sharing) {
+    toast(`“${sharing.title}” is installed in the same folder, so TruongFlix can’t tell their files apart. Uninstall them from Windows Settings › Apps instead.`, 'error');
+    return;
+  }
   const jobId = newJobId(gameId);
   jobOwners.set(jobId, gameId);
   setJob(gameId, { jobId, phase: 'uninstalling', percent: null, status: 'Waiting for Windows permission…' });

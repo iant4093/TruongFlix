@@ -286,6 +286,13 @@ function countWatchTime(type: PlayableType, id: number, time: number, speed = 1)
   tick = { type, id, time, wall: now };
 }
 
+/**
+ * The profile that started what's playing. VLC and the mini-player leave the app usable, so the
+ * profile can be switched mid-film: progress, history and screen time stay with the one watching
+ * (they used to go to whichever profile was switched to: an adult film in the kids' history).
+ */
+let playingFor: number | undefined;
+
 async function flushWatchTime() {
   const seconds = pendingSeconds;
   const current = tick;
@@ -298,7 +305,7 @@ async function flushWatchTime() {
     const item = items.find((i) => i.kind === 'movie' && i.versions.some((v) => v.id === m.id));
     await logWatchTime('movie', m.id, seconds, {
       title: m.title, series_id: null, series_title: null, genres: item?.genres ?? [], season: null, episode: null, poster: m.poster_path,
-    }).catch(() => {});
+    }, playingFor).catch(() => {});
   } else {
     const e = episodes.find((x) => x.id === current.id);
     const s = e ? series.find((x) => x.id === e.series_id) : undefined;
@@ -306,7 +313,7 @@ async function flushWatchTime() {
     const item = items.find((i) => i.kind === 'tv' && i.id === s.id);
     await logWatchTime('episode', e.id, seconds, {
       title: e.title, series_id: s.id, series_title: s.title, genres: item?.genres ?? [], season: e.season_number, episode: e.episode_number, poster: s.poster_path,
-    }).catch(() => {});
+    }, playingFor).catch(() => {});
   }
 }
 
@@ -337,6 +344,7 @@ export async function playInVlc(target: PlayTarget) {
   const store = useLibraryStore.getState();
   if (refuseUnfinishedDownload(target)) return;
   try {
+    playingFor = store.activeProfile?.id;
     const [subtitlePath, sourcePath] = await Promise.all([subtitleFor(target), resolvePlaybackSource(target.filePath)]);
     await invoke('launch_vlc', {
       filePath: sourcePath,
@@ -416,8 +424,8 @@ async function saveBuiltinProgress() {
   if (!playerSession || playerSession.target.type === 'live' || !playerState?.loaded || !playerState.duration) return;
   const { type, id } = playerSession.target;
   const time = playerState.eof ? playerState.duration : playerState.time;
-  await recordProgress(type, id, time, playerState.duration).catch(() => {});
-  patchProgress(type, id, time, playerState.duration);
+  await recordProgress(type, id, time, playerState.duration, playingFor).catch(() => {});
+  if (playingFor === useLibraryStore.getState().activeProfile?.id) patchProgress(type, id, time, playerState.duration);
 }
 
 /** Opens (or switches the running player to) a movie/episode inside the TruongFlix window. */
@@ -429,6 +437,7 @@ export async function playBuiltin(target: PlayTarget) {
     await flushWatchTime();
     await flushLiveTime(); liveTick = null;
   }
+  playingFor = store.activeProfile?.id;
   const generation = ++openGeneration;
   const loadId = crypto.randomUUID();
   store.setPlayerSession({ ...describe(target), loadId });
@@ -1074,8 +1083,8 @@ export async function initPlayerEvents() {
         void flushWatchTime();
       }
       try {
-        await recordProgress(payload.media_type, payload.media_id, payload.time, payload.length);
-        store.patchProgress(payload.media_type, payload.media_id, payload.time, payload.length);
+        await recordProgress(payload.media_type, payload.media_id, payload.time, payload.length, playingFor);
+        if (playingFor === store.activeProfile?.id) store.patchProgress(payload.media_type, payload.media_id, payload.time, payload.length);
       } catch (e) {
         console.warn('[player] progress save failed', e);
       }
@@ -1083,7 +1092,7 @@ export async function initPlayerEvents() {
     listen<ExitedPayload>('vlc-exited', async ({ payload }) => {
       const store = useLibraryStore.getState();
       try {
-        await recordProgress(payload.media_type, payload.media_id, payload.final_time, payload.length);
+        await recordProgress(payload.media_type, payload.media_id, payload.final_time, payload.length, playingFor);
       } catch (e) {
         console.warn('[player] final save failed', e);
       }

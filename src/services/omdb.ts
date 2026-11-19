@@ -43,7 +43,7 @@ interface OmdbResponse {
 export async function fetchCriticScores(apiKey: string, imdbId: string): Promise<CriticScores> {
   let res: Response;
   try {
-    res = await fetch(`https://www.omdbapi.com/?i=${encodeURIComponent(imdbId)}&apikey=${encodeURIComponent(apiKey)}`);
+    res = await fetch(`https://www.omdbapi.com/?i=${encodeURIComponent(imdbId)}&apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(20_000) });
   } catch {
     throw new OmdbError('Couldn’t reach OMDb', 'network');
   }

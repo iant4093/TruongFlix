@@ -52,6 +52,9 @@ function describe(target: PlayTarget) {
 }
 
 /** Starts casting `target` from `start` seconds (stops local playback first). */
+/** The profile that started the cast: switching profiles on the PC doesn't move its progress. */
+let castFor: number | undefined;
+
 export async function castTo(device: CastDevice, target: PlayTarget, start = target.startTime, client?: StreamClient) {
   const store = useLibraryStore.getState();
   const limit = await limitStatus(store.activeProfile);
@@ -61,6 +64,7 @@ export async function castTo(device: CastDevice, target: PlayTarget, start = tar
   const row = rowFor(target);
   if (!row) return store.toast('That file isn’t in the library anymore', 'error');
   if (store.playerSession) await closeBuiltin();
+  castFor = store.activeProfile?.id;
   // The daily limit and bedtime are checked while it plays on the TV too, not only when it starts.
   startLimitWatch();
   if (token) releaseStream(token);
@@ -124,7 +128,7 @@ async function saveProgress(force = false) {
   if (!force && Date.now() - lastSaved < 10_000) return;
   lastSaved = Date.now();
   const absolute = cast.offset + cast.time;
-  await recordProgress(cast.target.type, cast.target.id, absolute, cast.duration).catch(() => {});
+  await recordProgress(cast.target.type, cast.target.id, absolute, cast.duration, castFor).catch(() => {});
   useLibraryStore.getState().patchProgress(cast.target.type, cast.target.id, absolute, cast.duration);
 }
 
@@ -151,7 +155,7 @@ export async function initCastEvents() {
       if (lastTick && payload.time > lastTick.time && payload.time - lastTick.time < (now - lastTick.at) / 1000 + 3) {
         const seconds = payload.time - lastTick.time;
         const info = describe(cast.target);
-        void logWatchTime(cast.target.type, cast.target.id, seconds, { title: info.subtitle?.split(' · ')[1] ?? info.title, series_id: null, series_title: cast.target.type === 'episode' ? info.title : null, genres: [], season: null, episode: null, poster: null });
+        void logWatchTime(cast.target.type, cast.target.id, seconds, { title: info.subtitle?.split(' · ')[1] ?? info.title, series_id: null, series_title: cast.target.type === 'episode' ? info.title : null, genres: [], season: null, episode: null, poster: null }, castFor);
       }
       lastTick = { time: payload.time, at: now };
       void saveProgress();
@@ -160,7 +164,7 @@ export async function initCastEvents() {
     }
     if (payload.state === 'paused') void saveProgress(true);
     if (payload.state === 'ended') {
-      void recordProgress(cast.target.type, cast.target.id, cast.duration, cast.duration).then(() => useLibraryStore.getState().reload());
+      void recordProgress(cast.target.type, cast.target.id, cast.duration, cast.duration, castFor).then(() => useLibraryStore.getState().reload());
       if (cast.next) void castTo(cast.device, cast.next, 0);
     }
   });

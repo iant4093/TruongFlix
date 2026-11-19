@@ -527,7 +527,12 @@ function handleProfileSql(q: string, values: unknown[]): unknown | undefined {
   }
   if (q.includes('FROM profile_state') || q.includes('INTO profile_state')) return q.startsWith('SELECT') ? [] : [1, 0];
   if (q.startsWith('SELECT series_id FROM episodes WHERE id')) return episodes.filter((e) => e.id === values[0]).map((e) => ({ series_id: e.series_id }));
-  if (q.startsWith('SELECT * FROM watch_log')) return watchLog.filter((w) => w.profile_id === values[0]).sort((a, b) => b.day.localeCompare(a.day));
+  if (q.startsWith('UPDATE watch_log SET hidden = 1')) {
+    const row = watchLog.find((w) => w.profile_id === values[0] && w.media_type === values[1] && w.media_id === values[2] && w.day === values[3]);
+    if (row) (row as { hidden?: number }).hidden = 1;
+    return [1, 0];
+  }
+  if (q.startsWith('SELECT * FROM watch_log')) return watchLog.filter((w) => w.profile_id === values[0] && !(w as { hidden?: number }).hidden).sort((a, b) => b.day.localeCompare(a.day));
   if (q.startsWith('INSERT INTO watch_log')) {
     const [profile_id, media_type, media_id, day, seconds, title, series_id, series_title, genres, season_number, episode_number, poster] = values as never[];
     const row = watchLog.find((w) => w.profile_id === profile_id && w.media_type === media_type && w.media_id === media_id && w.day === day);

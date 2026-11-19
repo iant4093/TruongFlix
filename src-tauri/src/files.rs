@@ -1,7 +1,7 @@
 //! Library file management: tidying loose files into folders, and a per-library
 //! "Recently Deleted" trash that lives on the same volume (so deleting is an instant rename).
 
-use crate::scanner::{has_video_extension, is_hidden_name, is_hidden_or_system, is_library_video};
+use crate::scanner::{has_video_extension, is_hidden_name, is_library_video};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -360,19 +360,36 @@ pub(crate) fn dir_path(s: &str) -> PathBuf {
     }
 }
 
-fn videos_under(dir: &Path) -> Vec<PathBuf> {
-    WalkDir::new(dir)
-        .into_iter()
-        .filter_entry(|e| !is_hidden_or_system(e))
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file() && is_video(e.path()))
-        .map(|e| e.into_path())
-        .collect()
+/// Files that only exist for the videos next to them: deleting a title may take them along.
+const TITLE_EXTRAS: &[&str] = &["sup", "smi", "tbn", "sfv", "md5", "gif", "bmp", "nzb", "torrent", "url"];
+
+/// Whether a folder holds nothing but these videos and things that belong to them (subtitles,
+/// artwork, .nfo, samples and trailers, Thumbs.db). Anything else (other videos, documents,
+/// photos, archives, music) means the folder isn't the title's to take: only counting videos
+/// used to send a downloads folder's other files to the trash (and on to deletion 30 days later).
+fn owned_folder(dir: &Path, wanted: &HashSet<&PathBuf>) -> bool {
+    WalkDir::new(dir).into_iter().all(|entry| {
+        let Ok(e) = entry else { return false }; // unreadable: don't take it
+        if !e.file_type().is_file() {
+            return true;
+        }
+        let p = e.path();
+        if wanted.contains(&p.to_path_buf()) || is_sidecar(p) {
+            return true;
+        }
+        let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+        let ext = p.extension().map(|x| x.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        matches!(name.as_str(), "thumbs.db" | "desktop.ini" | ".ds_store")
+            || name.starts_with("._")
+            || TITLE_EXTRAS.contains(&ext.as_str())
+            // A sample or trailer the library skips (it would be a title of its own otherwise).
+            || (has_video_extension(p) && !is_video(p))
+    })
 }
 
 /// Decides what to move for a set of videos: the highest folder (below the media root) that
-/// contains nothing but these videos — e.g. a movie's folder or a whole show — otherwise
-/// just the video files plus their sidecars.
+/// contains nothing but these videos and their extras — e.g. a movie's folder or a whole show —
+/// otherwise just the video files plus their sidecars.
 fn plan_trash(videos: &[PathBuf], root: &Path, files_only: bool) -> Vec<PathBuf> {
     let wanted: HashSet<&PathBuf> = videos.iter().collect();
     let mut owned_cache: HashMap<PathBuf, bool> = HashMap::new();
@@ -386,7 +403,7 @@ fn plan_trash(videos: &[PathBuf], root: &Path, files_only: bool) -> Vec<PathBuf>
             }
             let owned = *owned_cache
                 .entry(dir.to_path_buf())
-                .or_insert_with(|| videos_under(dir).iter().all(|v| wanted.contains(v)));
+                .or_insert_with(|| owned_folder(dir, &wanted));
             if !owned {
                 break;
             }
@@ -834,6 +851,20 @@ mod tests {
         assert_eq!(plan_trash(&[e1.clone(), e2.clone()], &shows_root, false), [root.join("Shows/Severance")]);
         // Loose file in the root: file + its own sidecar only (not Loose.Movie.Two).
         assert_eq!(plan_trash(&[loose.clone()], &root, false), [root.join("Loose.Movie.en.srt"), loose.clone()]);
+        // A folder that also holds other files (a downloads folder) isn't taken: just the movie.
+        let shared = root.join("Downloads/Heat.1995.mkv");
+        touch(&shared, BIG);
+        touch(&root.join("Downloads/taxes-2025.pdf"), 10);
+        touch(&root.join("Downloads/Heat.1995.nfo"), 10);
+        let planned = plan_trash(&[shared.clone()], &root, false);
+        assert_eq!(planned.len(), 2);
+        assert!(planned.contains(&shared) && planned.contains(&root.join("Downloads/Heat.1995.nfo")));
+        // Its own folder with a sample and artwork still goes whole.
+        let own = root.join("Films/Ronin (1998)/Ronin.mkv");
+        touch(&own, BIG);
+        touch(&root.join("Films/Ronin (1998)/Sample/ronin-sample.mkv"), 10);
+        touch(&root.join("Films/Ronin (1998)/poster.jpg"), 10);
+        assert_eq!(plan_trash(&[own.clone()], &root.join("Films"), false), [root.join("Films/Ronin (1998)")]);
 
         let res = trash_paths(&[e1.clone(), e2.clone()], &shows_root, false).unwrap();
         assert!(!root.join("Shows/Severance").exists());

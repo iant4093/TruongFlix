@@ -9,6 +9,8 @@ import { downloadSubtitle, searchSubtitles, subtitlesEnabled, type SubtitleResul
 const RETRY_DAYS = 14;
 /** At most this many downloads per run (the daily allowance is usually 5–20). */
 const MAX_PER_RUN = 10;
+/** Searches per run (each also hashes the file): a big library with few subtitles is worked through over several runs instead of thousands of searches at once. */
+const MAX_SEARCHES_PER_RUN = 40;
 
 export interface AutoSubsResult {
   downloaded: number;
@@ -76,16 +78,23 @@ export async function runAutoSubtitles(manual = false): Promise<AutoSubsResult> 
     const missing = await findMissingSubtitles(files, infos, language);
     const recentlyTried = (r: { subs_auto_at: string | null; subs_auto_result: string | null } | undefined) =>
       !!r?.subs_auto_at && r.subs_auto_result === 'none' && Date.now() - Date.parse(r.subs_auto_at.replace(' ', 'T') + 'Z') < RETRY_DAYS * 864e5;
-    const rowOf = (f: HealthFile) => (f.kind === 'movie' ? movies.find((m) => m.id === f.id) : episodes.find((e) => e.id === f.id));
+    // Looked up once (a search per comparison froze the window on big libraries).
+    const movieById = new Map(movies.map((m) => [m.id, m]));
+    const episodeById = new Map(episodes.map((e) => [e.id, e]));
+    const rowOf = (f: HealthFile) => (f.kind === 'movie' ? movieById.get(f.id) : episodeById.get(f.id));
     // In-progress titles first, then the most recently added.
     const score = (f: HealthFile) => {
       const r = rowOf(f);
       return (r?.progress_seconds ? 2e12 : 0) + (r?.last_watched_at ? 1e12 : 0) + Date.parse((r && 'created_at' in r ? r.created_at : '') || '0') / 1000;
     };
-    const queue = missing.filter((f) => !recentlyTried(rowOf(f))).sort((a, b) => score(b) - score(a));
+    const queue = missing
+      .filter((f) => !recentlyTried(rowOf(f)))
+      .map((f) => ({ f, s: score(f) }))
+      .sort((a, b) => b.s - a.s)
+      .map((x) => x.f);
 
     for (const file of queue) {
-      if (result.downloaded >= MAX_PER_RUN) break;
+      if (result.downloaded >= MAX_PER_RUN || result.checked >= MAX_SEARCHES_PER_RUN) break;
       if (!manual && useLibraryStore.getState().playerSession) break; // don't compete with playback
       const target = targetFor(file, movies, episodes);
       if (!target) continue;

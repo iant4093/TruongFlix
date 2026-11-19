@@ -105,7 +105,8 @@ async function probeFiles() {
         touched(await db.markProbeFailed(table, row.id, row.file_mtime, info.error, info.size ?? null));
         continue;
       }
-      const existing = parseSegments(row.segments);
+      const now = await db.currentSegments(table, row.id).catch(() => undefined);
+      const existing = parseSegments(now === undefined ? row.segments : now);
       // Markers set by hand always win; audio-detected ones stay unless the chapters now cover them.
       const manual = existing.filter((s) => s.source === 'manual');
       const fromChapters = segmentsFromChapters(info).filter((c) => !manual.some((m) => m.kind === c.kind));
@@ -248,7 +249,9 @@ async function detectIntros() {
         if (!found) continue;
         for (const [k, e] of group.entries()) {
           const seg = found[k];
-          const existing = parseSegments(e.segments);
+          // Read again: detection takes minutes, and an intro or credits set by hand meanwhile stays.
+          const now = await db.currentSegments('episodes', e.id).catch(() => undefined);
+          const existing = parseSegments(now === undefined ? e.segments : now);
           const isPending = pending.includes(e);
           if (existing.some((s) => s.kind === 'intro' && s.source === 'manual')) {
             if (isPending) touched(await db.markIntroChecked([e.id])); // never replace an intro set by hand

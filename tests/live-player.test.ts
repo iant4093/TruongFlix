@@ -228,7 +228,7 @@ it('preserves a movie resume point while its close saves in the background', asy
   vi.mocked(db.recordProgress).mockImplementation(() => new Promise<void>((resolve) => { resolveSave = resolve; }));
   const closing = closeBuiltin();
   expect(useLibraryStore.getState().playerSession).toBeNull();
-  expect(db.recordProgress).toHaveBeenCalledWith('movie', 42, 50, 120);
+  expect(db.recordProgress).toHaveBeenCalledWith('movie', 42, 50, 120, undefined);
   resolveSave();
   await closing;
   expect(invoke).toHaveBeenCalledWith('player_close');
