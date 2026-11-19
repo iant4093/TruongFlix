@@ -9,7 +9,8 @@ export interface MusicApi {
   /** `refresh` looks online again even if the song wasn't found last time. */
   lyrics(trackId: number, refresh?: boolean): Promise<MusicLyrics | null>;
   /** A URL the player can load for this song. */
-  stream(track: MusicTrack): Promise<MusicStream>;
+  /** `keep`: the stream URLs the player still uses (playing and preloaded), never released for this one. */
+  stream(track: MusicTrack, keep?: string[]): Promise<MusicStream>;
   /** The song was listened to (counts toward Listen Now and plays). */
   played(trackId: number): Promise<void>;
   setFavourite(trackId: number, value: boolean): Promise<void>;
@@ -58,7 +59,7 @@ export function httpMusicApi(fetcher: Fetcher, who: { id: number; key?: string }
   return {
     library: () => fetcher<MusicLibrary>(`/music/library${query}`),
     lyrics: (trackId, refresh) => fetcher<MusicLyrics | null>(`/music/lyrics${query}&id=${trackId}${refresh ? '&refresh=1' : ''}`),
-    stream: (track) => post<MusicStream>('/music/stream', { id: track.id, codecs: (codecs ??= playableCodecs()) }),
+    stream: (track, keep = []) => post<MusicStream>('/music/stream', { id: track.id, codecs: (codecs ??= playableCodecs()), keep }),
     played: (trackId) => post<unknown>('/music/played', { id: trackId }).then(() => undefined),
     setFavourite: (trackId, value) => post<unknown>('/music/favourite', { id: trackId, value }).then(() => undefined),
     createPlaylist: (name, trackIds = []) => post<MusicPlaylist>('/music/playlists/create', { name, trackIds }),

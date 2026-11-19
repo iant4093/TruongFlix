@@ -155,10 +155,16 @@ export interface MusicFile {
   error: string | null;
 }
 
-export async function musicFileIndex(): Promise<Map<string, { id: number; mtime: number }>> {
+export async function musicFileIndex(): Promise<Map<string, { id: number; mtime: number; size: number }>> {
   const db = await musicDb();
-  const rows = await db.select<{ id: number; file_path: string; file_mtime: number }[]>('SELECT id, file_path, file_mtime FROM music_tracks');
-  return new Map(rows.map((r) => [r.file_path, { id: r.id, mtime: r.file_mtime }]));
+  const rows = await db.select<{ id: number; file_path: string; file_mtime: number; file_size: number | null }[]>('SELECT id, file_path, file_mtime, file_size FROM music_tracks');
+  return new Map(rows.map((r) => [r.file_path, { id: r.id, mtime: r.file_mtime, size: r.file_size ?? 0 }]));
+}
+
+/** A song moved or renamed: its row (playlists, plays, favourites) follows it to the new path. */
+export async function relinkMusicPaths(moves: { from: string; to: string }[]) {
+  const db = await musicDb();
+  for (const { from, to } of moves) await db.execute('UPDATE music_tracks SET file_path = $2 WHERE file_path = $1', [from, to]);
 }
 
 async function ensureArtist(db: Database, cache: Map<string, number>, name: string): Promise<number> {
@@ -269,6 +275,21 @@ export async function upsertMusicFiles(files: MusicFile[], now = Date.now(), roo
     ]);
   }
   const PER_STATEMENT = 40;
+  // Songs whose title, artist or length changed lose their cached online lyrics (they were looked
+  // up for the old tags, so a wrong match used to stay after the tags were fixed).
+  const retagged: number[] = [];
+  for (let i = 0; i < rows.length; i += PER_STATEMENT) {
+    const chunk = rows.slice(i, i + PER_STATEMENT);
+    const before = await db.select<{ id: number; file_path: string; title: string; artist_id: number; duration: number }[]>(
+      `SELECT id, file_path, title, artist_id, duration FROM music_tracks WHERE file_path IN (${chunk.map((_, k) => `$${k + 1}`).join(', ')})`,
+      chunk.map((r) => r[0]),
+    );
+    const old = new Map(before.map((r) => [r.file_path, r]));
+    for (const r of chunk) {
+      const o = old.get(r[0] as string);
+      if (o && (o.title !== r[3] || o.artist_id !== r[4] || Math.abs((o.duration || 0) - (r[10] as number)) > 2)) retagged.push(o.id);
+    }
+  }
   for (let i = 0; i < rows.length; i += PER_STATEMENT) {
     const chunk = rows.slice(i, i + PER_STATEMENT);
     const width = chunk[0].length;
@@ -285,6 +306,10 @@ export async function upsertMusicFiles(files: MusicFile[], now = Date.now(), roo
   }
   // Changed lyrics may make a cached online lookup obsolete.
   await db.execute(`DELETE FROM music_lyrics_cache WHERE track_id IN (SELECT id FROM music_tracks WHERE lyrics IS NOT NULL)`);
+  for (let i = 0; i < retagged.length; i += 500) {
+    const ids = retagged.slice(i, i + 500);
+    await db.execute(`DELETE FROM music_lyrics_cache WHERE track_id IN (${ids.map((_, k) => `$${k + 1}`).join(', ')})`, ids);
+  }
 }
 
 /** Removes songs whose files are gone, with their playlist entries, plays and favourites. */

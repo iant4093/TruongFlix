@@ -48,7 +48,7 @@ export async function musicRoute(caller: Caller, profile: Profile, method: strin
       if (!reg) throw new ApiError(404, 'Not found');
       let ring = rings.get(caller.session);
       if (!ring) rings.set(caller.session, (ring = new StreamRing()));
-      ring.add(reg.token);
+      ring.add(reg.token, Array.isArray(body.keep) ? body.keep.slice(0, 4).map(String) : []);
       const url = await streamUrl(reg.token, 0);
       return { url: url.path, transcoded: reg.transcoded };
     }

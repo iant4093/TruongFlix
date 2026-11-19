@@ -189,7 +189,15 @@ function wire(slot: Slot) {
   el.addEventListener('seeking', () => mine() && (stalledAt = null));
   el.addEventListener('canplay', () => mine() && set({ loading: false }));
   el.addEventListener('ended', () => mine() && onEnded());
-  el.addEventListener('error', () => mine() && el.src !== silentUrl && onError());
+  el.addEventListener('error', () => {
+    if (el.src === silentUrl) return;
+    if (mine()) onError();
+    // A preload that failed isn't used: the song loads normally when its turn comes.
+    else if (slot.key) {
+      slot.key = null;
+      slot.url = null;
+    }
+  });
 }
 
 function maybeCount() {
@@ -206,7 +214,8 @@ function maybeCount() {
 async function urlFor(track: MusicTrack): Promise<string> {
   const api = get().api;
   if (!api) throw new Error('Music isn’t ready');
-  return (await api.stream(track)).url;
+  const inUse = (slots ?? []).map((s) => s.url).filter((u): u is string => !!u);
+  return (await api.stream(track, inUse)).url;
 }
 
 /** Starts fetching the next song a little before this one ends. */
@@ -253,7 +262,7 @@ async function load(item: Q.QueueItem | null, autoplay: boolean, startAt = 0) {
   set({ track, time: startAt, duration: track.duration, loading: true, error: null });
   updateMediaSession();
   const spare = spareSlot();
-  if (spare.key === item.key && spare.url) {
+  if (spare.key === item.key && spare.url && !spare.el.error) {
     // Preloaded: swap elements so the next song starts right away.
     prev.el.pause();
     prev.key = null;
@@ -261,7 +270,7 @@ async function load(item: Q.QueueItem | null, autoplay: boolean, startAt = 0) {
     const el = spare.el;
     if (startAt) el.currentTime = startAt;
     else if (el.currentTime) el.currentTime = 0;
-    if (autoplay) await el.play().catch(() => set({ playing: false, loading: false }));
+    if (autoplay) await el.play().catch((e) => seq === loadSeq && set({ playing: false, loading: false, error: e?.name === 'NotAllowedError' ? null : 'This song couldn’t be played' }));
     else set({ loading: false });
     return;
   }

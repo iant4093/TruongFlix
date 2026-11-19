@@ -7,6 +7,7 @@ import { initMusicPlayer, pause, stopMusic, useMusicPlayer } from '../music/play
 import type { MusicLyrics, MusicStream } from '../music/types';
 import { registerStream, releaseStream, streamUrl } from './streaming';
 import * as mdb from './musicdb';
+import { pairMoved } from '../lib/relink';
 
 /**
  * The desktop side of Music: scanning the music folders, lyrics (from the files, or Kugou / NetEase / LRCLIB),
@@ -101,9 +102,15 @@ export async function registerMusicStream(trackId: number, codecs: string[]): Pr
 export class StreamRing {
   private tokens: string[] = [];
   constructor(private keep = 3) {}
-  add(token: string) {
+  /** Releases the oldest streams beyond `keep`, except any still in one of the player's `inUse` URLs
+   * (skipping around while a song plays used to release the playing song's stream). */
+  add(token: string, inUse: string[] = []) {
     this.tokens.push(token);
-    while (this.tokens.length > this.keep) releaseStream(this.tokens.shift()!);
+    const used = (t: string) => inUse.some((u) => typeof u === 'string' && u.includes(t));
+    for (let i = 0; this.tokens.length > this.keep && i < this.tokens.length - 1; ) {
+      if (used(this.tokens[i])) i++;
+      else releaseStream(this.tokens.splice(i, 1)[0]);
+    }
   }
   clear() {
     for (const t of this.tokens) releaseStream(t);
@@ -115,10 +122,10 @@ const desktopStreams = new StreamRing();
 let serverPort = 0;
 let codecs: string[] | null = null;
 
-async function desktopStream(trackId: number): Promise<MusicStream> {
+async function desktopStream(trackId: number, keep: string[] = []): Promise<MusicStream> {
   const reg = await registerMusicStream(trackId, (codecs ??= playableCodecs()));
   if (!reg) throw new Error('This song is no longer in your library');
-  desktopStreams.add(reg.token);
+  desktopStreams.add(reg.token, keep);
   const url = await streamUrl(reg.token, 0, '127.0.0.1');
   serverPort = Number(new URL(url.url).port) || serverPort;
   return { url: url.url, transcoded: reg.transcoded };
@@ -140,7 +147,7 @@ function localApi(artDir: string): MusicApi {
   return {
     library: () => mdb.loadMusic(profileId()),
     lyrics: (id, refresh) => lyricsFor(id, undefined, refresh),
-    stream: (track) => desktopStream(track.id),
+    stream: (track, keep) => desktopStream(track.id, keep),
     played: async (id) => {
       await mdb.recordPlay(profileId(), id);
     },
@@ -237,6 +244,8 @@ export function goneMusicPaths(indexed: string[], seen: Set<string>, dirs: strin
 }
 
 let scanning = false;
+/** A scan asked for while one ran (a folder was just added, say): run once that one finishes. */
+let queued: { force?: boolean; quiet?: boolean } | null = null;
 
 /** Bumped when matching changes, so existing libraries are regrouped on the next scan. */
 const MATCH_VERSION = 2;
@@ -261,7 +270,10 @@ export const useMusicScan = create<{ running: boolean }>(() => ({ running: false
 
 /** Reads new and changed songs in the music folders; runs alongside the video scan. */
 export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = {}) {
-  if (scanning) return;
+  if (scanning) {
+    queued = { force: !!(queued?.force || opts.force), quiet: (queued?.quiet ?? true) && !!opts.quiet };
+    return;
+  }
   const { settings, toast } = useLibraryStore.getState();
   const dirs = settings.music_directories ?? [];
   scanning = true;
@@ -278,6 +290,19 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
     const rematch = !!index.size && readMatchVersion() < MATCH_VERSION;
     const force = !!opts.force || rematch;
     const res = roots.length ? await invoke<MusicScanResult>('music_scan', { paths: roots, known, force }) : { seen: [], changed: [], unreadable: [] };
+    // Songs moved or renamed since the last scan keep their row (and history) at the new path.
+    const vanished = goneMusicPaths([...index.keys()], new Set(res.seen), dirs, offline, res.unreadable ?? [], !!opts.force);
+    const moved = pairMoved(
+      vanished.filter((p) => index.has(p)).map((p) => ({ path: p, size: index.get(p)!.size })),
+      res.changed.filter((f) => !index.has(f.file_path)).map((f) => ({ path: f.file_path, size: f.file_size })),
+    );
+    if (moved.length) {
+      await mdb.relinkMusicPaths(moved);
+      for (const { from, to } of moved) {
+        index.set(to, index.get(from)!);
+        index.delete(from);
+      }
+    }
     const added = res.changed.filter((f) => !index.has(f.file_path)).length;
     await mdb.upsertMusicFiles(res.changed, Date.now(), dirs);
     if (roots.length && !offline.length) writeMatchVersion();
@@ -297,5 +322,8 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
   } finally {
     scanning = false;
     useMusicScan.setState({ running: false });
+    const next = queued;
+    queued = null;
+    if (next) void runMusicScan(next);
   }
 }

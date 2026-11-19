@@ -39,6 +39,28 @@ const PORTABLE_TABLES: &[&str] = &[
     "season_cache",
     "live_data",
     "live_viewing",
+    // Music (shared song index, then each profile's playlists, plays and favourites).
+    "music_artists",
+    "music_albums",
+    "music_tracks",
+    "music_playlists",
+    "music_playlist_tracks",
+    "music_plays",
+    "music_favourites",
+    "music_lyrics_cache",
+];
+
+/// Tables a backup may not have (made before the feature existed) or this computer may not have yet
+/// (Music never opened): skipped instead of refusing the restore.
+const OPTIONAL_TABLES: &[&str] = &[
+    "music_artists",
+    "music_albums",
+    "music_tracks",
+    "music_playlists",
+    "music_playlist_tracks",
+    "music_plays",
+    "music_favourites",
+    "music_lyrics_cache",
 ];
 
 /// Account keys, passwords and the browser access code never leave this computer in a backup;
@@ -378,7 +400,16 @@ async fn remap_folders(
         ("episodes", "file_path"),
         ("tv_series", "folder_path"),
         ("subtitles", "file_path"),
+        ("music_tracks", "file_path"),
     ] {
+        // Music's tables only exist once Music has been opened.
+        let exists: Option<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+            .bind(table)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if exists.is_none() {
+            continue;
+        }
         let read = format!("SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL");
         let update = format!("UPDATE {table} SET {column} = ? WHERE rowid = ?");
         let rows: Vec<(i64, String)> = sqlx::query_as(&read).fetch_all(&mut *tx).await?;
@@ -392,13 +423,13 @@ async fn remap_folders(
             }
         }
     }
-    let rows = sqlx::query("SELECT key, value FROM settings WHERE key IN ('media_directories', 'network_shares', 'torrent_movies_dir', 'torrent_tv_dir')")
+    let rows = sqlx::query("SELECT key, value FROM settings WHERE key IN ('media_directories', 'music_directories', 'network_shares', 'torrent_movies_dir', 'torrent_tv_dir')")
         .fetch_all(&mut *tx).await?;
     for row in rows {
         let key: String = row.get(0);
         let raw: String = row.get(1);
         let next = match key.as_str() {
-            "media_directories" => serde_json::from_str::<Vec<String>>(&raw)
+            "media_directories" | "music_directories" => serde_json::from_str::<Vec<String>>(&raw)
                 .ok()
                 .map(|folders| {
                     let folders: Vec<_> = folders
@@ -452,10 +483,21 @@ async fn columns(db: &mut SqliteConnection, table: &str) -> Result<Vec<String>, 
         .await
 }
 
+/// Columns of a table here that must be given a value (NOT NULL, no default, not the row id).
+async fn required_columns(db: &mut SqliteConnection, table: &str) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1 AND dflt_value IS NULL AND pk = 0")
+        .bind(table)
+        .fetch_all(db)
+        .await
+}
+
+/// For each portable table, the columns to copy: those both the backup and this computer have.
+/// Columns added by a later update just take their defaults (a backup used to be refused after any
+/// update that added a column). `None`: an optional table one side doesn't have, left as it is.
 async fn check_schema(
     source: &mut SqliteConnection,
     destination: &mut SqliteConnection,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<Vec<Option<Vec<String>>>, String> {
     let mut tables = Vec::new();
     for table in PORTABLE_TABLES {
         let source_cols = columns(source, table)
@@ -464,10 +506,20 @@ async fn check_schema(
         let dest_cols = columns(destination, table)
             .await
             .map_err(|error| error.to_string())?;
-        if dest_cols.is_empty() || !dest_cols.iter().all(|column| source_cols.contains(column)) {
+        if OPTIONAL_TABLES.contains(table) && (source_cols.is_empty() || dest_cols.is_empty()) {
+            tables.push(None);
+            continue;
+        }
+        if dest_cols.is_empty() || source_cols.is_empty() {
             return Err(format!("The backup is missing required data in {table}."));
         }
-        tables.push(dest_cols);
+        let required = required_columns(destination, table)
+            .await
+            .map_err(|error| error.to_string())?;
+        if required.iter().any(|column| !source_cols.contains(column)) {
+            return Err(format!("The backup is missing required data in {table}."));
+        }
+        tables.push(Some(dest_cols.into_iter().filter(|column| source_cols.contains(column)).collect()));
     }
     Ok(tables)
 }
@@ -605,7 +657,10 @@ async fn apply_restore(dir: &Path, pending: &Path, local_secrets: &[String]) -> 
 
     let mut tx = dest.begin().await.map_err(|error| error.to_string())?;
     let secrets = secret_list();
-    for table in PORTABLE_TABLES.iter().rev() {
+    for (table, columns) in PORTABLE_TABLES.iter().zip(&column_sets).rev() {
+        if columns.is_none() {
+            continue; // an optional table one side doesn't have: what's here stays
+        }
         // Secrets set on this computer stay; older backups may still fill in missing ones.
         let keep = if *table == "settings" { format!(" WHERE key NOT IN ({secrets})") } else { String::new() };
         sqlx::query(&format!("DELETE FROM main.{table}{keep}"))
@@ -614,6 +669,7 @@ async fn apply_restore(dir: &Path, pending: &Path, local_secrets: &[String]) -> 
             .map_err(|error| error.to_string())?;
     }
     for (table, columns) in PORTABLE_TABLES.iter().zip(column_sets) {
+        let Some(columns) = columns else { continue };
         // The identifiers come from the live schema, not from the backup file.
         let columns = columns
             .iter()
@@ -699,7 +755,7 @@ mod tests {
             INSERT INTO settings VALUES ('media_directories', '[\"/old/Movies\"]');
             CREATE TABLE profiles(id INTEGER PRIMARY KEY, name TEXT);
             INSERT INTO profiles VALUES (1, 'Saved profile');
-            CREATE TABLE movies(id INTEGER PRIMARY KEY, file_path TEXT UNIQUE);
+            CREATE TABLE movies(id INTEGER PRIMARY KEY, file_path TEXT UNIQUE NOT NULL);
             INSERT INTO movies VALUES (42, '/old/Movies/Favorites/Film.mkv');
             CREATE TABLE tv_series(id INTEGER PRIMARY KEY, folder_path TEXT);
             CREATE TABLE episodes(id INTEGER PRIMARY KEY, file_path TEXT);
@@ -902,6 +958,20 @@ mod tests {
                 .unwrap(),
             42
         );
+    }
+
+    #[tokio::test]
+    async fn restores_a_backup_made_before_a_column_was_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = fixture(dir.path()).await;
+        let backup = dir.path().join(PENDING);
+        snapshot(&dir.path().join(DB), &backup).await.unwrap();
+        // This computer has since gained a column the backup doesn't have.
+        sqlx::raw_sql("ALTER TABLE movies ADD COLUMN stinger TEXT").execute(&mut db).await.unwrap();
+        db.close().await.unwrap();
+        apply_restore(dir.path(), &backup, &[]).await.unwrap();
+        let mut db = connect(&dir.path().join(DB), false, false).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT id FROM movies").fetch_one(&mut db).await.unwrap(), 42);
     }
 
     #[test]

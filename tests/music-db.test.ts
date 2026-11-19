@@ -83,7 +83,7 @@ describe('music library tables', () => {
     expect(lib.albums.map((a) => a.title).sort()).toEqual(['Neon', 'loose']); // "Echo" had no songs left
     expect(lib.playlists.find((p) => p.id === pl.id)!.trackIds).toEqual([t.Intro.id]);
     const index = await mdb.musicFileIndex();
-    expect(index.get('/m/A/01 Intro.mp3')).toEqual({ id: t.Intro.id, mtime: 2 });
+    expect(index.get('/m/A/01 Intro.mp3')).toMatchObject({ id: t.Intro.id, mtime: 2 });
   });
 
   it('keeps featured artists and compilations on one album', async () => {

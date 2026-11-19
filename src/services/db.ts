@@ -746,17 +746,18 @@ export interface IndexedFile {
   type: 'movie' | 'episode';
   id: number;
   mtime: number;
+  size: number;
 }
 
 /** file_path -> existing row, used for incremental diffing. */
 export async function getFileIndex(): Promise<Map<string, IndexedFile>> {
   const [movies, episodes] = await Promise.all([
-    select<{ id: number; file_path: string; file_mtime: number }[]>('SELECT id, file_path, file_mtime FROM movies'),
-    select<{ id: number; file_path: string; file_mtime: number }[]>('SELECT id, file_path, file_mtime FROM episodes'),
+    select<{ id: number; file_path: string; file_mtime: number; file_size: number | null }[]>('SELECT id, file_path, file_mtime, file_size FROM movies'),
+    select<{ id: number; file_path: string; file_mtime: number; file_size: number | null }[]>('SELECT id, file_path, file_mtime, file_size FROM episodes'),
   ]);
   const map = new Map<string, IndexedFile>();
-  for (const m of movies) map.set(m.file_path, { type: 'movie', id: m.id, mtime: m.file_mtime });
-  for (const e of episodes) map.set(e.file_path, { type: 'episode', id: e.id, mtime: e.file_mtime });
+  for (const m of movies) map.set(m.file_path, { type: 'movie', id: m.id, mtime: m.file_mtime, size: m.file_size ?? 0 });
+  for (const e of episodes) map.set(e.file_path, { type: 'episode', id: e.id, mtime: e.file_mtime, size: e.file_size ?? 0 });
   return map;
 }
 

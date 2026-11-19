@@ -449,6 +449,14 @@ async fn get(client: &Client, url: &Url, transport: &Transport) -> Result<Respon
             retry_after: seconds,
         });
     }
+    // Refused or a server error says nothing about whether the channel is on the air (many providers
+    // refuse probes, or are briefly overloaded): the channel keeps the health it had.
+    if status == 401 || status == 403 || (500..600).contains(&status) {
+        return Err(result(
+            "unknown",
+            &format!("HTTP {status} — couldn’t check"),
+        ));
+    }
     if !response.status().is_success() {
         return Err(result(
             "failed",

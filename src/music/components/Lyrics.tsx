@@ -57,7 +57,9 @@ useMusicPlayer.subscribe((s) => {
 /** Lyrics for a song (kept for a while; a miss is asked again next time). `retry` searches online again. */
 export function useLyrics(trackId: number | null) {
   const api = useMusicPlayer((s) => s.api);
-  const [attempt, setAttempt] = useState(0);
+  // "Search again" applies to the song it was tapped on, not to every song after it.
+  const [retried, setRetried] = useState<{ id: number | null; n: number }>({ id: null, n: 0 });
+  const attempt = retried.id === trackId ? retried.n : 0;
   const [state, setState] = useState<{ id: number | null; lyrics: MusicLyrics | null; loading: boolean }>({ id: null, lyrics: null, loading: false });
   useEffect(() => {
     if (trackId == null || !api) return setState({ id: null, lyrics: null, loading: false });
@@ -76,7 +78,7 @@ export function useLyrics(trackId: number | null) {
       live = false;
     };
   }, [trackId, api, attempt]);
-  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  const retry = useCallback(() => setRetried((r) => ({ id: trackId, n: r.id === trackId ? r.n + 1 : 1 })), [trackId]);
   return { ...(state.id === trackId ? state : { id: trackId, lyrics: null, loading: true }), retry };
 }
 

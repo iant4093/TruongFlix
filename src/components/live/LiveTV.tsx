@@ -224,7 +224,8 @@ export default function LiveTV() {
   const matchesQuery = (value: string) => value.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   const channels = available.filter(
     (m) =>
-      (state.preferences.showUnavailable || m.playlist.health[m.channel.id]?.state !== 'unavailable') &&
+      // A favourite is never hidden: a wrong "unavailable" would otherwise make it vanish.
+      (state.preferences.showUnavailable || m.playlist.health[m.channel.id]?.state !== 'unavailable' || state.preferences.favourites.includes(m.key)) &&
       (group === 'all' || m.channel.group.split(';').includes(group)) &&
       (!favouritesOnly || state.preferences.favourites.includes(m.key)) &&
       matchesQuery(`${m.channel.name} ${m.channel.tvgId} ${m.channel.group}`),

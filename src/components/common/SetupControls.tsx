@@ -9,6 +9,7 @@ import { IS_MAC } from '../../lib/platform';
 import { LanguageSelect } from './SubtitlesPanel';
 import Spinner from './Spinner';
 import { errorMessage } from '../../lib/errors';
+import { useLibraryStore } from '../../store/useLibraryStore';
 
 // ---------------------------------------------------------------------------
 // TMDB key
@@ -340,7 +341,15 @@ export function FolderList({ value, onChange, pickerTitle = 'Choose Movie / TV f
               <span className="selectable min-w-0 flex-1 truncate font-mono text-xs">{dir}</span>
               <button
                 type="button"
-                onClick={() => onChange(value.filter((d) => d !== dir))}
+                onClick={async () => {
+                  const ok = await useLibraryStore.getState().confirm({
+                    title: 'Remove this folder?',
+                    message: `Everything in “${dir}” leaves your library, with its watch history, playlists and favourites. The files themselves aren’t touched.`,
+                    confirmLabel: 'Remove',
+                    danger: true,
+                  });
+                  if (ok) onChange(value.filter((d) => d !== dir));
+                }}
                 aria-label="Remove folder" title="Remove folder"
                 className="text-nf-muted opacity-60 transition hover:text-nf-red group-hover:opacity-100"
               >

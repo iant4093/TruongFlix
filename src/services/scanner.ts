@@ -12,6 +12,7 @@ import { imdbSyncDue, syncImdbRatings } from './imdb';
 import { guessSeasonEpisode, parseVideoFile, toRawFile } from './parser';
 import * as tmdb from './tmdb';
 import type { SearchResult } from './tmdb';
+import { pairMoved } from '../lib/relink';
 
 const CONCURRENCY = 4;
 const RELOAD_INTERVAL_MS = 2000;
@@ -240,8 +241,22 @@ export async function runScan(opts: ScanOptions = {}) {
           return had >= 20 && lost === had;
         });
     if (suspicious.length) console.warn('[scan] not removing titles from', suspicious);
+    // Files moved or renamed since the last scan keep their entry (and watch history) at the new path.
+    const moved = pairMoved(
+      missing.map(([path, rec]) => ({ path, size: rec.size })),
+      files.filter((f) => !index.has(f.file_path)).map((f) => ({ path: f.file_path, size: f.file_size })),
+    );
+    if (moved.length) {
+      await db.updateFilePaths(moved);
+      for (const { from, to } of moved) {
+        const rec = index.get(from)!;
+        index.delete(from);
+        index.set(to, { ...rec, mtime: files.find((f) => f.file_path === to)?.mtime ?? rec.mtime });
+      }
+    }
+    const relinked = new Set(moved.map((m) => m.from));
     for (const [path, rec] of missing) {
-      if (suspicious.some((r) => isUnder(path, r))) continue;
+      if (relinked.has(path) || suspicious.some((r) => isUnder(path, r))) continue;
       (rec.type === 'movie' ? goneMovies : goneEpisodes).push(path);
     }
     const removed = goneMovies.length + goneEpisodes.length;
