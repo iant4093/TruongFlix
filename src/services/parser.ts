@@ -25,11 +25,21 @@ export type ParsedFile = ParsedMovieFile | ParsedEpisodeFile;
 // ---------------------------------------------------------------------------
 
 const TV_PATTERNS = [
-  /\bS\d{1,2}[ ._-]?E\d{1,3}\b/i, // S01E01, S01.E01
+  /\bS\d{1,2}[ ._-]?E\d{1,4}(?![0-9])/i, // S01E01, S01.E01, S01E01E02
   /(?:^|[^a-z0-9])\d{1,2}x\d{2,3}(?:[^a-z0-9]|$)/i, // 1x01
   /\bSeason[ ._-]*\d{1,2}[ ._-]*Episode[ ._-]*\d{1,3}\b/i, // Season 1 Episode 1
 ];
 const SEASON_FOLDER = /^(?:season|series|staffel|saison|temporada)[ ._-]*(\d{1,2})\b|^S(\d{1,2})$/i;
+/** Sonarr's and Plex's folder for season 0. */
+const SPECIALS_FOLDER = /^specials?$/i;
+/** "S01E01", "S01E01E02", "S01E01-E03", "s01.e01": read directly when the parser library gives up. */
+const SXXEYY = /\bS(\d{1,2})[ ._-]?E(\d{1,4})((?:[ ._-]?-?[ ._-]?E\d{1,4}|-\d{1,4}(?![0-9p]))*)/i;
+const NXNN = /(?:^|[^a-z0-9])(\d{1,2})x(\d{2,3})(?:[^a-z0-9]|$)/i;
+/** Anime releases: "[Group] Title - 1085 (1080p) [hash]", numbered from the first episode. */
+const ANIME_RELEASE = /^\[[^\]]+\][ ._]*(.+?)[ ._]+-[ ._]+(\d{1,4})(?:v\d)?(?=[ ._\[(]|$)/i;
+/** "Title - 05": an episode number after a dash (a show inside its season folder). */
+const DASH_NUMBER = /[ ._]-[ ._]+(\d{1,4})(?:v\d)?(?=[ ._\[(]|$)/;
+const VIDEO_EXT = /\.(?:mkv|mp4|m4v|avi|mov|webm|ts)$/i;
 const EPISODE_ONLY = /(?:^|[^a-z0-9])(?:e|ep|episode)[ ._-]*(\d{1,3})(?:[^0-9]|$)/i;
 const LEADING_NUMBER = /^(\d{1,3})(?:[ ._-]|$)/;
 
@@ -159,51 +169,86 @@ export function extractTech(filename: string): TechInfo {
 // ---------------------------------------------------------------------------
 
 function seasonFromFolder(name: string): number | null {
+  if (SPECIALS_FOLDER.test(name.trim())) return 0;
   const m = name.trim().match(SEASON_FOLDER);
   if (!m) return null;
   return toInt(m[1] ?? m[2]);
 }
 
 function isTvFile(file: RawVideoFile): boolean {
-  if (TV_PATTERNS.some((re) => re.test(file.filename))) return true;
+  if (TV_PATTERNS.some((re) => re.test(file.filename)) || ANIME_RELEASE.test(file.filename)) return true;
   return seasonFromFolder(file.parent_folder_name) !== null;
 }
 
 function parseEpisode(file: RawVideoFile): ParsedEpisodeFile | null {
-  const parsed = filenameParse(file.filename, true);
+  // Without the extension: the parser library returns nothing for "Show - S01E01.mkv" (it does
+  // for .mp4), which used to import whole shows as one wrong movie.
+  const stem = file.filename.replace(VIDEO_EXT, '');
+  const parsed = filenameParse(stem, true);
   const folderSeason = seasonFromFolder(file.parent_folder_name);
+  const explicitPattern = TV_PATTERNS.some((re) => re.test(file.filename));
+  const anime = stem.match(ANIME_RELEASE);
 
   let season: number | null = null;
   let episodes: number[] = [];
-  if ('isTv' in parsed && parsed.isTv) {
+  if (explicitPattern && 'isTv' in parsed && parsed.isTv) {
     season = parsed.seasons?.[0] ?? null;
     episodes = parsed.episodeNumbers ?? [];
   }
+  if (!episodes.length && explicitPattern) {
+    const sxe = stem.match(SXXEYY);
+    const nx = stem.match(NXNN);
+    if (sxe) {
+      season = toInt(sxe[1]);
+      const first = parseInt(sxe[2], 10);
+      const more = [...(sxe[3] ?? '').matchAll(/\d{1,4}/g)].map((m) => parseInt(m[0], 10));
+      // "E01-E03" / "E01-03" is a range; "E01E02" a list.
+      const ranged = /-/.test(sxe[3] ?? '') && more.length === 1 && more[0] > first && more[0] - first < 10;
+      episodes = ranged ? Array.from({ length: more[0] - first + 1 }, (_, i) => first + i) : [first, ...more];
+    } else if (nx) {
+      season = toInt(nx[1]);
+      episodes = [parseInt(nx[2], 10)];
+    }
+  }
   if (!episodes.length) {
-    const base = file.filename.replace(/\.[^.]+$/, '');
-    const m = base.match(EPISODE_ONLY) ?? base.match(LEADING_NUMBER);
-    if (m) episodes = [parseInt(m[1], 10)];
+    // No season marker: an absolute or plain episode number ("[Group] Show - 1085", "Show - 05",
+    // "E05", "05 - Title"). The parser library would read "1085" as S10E85.
+    const m = anime ?? stem.match(DASH_NUMBER) ?? stem.match(EPISODE_ONLY) ?? stem.match(LEADING_NUMBER);
+    if (m) episodes = [parseInt(m[anime ? 2 : 1], 10)];
   }
   if (season == null) season = folderSeason;
   if (season == null && episodes.length) season = 1;
   if (season == null || !episodes.length) return null;
 
   // Show title: filename first, then folder context.
-  const explicitPattern = TV_PATTERNS.some((re) => re.test(file.filename));
-  let { title, year } = explicitPattern ? parseName(file.filename, true) : { title: '', year: null as number | null };
+  let { title, year } = explicitPattern
+    ? parseName(stem, true)
+    : anime
+      ? parseName(anime[1], true)
+      : { title: '', year: null as number | null };
   const inSeasonFolder = folderSeason !== null;
   const showFolderName = inSeasonFolder ? file.grandparent_folder_name : file.parent_folder_name;
   const folderInfo = !isGenericFolder(showFolderName) ? parseFolderName(showFolderName) : { title: '', year: null };
-  const folderTitleOk = !isGenericEpisodeTitle(folderInfo.title) && seasonFromFolder(folderInfo.title) === null;
-
-  if ((isGenericEpisodeTitle(title) || looksObfuscated(title)) && folderTitleOk) {
+  // A show named with a number ("24", "1923") is fine as the folder above a season folder.
+  const numericShow = (t: string) => inSeasonFolder && /^\d{2,4}$/.test(t.trim());
+  const folderTitleOk = (!isGenericEpisodeTitle(folderInfo.title) || numericShow(folderInfo.title)) && seasonFromFolder(folderInfo.title) === null;
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  // "1923.S01E01": the parser library takes the title for a year.
+  if (!title && year != null && folderTitleOk && norm(folderInfo.title) === String(year)) {
+    title = folderInfo.title;
+    year = null;
+  }
+  if (folderTitleOk && numericShow(folderInfo.title) && norm(title) === norm(folderInfo.title)) {
+    title = folderInfo.title;
+    if (year != null && String(year) === norm(title)) year = null;
+  } else if ((isGenericEpisodeTitle(title) || looksObfuscated(title)) && folderTitleOk) {
     title = folderInfo.title;
     year = folderInfo.year ?? year;
   } else if (folderTitleOk && year == null && folderInfo.year != null) {
-    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (norm(folderInfo.title) === norm(title)) year = folderInfo.year;
   }
-  if (isGenericEpisodeTitle(title)) return null;
+  if (isGenericEpisodeTitle(title) && !(folderTitleOk && title === folderInfo.title)) return null;
+  if (year != null && String(year) === norm(title)) year = null;
 
   return {
     kind: 'tv',

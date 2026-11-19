@@ -7,6 +7,13 @@ use walkdir::{DirEntry, WalkDir};
 const VIDEO_EXTENSIONS: &[&str] = &["mkv", "mp4", "m4v", "avi", "mov", "webm", "ts"];
 const EXTRA_KEYWORDS: &[&str] = &["sample", "trailer", "featurette"];
 const EXTRA_MAX_BYTES: u64 = 60 * 1024 * 1024;
+/// Plex/Jellyfin folders for bonus material: never titles of their own, whatever their size (a
+/// featurette used to become a "movie" matched to some random title).
+const EXTRAS_FOLDERS: &[&str] = &[
+    "extras", "extra", "featurettes", "behind the scenes", "deleted scenes", "interviews", "scenes", "shorts", "trailers", "bonus",
+];
+/// Plex's file-name form of the same: "Inception (2010)-deleted.mkv".
+const EXTRAS_SUFFIXES: &[&str] = &["-behindthescenes", "-deleted", "-featurette", "-interview", "-scene", "-short", "-trailer", "-other", "-extra"];
 /// `.ts` is also TypeScript; real MPEG transport streams are never this small.
 const MIN_TS_BYTES: u64 = 1024 * 1024;
 
@@ -48,6 +55,14 @@ pub(crate) fn is_library_video(path: &Path, size: u64) -> bool {
         return false;
     }
     let lower = name.to_ascii_lowercase();
+    let stem = lower.strip_suffix(&format!(".{ext}")).unwrap_or(&lower);
+    if EXTRAS_SUFFIXES.iter().any(|s| stem.ends_with(s)) {
+        return false;
+    }
+    let parent = path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if EXTRAS_FOLDERS.contains(&parent.as_str()) {
+        return false;
+    }
     !(size < EXTRA_MAX_BYTES && EXTRA_KEYWORDS.iter().any(|k| lower.contains(k)))
 }
 
@@ -162,6 +177,9 @@ mod tests {
         touch(&root.join("Movies/.hidden/secret.mkv"), big);
         touch(&root.join("Movies/notes.txt"), 10);
         touch(&root.join("Movies/code.ts"), 500);
+        // Bonus material, whatever its size.
+        touch(&root.join("Movies/Inception (2010)/Featurettes/Making Of.mkv"), big);
+        touch(&root.join("Movies/Inception (2010)/Inception (2010)-deleted.mkv"), big);
 
         let mut seen = HashSet::new();
         let mut out = Vec::new();
