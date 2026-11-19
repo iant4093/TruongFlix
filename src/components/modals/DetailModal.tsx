@@ -312,6 +312,14 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
                 <button
                   type="button"
                   onClick={async () => {
+                    // Deletes the video and its library entry (with your place in it): asked first.
+                    const ok = await useLibraryStore.getState().confirm({
+                      title: 'Delete this stream now?',
+                      message: 'The downloaded video is deleted and the title leaves your library, along with where you stopped watching.',
+                      confirmLabel: 'Delete',
+                      danger: true,
+                    });
+                    if (!ok) return;
                     try {
                       await removeTorrent(torrent.infoHash, true);
                       openDetail(null);

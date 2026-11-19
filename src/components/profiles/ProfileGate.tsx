@@ -10,6 +10,7 @@ import { MATURITY_LABEL } from '../../store/selectors';
 import ProfileAvatar from '../common/ProfileAvatar';
 import Dropdown from '../common/Dropdown';
 import { Wordmark } from '../layout/Navbar';
+import { errorMessage } from '../../lib/errors';
 
 const MATURITY_HINT: Record<Maturity, string> = {
   all: 'Every title in your library.',
@@ -152,7 +153,11 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
   const [pin, setPin] = useState('');
   const [keepPin, setKeepPin] = useState(!!profile?.pin);
 
+  const [saving, setSaving] = useState(false);
+  // A PIN of 1–3 digits used to be dropped without a word, leaving the profile unlocked.
+  const pinIncomplete = pin.length > 0 && pin.length < 4;
   const save = async () => {
+    if (saving || pinIncomplete) return;
     const clean = name.trim() || 'Profile';
     const input: ProfileInput = {
       name: clean,
@@ -163,11 +168,17 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
       wake_time: wakeTime,
       pin: /^\d{4}$/.test(pin) ? pin : keepPin && profile ? profile.pin : '',
     };
-    if (profile) await db.updateProfile(profile.id, input);
-    else await db.createProfile(input);
-    await loadProfiles();
-    if (profile && profile.id === active?.id) await reload(); // maturity may have changed
-    onDone();
+    setSaving(true);
+    try {
+      if (profile) await db.updateProfile(profile.id, input);
+      else await db.createProfile(input);
+      await loadProfiles();
+      if (profile && profile.id === active?.id) await reload(); // maturity may have changed
+      onDone();
+    } catch (e) {
+      useLibraryStore.getState().toast(`Couldn’t save the profile: ${errorMessage(e)}`, 'error');
+      setSaving(false);
+    }
   };
 
   const remove = async () => {
@@ -291,6 +302,7 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
                 </button>
               )}
             </div>
+            {pinIncomplete && <p className="mt-2 text-xs text-nf-red">A PIN needs 4 digits.</p>}
             <p className="mt-2 text-xs text-nf-muted">
               {keepPin && !pin && 'A PIN is set. Type a new one to change it. '}
               {maturity === 'all'
@@ -301,7 +313,7 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
         </div>
       </div>
       <div className="mt-8 flex gap-3">
-        <button onClick={save} className="bg-white px-8 py-2 text-lg font-semibold text-black hover:bg-nf-red hover:text-white">
+        <button onClick={save} disabled={saving || pinIncomplete} className="bg-white px-8 py-2 text-lg font-semibold text-black hover:bg-nf-red hover:text-white disabled:opacity-50 disabled:hover:bg-white disabled:hover:text-black">
           Save
         </button>
         <button onClick={onDone} className="border border-nf-muted px-8 py-2 text-lg text-nf-muted hover:border-white hover:text-white">

@@ -39,7 +39,7 @@ import Dropdown from '../common/Dropdown';
 import { formatBytes, formatPercent, formatSpeed } from '../../lib/format';
 import { errorMessage } from '../../lib/errors';
 import { basename } from '../../lib/path';
-import { Block, BTN, BTN_DANGER, BTN_PRIMARY, Group, INPUT, Page, Row, Segmented, StatusText, Switch, ToggleRow } from './ui';
+import { Block, BTN, BTN_DANGER, BTN_PRIMARY, Group, INPUT, NumberField, Page, Row, Segmented, StatusText, Switch, ToggleRow } from './ui';
 
 type TransferFilter = 'all' | 'downloading' | 'streams' | 'seeding' | 'completed';
 
@@ -499,18 +499,7 @@ export default function TorrentsPage() {
             onChange={(v) => void update({ torrent_stream_cache_hours: v })}
           />
           <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              min={1}
-              max={8760}
-              value={settings.torrent_stream_cache_hours}
-              onChange={(e) => {
-                const n = Math.max(1, Math.min(8760, Number(e.target.value) || 1));
-                void update({ torrent_stream_cache_hours: n });
-              }}
-              aria-label="Stream cache hours"
-              className={`${INPUT} w-20 text-right tabular-nums`}
-            />
+            <NumberField value={settings.torrent_stream_cache_hours} min={1} max={8760} label="Stream cache hours" onCommit={(n) => void update({ torrent_stream_cache_hours: n })} className={`${INPUT} w-20 text-right tabular-nums`} />
             <span className="text-xs text-nf-muted">hr</span>
           </div>
         </Row>
@@ -524,16 +513,7 @@ export default function TorrentsPage() {
             options={RATIO_OPTIONS}
             onChange={(v) => void update({ torrent_seed_ratio_limit: v })}
           />
-          <input
-            type="number"
-            min={0}
-            max={100}
-            step={0.1}
-            value={settings.torrent_seed_ratio_limit}
-            onChange={(e) => void update({ torrent_seed_ratio_limit: Math.max(0, Number(e.target.value) || 0) })}
-            aria-label="Max share ratio"
-            className={`${INPUT} w-20 text-right tabular-nums`}
-          />
+          <NumberField value={settings.torrent_seed_ratio_limit} min={0} max={100} step={0.1} integer={false} label="Max share ratio" onCommit={(n) => void update({ torrent_seed_ratio_limit: n })} className={`${INPUT} w-20 text-right tabular-nums`} />
         </Row>
 
         <Row
@@ -546,15 +526,7 @@ export default function TorrentsPage() {
             onChange={(v) => void update({ torrent_seed_time_mins: v })}
           />
           <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              min={0}
-              max={525600}
-              value={settings.torrent_seed_time_mins}
-              onChange={(e) => void update({ torrent_seed_time_mins: Math.max(0, Math.round(Number(e.target.value) || 0)) })}
-              aria-label="Max seeding minutes"
-              className={`${INPUT} w-20 text-right tabular-nums`}
-            />
+            <NumberField value={settings.torrent_seed_time_mins} min={0} max={525600} label="Max seeding minutes" onCommit={(n) => void update({ torrent_seed_time_mins: n })} className={`${INPUT} w-20 text-right tabular-nums`} />
             <span className="text-xs text-nf-muted">min</span>
           </div>
         </Row>
@@ -607,15 +579,7 @@ export default function TorrentsPage() {
             onChange={(v) => void update({ torrent_max_download_kbps: v })}
           />
           <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              min={0}
-              step={100}
-              value={settings.torrent_max_download_kbps}
-              onChange={(e) => void update({ torrent_max_download_kbps: Math.max(0, Math.round(Number(e.target.value) || 0)) })}
-              aria-label="Download rate limit KB/s"
-              className={`${INPUT} w-24 text-right tabular-nums`}
-            />
+            <NumberField value={settings.torrent_max_download_kbps} min={0} step={100} label="Download rate limit KB/s" onCommit={(n) => void update({ torrent_max_download_kbps: n })} className={`${INPUT} w-24 text-right tabular-nums`} />
             <span className="text-xs text-nf-muted">KB/s</span>
           </div>
         </Row>
@@ -635,15 +599,7 @@ export default function TorrentsPage() {
             onChange={(v) => void update({ torrent_max_upload_kbps: v })}
           />
           <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              min={0}
-              step={100}
-              value={settings.torrent_max_upload_kbps}
-              onChange={(e) => void update({ torrent_max_upload_kbps: Math.max(0, Math.round(Number(e.target.value) || 0)) })}
-              aria-label="Upload rate limit KB/s"
-              className={`${INPUT} w-24 text-right tabular-nums`}
-            />
+            <NumberField value={settings.torrent_max_upload_kbps} min={0} step={100} label="Upload rate limit KB/s" onCommit={(n) => void update({ torrent_max_upload_kbps: n })} className={`${INPUT} w-24 text-right tabular-nums`} />
             <span className="text-xs text-nf-muted">KB/s</span>
           </div>
         </Row>
@@ -657,18 +613,7 @@ export default function TorrentsPage() {
             </>
           }
         >
-          <input
-            type="number"
-            min={0}
-            max={65535}
-            value={settings.torrent_listen_port}
-            onChange={(e) => {
-              const p = Math.max(0, Math.min(65535, Math.round(Number(e.target.value) || 0)));
-              void update({ torrent_listen_port: p });
-            }}
-            aria-label="Listening port"
-            className={`${INPUT} w-28 text-right tabular-nums`}
-          />
+          <NumberField value={settings.torrent_listen_port} min={0} max={65535} label="Listening port" onCommit={(n) => void update({ torrent_listen_port: n })} className={`${INPUT} w-28 text-right tabular-nums`} />
           <button
             type="button"
             onClick={() => {
@@ -692,18 +637,7 @@ export default function TorrentsPage() {
           label="Maximum peers per torrent"
           description="Upper bound on simultaneous peer connections per active torrent."
         >
-          <input
-            type="number"
-            min={10}
-            max={500}
-            value={settings.torrent_peer_limit}
-            onChange={(e) => {
-              const n = Math.max(10, Math.min(500, Math.round(Number(e.target.value) || 128)));
-              void update({ torrent_peer_limit: n });
-            }}
-            aria-label="Max peers per torrent"
-            className={`${INPUT} w-24 text-right tabular-nums`}
-          />
+          <NumberField value={settings.torrent_peer_limit} min={10} max={500} empty={128} label="Max peers per torrent" onCommit={(n) => void update({ torrent_peer_limit: n })} className={`${INPUT} w-24 text-right tabular-nums`} />
         </Row>
       </Group>
 

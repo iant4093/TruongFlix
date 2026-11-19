@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 /** Shared building blocks so every settings page looks the same. */
 
@@ -110,4 +110,70 @@ export function Segmented<T extends string | number>({ value, options, onChange 
 export function StatusText({ tone = 'muted', children }: { tone?: 'muted' | 'good' | 'warn' | 'bad'; children: ReactNode }) {
   const color = tone === 'good' ? 'text-nf-green' : tone === 'warn' ? 'text-nf-warn' : tone === 'bad' ? 'text-nf-red' : 'text-nf-muted';
   return <span className={`text-xs ${color}`}>{children}</span>;
+}
+
+/**
+ * A number setting that's saved when you leave the field or press Enter, not on every keystroke
+ * (typing a port used to save, and restart the torrent engine, once per digit, and clamping each
+ * partial value made some numbers impossible to type). Out-of-range values are clamped on save.
+ */
+export function NumberField({
+  value,
+  onCommit,
+  min,
+  max = Infinity,
+  step,
+  integer = true,
+  empty = min,
+  label,
+  className,
+}: {
+  value: number;
+  onCommit: (v: number) => void;
+  min: number;
+  max?: number;
+  step?: number;
+  integer?: boolean;
+  /** Saved when the field is left empty. */
+  empty?: number;
+  label: string;
+  className?: string;
+}) {
+  const [text, setText] = useState(String(value));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!editing) setText(String(value));
+  }, [value, editing]);
+  const commit = () => {
+    setEditing(false);
+    const raw = text.trim() === '' ? empty : Number(text);
+    const n = Number.isFinite(raw) ? Math.max(min, Math.min(max, integer ? Math.round(raw) : raw)) : value;
+    setText(String(n));
+    if (n !== value) onCommit(n);
+  };
+  return (
+    <input
+      type="number"
+      min={min}
+      max={Number.isFinite(max) ? max : undefined}
+      step={step}
+      value={text}
+      onFocus={() => setEditing(true)}
+      onChange={(e) => {
+        setEditing(true);
+        setText(e.target.value);
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+        if (e.key === 'Escape' && editing) {
+          e.stopPropagation();
+          setEditing(false);
+          setText(String(value));
+        }
+      }}
+      aria-label={label}
+      className={className}
+    />
+  );
 }

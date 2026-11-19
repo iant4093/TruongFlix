@@ -6,7 +6,7 @@ import { byName, formatTotal, listenNow, playlistArt, searchMusic } from '../lib
 import { currentRoute, goBack, MUSIC_TABS, musicToast, openRoute, openTab, setMusicQuery, takeScroll, useMusicNav, type MusicRoute } from '../nav';
 import { playTracks, useMusicPlayer } from '../player';
 import type { MusicAlbum, MusicArtist, MusicLibrary as Library, MusicPlaylist, MusicTrack } from '../types';
-import { askName } from './Overlays';
+import { askConfirm, askName } from './Overlays';
 import TrackList from './TrackList';
 import TrackMenu from './TrackMenu';
 import { Cover, Mosaic } from './ui';
@@ -537,7 +537,7 @@ function PlaylistPage({ library, id, phone }: { library: Library; id: number; ph
     if (name && name !== playlist.name) await renamePlaylist(playlist.id, name).catch((e) => musicToast(errorMessage(e)));
   };
   const remove = async () => {
-    if (!window.confirm(`Delete “${playlist.name}”? The songs stay in your library.`)) return;
+    if (!(await askConfirm(`Delete “${playlist.name}”?`, 'The songs stay in your library.', 'Delete'))) return;
     goBack();
     await deletePlaylist(playlist.id).catch((e) => musicToast(errorMessage(e)));
   };
