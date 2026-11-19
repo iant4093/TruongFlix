@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
 import { Pencil, Plus } from 'lucide-react';
 import type { Maturity, Profile, ProfileInput } from '../../types/media';
@@ -46,10 +46,17 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
   const dialog = useRef<HTMLDivElement>(null);
   const present = useIsPresent();
   const finishManaging = () => setGate(openedAs.current === 'manage' && active ? null : 'select');
+  // Unsaved changes in the editor: Escape (or a TV remote's Back) asks before throwing them away.
+  const editorDirty = useRef(false);
   useModalDialog(dialog, {
     onClose: () => {
-      if (editing) setEditing(null);
-      else if (managing) finishManaging();
+      if (editing) {
+        if (!editorDirty.current) return setEditing(null);
+        void useLibraryStore
+          .getState()
+          .confirm({ title: 'Discard changes?', message: 'Your changes to this profile haven’t been saved.', confirmLabel: 'Discard', danger: true })
+          .then((ok) => ok && setEditing(null));
+      } else if (managing) finishManaging();
     },
     active: present,
     priority: 150,
@@ -76,7 +83,7 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
       <div className="flex min-h-full items-center justify-center">
         <AnimatePresence mode="wait">
           {editing ? (
-            <ProfileEditor key="editor" profile={editing === 'new' ? null : editing} onDone={() => setEditing(null)} canDelete={profiles.length > 1} />
+            <ProfileEditor key="editor" profile={editing === 'new' ? null : editing} onDone={() => setEditing(null)} canDelete={profiles.length > 1} onDirty={(d) => (editorDirty.current = d)} />
           ) : (
             <motion.div key="grid" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="flex flex-col items-center">
               <h1 className="mb-10 text-[clamp(2rem,3.5vw,3.5rem)] font-medium">{managing ? 'Manage Profiles:' : 'Who’s watching?'}</h1>
@@ -136,7 +143,7 @@ function Gate({ mode }: { mode: 'select' | 'manage' }) {
   );
 }
 
-function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null; onDone: () => void; canDelete: boolean }) {
+function ProfileEditor({ profile, onDone, canDelete, onDirty }: { profile: Profile | null; onDone: () => void; canDelete: boolean; onDirty: (dirty: boolean) => void }) {
   const profiles = useLibraryStore((s) => s.profiles);
   const loadProfiles = useLibraryStore((s) => s.loadProfiles);
   const active = useLibraryStore((s) => s.activeProfile);
@@ -154,6 +161,19 @@ function ProfileEditor({ profile, onDone, canDelete }: { profile: Profile | null
   const [keepPin, setKeepPin] = useState(!!profile?.pin);
 
   const [saving, setSaving] = useState(false);
+  const dirty =
+    name !== (profile?.name ?? '') ||
+    (!!profile && color !== profile.color) ||
+    maturity !== (profile?.maturity ?? 'all') ||
+    dailyLimit !== (profile?.daily_limit ?? 0) ||
+    bedtime !== (profile?.bedtime ?? '') ||
+    wakeTime !== (profile?.wake_time || '07:00') ||
+    pin !== '' ||
+    keepPin !== !!profile?.pin;
+  useEffect(() => {
+    onDirty(dirty);
+    return () => onDirty(false);
+  }, [dirty, onDirty]);
   // A PIN of 1–3 digits used to be dropped without a word, leaving the profile unlocked.
   const pinIncomplete = pin.length > 0 && pin.length < 4;
   const save = async () => {

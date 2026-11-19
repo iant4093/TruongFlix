@@ -1,3 +1,5 @@
+import { timeoutSignal } from '../lib/timeout';
+
 /** Rotten Tomatoes and Metacritic scores from OMDb (free key, 1,000 requests a day). */
 
 export class OmdbError extends Error {
@@ -43,7 +45,7 @@ interface OmdbResponse {
 export async function fetchCriticScores(apiKey: string, imdbId: string): Promise<CriticScores> {
   let res: Response;
   try {
-    res = await fetch(`https://www.omdbapi.com/?i=${encodeURIComponent(imdbId)}&apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(20_000) });
+    res = await fetch(`https://www.omdbapi.com/?i=${encodeURIComponent(imdbId)}&apikey=${encodeURIComponent(apiKey)}`, { signal: timeoutSignal(20_000) });
   } catch {
     throw new OmdbError('Couldn’t reach OMDb', 'network');
   }

@@ -220,8 +220,11 @@ export function nextUpEpisode(eps: EpisodeRow[]): EpisodeRow | null {
   if (!last.watched && last.progress_seconds > 0) return last;
   if (!last.watched) return null;
   const idx = eps.indexOf(last);
-  return eps.slice(idx + 1).find((e) => e.season_number > 0) ?? null;
+  return eps.slice(idx + 1).find((e) => e.season_number > 0 && !sameEpisode(e, last)) ?? null;
 }
+
+/** Two files of the same episode (different copies or qualities). */
+export const sameEpisode = (a: EpisodeRow, b: EpisodeRow) => a.season_number === b.season_number && a.episode_number === b.episode_number;
 
 /** What "Play" on a series should start: Next Up, otherwise the first regular episode. */
 export function seriesPlayEpisode(eps: EpisodeRow[]): EpisodeRow | null {

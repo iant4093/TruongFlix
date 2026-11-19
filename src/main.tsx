@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import CrashScreen from './components/common/CrashScreen';
 import './index.css';
 
 // In a plain browser during development, fake the Tauri backend so the UI can be previewed.
@@ -12,7 +13,9 @@ const boot =
 boot.then(() => {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
-      <App />
+      <CrashScreen>
+        <App />
+      </CrashScreen>
     </React.StrictMode>,
   );
 });

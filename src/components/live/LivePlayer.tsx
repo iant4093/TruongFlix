@@ -155,11 +155,13 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
         event.preventDefault();
         void seekLive(10);
       }
-      if (event.code === 'PageUp') {
+      // Up/Down change channel too, as on a TV: a controller's D-pad or a remote with only arrows
+      // had no way to zap. (The settings panel keeps the arrows for its own menu.)
+      if (event.code === 'PageUp' || (event.code === 'ArrowUp' && !settings)) {
         event.preventDefault();
         void retuneLive(-1);
       }
-      if (event.code === 'PageDown') {
+      if (event.code === 'PageDown' || (event.code === 'ArrowDown' && !settings)) {
         event.preventDefault();
         void retuneLive(1);
       }

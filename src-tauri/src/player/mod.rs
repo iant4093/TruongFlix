@@ -529,7 +529,9 @@ fn open_blocking(
     for (name, value) in [("http-header-fields", ""), ("referrer", ""), ("user-agent", "mpv"), ("speed", "1"),
         ("start", "none"), ("cache", "auto"), ("cache-on-disk", "no"), ("demuxer-max-bytes", "150MiB"), ("demuxer-max-back-bytes", "50MiB"),
         // Track choice starts fresh for each file ("subtitles off" for one file mustn't stick).
-        ("aid", "auto"), ("sid", "auto")] {
+        ("aid", "auto"), ("sid", "auto"),
+        // A subtitle timing fix belongs to that file: the next episode starts in sync.
+        ("sub-delay", "0")] {
         let _ = api.set_property(h, name, value);
     }
     // Preferred languages apply to every file, not only the one that created the core.

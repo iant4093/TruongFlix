@@ -1,4 +1,5 @@
 import type { NextEpisode } from '../types/media';
+import { timeoutSignal } from '../lib/timeout';
 
 /**
  * Episode release dates from TVmaze (free, keyless), merged with TMDB's. TMDB often lists the
@@ -153,7 +154,7 @@ function tvmaze<T>(path: string): Promise<T | null> {
   const run = queue.then(async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       // A request that never answers (Wi-Fi change, sleep) would hold up every later one in the queue.
-      const res = await fetch(API + path, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
+      const res = await fetch(API + path, { headers: { Accept: 'application/json' }, signal: timeoutSignal(20_000) });
       await sleep(550);
       if (res.status === 429) {
         await sleep(2000);

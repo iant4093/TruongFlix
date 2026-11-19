@@ -5,7 +5,15 @@ export function isPlayerShortcut(event: KeyboardEvent) {
   const target = event.target;
   if (!(target instanceof Element)) return true;
   if (target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="listbox"], [role="slider"]')) return false;
-  return !((event.key === ' ' || event.key === 'Enter') && target.closest('button, a[href], [role="button"]'));
+  if (event.key !== ' ' && event.key !== 'Enter') return true;
+  const control = target.closest('button, a[href], [role="button"]');
+  if (!control) return true;
+  // Only a control reached with the keyboard (or a TV remote) keeps Space/Enter. One that merely
+  // kept focus from a mouse click used to take them: Space after clicking "Forward 10s" jumped
+  // again instead of pausing. It loses focus, so the key doesn't also click it.
+  if (control.matches(':focus-visible')) return false;
+  if (control instanceof HTMLElement) control.blur();
+  return true;
 }
 
 export const playerControlTitles = {

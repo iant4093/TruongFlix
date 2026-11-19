@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useLibraryStore } from '../store/useLibraryStore';
-import { episodeTarget, playTargetFor } from '../store/selectors';
+import { episodeTarget, sameEpisode, playTargetFor } from '../store/selectors';
 import { IS_MAC } from '../lib/platform';
 import type {
   AudioDevice,
@@ -404,7 +404,8 @@ function describe(target: PlayTarget): PlayerSession {
   const series = ep ? items.find((i) => i.kind === 'tv' && i.id === ep.series_id) : undefined;
   const list = ep ? (episodesBySeries.get(ep.series_id) ?? []) : [];
   const idx = ep ? list.findIndex((e) => e.id === ep.id) : -1;
-  const nextEp = idx >= 0 ? list.slice(idx + 1).find((e) => e.season_number > 0) : undefined;
+  // Another copy of the same episode (a 4K and a 1080p file) isn't the next one.
+  const nextEp = idx >= 0 && ep ? list.slice(idx + 1).find((e) => e.season_number > 0 && !sameEpisode(e, ep)) : undefined;
   const title = series?.title ?? target.label;
   return {
     target,
@@ -413,17 +414,19 @@ function describe(target: PlayTarget): PlayerSession {
     subtitle: ep ? `S${ep.season_number}:E${ep.episode_number} · ${ep.title}` : null,
     overview: ep?.overview || series?.overview || null,
     logo: series?.logo ?? null,
-    next: nextEp ? { ...episodeTarget(nextEp, { title }), startTime: 0 } : null,
+    // A half-watched next episode carries on where it was left (it used to restart, and the save
+    // 30 seconds later threw the old place away).
+    next: nextEp ? episodeTarget(nextEp, { title }) : null,
     nextLabel: nextEp ? `S${nextEp.season_number}:E${nextEp.episode_number} · ${nextEp.title}` : null,
   };
 }
 
 /** Saves the current position of the built-in player's item (resume point / watched). */
-async function saveBuiltinProgress() {
+async function saveBuiltinProgress(finished = false) {
   const { playerSession, playerState, patchProgress } = useLibraryStore.getState();
   if (!playerSession || playerSession.target.type === 'live' || !playerState?.loaded || !playerState.duration) return;
   const { type, id } = playerSession.target;
-  const time = playerState.eof ? playerState.duration : playerState.time;
+  const time = playerState.eof || finished ? playerState.duration : playerState.time;
   await recordProgress(type, id, time, playerState.duration, playingFor).catch(() => {});
   if (playingFor === useLibraryStore.getState().activeProfile?.id) patchProgress(type, id, time, playerState.duration);
 }
@@ -431,9 +434,15 @@ async function saveBuiltinProgress() {
 /** Opens (or switches the running player to) a movie/episode inside the TruongFlix window. */
 export async function playBuiltin(target: PlayTarget) {
   const store = useLibraryStore.getState();
+  // "That's all for today" / bedtime stays up: the Next key (keyboard media key, phone remote)
+  // used to clear it by starting the next episode.
+  if (store.playerPrompt === 'limit' || store.playerPrompt === 'bedtime') return;
   if (refuseUnfinishedDownload(target)) return;
   if (store.playerSession) {
-    await saveBuiltinProgress();
+    // Moving on to the next episode (at the credits, or with Next) finishes this one: credits
+    // that start before the 90% mark used to leave it "in progress" and back in Continue Watching.
+    const next = store.playerSession.next;
+    await saveBuiltinProgress(!!next && next.type === target.type && next.id === target.id);
     await flushWatchTime();
     await flushLiveTime(); liveTick = null;
   }
@@ -473,7 +482,10 @@ export async function playBuiltin(target: PlayTarget) {
     await invoke('player_layout', { rect: mini ? miniRect() : null }).catch(() => {});
   } catch (e) {
     if (generation !== openGeneration) return;
-    store.setPlayerSession(null);
+    // The title before it (Next was pressed) may still be playing: stop it and clear the mini
+    // player, sleep timer and full screen, instead of leaving it playing with no controls.
+    finishSession(false);
+    await invoke('player_close').catch(() => {});
     store.toast(`Built-in player couldn’t start: ${errorMessage(e)} Opening in VLC instead.`, 'error');
     await playInVlc(target);
   }
@@ -626,6 +638,9 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
       audioLang: null,
       subLang: null,
       options: [
+        // Multiview mutes this player while another pane is listened to; a channel opened on its
+        // own starts with sound.
+        ['mute', 'no'],
         ...subtitleOptions(settings.subtitle_style),
         ['audio-device', settings.audio_device || 'auto'],
         ['af', audioFilterChain(settings, 2)],

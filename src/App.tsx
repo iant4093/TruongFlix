@@ -249,6 +249,10 @@ export default function App() {
         <Wordmark className="text-5xl" />
         <p className="max-w-lg text-nf-secondary">TruongFlix couldn’t open its library database.</p>
         <pre className="selectable max-w-2xl whitespace-pre-wrap rounded bg-black/40 p-4 text-left text-xs text-nf-muted">{fatal}</pre>
+        {/* Often temporary (the database locked by another copy of the app, or a busy disk). */}
+        <button type="button" autoFocus onClick={() => window.location.reload()} className="nf-btn-red px-6 py-2 font-semibold">
+          Try again
+        </button>
       </div>
     );
   }

@@ -3,6 +3,7 @@ import type { EpisodeMetadata, MovieExtras, MovieMetadata, SeriesExtras, SeriesM
 import { saveSeasonCache } from './db';
 import type { CatalogDetail, CatalogSeason } from '../types/browse';
 import { getAirSchedule, localDateKey, mergeNextEpisode, mergeSeasonAirDates, seasonNeedsSchedule, type ShowIds } from './airdates';
+import { timeoutSignal } from '../lib/timeout';
 
 const API = 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p';
@@ -78,7 +79,7 @@ async function request<T>(path: string, params: Record<string, string | number |
     let res: Response;
     try {
       // A hung request would hold one of the few request slots for good (and stall every scan).
-      res = await fetch(url.toString(), { headers, signal: AbortSignal.timeout(20_000) });
+      res = await fetch(url.toString(), { headers, signal: timeoutSignal(20_000) });
     } catch (e) {
       release();
       if (attempt === 3) throw new TmdbError(`Network error: ${String(e)}`, null, true);

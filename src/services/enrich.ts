@@ -204,7 +204,10 @@ async function fetchCriticRatings(force = false): Promise<CriticRefresh> {
 /** "Refresh critic scores" in Settings: re-checks every title now. */
 export async function refreshCriticScores(): Promise<CriticRefresh> {
   try {
-    return await fetchCriticRatings(true);
+    const result = await fetchCriticRatings(true);
+    // Shown now, even if the library reloaded moments ago (the throttled reload skipped it).
+    await reloadIfChanged(true);
+    return result;
   } finally {
     if (!running) useLibraryStore.getState().setAnalysis({ running: false, message: '' });
   }
