@@ -507,8 +507,17 @@ pub async fn player_open(
     // Per-play settings (subtitle style, audio filters, preferred tracks) applied before loading.
     // The core is reused: a live provider's headers/cache/offset must never leak into the next file.
     for (name, value) in [("http-header-fields", ""), ("referrer", ""), ("user-agent", "mpv"), ("speed", "1"),
-        ("start", "none"), ("cache", "auto"), ("cache-on-disk", "no"), ("demuxer-max-bytes", "150MiB"), ("demuxer-max-back-bytes", "50MiB")] {
+        ("start", "none"), ("cache", "auto"), ("cache-on-disk", "no"), ("demuxer-max-bytes", "150MiB"), ("demuxer-max-back-bytes", "50MiB"),
+        // Track choice starts fresh for each file ("subtitles off" for one file mustn't stick).
+        ("aid", "auto"), ("sid", "auto")] {
         let _ = api.set_property(h, name, value);
+    }
+    // Preferred languages apply to every file, not only the one that created the core.
+    let lang_ok = |l: &str| l.len() <= 32 && l.chars().all(|c| c.is_ascii_alphanumeric() || c == ',' || c == '-');
+    for (name, lang) in [("alang", audio_lang.as_deref().unwrap_or("")), ("slang", sub_lang.as_deref().unwrap_or(""))] {
+        if lang_ok(lang) {
+            let _ = api.set_property(h, name, lang);
+        }
     }
     if let Some(ref source) = live_source {
         if !source.referrer.is_empty() { api.set_property(h, "referrer", &source.referrer)?; }

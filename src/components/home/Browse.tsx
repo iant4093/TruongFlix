@@ -115,7 +115,9 @@ export function BrowseView({ view }: { view: Extract<View, 'home' | 'tv' | 'movi
   );
 
   const catalog = useCatalog(items);
-  const featured = useMemo(() => pickFeatured(catalog, SESSION_SEED + view.length), [catalog, view]);
+  const picked = useMemo(() => pickFeatured(catalog, SESSION_SEED + view.length), [catalog, view]);
+  // Shown with its current progress, so the billboard's Play resumes where you are now.
+  const featured = useMemo(() => (picked ? items.find((i) => i.key === picked.key) ?? picked : null), [picked, items]);
 
   // Continue Watching follows progress live; it's the only row that shows it.
   const continueRow = useMemo(
@@ -228,7 +230,8 @@ const GRID_STEP = 60;
 export function GridView({ title, items, empty }: { title: string; items: MediaItem[]; empty: string }) {
   const perRow = useItemsPerRow();
   const [count, setCount] = useState(GRID_STEP);
-  useEffect(() => setCount(GRID_STEP), [items]);
+  const keys = items.map((i) => i.key).join('\n');
+  useEffect(() => setCount(GRID_STEP), [keys]);
   const more = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = more.current;

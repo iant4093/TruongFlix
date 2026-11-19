@@ -1011,8 +1011,19 @@ export function chooseTrack(kind: 'aid' | 'sid', value: number | 'no') {
   const prefs = readTrackPrefs();
   const scope = trackScope(playerSession);
   const pref = { ...prefs[scope] };
-  if (kind === 'aid' && track?.lang) pref.audio = track.lang;
-  if (kind === 'sid') pref.sub = value === 'no' ? 'off' : track?.lang ?? pref.sub;
+  if (kind === 'aid') {
+    if (track?.lang) pref.audio = track.lang;
+    else delete pref.audio; // an untagged track: back to the file's own default next time
+  }
+  if (kind === 'sid') {
+    // Movies are each their own film: "off" isn't carried to the next one (it would hide the forced
+    // subtitles a foreign-language film needs). Shows remember it for their next episode.
+    if (value === 'no') {
+      if (scope === 'movies') delete pref.sub;
+      else pref.sub = 'off';
+    } else if (track?.lang) pref.sub = track.lang;
+    else delete pref.sub;
+  }
   prefs[scope] = pref;
   try {
     localStorage.setItem(TRACK_PREFS, JSON.stringify(prefs));

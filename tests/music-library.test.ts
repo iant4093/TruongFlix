@@ -92,5 +92,9 @@ describe('music scan', () => {
     expect(goneMusicPaths(album, new Set(), ['D:\\Music'], [])).toEqual([]);
     // A few really deleted: those go.
     expect(goneMusicPaths(album, new Set(album.slice(3)), ['D:\\Music'], [])).toEqual(album.slice(0, 3));
+    // Most of them deleted (but not all): they go too.
+    expect(goneMusicPaths(album, new Set(album.slice(25)), ['D:\\Music'], [])).toEqual(album.slice(0, 25));
+    // A full rescan the user asked for removes them even when every one is gone.
+    expect(goneMusicPaths(album, new Set(), ['D:\\Music'], [], [], true)).toEqual(album);
   });
 });

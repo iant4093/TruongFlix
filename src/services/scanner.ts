@@ -229,13 +229,16 @@ export async function runScan(opts: ScanOptions = {}) {
     const missing = [...index].filter(
       ([path]) => !onDisk.has(path) && !protectedTorrentPaths.has(path) && !offline.some((r) => isUnder(path, r)) && !walk.unreadable.some((u) => path === u || isUnder(path, u)),
     );
-    // A folder that suddenly lost most of its titles is far more likely an empty mount point or a
-    // different disk on the same letter than a real clear-out: leave it for the next scan.
-    const suspicious = roots.filter((r) => {
-      const had = [...index.keys()].filter((p) => isUnder(p, r)).length;
-      const lost = missing.filter(([p]) => isUnder(p, r)).length;
-      return had >= 20 && lost / had > 0.5;
-    });
+    // A folder where every one of many titles vanished at once is far more likely an empty mount
+    // point or a different disk on the same letter than a real clear-out: leave it, unless this is a
+    // full rescan the user asked for.
+    const suspicious = opts.force
+      ? []
+      : roots.filter((r) => {
+          const had = [...index.keys()].filter((p) => isUnder(p, r)).length;
+          const lost = missing.filter(([p]) => isUnder(p, r)).length;
+          return had >= 20 && lost === had;
+        });
     if (suspicious.length) console.warn('[scan] not removing titles from', suspicious);
     for (const [path, rec] of missing) {
       if (suspicious.some((r) => isUnder(path, r))) continue;

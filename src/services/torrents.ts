@@ -1198,7 +1198,10 @@ export function pollTorrents(): Promise<TorrentItem[]> {
         try {
           await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' });
           const pending = filePaths.filter((p) => !isUnder(p, savePath));
-          const { paths } = await moveTorrentFiles(planTorrentMoves(pending, savePath));
+          // Planned from every file so each keeps its subfolder (a plan from only the leftovers
+          // would put a retried "Season 2/E01.mkv" straight into the show folder).
+          const plan = planTorrentMoves(filePaths, savePath).filter((m) => pending.includes(m.from));
+          const { paths } = await moveTorrentFiles(plan);
           const now = new Map(pending.map((p, i) => [p, paths[i]]));
           filePaths = filePaths.map((p) => now.get(p) ?? p);
           seedingStopped = true;

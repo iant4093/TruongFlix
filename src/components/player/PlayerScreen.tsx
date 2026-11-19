@@ -896,7 +896,8 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
   const [visible, setVisible] = useState(true);
   const [panel, setPanel] = useState<Panel>(null);
   // Using a TV remote, keyboard or gamepad: Skip Intro and Next Episode take focus when they appear.
-  const tvKeys = useTvMode((s) => s.keyboard);
+  // (Only with a game controller: on a keyboard, Space must keep pausing rather than press the button.)
+  const tvKeys = useTvMode((s) => s.controller);
   // A menu opened from the remote starts on its current choice.
   useEffect(() => {
     if (!panel || !useTvMode.getState().keyboard) return;
@@ -1026,7 +1027,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         return;
       }
       // With a menu open, arrows move between its options (TV remotes and gamepads have no mouse).
-      if (useLibraryStore.getState().playerSession && document.querySelector('[data-player-menu]') && e.key.startsWith('Arrow')) return;
+      if (useTvMode.getState().keyboard && document.querySelector('[data-player-menu]') && e.key.startsWith('Arrow')) return;
       let handled = true;
       switch (e.key) {
         case ' ':

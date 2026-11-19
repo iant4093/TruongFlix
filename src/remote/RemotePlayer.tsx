@@ -90,6 +90,8 @@ export default function RemotePlayer({
   const pendingSeek = useRef<number | null>(null);
 
   const [stream, setStream] = useState<RemoteStream | null>(null);
+  /** Where playback last was (seconds into the title), for saving after the video element is gone. */
+  const lastPos = useRef<number | null>(null);
   const [offset, setOffset] = useState(0);
   const [time, setTime] = useState(0);
   const [bufferedEnd, setBufferedEnd] = useState(0);
@@ -295,6 +297,7 @@ export default function RemotePlayer({
     setCountdown(null);
     setPanel(null);
     setStream(null);
+    lastPos.current = null;
     const prev = streamToken.current ?? undefined;
     streamToken.current = null;
     void loadStream({ start: target.resume >= 0 ? target.resume : undefined, prevToken: prev });
@@ -366,7 +369,9 @@ export default function RemotePlayer({
       if (!stream || !duration) return;
       const seconds = watched.current.total;
       watched.current.total = 0;
-      const cur = offset + (video.current?.currentTime ?? 0);
+      // On the way out the video element may already be gone: the last known place is used then.
+      const cur = video.current ? offset + video.current.currentTime : lastPos.current;
+      if (cur == null) return;
       if (offline) void savePosition(offline.id, cur).catch(() => {});
       const res = await api<{ blocked: string | null }>('/progress', {
         body: { ...base, type: target.type, id: target.id, time: cur, duration, watched: seconds, token: streamToken.current },
@@ -695,6 +700,7 @@ export default function RemotePlayer({
           const dt = t - watched.current.last;
           if (dt > 0 && dt < 2.5) watched.current.total += dt;
           watched.current.last = t;
+          lastPos.current = offset + t;
           setTime(t);
           if (el.buffered.length) setBufferedEnd(el.buffered.end(el.buffered.length - 1));
         }}

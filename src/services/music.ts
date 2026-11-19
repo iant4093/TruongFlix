@@ -218,18 +218,21 @@ const isUnder = (path: string, root: string) => {
  * suddenly lost most of its songs (an empty mount point or a different disk on the same letter is
  * far likelier than a real clear-out): dropping a song also drops its playlists and favourites.
  */
-export function goneMusicPaths(indexed: string[], seen: Set<string>, dirs: string[], offline: string[], unreadable: string[] = []): string[] {
+export function goneMusicPaths(indexed: string[], seen: Set<string>, dirs: string[], offline: string[], unreadable: string[] = [], force = false): string[] {
   const missing = indexed.filter((p) => {
     if (!dirs.some((d) => isUnder(p, d))) return true;
     if (offline.some((d) => isUnder(p, d))) return false;
     if (unreadable.some((u) => p === u || isUnder(p, u))) return false;
     return !seen.has(p);
   });
-  const suspicious = dirs.filter((d) => {
-    const had = indexed.filter((p) => isUnder(p, d)).length;
-    const lost = missing.filter((p) => isUnder(p, d)).length;
-    return had >= 20 && lost / had > 0.5;
-  });
+  // Only a folder where every one of many songs vanished at once (and not on a full rescan).
+  const suspicious = force
+    ? []
+    : dirs.filter((d) => {
+        const had = indexed.filter((p) => isUnder(p, d)).length;
+        const lost = missing.filter((p) => isUnder(p, d)).length;
+        return had >= 20 && lost === had;
+      });
   return missing.filter((p) => !suspicious.some((d) => isUnder(p, d)));
 }
 
@@ -278,7 +281,7 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
     const added = res.changed.filter((f) => !index.has(f.file_path)).length;
     await mdb.upsertMusicFiles(res.changed, Date.now(), dirs);
     if (roots.length && !offline.length) writeMatchVersion();
-    const gone = goneMusicPaths([...index.keys()], new Set(res.seen), dirs, offline, res.unreadable ?? []);
+    const gone = goneMusicPaths([...index.keys()], new Set(res.seen), dirs, offline, res.unreadable ?? [], !!opts.force);
     await mdb.removeMusicPaths(gone);
     if (!gone.length && res.changed.length) await mdb.pruneMusic();
     if (res.changed.length || gone.length) await loadMusicLibrary(true);
