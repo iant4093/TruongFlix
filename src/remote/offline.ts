@@ -24,6 +24,7 @@ import {
 } from './offlineLogic';
 import { idbStore, type OfflineStore } from './offlineStore';
 import { errorMessage } from '../lib/errors';
+import { PROFILE_LOCKED } from './types';
 
 const RETRIES = 5;
 const STATUS_POLL_MS = 2000;
@@ -365,7 +366,21 @@ export async function queueProgress(p: Omit<PendingProgress, 'key' | 'at'>) {
 
 let flushing = false;
 
-/** Sends offline progress to the PC. Entries the PC refuses (locked profile, removed title) are dropped. */
+/** Points saved progress for a PIN profile at its new unlock, after the PIN is entered again. */
+export async function rekeyProgress(profile: number, profileKey: string | undefined) {
+  const stored = await getStore().pending().catch(() => [] as PendingProgress[]);
+  for (const p of stored) pendingQueue = mergeProgress(pendingQueue, p);
+  for (const p of pendingQueue) {
+    if (p.profile !== profile || p.profileKey === profileKey) continue;
+    p.profileKey = profileKey;
+    await getStore().putPending(p).catch(() => {});
+  }
+}
+
+/**
+ * Sends offline progress to the PC. Entries the PC refuses for good (a removed title) are dropped;
+ * a PIN profile whose unlock expired keeps its progress until the PIN is entered again.
+ */
 export async function flushProgress() {
   if (flushing) return;
   flushing = true;
@@ -376,7 +391,8 @@ export async function flushProgress() {
       try {
         await api('/progress', { body: { profile: p.profile, key: p.profileKey, type: p.type, id: p.id, time: p.time, duration: p.duration, at: p.at } });
       } catch (e) {
-        if (!(e instanceof ApiStatusError)) break; // still offline
+        if (!(e instanceof ApiStatusError) || e.status === 429 || e.status >= 500) break; // still offline, or busy
+        if (e.status === 403 && e.message === PROFILE_LOCKED) continue; // kept: sent once unlocked again
       }
       pendingQueue = pendingQueue.filter((x) => x.key !== p.key);
       await getStore().removePending(p.key).catch(() => {});

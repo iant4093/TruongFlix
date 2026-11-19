@@ -22,6 +22,7 @@ import { blockedMessage, limitStatus } from './limits';
 import { verifyPin } from './pin';
 import { parseMediaInfo, parseSegments } from './mediainfo';
 import { playLive, subtitleOptions } from './player';
+import { PROFILE_LOCKED } from '../remote/types';
 import { ApiError, command as remoteCommand, noteController, nowPlaying, rateLimit, startOnPc, type Caller } from './remotecontrol';
 import { eventMatches, findLiveChannel, initLive, LEAGUES, localDate, sportsSchedule, useLiveStore, webPlayerUrl } from './live';
 import type { LiveChannel, LivePlaylist, LivePreferences } from '../types/live';
@@ -164,7 +165,7 @@ function profileFor(id: unknown, unlock: unknown): Profile {
   if (!profile) throw new ApiError(404, 'Unknown profile');
   if (profile.pin) {
     const entry = unlocked.get(profile.id)?.get(String(unlock ?? ''));
-    if (!entry || entry.expires < Date.now() || entry.pin !== profile.pin) throw new ApiError(403, 'This profile is locked');
+    if (!entry || entry.expires < Date.now() || entry.pin !== profile.pin) throw new ApiError(403, PROFILE_LOCKED);
   }
   return profile;
 }
@@ -787,7 +788,7 @@ export async function route(caller: Caller, method: string, path: string, query:
     rateLimit(caller, 'state', 40, 10_000);
     return nowPlaying(caller, p());
   }
-  if (method === 'POST' && path === '/remote/command') return remoteCommand(caller, p(), body.action as never, body.value);
+  if (method === 'POST' && path === '/remote/command') return remoteCommand(caller, p(), body.action as never, body.value, body.expect);
   if (method === 'GET' && path === '/live') {
     rateLimit(caller, 'live', 20, 60_000);
     return live(p());

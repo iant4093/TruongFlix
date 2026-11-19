@@ -7,7 +7,7 @@ import ProfileAvatar from '../components/common/ProfileAvatar';
 import type { RemoteItem, RemoteLibrary, RemotePlayable, RemoteProfile, RemoteTitle } from './types';
 import { Featured, Poster, Row } from './RemoteBits';
 import TitlePage from './RemoteTitle';
-import { api, AuthError, getToken, login, qs } from './api';
+import { api, AuthError, getToken, login, qs, SIGNED_OUT } from './api';
 import RemotePlayer from './RemotePlayer';
 import { NowPlayingBar, RemoteSheet, useNowPlaying } from './RemoteControl';
 import { errorMessage } from '../lib/errors';
@@ -17,8 +17,9 @@ import { pause as pauseMusic, setBarHidden, useMusicPlayer } from '../music/play
 import { EqBars } from '../music/components/ui';
 import type { RemoteRow } from './types';
 import { DownloadsPage } from './RemoteDownloads';
-import { initOffline } from './offline';
+import { flushProgress, initOffline, rekeyProgress } from './offline';
 import type { OfflineItem } from './offlineLogic';
+import { consumeBack, useBackToClose } from './backStack';
 
 type Tab = 'home' | 'tv' | 'movies' | 'live' | 'music' | 'mylist';
 const TABS: { tab: Tab; label: string }[] = [
@@ -106,6 +107,7 @@ export default function RemoteApp() {
   const popped = useRef(false);
   useEffect(() => {
     const onPop = () => {
+      if (consumeBack()) return; // an overlay (the PC remote, the Live player) closed instead
       if (!pushed.current) return;
       pushed.current = false;
       popped.current = true;
@@ -135,6 +137,8 @@ export default function RemoteApp() {
 
   const choose = (w: Who | null) => {
     setWho(w);
+    // Progress saved offline while this profile's unlock had expired goes out with the new one.
+    if (w) void rekeyProgress(w.id, w.key).then(() => flushProgress()).catch(() => {});
     if (w) sessionStorage.setItem('tf-remote-who', JSON.stringify(w));
     else sessionStorage.removeItem('tf-remote-who');
     setScreen({ name: 'home' });
@@ -144,6 +148,12 @@ export default function RemoteApp() {
   }, []);
   useEffect(() => {
     void initOffline();
+  }, []);
+  // Any request refused for the sign-in (a revoked device, a new code) goes back to signing in.
+  useEffect(() => {
+    const out = () => setSignedIn(false);
+    window.addEventListener(SIGNED_OUT, out);
+    return () => window.removeEventListener(SIGNED_OUT, out);
   }, []);
 
   if (!signedIn) return <Login onDone={() => setSignedIn(true)} />;
@@ -232,9 +242,17 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
   const pinFor = useLeaving(locked, 240);
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
+  const [failed, setFailed] = useState('');
+  const [tries, setTries] = useState(0);
   useEffect(() => {
-    api<RemoteProfile[]>('/profiles').then(setProfiles).catch(onAuthError);
-  }, [onAuthError]);
+    setFailed('');
+    api<RemoteProfile[]>('/profiles')
+      .then(setProfiles)
+      .catch((e) => {
+        onAuthError(e);
+        if (!(e instanceof AuthError)) setFailed(errorMessage(e));
+      });
+  }, [onAuthError, tries]);
   const unlock = async (p: RemoteProfile, value: string) => {
     try {
       const { key } = await api<{ key: string }>('/unlock', { body: { profile: p.id, pin: value } });
@@ -258,6 +276,14 @@ function Profiles({ onPick, onAuthError }: { onPick: (w: Who) => void; onAuthErr
           </button>
         ))}
       </div>
+      {failed && !profiles && (
+        <div className="nf-fade mt-2 flex flex-col items-center gap-4 text-center">
+          <p className="text-nf-secondary">{failed}</p>
+          <button type="button" onClick={() => setTries((n) => n + 1)} className="nf-press rounded-full bg-white px-5 py-2 text-sm font-semibold text-black">
+            Try again
+          </button>
+        </div>
+      )}
       {pinFor.shown && (
         <div className={`nf-fade fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-6 ${leavingClass(pinFor.closing)}`} onClick={() => setLocked(null)}>
           <div className="nf-pop-in w-full max-w-xs text-center" onClick={(e) => e.stopPropagation()}>
@@ -357,6 +383,7 @@ function Browse({
   const [remoteOpen, setRemoteOpen] = useState(false);
   const closeRemote = useCallback(() => setRemoteOpen(false), []);
   const remoteSheet = useLeaving(remoteOpen);
+  useBackToClose(remoteOpen, closeRemote);
   const musicPlaying = useRemoteMusic(who);
   const remote = (
     <>

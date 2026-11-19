@@ -253,6 +253,21 @@ describe('phone as a remote for the PC', () => {
     await expect(state(A, { profile: '3', key })).resolves.toMatchObject({ active: true });
   });
 
+  it('shows another profile only what that profile may watch (PC profile without a PIN)', async () => {
+    const { useLibraryStore } = await import('../src/store/useLibraryStore');
+    useLibraryStore.setState({ items: [{ key: 'movie-2', certification: 'R' }] } as never);
+    await expect(state(A, { profile: '2' })).rejects.toMatchObject({ status: 403 });
+    await expect(cmd('pause', undefined, 2)).rejects.toMatchObject({ status: 403 });
+    useLibraryStore.setState({ items: [{ key: 'movie-2', certification: 'G' }] } as never);
+    await expect(state(A, { profile: '2' })).resolves.toMatchObject({ active: true, title: 'Family film' });
+  });
+
+  it('ignores a command meant for a title that is no longer playing', async () => {
+    await expect(remote.route(A, 'POST', '/remote/command', {}, { profile: 1, action: 'next', expect: { type: 'movie', id: 7 } })).rejects.toMatchObject({ status: 409 });
+    expect(player.playBuiltin).not.toHaveBeenCalled();
+    await expect(remote.route(A, 'POST', '/remote/command', {}, { profile: 1, action: 'pause', expect: { type: 'movie', id: 2 } })).resolves.toEqual({ ok: true });
+  });
+
   it('routes commands to the desktop player actions', async () => {
     await cmd('toggle');
     expect(player.playerCommand).toHaveBeenLastCalledWith('cycle', 'pause');

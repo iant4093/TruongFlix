@@ -4,6 +4,7 @@ import { ArrowLeft, Globe, Maximize, Minimize, Monitor, Play, Radio, RefreshCw }
 import type { RemoteLive, RemoteLiveChannel, RemoteLiveEvent, RemoteProfile } from './types';
 import { api, qs } from './api';
 import { errorMessage } from '../lib/errors';
+import { useBackToClose } from './backStack';
 
 type Who = { id: number; key?: string; profile: RemoteProfile };
 type Watching = { channel: RemoteLiveChannel; title: string; subtitle: string };
@@ -71,6 +72,7 @@ export default function RemoteLiveSection({ who, onAuthError, onPlayedOnPc }: { 
   );
   const channels = (data?.channels ?? []).filter((c) => !needle || `${c.name} ${c.group} ${c.source}`.toLowerCase().includes(needle)).slice(0, 200);
 
+  useBackToClose(!!watching, () => setWatching(null));
   if (watching) return <WebChannelPlayer watching={watching} onBack={() => setWatching(null)} />;
   return (
     <div className="px-4">

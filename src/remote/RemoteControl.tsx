@@ -48,25 +48,40 @@ export function useNowPlaying(who: Who, enabled: boolean, onAuthError: (e: unkno
   const [error, setError] = useState('');
   const timer = useRef<number | null>(null);
   const active = useRef(false);
+  // Bumped on unmount and on each new poll, so an answer arriving late never starts a second loop
+  // (or keeps one going after the screen closed).
+  const run = useRef(0);
+  const misses = useRef(0);
+  const npRef = useRef<RemoteNowPlaying | null>(null);
+  npRef.current = np;
 
   const poll = useCallback(async () => {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = null;
+    const mine = ++run.current;
     try {
       const s = await api<RemoteNowPlaying>(`/remote/state${qs({ profile: who.id, key: who.key })}`);
+      if (mine !== run.current) return;
+      misses.current = 0;
       setPc(s.pc);
       setBlocked(null);
       setNp(s.active ? s : null);
       setAt(Date.now());
       active.current = s.active;
     } catch (e) {
+      if (mine !== run.current) return;
       onAuthError(e);
       if (e instanceof AuthError) return;
-      setNp(null);
-      active.current = false;
+      // A refusal is an answer; a dropped request (Wi-Fi blip, the PC busy) isn't: what's playing
+      // stays up for a few tries instead of the bar vanishing and coming back.
+      const refused = e instanceof ApiStatusError && e.status < 500;
+      if (refused || ++misses.current >= 3) {
+        setNp(null);
+        active.current = false;
+      }
       if (e instanceof ApiStatusError && e.status === 403) setBlocked(e.message);
     }
-    if (!document.hidden) timer.current = window.setTimeout(() => void poll(), active.current ? 1000 : 4000);
+    if (mine === run.current && !document.hidden) timer.current = window.setTimeout(() => void poll(), active.current ? 1000 : 4000);
   }, [who, onAuthError]);
 
   useEffect(() => {
@@ -78,6 +93,7 @@ export function useNowPlaying(who: Who, enabled: boolean, onAuthError: (e: unkno
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
+      run.current++;
       if (timer.current) window.clearTimeout(timer.current);
       timer.current = null;
     };
@@ -98,10 +114,12 @@ export function useNowPlaying(who: Who, enabled: boolean, onAuthError: (e: unkno
       });
       if (action === 'seek' || action === 'skip') setAt(Date.now());
       try {
-        await api(`/remote/command`, { body: { profile: who.id, key: who.key, action, value } });
+        const cur = npRef.current;
+        await api(`/remote/command`, { body: { profile: who.id, key: who.key, action, value, expect: cur ? { type: cur.type, id: cur.id } : undefined } });
       } catch (e) {
         onAuthError(e);
-        setError(errorMessage(e));
+        // The PC moved on (a second tap on Next, say): nothing was done, the next poll shows what's on.
+        if (!(e instanceof ApiStatusError && e.status === 409)) setError(errorMessage(e));
       }
       window.setTimeout(() => void poll(), action === 'next' || action === 'stop' ? 900 : 300);
     },
@@ -187,7 +205,16 @@ function Scrubber({ time, duration, onSeek }: { time: number; duration: number; 
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(shown * duration)}
-        className="relative flex h-10 touch-none items-center"
+        aria-valuetext={`${formatClock(shown * duration)} of ${formatClock(duration)}`}
+        tabIndex={0}
+        // Keyboards and screen readers (VoiceOver swipes up/down) step 10 seconds at a time.
+        onKeyDown={(e) => {
+          const step = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 10 : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -10 : 0;
+          if (!step || !duration) return;
+          e.preventDefault();
+          onSeek(Math.max(0, Math.min(duration - 1, time + step)));
+        }}
+        className="relative flex h-10 touch-none items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-white/60"
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId);
           setDrag(ratioAt(e.clientX));
@@ -265,6 +292,8 @@ function TrackSheet({ np, send, onClose, closing = false }: { np: RemoteNowPlayi
   const row = (selected: boolean, label: string, detail: string | null, onClick: () => void, key: string) => (
     <button
       key={key}
+      role="menuitemradio"
+      aria-checked={selected}
       onClick={() => {
         onClose();
         onClick();
@@ -307,10 +336,23 @@ const round = 'flex items-center justify-center rounded-full hover:bg-white/10 a
 export function RemoteSheet({ now, onClose, closing = false }: { now: NowPlaying; onClose: () => void; closing?: boolean }) {
   const { np, at, send, error } = now;
   const [tracks, setTracks] = useState(false);
+  // Opened right after "Play on PC": the PC takes a moment to start, so the sheet waits for it
+  // (it used to close at once, before anything was playing). It closes when playback ends.
+  const seen = useRef(false);
+  if (np) seen.current = true;
   useEffect(() => {
-    if (!np) onClose();
+    if (np) return;
+    if (seen.current) return onClose();
+    const t = window.setTimeout(onClose, 12_000);
+    return () => window.clearTimeout(t);
   }, [np, onClose]);
-  if (!np) return null;
+  if (!np)
+    return (
+      <div className={`nf-fade fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/90 ${leavingClass(closing)}`} onClick={onClose}>
+        <span className="h-8 w-8 animate-spin rounded-full border-2 border-white/25 border-t-white" aria-hidden />
+        <p className="text-sm text-white/70">Starting on your computer…</p>
+      </div>
+    );
   return <Sheet np={np} at={at} send={send} error={error} onClose={onClose} tracks={tracks} setTracks={setTracks} closing={closing} />;
 }
 

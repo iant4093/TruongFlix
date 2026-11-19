@@ -102,7 +102,9 @@ export default function WatchTogether({
     const c = client.current!;
     if (!el) return;
     const onPlay = () => c.localPlaying(true);
-    const onPause = () => c.localPlaying(false);
+    // A phone pauses its video when it locks or the page goes to the background: that isn't this
+    // viewer pausing the party for everyone.
+    const onPause = () => !document.hidden && c.localPlaying(false);
     const onSeeked = () => c.localSeek();
     const onRate = () => c.localRate(el.playbackRate);
     const onLoad = () => c.settle();
@@ -129,6 +131,33 @@ export default function WatchTogether({
 
   // Leaving the player leaves the party.
   useEffect(() => () => void client.current?.leave(), []);
+
+  // Back from the background: catch up with the room, or join it again if this phone was dropped
+  // while it was away.
+  const lastCode = useRef<string | null>(null);
+  if (state?.code) lastCode.current = state.code;
+  const rejoinable = useRef(false);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.hidden) {
+        rejoinable.current = !!client.current?.code;
+        return;
+      }
+      const c = client.current!;
+      if (c.code) {
+        c.settle();
+        void c.tick();
+      } else if (rejoinable.current && lastCode.current) {
+        rejoinable.current = false;
+        void api<TogetherState>('/together/join', { body: { ...base(), code: lastCode.current } })
+          .then((s) => c.start(s))
+          .catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refresh = useCallback(() => {
     setRooms(null);
@@ -192,7 +221,10 @@ export default function WatchTogether({
             error={error}
             onCreate={() => void create()}
             onJoin={(code) => void join(code)}
-            onLeave={() => void client.current!.leave()}
+            onLeave={() => {
+              lastCode.current = null;
+              void client.current!.leave();
+            }}
             onWait={(on) => client.current!.setWaitForAll(on)}
             onRefresh={refresh}
             onClose={() => setOpen(false)}

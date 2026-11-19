@@ -16,6 +16,7 @@ import {
   toggleFullscreen,
 } from './player';
 import { languageName } from './subtitles';
+import { allowedForMaturity } from '../store/selectors';
 
 /**
  * "Playing on <PC>": lets a signed-in browser (phone) see and control what the desktop app's
@@ -55,10 +56,18 @@ export function rateLimit(caller: Caller, kind: string, max: number, windowMs: n
   hits.set(k, list);
 }
 
-/** The browser's (unlocked) profile must be the one open on the PC, unless that one has no PIN. */
+/**
+ * The browser's (unlocked) profile must be the one open on the PC, unless that one has no PIN; and
+ * then only for what the browser's profile may watch itself (a kids profile used to see, and
+ * control, whatever an unrestricted PC profile was playing).
+ */
 function authorize(profile: Profile) {
-  const pc = useLibraryStore.getState().activeProfile;
+  const { activeProfile: pc, playerSession: session, items } = useLibraryStore.getState();
   if (!pc || (pc.id !== profile.id && pc.pin)) throw new ApiError(403, OTHER_PROFILE);
+  if (pc.id === profile.id || profile.maturity === 'all') return;
+  // Live TV and casts carry no rating this can check: only unrestricted profiles see those.
+  const item = session && session.target.type !== 'live' && session.itemKey ? items.find((i) => i.key === session.itemKey) : undefined;
+  if (!item || !allowedForMaturity(item, profile.maturity)) throw new ApiError(403, OTHER_PROFILE);
 }
 
 const announced = new Set<string>();
@@ -188,12 +197,18 @@ function num(value: unknown) {
 }
 
 /** POST /remote/command — reuses the same player actions as the desktop controls. */
-export async function command(caller: Caller, profile: Profile, action: RemoteCommandAction, value: unknown) {
+export async function command(caller: Caller, profile: Profile, action: RemoteCommandAction, value: unknown, expect?: unknown) {
   rateLimit(caller, 'command', 40, 10_000);
   const store = useLibraryStore.getState();
   const { playerSession: session, playerState: state, playerTracks, playerPrompt, cast } = store;
   if (!session && !cast) throw new ApiError(404, `Nothing is playing on ${pcName(caller)}`);
   authorize(profile);
+  // The phone says which title it meant: a tap that crosses the PC moving on to the next episode
+  // (or someone starting something else) isn't applied to the wrong title.
+  const meant = expect && typeof expect === 'object' ? (expect as { type?: unknown; id?: unknown }) : null;
+  const target = session?.target ?? cast?.target;
+  if (meant && target && (String(meant.type) !== target.type || String(meant.id) !== String(target.id)))
+    throw new ApiError(409, `Something else is playing on ${pcName(caller)} now`);
   noteController(caller);
   noteUserActivity();
 

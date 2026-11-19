@@ -35,7 +35,7 @@ export function TogetherPanel({
     <div
       role="dialog"
       aria-label="Watch together"
-      className="w-[min(360px,calc(100vw-1.5rem))] rounded-xl border border-white/15 bg-nf-surface/95 p-4 text-left text-white shadow-2xl backdrop-blur"
+      className="max-h-[calc(100dvh-6rem)] w-[min(360px,calc(100vw-1.5rem))] overflow-y-auto overscroll-contain rounded-xl border border-white/15 bg-nf-surface/95 p-4 text-left text-white shadow-2xl backdrop-blur"
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => e.stopPropagation()}
     >

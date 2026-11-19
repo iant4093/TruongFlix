@@ -272,3 +272,6 @@ export interface RemoteLive {
   /** Every league the PC follows ([id, name]), with or without games today. */
   leagues?: [string, string][];
 }
+
+/** The refusal for a PIN profile whose unlock has expired (the PC restarted, or 12 hours passed). */
+export const PROFILE_LOCKED = 'This profile is locked';

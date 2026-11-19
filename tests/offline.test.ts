@@ -210,3 +210,32 @@ describe('offline helpers', () => {
     expect(downloadFraction(item({ state: 'queued' }))).toBe(0);
   });
 });
+
+describe('progress saved offline', () => {
+  it('keeps a locked profile’s progress until its PIN is entered again', async () => {
+    const { _resetOffline, flushProgress, queueProgress, rekeyProgress } = await import('../src/remote/offline');
+    const store = memoryStore();
+    _resetOffline(store);
+    const sent: unknown[] = [];
+    let unlocked = false;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body);
+      if (body.key !== 'new' || !unlocked) return new Response(JSON.stringify({ error: 'This profile is locked' }), { status: 403 });
+      sent.push(body);
+      return new Response('{}', { status: 200 });
+    }));
+    try {
+      await queueProgress({ profile: 3, profileKey: 'old', type: 'movie', id: 2, time: 60, duration: 100 });
+      await flushProgress();
+      expect(await store.pending()).toHaveLength(1);
+      unlocked = true;
+      await rekeyProgress(3, 'new');
+      await flushProgress();
+      expect(sent).toEqual([expect.objectContaining({ profile: 3, key: 'new', time: 60 })]);
+      expect(await store.pending()).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+      _resetOffline(null);
+    }
+  });
+});
