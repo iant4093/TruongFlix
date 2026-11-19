@@ -1494,7 +1494,8 @@ impl TorrentManager {
         match action {
             "pause" => {
                 if let (Some(session), Some(h)) = (session, handle) {
-                    if !h.is_paused() {
+                    let errored = h.with_state(|s| matches!(s, librqbit::ManagedTorrentState::Error(_)));
+                    if !h.is_paused() && !errored {
                         session.pause(&h).await.map_err(|e| format!("{e:#}"))?;
                     }
                 }
@@ -1502,7 +1503,10 @@ impl TorrentManager {
             }
             "resume" => {
                 if let (Some(session), Some(h)) = (session, handle) {
-                    if h.is_paused() {
+                    // A torrent stopped by an error (disk full, a share that dropped) starts again
+                    // from its files: it used to stay at "Error" until removed and added again.
+                    let errored = h.with_state(|s| matches!(s, librqbit::ManagedTorrentState::Error(_)));
+                    if h.is_paused() || errored {
                         session.unpause(&h).await.map_err(|e| format!("{e:#}"))?;
                     }
                 }
@@ -2100,6 +2104,16 @@ pub async fn torrent_configure(
 ) -> Result<Option<u16>, String> {
     let mgr = global_manager(&app)?;
     mgr.configure(config).await
+}
+
+/// Starts the engine, which brings back the torrents saved by the last run (downloads carry on,
+/// finished ones seed). It used to start only when something new was added or streamed, so after
+/// a restart downloads sat at "Paused" with no way to resume them.
+#[tauri::command]
+pub async fn torrent_start(app: AppHandle) -> Result<Option<u16>, String> {
+    let mgr = global_manager(&app)?;
+    let session = mgr.ensure_session().await?;
+    Ok(session.listen_addr().map(|a| a.port()))
 }
 
 #[tauri::command]

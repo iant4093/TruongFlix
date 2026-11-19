@@ -29,8 +29,10 @@ use tokio::net::{TcpListener, TcpStream};
 const IDLE_STREAM: Duration = Duration::from_secs(15 * 60);
 /// A growing stream that hasn't grown for this long is ended (its conversion stalled or died).
 const STALLED_STREAM: Duration = Duration::from_secs(120);
-/// A client that accepts no data for this long is dropped, freeing its connection slot.
-const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A TV paused on the converted (no seeking) stream stops reading until play is pressed: it must
+/// get its pause back, so only a client gone this long counts as gone (a closed connection fails
+/// at once anyway). 60 seconds ended every paused cast on these TVs.
+const PAUSED_CLIENT: Duration = Duration::from_secs(20 * 60);
 
 /// Marks a conversion finished when its thread ends, however it ends (a panic too): waiters on a
 /// conversion that never set `done` used to wait forever.
@@ -1277,7 +1279,7 @@ async fn serve_growing(conn: &mut TcpStream, path: &Path, done: &AtomicBool, hea
             let mut chunk = format!("{n:X}\r\n").into_bytes();
             chunk.extend_from_slice(&buf[..n]);
             chunk.extend_from_slice(b"\r\n");
-            tokio::time::timeout(WRITE_TIMEOUT, conn.write_all(&chunk)).await.map_err(|_| timed_out())??;
+            tokio::time::timeout(PAUSED_CLIENT, conn.write_all(&chunk)).await.map_err(|_| timed_out())??;
             continue;
         }
         if done.load(Ordering::Acquire) || grew.elapsed() > STALLED_STREAM {

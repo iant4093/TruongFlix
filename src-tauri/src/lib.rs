@@ -220,6 +220,7 @@ pub fn run() {
             watcher::watch_folders,
             files::apply_moves,
             torrent::torrent_configure,
+            torrent::torrent_start,
             torrent::torrent_inspect,
             torrent::torrent_inspect_files,
             torrent::torrent_add,

@@ -696,6 +696,9 @@ export function planTorrentMoves(paths: string[], targetDir: string): FileMove[]
     while (i < common.length && i < d.length && common[i] === d[i]) i++;
     common = common.slice(0, i);
   }
+  // A season folder is kept ("Season 2/E01.mkv"), so episodes of different seasons never collide,
+  // even when only one season's files are moved (a retry).
+  if (common.length > 1 && /^(?:season|series|staffel|saison|temporada)[ ._-]*\d{1,2}$|^s\d{1,2}$|^specials?$/i.test(common[common.length - 1])) common = common.slice(0, -1);
   return paths.map((from) => {
     const rest = split(from).slice(common.length).filter(Boolean);
     return { from, to: (rest.length ? rest : [basename(from) || 'video.mkv']).reduce((dir, part) => joinPath(dir, part), targetDir) };
@@ -1198,14 +1201,18 @@ export function pollTorrents(): Promise<TorrentItem[]> {
         try {
           await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' });
           const pending = filePaths.filter((p) => !isUnder(p, savePath));
-          // Planned from every file so each keeps its subfolder (a plan from only the leftovers
-          // would put a retried "Season 2/E01.mkv" straight into the show folder).
-          const plan = planTorrentMoves(filePaths, savePath).filter((m) => pending.includes(m.from));
+          // Planned from the files still to move: the ones already moved live elsewhere, and mixing
+          // them in made the shared folder something like C:\Users and sent files to odd places.
+          // The planner keeps season folders.
+          const plan = planTorrentMoves(pending, savePath);
           const { paths } = await moveTorrentFiles(plan);
           const now = new Map(pending.map((p, i) => [p, paths[i]]));
+          const before = filePaths;
           filePaths = filePaths.map((p) => now.get(p) ?? p);
           seedingStopped = true;
-          needsLibraryReload = true;
+          // Only when something moved: a move that keeps failing used to reload the whole
+          // library on every check (every few seconds).
+          if (filePaths.some((p, i) => p !== before[i])) needsLibraryReload = true;
           await db.updateTorrentRecord(hash, { file_paths: filePaths, seeding_stopped: true });
         } catch (e) {
           console.warn('[torrents] post-complete move failed; will retry', e);
@@ -1392,6 +1399,11 @@ export async function initTorrentService() {
 
   await syncTorrentEngineConfig();
   try {
+    // Torrents from the last run that still have work (downloading, or seeding) come back now,
+    // before anything expired is cleared (removing one needs the engine running, or it would be
+    // restored later and download again unseen).
+    const records = await db.listTorrentRecords().catch(() => [] as TorrentRecord[]);
+    if (records.some((r) => !(r.completed_at && r.seeding_stopped))) await invoke('torrent_start').catch((e) => console.warn('[torrents] start failed', e));
     await reapExpiredStreams();
     await pollTorrents();
   } catch (e) {

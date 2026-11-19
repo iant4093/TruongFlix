@@ -1571,8 +1571,10 @@ export async function upsertTorrentRecord(t: UpsertTorrentInput) {
        movie_id = COALESCE(excluded.movie_id, torrents.movie_id),
        file_paths = excluded.file_paths,
        total_bytes = CASE WHEN excluded.total_bytes > 0 THEN excluded.total_bytes ELSE torrents.total_bytes END,
-       completed_at = COALESCE(excluded.completed_at, torrents.completed_at),
-       seeding_stopped = MAX(torrents.seeding_stopped, excluded.seeding_stopped)`,
+       -- Added again and not finished (its files were deleted): a fresh download, not the old
+       -- "complete, not seeding" record that used to stop it within seconds.
+       completed_at = CASE WHEN excluded.completed_at IS NULL THEN NULL ELSE COALESCE(torrents.completed_at, excluded.completed_at) END,
+       seeding_stopped = CASE WHEN excluded.completed_at IS NULL THEN excluded.seeding_stopped ELSE MAX(torrents.seeding_stopped, excluded.seeding_stopped) END`,
     [
       t.info_hash.toLowerCase(),
       t.name,

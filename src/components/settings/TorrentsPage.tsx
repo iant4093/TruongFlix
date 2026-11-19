@@ -384,9 +384,10 @@ export default function TorrentsPage() {
                   )}
 
                   {t.inSession && !t.seedingStopped && (
-                    t.paused ? (
+                    // A torrent stopped by an error (disk full, a share that dropped) offers Retry.
+                    t.paused || t.error ? (
                       <button type="button" disabled={busy} onClick={() => void runTransferAction(t, 'resume', () => resumeTorrent(t.infoHash))} className="nf-btn-ghost h-8 px-2.5 py-0 text-xs">
-                        <Play className="h-3.5 w-3.5" /> Resume
+                        <Play className="h-3.5 w-3.5" /> {t.error && !t.paused ? 'Retry' : 'Resume'}
                       </button>
                     ) : (
                       <button type="button" disabled={busy} onClick={() => void runTransferAction(t, 'pause', () => pauseTorrent(t.infoHash))} className="nf-btn-ghost h-8 px-2.5 py-0 text-xs">

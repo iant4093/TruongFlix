@@ -226,7 +226,39 @@ fn move_one(from: &Path, to: &Path) -> std::io::Result<()> {
         std::fs::rename(from, &tmp)?;
         return std::fs::rename(&tmp, to);
     }
-    std::fs::rename(from, to)
+    match std::fs::rename(from, to) {
+        Err(e) if cross_device(&e) => copy_then_remove(from, to),
+        other => other,
+    }
+}
+
+/// A rename can't cross drives or shares (Windows ERROR_NOT_SAME_DEVICE, Unix EXDEV): "Keep in
+/// Library" from the stream cache to a library on D: or a NAS always failed, and retried forever.
+fn cross_device(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(17) if cfg!(windows)) || matches!(e.raw_os_error(), Some(18) if !cfg!(windows))
+}
+
+/// Copies under a temporary name, checks the size, puts it in place, then removes the original.
+/// Nothing is left half-copied at the destination, and the original stays if anything fails.
+fn copy_then_remove(from: &Path, to: &Path) -> std::io::Result<()> {
+    let tmp = to.with_extension(format!("{}.tfx-copy", to.extension().map(|e| e.to_string_lossy()).unwrap_or_default()));
+    let copied = std::fs::copy(from, &tmp).and_then(|n| {
+        if n == std::fs::metadata(from)?.len() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("the copy is incomplete"))
+        }
+    });
+    if let Err(e) = copied.and_then(|_| std::fs::rename(&tmp, to)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::remove_file(from) {
+        // Two copies are worse than none moved: undo, and report it.
+        let _ = std::fs::remove_file(to);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Removes now-empty folders (ignoring OS junk files), walking up but never removing a root.
