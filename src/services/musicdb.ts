@@ -239,38 +239,48 @@ export async function upsertMusicFiles(files: MusicFile[], now = Date.now(), roo
     for (const r of list) r.tags.albumArtist = albumArtist ?? primaryArtist(r.tags.artist);
   }
 
+  // Written 40 songs per statement: one database call per song made a first import of a big
+  // collection take minutes.
+  const rows: unknown[][] = [];
   for (const { f, tags } of resolved) {
     const artistId = await ensureArtist(db, artists, tags.artist);
     const albumArtistId = await ensureArtist(db, artists, tags.albumArtist || tags.artist);
     const albumId = await ensureAlbum(db, albums, tags.album, albumArtistId, now);
+    rows.push([
+      f.file_path,
+      f.mtime,
+      f.file_size,
+      tags.title,
+      artistId,
+      albumId,
+      tags.trackNo,
+      tags.discNo,
+      tags.year,
+      f.genre,
+      f.duration || 0,
+      f.codec,
+      f.sample_rate,
+      f.bit_depth,
+      f.bitrate,
+      f.cover,
+      f.lyrics,
+      f.lyrics_source,
+      now,
+    ]);
+  }
+  const PER_STATEMENT = 40;
+  for (let i = 0; i < rows.length; i += PER_STATEMENT) {
+    const chunk = rows.slice(i, i + PER_STATEMENT);
+    const width = chunk[0].length;
+    const values = chunk.map((_, r) => `(${Array.from({ length: width }, (_, c) => `$${r * width + c + 1}`).join(', ')})`).join(', ');
     await db.execute(
       `INSERT INTO music_tracks (file_path, file_mtime, file_size, title, artist_id, album_id, track_no, disc_no, year, genre, duration, codec, sample_rate, bit_depth, bitrate, art, lyrics, lyrics_source, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+       VALUES ${values}
        ON CONFLICT(file_path) DO UPDATE SET file_mtime = excluded.file_mtime, file_size = excluded.file_size, title = excluded.title,
          artist_id = excluded.artist_id, album_id = excluded.album_id, track_no = excluded.track_no, disc_no = excluded.disc_no,
          year = excluded.year, genre = excluded.genre, duration = excluded.duration, codec = excluded.codec, sample_rate = excluded.sample_rate,
          bit_depth = excluded.bit_depth, bitrate = excluded.bitrate, art = excluded.art, lyrics = excluded.lyrics, lyrics_source = excluded.lyrics_source`,
-      [
-        f.file_path,
-        f.mtime,
-        f.file_size,
-        tags.title,
-        artistId,
-        albumId,
-        tags.trackNo,
-        tags.discNo,
-        tags.year,
-        f.genre,
-        f.duration || 0,
-        f.codec,
-        f.sample_rate,
-        f.bit_depth,
-        f.bitrate,
-        f.cover,
-        f.lyrics,
-        f.lyrics_source,
-        now,
-      ],
+      chunk.flat(),
     );
   }
   // Changed lyrics may make a cached online lookup obsolete.

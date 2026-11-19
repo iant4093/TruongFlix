@@ -110,6 +110,16 @@ describe('music library tables', () => {
     expect(wall[0].trackIds.map((id) => lib.tracks.find((t) => t.id === id)!.discNo)).toEqual([1, 2]);
   });
 
+  it('imports a big batch in several statements, every song once', async () => {
+    const many = Array.from({ length: 95 }, (_, i) => file(`/m/Big/${String(i).padStart(2, '0')} Song.mp3`, { title: `Song ${i}`, artist: 'Band', album: 'Big' }));
+    await mdb.upsertMusicFiles(many);
+    await mdb.upsertMusicFiles(many.slice(0, 50).map((f) => ({ ...f, mtime: 3, title: `${f.title} (v2)` })));
+    const index = await mdb.musicFileIndex();
+    expect([...index.keys()].filter((p) => p.startsWith('/m/Big/'))).toHaveLength(95);
+    expect(index.get('/m/Big/00 Song.mp3')?.mtime).toBe(3);
+    expect(index.get('/m/Big/94 Song.mp3')?.mtime).toBe(1);
+  });
+
   it('keeps plays and favourites per profile', async () => {
     const t = await seed();
     await mdb.recordPlay(1, t.Song.id, 1000);
