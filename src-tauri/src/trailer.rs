@@ -216,6 +216,44 @@ fn parse_selection(video: &Value, audio: Option<&Value>) -> Result<Resolved, Str
         height,
     })
 }
+/// Windows: the resolver and every process it starts (its JavaScript runtime) live in a job that's
+/// killed when this is dropped. Killing only the resolver on a timeout left its helpers running.
+#[cfg(windows)]
+struct KillTree(isize); // the job's handle (kept as a number so the future stays Send)
+
+#[cfg(windows)]
+impl KillTree {
+    fn new() -> Option<Self> {
+        use windows_sys::Win32::System::JobObjects::*;
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+            Some(Self(job as isize))
+        }
+    }
+    fn add(&self, child: &tokio::process::Child) {
+        if let Some(handle) = child.raw_handle() {
+            unsafe {
+                windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(self.0 as _, handle as _);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for KillTree {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0 as _);
+        }
+    }
+}
+
 async fn extract(key: &str, progressive: bool) -> Result<(Resolved, Option<Resolved>), String> {
     let mut command = Command::new(helper("yt-dlp")?);
     command.kill_on_drop(true).args([
@@ -249,7 +287,11 @@ async fn extract(key: &str, progressive: bool) -> Result<(Resolved, Option<Resol
     ]);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
-    let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+    command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    let child = command.spawn().map_err(|_| "Could not start the trailer resolver")?;
+    #[cfg(windows)]
+    let _tree = KillTree::new().inspect(|t| t.add(&child));
+    let output = tokio::time::timeout(Duration::from_secs(35), child.wait_with_output())
         .await
         .map_err(|_| "The trailer provider took too long to respond")?
         .map_err(|_| "Could not start the trailer resolver")?;

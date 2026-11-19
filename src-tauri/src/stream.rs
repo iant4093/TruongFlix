@@ -1669,15 +1669,19 @@ fn run_encode(
         done.store(true, Ordering::Release);
         return;
     }
+    // The conversion this one replaces (after a seek) shares the folder: wait for it to stop. If it
+    // hangs, carry on, but leave its temporary files alone (deleting them broke its last segments).
+    let mut prev_running = false;
     if let Some(prev) = prev_done {
         let wait = Instant::now();
-        while !prev.load(Ordering::Acquire) && wait.elapsed() < Duration::from_secs(8) {
+        while !prev.load(Ordering::Acquire) && wait.elapsed() < Duration::from_secs(30) {
             if cancel.load(Ordering::Acquire) {
                 done.store(true, Ordering::Release);
                 return;
             }
             std::thread::sleep(Duration::from_millis(25));
         }
+        prev_running = !prev.load(Ordering::Acquire);
     }
     if cancel.load(Ordering::Acquire) {
         done.store(true, Ordering::Release);
@@ -1705,7 +1709,9 @@ fn run_encode(
         }
     }
     attempts.push(Convert::Plain);
-    let m3u8 = dir.join("seg.m3u8");
+    // Each conversion keeps its own playlist: one that's being replaced can't remove or confuse
+    // the new one's.
+    let m3u8 = dir.join(format!("seg-{}.m3u8", &random_token()[..8]));
     let live_ts = dir.join("live.ts");
     let mp4_part = dir.join(MP4_PART);
     let mp4_ready = dir.join(MP4_READY);
@@ -1740,7 +1746,9 @@ fn run_encode(
                 let _ = std::fs::remove_file(&mp4_ready);
             }
         }
-        remove_tmp_files(&dir);
+        if !prev_running {
+            remove_tmp_files(&dir);
+        }
 
         let gop = match &output {
             Output::Hls(plan, _, _) => plan.gop,
@@ -1890,7 +1898,7 @@ fn run_encode(
                     let _ = std::fs::remove_file(dir.join(format!("seg{partial}.ts")));
                 }
                 let _ = std::fs::remove_file(&m3u8);
-                remove_tmp_files(&dir);
+                // Temporary files are left for the next conversion (which may already be writing its own).
             } else if mp4_progress.is_some() {
                 let _ = std::fs::remove_file(&mp4_part);
             } else {

@@ -80,9 +80,16 @@ unsafe fn client_rect_on_screen(main: HWND) -> RECT {
 }
 
 /// Creates the video popup behind `main` and returns its HWND for mpv's `wid`. Main thread only.
+/// A previous player that's still shutting down keeps drawing into its own window, so that window
+/// is only hidden here; its player destroys it once it has stopped (`destroy_window`).
 pub fn attach(main_hwnd: isize) -> Result<isize, String> {
     release();
-    destroy();
+    let old = VIDEO.swap(0, Ordering::AcqRel) as HWND;
+    if !old.is_null() {
+        unsafe {
+            ShowWindow(old, SW_HIDE);
+        }
+    }
     *MINI.lock().unwrap() = None;
     *MULTIVIEW.lock().unwrap() = None;
     unsafe {
@@ -267,5 +274,17 @@ pub fn destroy() {
         unsafe {
             DestroyWindow(video);
         }
+    }
+}
+
+/// Destroys one player's own video window after that player has stopped (clearing it as the
+/// current window if it still is). Main thread only.
+pub fn destroy_window(window: isize) {
+    if window == 0 {
+        return;
+    }
+    let _ = VIDEO.compare_exchange(window, 0, Ordering::AcqRel, Ordering::Acquire);
+    unsafe {
+        DestroyWindow(window as HWND);
     }
 }

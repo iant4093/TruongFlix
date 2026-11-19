@@ -1545,15 +1545,19 @@ impl TorrentManager {
                 let secret_for_loop = secret.clone();
                 let mgr_for_loop = mgr.clone();
 
+                // At most 32 connections at once (players open a few per seek).
+                let slots = Arc::new(tokio::sync::Semaphore::new(32));
                 tokio::spawn(async move {
                     loop {
                         let Ok((socket, _)) = listener.accept().await else {
                             break;
                         };
+                        let Ok(slot) = slots.clone().try_acquire_owned() else { continue };
                         let mgr_conn = mgr_for_loop.clone();
                         let sec_conn = secret_for_loop.clone();
                         tokio::spawn(async move {
                             let _ = serve_stream_connection(socket, mgr_conn, sec_conn).await;
+                            drop(slot);
                         });
                     }
                 });
@@ -1632,6 +1636,18 @@ impl TorrentManager {
             "http://127.0.0.1:{port}/torrent/{secret}/{}/{chosen_idx}",
             id20.as_string()
         ))
+    }
+}
+
+/// Resolves once the other side has closed the connection (or it broke).
+async fn peer_gone(socket: &TcpStream) {
+    let mut probe = [0u8; 1];
+    loop {
+        match socket.peek(&mut probe).await {
+            Ok(0) | Err(_) => return,
+            // It sent more (a pipelined request): check again later.
+            Ok(_) => tokio::time::sleep(Duration::from_secs(1)).await,
+        }
     }
 }
 
@@ -1794,11 +1810,19 @@ async fn serve_stream_connection(
     let mut buf = vec![0u8; 64 * 1024];
     while remaining > 0 {
         let to_read = (remaining as usize).min(buf.len());
-        let n = fstream.read(&mut buf[..to_read]).await.map_err(|_| ())?;
+        // Waiting for a piece ends when the player hangs up (it seeked elsewhere) or nothing arrives
+        // for 5 minutes: an abandoned request used to keep asking for pieces at the old spot forever.
+        let n = tokio::select! {
+            read = tokio::time::timeout(Duration::from_secs(300), fstream.read(&mut buf[..to_read])) => match read {
+                Ok(Ok(n)) => n,
+                _ => return Err(()),
+            },
+            _ = peer_gone(&socket) => return Err(()),
+        };
         if n == 0 {
             break;
         }
-        socket.write_all(&buf[..n]).await.map_err(|_| ())?;
+        tokio::time::timeout(Duration::from_secs(60), socket.write_all(&buf[..n])).await.map_err(|_| ())?.map_err(|_| ())?;
         remaining -= n as u64;
     }
     let _ = socket.flush().await;

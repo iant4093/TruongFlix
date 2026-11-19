@@ -280,7 +280,7 @@ fn read_string(p: &mpv::EventProperty) -> Option<String> {
 
 /// Event loop for one mpv core. Emits throttled `player-state`, `player-tracks`, `player-error`
 /// and finally `player-closed` once the core has shut down.
-fn event_loop(app: AppHandle, handle_addr: usize) {
+fn event_loop(app: AppHandle, handle_addr: usize, video_window: Option<isize>) {
     let Ok(api) = mpv::api() else { return };
     let h = handle_addr as *mut mpv::Handle;
     let mut state = PlayerState { volume: 100.0, speed: 1.0, ..Default::default() };
@@ -397,14 +397,14 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
     #[cfg(target_os = "macos")]
     let _ = on_main(&app, move || macos::detach_for(handle_addr));
     unsafe { (api.terminate_destroy)(h) };
-    // Windows: only destroy the video window once mpv no longer renders into it.
+    // Windows: this player's own window goes once mpv no longer renders into it (a newer player
+    // has its own window, so it's never the one destroyed here).
     #[cfg(windows)]
-    {
-        let still_current = SESSION.lock().unwrap().as_ref().is_some_and(|s| s.handle == handle_addr);
-        if still_current {
-            let _ = on_main(&app, win32::destroy);
-        }
+    if let Some(window) = video_window {
+        let _ = on_main(&app, move || win32::destroy_window(window));
     }
+    #[cfg(not(windows))]
+    let _ = video_window;
     {
         let mut s = SESSION.lock().unwrap();
         if s.as_ref().is_some_and(|s| s.handle == handle_addr) {
@@ -419,6 +419,26 @@ fn event_loop(app: AppHandle, handle_addr: usize) {
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn player_open(
+    app: AppHandle,
+    window: WebviewWindow,
+    file_path: String,
+    start_time: f64,
+    subtitle_path: Option<String>,
+    audio_lang: Option<String>,
+    sub_lang: Option<String>,
+    options: Option<Vec<(String, String)>>,
+    live_source: Option<crate::live::Transport>,
+    load_id: Option<String>,
+) -> Result<(), String> {
+    // The lifecycle lock blocks (and opening waits on the UI thread): kept off the async runtime's
+    // few worker threads, so a slow open can't stall the media server or torrents.
+    tauri::async_runtime::spawn_blocking(move || open_blocking(app, window, file_path, start_time, subtitle_path, audio_lang, sub_lang, options, live_source, load_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn open_blocking(
     app: AppHandle,
     window: WebviewWindow,
     file_path: String,
@@ -498,7 +518,7 @@ pub async fn player_open(
             let app2 = app.clone();
             std::thread::Builder::new()
                 .name("mpv-events".into())
-                .spawn(move || event_loop(app2, addr))
+                .spawn(move || event_loop(app2, addr, video_window))
                 .map_err(|e| e.to_string())?;
             h
         }
@@ -699,6 +719,9 @@ fn command_allowed(args: &[&str]) -> bool {
 /// Runs an mpv command, e.g. `["seek", "10", "relative"]` or `["cycle", "pause"]`.
 #[tauri::command]
 pub async fn player_command(args: Vec<String>) -> Result<(), String> {
+    // The lifecycle lock blocks (and opening waits on the UI thread): kept off the async runtime's
+    // few worker threads, so a slow open can't stall the media server or torrents.
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
     if !command_allowed(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
         return Err("This player command isn't allowed".into());
     }
@@ -713,11 +736,17 @@ pub async fn player_command(args: Vec<String>) -> Result<(), String> {
         }
     }
     Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Sets an mpv property, e.g. `volume` = `"80"` or `sid` = `"2"`.
 #[tauri::command]
 pub async fn player_set(name: String, value: String) -> Result<(), String> {
+    // The lifecycle lock blocks (and opening waits on the UI thread): kept off the async runtime's
+    // few worker threads, so a slow open can't stall the media server or torrents.
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
     if !property_allowed(&name, &value) {
         return Err(format!("The player setting “{name}” can't be changed"));
     }
@@ -727,11 +756,17 @@ pub async fn player_set(name: String, value: String) -> Result<(), String> {
     api.set_property(h, &name, &value)?;
     multiview::mirror(api, &name, &value);
     Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Stops playback and tears the core down (the event loop emits `player-closed` when done).
 #[tauri::command]
 pub async fn player_close(app: AppHandle) -> Result<(), String> {
+    // The lifecycle lock blocks (and opening waits on the UI thread): kept off the async runtime's
+    // few worker threads, so a slow open can't stall the media server or torrents.
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
     let api = mpv::api()?;
     let _lifecycle = LIFECYCLE.lock().unwrap();
     let addr = {
@@ -753,6 +788,9 @@ pub async fn player_close(app: AppHandle) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", windows)))]
     let _ = &app;
     api.command(addr as *mut mpv::Handle, &["quit"])
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
