@@ -204,6 +204,18 @@ async fn status_request(port: u16, auth: &str, query: &str) -> Option<(f64, f64)
     Some((time, length))
 }
 
+/// Quitting TruongFlix closes the VLC it started (it used to keep playing with nothing saving
+/// where it got to).
+pub fn close_on_exit(app: &AppHandle) {
+    if let Some(state) = app.try_state::<VlcState>() {
+        if let Some(child) = state.current.lock().ok().and_then(|mut c| c.take()) {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
 fn restore_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -325,6 +337,17 @@ pub async fn launch_vlc(
             tokio::time::sleep(POLL_INTERVAL).await;
         }
 
+        // Ended because another title replaced it: the new VLC is playing (its progress was saved
+        // as it went), so nothing is reported and TruongFlix doesn't jump in front of it.
+        let replaced = app
+            .state::<VlcState>()
+            .current
+            .lock()
+            .map(|cur| cur.as_ref().is_some_and(|c| !Arc::ptr_eq(c, &child)))
+            .unwrap_or(false);
+        if replaced {
+            return;
+        }
         let _ = app.emit(
             "vlc-exited",
             ExitedPayload {

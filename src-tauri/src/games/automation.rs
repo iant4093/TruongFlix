@@ -1,17 +1,17 @@
 //! Drives a repack's Inno Setup wizard with every window hidden. Runs inside the elevated helper,
 //! because Windows only lets an elevated process hide or press buttons in the elevated installer.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE, LPARAM, WPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HWND, INVALID_HANDLE_VALUE, LPARAM, WPARAM};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
@@ -35,9 +35,16 @@ const PBM_GETPOS: u32 = 0x0408;
 const IDYES: usize = 6;
 
 /// Every process started by the installer, so its windows can be hidden and its sound muted.
+///
+/// Each one is kept with its creation time. Windows reuses process ids quickly: an id alone used to
+/// let an unrelated program in (one started later under a dead installer process's id, or one
+/// whose long-gone parent's id was reused by the installer, like Explorer), and the elevated
+/// helper then hid its windows, muted it and closed it at the end of the install.
 pub struct ProcessTree {
     own_pid: u32,
-    known: Mutex<HashSet<u32>>,
+    known: Mutex<HashMap<u32, u64>>,
+    /// When the first installer process started: nothing older belongs to the install.
+    since: Mutex<u64>,
 }
 
 static TREE: OnceLock<ProcessTree> = OnceLock::new();
@@ -45,8 +52,24 @@ static TREE: OnceLock<ProcessTree> = OnceLock::new();
 pub fn tree() -> &'static ProcessTree {
     TREE.get_or_init(|| ProcessTree {
         own_pid: std::process::id(),
-        known: Mutex::new(HashSet::new()),
+        known: Mutex::new(HashMap::new()),
+        since: Mutex::new(u64::MAX),
     })
+}
+
+/// When a process started (100 ns units), if it can be asked.
+fn created(pid: u32) -> Option<u64> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut c, mut e, mut k, mut u) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(handle, &mut c, &mut e, &mut k, &mut u) != 0;
+        CloseHandle(handle);
+        ok.then(|| ((c.dwHighDateTime as u64) << 32) | c.dwLowDateTime as u64)
+    }
 }
 
 pub struct ProcessEntry {
@@ -77,27 +100,42 @@ fn snapshot() -> HashMap<u32, ProcessEntry> {
 
 impl ProcessTree {
     pub fn add_root(&self, pid: u32) {
-        self.known.lock().unwrap().insert(pid);
+        let at = created(pid).unwrap_or(0);
+        let mut since = self.since.lock().unwrap();
+        if at > 0 && at < *since {
+            *since = at;
+        }
+        self.known.lock().unwrap().insert(pid, at);
     }
 
+    /// Installer processes that are still the same processes (not a later program on a reused id).
     pub fn pids(&self) -> Vec<u32> {
-        self.known.lock().unwrap().iter().copied().collect()
+        self.known.lock().unwrap().iter().filter(|(pid, at)| same_process(**pid, **at)).map(|(pid, _)| *pid).collect()
     }
 
     /// Adds every descendant of a known process. A child keeps its parent's id after the parent
-    /// exits, so walking parent ids still finds it.
+    /// exits, so walking parent ids still finds it; only processes started since the install began
+    /// are taken (an old process whose dead parent's id was reused isn't the installer's).
     pub fn refresh(&self) -> HashMap<u32, ProcessEntry> {
         let procs = snapshot();
+        let since = *self.since.lock().unwrap();
         let mut known = self.known.lock().unwrap();
         for &pid in procs.keys() {
-            if known.contains(&pid) || pid == self.own_pid {
+            if known.contains_key(&pid) || pid == self.own_pid {
                 continue;
             }
             let mut chain = vec![pid];
             let mut current = procs[&pid].parent;
             for _ in 0..32 {
-                if known.contains(&current) {
-                    known.extend(chain.drain(..));
+                if known.contains_key(&current) {
+                    for p in chain.drain(..) {
+                        match created(p) {
+                            Some(at) if since == u64::MAX || at >= since => {
+                                known.insert(p, at);
+                            }
+                            _ => {}
+                        }
+                    }
                     break;
                 }
                 if current == 0 || current == self.own_pid {
@@ -113,20 +151,30 @@ impl ProcessTree {
         procs
     }
 
+    /// Membership as of the last `refresh` (call that once per check, not once per process: a
+    /// full process snapshot per window kept a CPU core busy for the whole install).
+    pub fn contains_known(&self, pid: u32) -> bool {
+        if pid == self.own_pid {
+            return false;
+        }
+        let at = self.known.lock().unwrap().get(&pid).copied();
+        at.is_some_and(|at| same_process(pid, at))
+    }
+
     pub fn contains(&self, pid: u32) -> bool {
         if pid == self.own_pid {
             return false;
         }
-        if self.known.lock().unwrap().contains(&pid) {
-            return true;
+        if !self.known.lock().unwrap().contains_key(&pid) {
+            self.refresh();
         }
-        self.refresh();
-        self.known.lock().unwrap().contains(&pid)
+        self.contains_known(pid)
     }
 
     pub fn any_alive(&self) -> bool {
         let procs = self.refresh();
-        self.known.lock().unwrap().iter().any(|pid| procs.contains_key(pid))
+        let known = self.known.lock().unwrap().clone();
+        known.iter().any(|(pid, at)| procs.contains_key(pid) && same_process(*pid, *at))
     }
 
     pub fn kill_all(&self) {
@@ -145,6 +193,11 @@ impl ProcessTree {
     pub fn image_dirs(&self) -> Vec<PathBuf> {
         self.pids().into_iter().filter_map(process_image).filter_map(|p| p.parent().map(Path::to_path_buf)).collect()
     }
+}
+
+/// Whether `pid` is still the process recorded at `at` (0: its start time couldn't be read).
+fn same_process(pid: u32, at: u64) -> bool {
+    at == 0 || created(pid).is_none_or(|now| now == at)
 }
 
 fn process_image(pid: u32) -> Option<PathBuf> {
@@ -219,11 +272,12 @@ fn children(parent: HWND) -> Vec<HWND> {
 pub fn tree_windows() -> Vec<HWND> {
     let mut all: Vec<HWND> = Vec::new();
     unsafe { EnumWindows(Some(collect_window), &mut all as *mut _ as LPARAM) };
+    tree().refresh();
     all.into_iter()
         .filter(|&hwnd| {
             let mut pid = 0u32;
             unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-            tree().contains(pid)
+            tree().contains_known(pid)
         })
         .collect()
 }

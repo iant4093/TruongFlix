@@ -566,12 +566,14 @@ fn trash_entry(p: &Path) -> Option<(PathBuf, PathBuf)> {
 
 /// A drive that's unplugged or a share that's offline: said plainly (it used to read "Not a
 /// TruongFlix trash entry").
-fn reachable(entry_dir: &str) -> Result<(), String> {
-    let trash = Path::new(entry_dir).parent().map(Path::to_path_buf).unwrap_or_default();
-    if !trash.exists() {
+/// Ok(false): the drive is there but this entry is gone (its trash folder was deleted by hand).
+fn reachable(entry_dir: &str) -> Result<bool, String> {
+    let path = Path::new(entry_dir);
+    let volume = path.ancestors().last().map(Path::to_path_buf).unwrap_or_default();
+    if !volume.as_os_str().is_empty() && !volume.exists() {
         return Err("The drive or network folder holding this item isn’t connected right now.".into());
     }
-    Ok(())
+    Ok(path.exists())
 }
 
 /// Entry folders are named "<seconds>-<8 hex digits>" when created (see `entry_name`).
@@ -582,7 +584,9 @@ fn looks_like_entry(entry: &Path) -> bool {
 }
 
 fn restore_trash_inner(entry_dir: &str, items: &[FileMove], allowed: Option<&[PathBuf]>) -> Result<RestoreResult, String> {
-    reachable(entry_dir)?;
+    if !reachable(entry_dir)? {
+        return Ok(RestoreResult { restored: 0, conflicts: Vec::new() }); // nothing left to bring back
+    }
     let (entry, origin) = trash_entry(Path::new(entry_dir)).ok_or("Not a TruongFlix trash entry")?;
     if allowed.is_some_and(|roots| !roots.iter().any(|r| origin == *r || strictly_inside(&origin, r))) {
         return Err("This item was deleted from a folder that’s no longer in your library. Add the folder back to restore it, or delete it for good.".into());
@@ -629,7 +633,9 @@ pub async fn restore_trash(app: AppHandle, entry_dir: String, items: Vec<FileMov
 }
 
 fn purge_trash_inner(entry_dir: &str, allowed: Option<&[PathBuf]>) -> Result<(), String> {
-    reachable(entry_dir)?;
+    if !reachable(entry_dir)? {
+        return Ok(()); // already gone
+    }
     let (entry, origin) = trash_entry(Path::new(entry_dir)).ok_or("Not a TruongFlix trash entry")?;
     // An entry whose library folder was removed from Settings can still be deleted for good (it
     // used to stay forever, past its 30 days): only a TruongFlix entry folder inside a

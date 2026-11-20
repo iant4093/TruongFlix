@@ -298,7 +298,14 @@ fn silent_parameters(filename: &Path, parameters: &str) -> String {
     params
 }
 
-fn run_post_action(action: &PostAction) -> Result<(), String> {
+/// After-install actions without known quiet switches can wait for input that never comes (their
+/// windows are hidden): the helper gives up after this long, or as soon as the job is cancelled.
+const POST_ACTION_LIMIT: Duration = Duration::from_secs(20 * 60);
+
+/// Left in a game folder that TruongFlix's install created.
+const CREATED_MARKER: &str = ".truongflix-installed";
+
+fn run_post_action(action: &PostAction, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
     let mut command = Command::new(&action.filename);
     command.raw_arg(silent_parameters(&action.filename, &action.parameters));
     command.creation_flags(CREATE_NO_WINDOW);
@@ -307,12 +314,17 @@ fn run_post_action(action: &PostAction) -> Result<(), String> {
     }
     let mut child = command.spawn().map_err(|e| format!("{}: {e}", action.label))?;
     tree().add_root(child.id());
+    let started = std::time::Instant::now();
     loop {
         for hwnd in automation::tree_windows() {
             automation::hide(hwnd);
         }
         if let Ok(Some(_)) = child.try_wait() {
             return Ok(());
+        }
+        if cancelled() || started.elapsed() > POST_ACTION_LIMIT {
+            let _ = child.kill();
+            return Err(format!("{} didn’t finish and was stopped", action.label));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -373,7 +385,7 @@ fn run_install(job: &CheckedInstall, log_file: &Path, reporter: &mut Reporter, c
             let mut ok = true;
             for action in &job.post_actions {
                 reporter.send(HelperEvent::Progress { percent: 100.0, status: action.label.clone() });
-                if let Err(message) = run_post_action(action) {
+                if let Err(message) = run_post_action(action, cancelled) {
                     reporter.send(HelperEvent::Error { message });
                     ok = false;
                 }
@@ -400,6 +412,10 @@ fn run_install(job: &CheckedInstall, log_file: &Path, reporter: &mut Reporter, c
         let roots = guard::shortcut_roots();
         for shortcut in &job.remove_shortcuts {
             remove_shortcut(shortcut, &roots);
+        }
+        // The folder is the game's own (made for it): uninstalling may later remove all of it.
+        if created_dir {
+            let _ = std::fs::write(job.install_dir.join(CREATED_MARKER), b"");
         }
     } else if created_dir {
         let _ = std::fs::remove_dir_all(&job.install_dir);
@@ -431,12 +447,17 @@ fn run_uninstall(job: &UninstallJob, protected: &Protected, reporter: &mut Repor
             return false;
         }
     }
-    // What the uninstaller left (saves, settings, logs) goes too, unless another program installed
-    // into the same folder still has its uninstaller there: its files aren't this game's to delete.
+    // What the uninstaller left (saves, settings, logs) goes too, but only from a folder the install
+    // made for the game, and only when no other program installed there still has its uninstaller.
+    // A folder that already held other things (D:\Games, a folder with mods) keeps them.
     if dir.exists() && !guard::has_uninstaller(&dir) {
-        if let Err(e) = std::fs::remove_dir_all(&dir) {
-            reporter.send(HelperEvent::Error { message: format!("Could not delete '{}': {e}", dir.display()) });
-            return false;
+        if dir.join(CREATED_MARKER).is_file() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                reporter.send(HelperEvent::Error { message: format!("Could not delete '{}': {e}", dir.display()) });
+                return false;
+            }
+        } else {
+            let _ = std::fs::remove_dir(&dir); // only if the uninstaller left it empty
         }
     }
     true

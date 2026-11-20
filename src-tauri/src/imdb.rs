@@ -60,6 +60,14 @@ async fn download(app: &AppHandle, name: &str, label: &str, dest: &Path) -> Resu
     }
     file.flush().map_err(|e| e.to_string())?;
     drop(file);
+    // Only a real gzip file replaces the cached one: a Wi-Fi sign-in page or an error page used to
+    // be saved as the dataset, which then gave no ratings at all for a day.
+    let mut magic = [0u8; 2];
+    let is_gzip = std::fs::File::open(&part).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic)).is_ok() && magic == [0x1f, 0x8b];
+    if !is_gzip {
+        let _ = std::fs::remove_file(&part);
+        return Err("IMDb download failed: the answer wasn’t the ratings file (a Wi-Fi sign-in page?)".into());
+    }
     std::fs::rename(&part, dest).map_err(|e| e.to_string())
 }
 

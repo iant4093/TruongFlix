@@ -268,6 +268,9 @@ pub fn run() {
             if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { .. }, .. } = &event {
                 if label == "main" { source_browser::close_with_library(app); }
             }
+            if let tauri::RunEvent::Exit = &event {
+                vlc::close_on_exit(app);
+            }
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = event {
                 torrent::handle_opened_urls(app, urls.iter().map(|u| u.as_str()));

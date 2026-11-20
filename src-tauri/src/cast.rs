@@ -50,8 +50,12 @@ struct Status {
 type Reporter = std::sync::Arc<dyn Fn(&str, f64, f64, Option<String>) + Send + Sync>;
 
 fn reporter(app: AppHandle) -> Reporter {
+    use std::sync::atomic::Ordering;
+    let mine = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     std::sync::Arc::new(move |state, time, duration, message| {
-        let _ = app.emit("cast-status", Status { state: state.into(), time, duration, message });
+        if GENERATION.load(Ordering::SeqCst) == mine {
+            let _ = app.emit("cast-status", Status { state: state.into(), time, duration, message });
+        }
     })
 }
 
@@ -65,7 +69,14 @@ enum Command {
     Seek(f64),
     Volume(f64),
     Stop,
+    /// A new cast took over: leave without telling the TV to stop (a late Stop used to end the new
+    /// cast, which on some TVs is every seek).
+    Replaced,
 }
+
+/// Bumped by every new cast: status from an older session is no longer sent (its "idle" used to
+/// land on the new title, and Stop then saved the old title's position onto it).
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 static SESSION: Mutex<Option<mpsc::Sender<Command>>> = Mutex::new(None);
 
@@ -572,6 +583,7 @@ fn chromecast_session(app: Reporter, device: CastDevice, media: CastMedia, rx: m
                         emit(&app, "idle", last_time, media.duration, None);
                         return;
                     }
+                    (Command::Replaced, _) => return,
                     _ => Ok(()),
                 };
                 if let Err(e) = sent {
@@ -706,6 +718,7 @@ async fn dlna_session(app: Reporter, device: CastDevice, media: CastMedia, rx: m
                     emit(&app, "idle", last_time, media.duration, None);
                     return;
                 }
+                Command::Replaced => return,
             };
             if let Err(e) = res {
                 emit(&app, if played { "paused" } else { "buffering" }, last_time, media.duration, Some(e));
@@ -767,7 +780,7 @@ async fn dlna_session(app: Reporter, device: CastDevice, media: CastMedia, rx: m
 pub fn cast_start(app: AppHandle, device: CastDevice, media: CastMedia) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     if let Some(old) = SESSION.lock().unwrap().replace(tx) {
-        let _ = old.send(Command::Stop);
+        let _ = old.send(Command::Replaced);
     }
     let app = reporter(app);
     emit(&app, "connecting", media.start, media.duration, None);
