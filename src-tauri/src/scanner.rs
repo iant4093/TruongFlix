@@ -8,12 +8,15 @@ const VIDEO_EXTENSIONS: &[&str] = &["mkv", "mp4", "m4v", "avi", "mov", "webm", "
 const EXTRA_KEYWORDS: &[&str] = &["sample", "trailer", "featurette"];
 const EXTRA_MAX_BYTES: u64 = 60 * 1024 * 1024;
 /// Plex/Jellyfin folders for bonus material: never titles of their own, whatever their size (a
-/// featurette used to become a "movie" matched to some random title).
-const EXTRAS_FOLDERS: &[&str] = &[
-    "extras", "extra", "featurettes", "behind the scenes", "deleted scenes", "interviews", "scenes", "shorts", "trailers", "bonus",
-];
-/// Plex's file-name form of the same: "Inception (2010)-deleted.mkv".
-const EXTRAS_SUFFIXES: &[&str] = &["-behindthescenes", "-deleted", "-featurette", "-interview", "-scene", "-short", "-trailer", "-other", "-extra"];
+/// featurette used to become a "movie" matched to some random title). These names only ever mean
+/// bonus material.
+const EXTRAS_FOLDERS: &[&str] = &["featurettes", "behind the scenes", "deleted scenes"];
+/// These also name real things ("Shorts" of short films, the show "Extras"): bonus material only
+/// inside a title's own folder, "Inception (2010)/Extras".
+const EXTRAS_FOLDERS_IN_TITLE: &[&str] = &["extras", "extra", "interviews", "scenes", "shorts", "trailers", "bonus"];
+/// Plex's file-name form of the same: "Inception (2010)-deleted.mkv" ("-short" or "-interview"
+/// would also catch "The-Big-Short.mkv" and "The-Interview.mkv").
+const EXTRAS_SUFFIXES: &[&str] = &["-behindthescenes", "-deleted", "-featurette", "-trailer"];
 /// `.ts` is also TypeScript; real MPEG transport streams are never this small.
 const MIN_TS_BYTES: u64 = 1024 * 1024;
 
@@ -62,6 +65,14 @@ pub(crate) fn is_library_video(path: &Path, size: u64) -> bool {
     let parent = path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     if EXTRAS_FOLDERS.contains(&parent.as_str()) {
         return false;
+    }
+    if EXTRAS_FOLDERS_IN_TITLE.contains(&parent.as_str()) {
+        // A title folder carries its year: "Inception (2010)", "Severance (2022)".
+        let title = path.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let has_year = title.as_bytes().windows(6).any(|w| (w[0] == b'(' || w[0] == b'[') && w[1..5].iter().all(u8::is_ascii_digit) && (w[5] == b')' || w[5] == b']'));
+        if has_year {
+            return false;
+        }
     }
     !(size < EXTRA_MAX_BYTES && EXTRA_KEYWORDS.iter().any(|k| lower.contains(k)))
 }
@@ -180,6 +191,11 @@ mod tests {
         // Bonus material, whatever its size.
         touch(&root.join("Movies/Inception (2010)/Featurettes/Making Of.mkv"), big);
         touch(&root.join("Movies/Inception (2010)/Inception (2010)-deleted.mkv"), big);
+        touch(&root.join("Movies/Inception (2010)/Extras/Interview.mkv"), big);
+        // ...but real titles in folders with those names stay.
+        touch(&root.join("Movies/Shorts/Piper (2016).mkv"), big);
+        touch(&root.join("Shows/Extras/Extras.S01E01.mkv"), big);
+        touch(&root.join("Movies/The-Interview.mkv"), big);
 
         let mut seen = HashSet::new();
         let mut out = Vec::new();
@@ -188,7 +204,7 @@ mod tests {
         assert!(unreadable.is_empty());
         let mut names: Vec<_> = out.iter().map(|f| f.filename.as_str()).collect();
         names.sort();
-        assert_eq!(names, ["Big.Trailer.Cut.2020.mkv", "S01E01.mkv", "d-dune2-2160p.mkv"]);
+        assert_eq!(names, ["Big.Trailer.Cut.2020.mkv", "Extras.S01E01.mkv", "Piper (2016).mkv", "S01E01.mkv", "The-Interview.mkv", "d-dune2-2160p.mkv"]);
 
         let ep = out.iter().find(|f| f.filename == "S01E01.mkv").unwrap();
         assert_eq!(ep.parent_folder_name, "Season 01");

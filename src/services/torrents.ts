@@ -1237,8 +1237,10 @@ export function pollTorrents(): Promise<TorrentItem[]> {
         }
       }
 
-      // Release handles paused for playback as soon as the viewer leaves that torrent.
-      if (live && seedingStopped && !isPlayingTorrent(filePaths)) {
+      // Release handles paused for playback as soon as the viewer leaves that torrent. One still
+      // downloading (added again after its files were deleted) finishes first: it used to be
+      // stopped within seconds because the old record said "complete, not seeding".
+      if (live && live.finished && seedingStopped && !isPlayingTorrent(filePaths)) {
         await invoke('torrent_action', { infoHash: hash, action: 'delete_keep_files' });
       }
 

@@ -216,6 +216,11 @@ function parseEpisode(file: RawVideoFile): ParsedEpisodeFile | null {
     const m = anime ?? stem.match(DASH_NUMBER) ?? stem.match(EPISODE_ONLY) ?? stem.match(LEADING_NUMBER);
     if (m) episodes = [parseInt(m[anime ? 2 : 1], 10)];
   }
+  // Inside a season folder, the parser library still knows older forms ("show.105", "Part 2",
+  // "1of11"); the season comes from the folder.
+  if (!episodes.length && folderSeason !== null && 'isTv' in parsed && parsed.isTv && parsed.episodeNumbers?.length) {
+    episodes = parsed.episodeNumbers;
+  }
   if (season == null) season = folderSeason;
   if (season == null && episodes.length) season = 1;
   if (season == null || !episodes.length) return null;

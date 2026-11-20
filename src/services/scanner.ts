@@ -262,16 +262,24 @@ export async function runScan(opts: ScanOptions = {}) {
     const removed = goneMovies.length + goneEpisodes.length;
     if (removed) await db.deleteMediaPaths(goneMovies, goneEpisodes);
 
-    // A moved file is matched again at its new place (renaming "The Office" to "The Office (US)",
-    // or moving a misfiled episode, should fix the match); its row and history stay.
-    const relinkedTo = new Set(moved.map((m) => m.to));
-    // Its match (perhaps chosen with Fix Match) comes along when only the drive or library folder
-    // changed; a new show or movie folder means it's matched again from there.
-    const folders = (p: string) => p.split(/[\\/]/).slice(-3, -1).join('/').toLowerCase();
-    const movedHint = new Map(moved.map((m) => [m.to, folders(m.from) === folders(m.to) ? hints.get(m.from) : undefined]));
+    // A moved file keeps its match (perhaps chosen with Fix Match) wherever it goes: another drive,
+    // a genre folder, "Season 1" renamed "Season 01". Only a renamed show or movie folder ("The
+    // Office" → "The Office (US)") matches it again, from there; it stays a movie or an episode.
+    const SEASON_DIR = /^(?:season|series|staffel|saison|temporada)[ ._-]*\d{1,2}$|^s\d{1,2}$|^specials?$/i;
+    const titleFolder = (p: string) => {
+      const parts = p.split(/[\\/]/);
+      const parent = parts[parts.length - 2] ?? '';
+      return (SEASON_DIR.test(parent) ? parts[parts.length - 3] ?? '' : parent).toLowerCase();
+    };
+    const rematch = new Map<string, MatchHint>();
+    for (const { from, to } of moved) {
+      if (titleFolder(from) === titleFolder(to)) continue;
+      const was = index.get(to)?.type;
+      rematch.set(to, { kind: was === 'episode' ? 'tv' : 'movie' });
+    }
     const todo = files.filter((f) => {
       const rec = index.get(f.file_path);
-      return opts.force || !rec || rec.mtime !== f.mtime || relinkedTo.has(f.file_path);
+      return opts.force || !rec || rec.mtime !== f.mtime || rematch.has(f.file_path);
     });
     const added = todo.filter((f) => !index.has(f.file_path)).length;
 
@@ -285,7 +293,7 @@ export async function runScan(opts: ScanOptions = {}) {
     await pool(todo, CONCURRENCY, async (file) => {
       if (networkFailures >= 6) return; // TMDB unreachable — leave the rest for next scan.
       try {
-        await ingestFile(file, ctx, relinkedTo.has(file.file_path) ? movedHint.get(file.file_path) : hints.get(file.file_path));
+        await ingestFile(file, ctx, rematch.get(file.file_path) ?? hints.get(file.file_path));
         networkFailures = 0;
       } catch (e) {
         failures++;

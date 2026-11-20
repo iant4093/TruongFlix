@@ -436,13 +436,18 @@ export async function playBuiltin(target: PlayTarget) {
   const store = useLibraryStore.getState();
   // "That's all for today" / bedtime stays up: the Next key (keyboard media key, phone remote)
   // used to clear it by starting the next episode.
-  if (store.playerPrompt === 'limit' || store.playerPrompt === 'bedtime') return;
+  // (Only for the profile that hit it: after switching to another profile, its Play works.)
+  if ((store.playerPrompt === 'limit' || store.playerPrompt === 'bedtime') && playingFor === store.activeProfile?.id) return;
   if (refuseUnfinishedDownload(target)) return;
   if (store.playerSession) {
     // Moving on to the next episode (at the credits, or with Next) finishes this one: credits
     // that start before the 90% mark used to leave it "in progress" and back in Continue Watching.
+    // Only near the end (in the credits or the last minutes): picking the next episode early from
+    // the list doesn't count this one as watched.
     const next = store.playerSession.next;
-    await saveBuiltinProgress(!!next && next.type === target.type && next.id === target.id);
+    const st = store.playerState;
+    const nearEnd = !!st?.duration && (st.time / st.duration >= 0.8 || st.duration - st.time <= 300);
+    await saveBuiltinProgress(nearEnd && !!next && next.type === target.type && next.id === target.id);
     await flushWatchTime();
     await flushLiveTime(); liveTick = null;
   }

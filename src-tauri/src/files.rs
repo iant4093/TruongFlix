@@ -400,7 +400,9 @@ const TITLE_EXTRAS: &[&str] = &["sup", "smi", "tbn", "sfv", "md5", "gif", "bmp",
 /// photos, archives, music) means the folder isn't the title's to take: only counting videos
 /// used to send a downloads folder's other files to the trash (and on to deletion 30 days later).
 fn owned_folder(dir: &Path, wanted: &HashSet<&PathBuf>) -> bool {
-    WalkDir::new(dir).into_iter().all(|entry| {
+    // Hidden and system entries (a NAS's @eaDir thumbnails, .DS_Store folders) go along with the
+    // folder: they used to make every folder on a Synology share look like someone else's.
+    WalkDir::new(dir).into_iter().filter_entry(|e| !crate::scanner::is_hidden_or_system(e)).all(|entry| {
         let Ok(e) = entry else { return false }; // unreadable: don't take it
         if !e.file_type().is_file() {
             return true;
@@ -414,8 +416,9 @@ fn owned_folder(dir: &Path, wanted: &HashSet<&PathBuf>) -> bool {
         matches!(name.as_str(), "thumbs.db" | "desktop.ini" | ".ds_store")
             || name.starts_with("._")
             || TITLE_EXTRAS.contains(&ext.as_str())
-            // A sample or trailer the library skips (it would be a title of its own otherwise).
-            || (has_video_extension(p) && !is_video(p))
+            // A sample or trailer the library skips for being small (a bigger video, even one the
+            // library skips as bonus material, may be a title of its own: a "Shorts" folder).
+            || (has_video_extension(p) && file_size(p) < 60 * 1024 * 1024 && !is_video(p))
     })
 }
 

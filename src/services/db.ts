@@ -772,7 +772,8 @@ export async function getFileIndex(): Promise<Map<string, IndexedFile>> {
 
 export interface MatchHint {
   kind: 'movie' | 'tv';
-  tmdbId: number;
+  /** Absent: the kind is known, the title is matched again (a moved file in a renamed folder). */
+  tmdbId?: number;
 }
 
 /** file_path -> previously resolved TMDB id, so refreshes keep manual Fix Match choices. */
@@ -1576,10 +1577,8 @@ export async function upsertTorrentRecord(t: UpsertTorrentInput) {
        movie_id = COALESCE(excluded.movie_id, torrents.movie_id),
        file_paths = excluded.file_paths,
        total_bytes = CASE WHEN excluded.total_bytes > 0 THEN excluded.total_bytes ELSE torrents.total_bytes END,
-       -- Added again and not finished (its files were deleted): a fresh download, not the old
-       -- "complete, not seeding" record that used to stop it within seconds.
-       completed_at = CASE WHEN excluded.completed_at IS NULL THEN NULL ELSE COALESCE(torrents.completed_at, excluded.completed_at) END,
-       seeding_stopped = CASE WHEN excluded.completed_at IS NULL THEN excluded.seeding_stopped ELSE MAX(torrents.seeding_stopped, excluded.seeding_stopped) END`,
+       completed_at = COALESCE(excluded.completed_at, torrents.completed_at),
+       seeding_stopped = MAX(torrents.seeding_stopped, excluded.seeding_stopped)`,
     [
       t.info_hash.toLowerCase(),
       t.name,
