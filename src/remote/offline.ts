@@ -70,6 +70,9 @@ export async function runDownload(start: OfflineItem, deps: EngineDeps): Promise
     });
   } catch (e) {
     check();
+    // A PIN profile whose unlock expired (the PC restarted, or 12 hours passed) waits for the PIN:
+    // it used to fail for good, and every queued episode after it too.
+    if (e instanceof ApiStatusError && e.status === 403 && e.message === PROFILE_LOCKED) return save({ state: 'paused', error: LOCKED_WAIT });
     return save({ state: e instanceof ApiStatusError ? 'failed' : 'paused', error: e instanceof ApiStatusError ? e.message : INTERRUPTED });
   }
   const stop = () => void deps.api('/stop', { body: { token: dl.token } }).catch(() => {});
@@ -195,6 +198,7 @@ export async function runDownload(start: OfflineItem, deps: EngineDeps): Promise
 let store: OfflineStore | null = null;
 const getStore = () => (store ??= idbStore());
 let items: OfflineItem[] = [];
+const LOCKED_WAIT = 'Waiting for this profile’s PIN: open it again to continue';
 const listeners = new Set<() => void>();
 let current: { id: string; ctrl: AbortController; finished: Promise<void> } | null = null;
 
@@ -375,6 +379,17 @@ export async function rekeyProgress(profile: number, profileKey: string | undefi
     p.profileKey = profileKey;
     await getStore().putPending(p).catch(() => {});
   }
+  // Downloads for this profile use the new unlock too; the ones waiting for it carry on.
+  let woke = false;
+  for (const item of items) {
+    if (item.profile !== profile || item.state === 'done' || item.profileKey === profileKey) continue;
+    const waiting = item.state === 'paused' && item.error === LOCKED_WAIT;
+    const next = { ...item, profileKey, ...(waiting ? { state: 'queued' as const, error: null } : {}) };
+    await getStore().put(next).catch(() => {});
+    setItem(next);
+    woke ||= waiting;
+  }
+  if (woke) pump();
 }
 
 /**

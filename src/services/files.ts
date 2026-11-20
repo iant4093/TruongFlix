@@ -214,6 +214,13 @@ export async function restoreTrash(row: TrashRow) {
   const store = useLibraryStore.getState();
   const items = JSON.parse(row.items) as FileMove[];
   const res = await invoke<{ restored: number; conflicts: string[] }>('restore_trash', { entryDir: row.entry_dir, items });
+  // Nothing came back (the trash folder was emptied by hand): the title isn't put back either. It
+  // used to return to the library, say "Restored", fail to play and vanish on the next scan.
+  if (!res.restored && !res.conflicts.length) {
+    await db.deleteTrashRow(row.id);
+    store.toast(`“${row.label}” can’t be restored: its files are no longer in Recently deleted.`, 'error');
+    return;
+  }
   await db.restoreSnapshot(JSON.parse(row.snapshot) as TrashSnapshot);
   if (res.conflicts.length) {
     store.toast(`Some files couldn’t be restored because something already exists there: ${res.conflicts.join(', ')}`, 'error');
@@ -229,8 +236,14 @@ export async function purgeTrash(row: TrashRow) {
   await db.deleteTrashRow(row.id);
 }
 
+/** Deletes everything in Recently deleted for good. One entry that can't be removed (its drive is
+ * offline, say) doesn't stop the rest; the first problem is reported at the end. */
 export async function emptyTrash() {
-  for (const row of await db.listTrash()) await purgeTrash(row);
+  const failed: string[] = [];
+  for (const row of await db.listTrash()) {
+    await purgeTrash(row).catch((e) => failed.push(`“${row.label}”: ${errorMessage(e)}`));
+  }
+  if (failed.length) throw new Error(`${failed.length} item${failed.length === 1 ? '' : 's'} couldn’t be deleted. ${failed[0]}`);
 }
 
 const parseSqlDate = (s: string) => new Date(s.replace(' ', 'T') + (s.endsWith('Z') ? '' : 'Z')).getTime();

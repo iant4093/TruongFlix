@@ -121,6 +121,11 @@ export default function App() {
         // Bring back NAS folders that dropped off while the app was closed, then note any shares.
         await reconnectOfflineShares().catch(() => []);
         void refreshShares().then(() => startFolderWatch());
+        // Files added while TruongFlix was closed: the folder watcher only sees changes from now on.
+        const s = useLibraryStore.getState().settings;
+        if (s.watch_folders && s.tmdb_api_key && s.media_directories.length && !useLibraryStore.getState().onboardingOpen) {
+          window.setTimeout(() => void import('./services/scanner').then((m) => m.runScan({ quiet: true })), 5000);
+        }
         // Fill in anything missing (media info, ratings, trailers, intros) without blocking startup.
         window.setTimeout(() => void startBackgroundAnalysis(), 3000);
       })

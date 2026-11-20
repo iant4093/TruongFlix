@@ -168,6 +168,10 @@ export function DownloadButton({
 export function DownloadsPage({ who, back, play }: { who: Who; back: () => void; play: (item: OfflineItem) => void }) {
   const all = useOfflineItems();
   const items = useMemo(() => all.filter((i) => i.profile === who.id).sort((a, b) => b.createdAt - a.createdAt), [all, who.id]);
+  // Other profiles' downloads (including profiles since deleted on the PC) use this phone's space
+  // too: they can be cleared here without showing what they are.
+  const others = useMemo(() => all.filter((i) => i.profile !== who.id), [all, who.id]);
+  const othersBytes = others.reduce((n, i) => n + (i.bytes || 0), 0);
   const [space, setSpace] = useState<SpaceEstimate | null>(null);
   useEffect(() => {
     void storageInfo().then(setSpace);
@@ -204,6 +208,25 @@ export function DownloadsPage({ who, back, play }: { who: Who; back: () => void;
             <DownloadRow key={item.id} item={item} play={play} />
           ))}
         </ul>
+        {others.length > 0 && (
+          <div className="mt-6 flex items-center justify-between gap-3 rounded bg-white/5 px-3 py-3 text-sm">
+            <span className="text-nf-secondary">
+              Other profiles: {others.length} download{others.length === 1 ? '' : 's'} · {formatBytes(othersBytes)}
+            </span>
+            <button
+              onClick={() => {
+                if (window.confirm(`Delete ${others.length} download${others.length === 1 ? '' : 's'} saved by other profiles on this phone?`)) {
+                  void (async () => {
+                    for (const i of others) await deleteDownload(i.id).catch(() => {});
+                  })();
+                }
+              }}
+              className="nf-press shrink-0 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold hover:bg-white/20"
+            >
+              Delete them
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

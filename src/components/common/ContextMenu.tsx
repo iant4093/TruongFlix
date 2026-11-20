@@ -64,8 +64,9 @@ function titleItems(item: MediaItem): ContextItem[] {
       icon: item.myList ? <Check className={ICON} /> : <Plus className={ICON} />,
       onSelect: () => s.toggleMyList(item),
     },
-    { label: 'Fix match', icon: <Wrench className={ICON} />, onSelect: () => s.openFixMatch(item.key) },
-    ...(target?.filePath
+    // Fix match and opening the media folder are for unrestricted profiles, as in the details page.
+    ...(s.activeProfile?.maturity === 'all' ? ([{ label: 'Fix match', icon: <Wrench className={ICON} />, onSelect: () => s.openFixMatch(item.key) }] as ContextItem[]) : []),
+    ...(target?.filePath && s.activeProfile?.maturity === 'all'
       ? ([{ label: navigator.userAgent.includes('Mac') ? 'Show in Finder' : 'Show in File Explorer', icon: <FolderOpen className={ICON} />, onSelect: () => revealInFileManager(target.filePath) }] as ContextItem[])
       : []),
   ];

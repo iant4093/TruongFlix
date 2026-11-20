@@ -111,6 +111,8 @@ export function initGames(): Promise<void> {
     await listen<{ jobId: string; event: HelperEvent }>('games-job', (e) => onHelperEvent(e.payload.jobId, e.payload.event));
     await listen<{ jobId: string; progress: VerifyProgress }>('games-verify', (e) => onVerifyProgress(e.payload.jobId, e.payload.progress));
     await listen<{ gameId: string; seconds: number; error: string | null }>('games-session', (e) => void onSessionEnded(e.payload));
+    await settleOpenSessions();
+    window.setInterval(markStillPlaying, 60_000);
 
     // Downloads that finished while this screen wasn't loaded yet.
     const torrents = useLibraryStore.getState().torrents;
@@ -392,10 +394,89 @@ export async function launchGame(gameId: number) {
   if (useGamesStore.getState().running[gameId]) return;
   await invoke('games_launch', { gameId });
   useGamesStore.setState((s) => ({ running: { ...s.running, [gameId]: true } }));
+  const now = Date.now();
+  writeOpen({ ...readOpen(), [gameId]: { start: now, seen: now } });
+}
+
+// Play time is measured until the game exits. Closing TruongFlix while a game runs used to lose
+// the whole session, so each one is noted when it starts (and checked in on every minute), and
+// settled on the next start: still running → watched until it ends; ended → counted up to the
+// last check-in.
+const OPEN_SESSIONS = 'tf-game-sessions';
+type OpenSessions = Record<string, { start: number; seen: number }>;
+const readOpen = (): OpenSessions => {
+  try {
+    return JSON.parse(localStorage.getItem(OPEN_SESSIONS) ?? '{}') as OpenSessions;
+  } catch {
+    return {};
+  }
+};
+const writeOpen = (v: OpenSessions) => {
+  try {
+    localStorage.setItem(OPEN_SESSIONS, JSON.stringify(v));
+  } catch {
+    /* storage unavailable: only a closed-app session can be lost */
+  }
+};
+function markStillPlaying() {
+  const open = readOpen();
+  const running = useGamesStore.getState().running;
+  let changed = false;
+  for (const id of Object.keys(open)) {
+    if (running[Number(id)]) {
+      open[id].seen = Date.now();
+      changed = true;
+    }
+  }
+  if (changed) writeOpen(open);
+}
+async function creditPlayTime(id: number, seconds: number) {
+  if (seconds <= 0) return;
+  const game = gameById(id);
+  await lib.addPlayTime(id, seconds);
+  if (game) await lib.recordPlaySession(game, seconds).catch(() => {});
+}
+async function settleOpenSessions() {
+  const open = readOpen();
+  for (const [key, s] of Object.entries(open)) {
+    const id = Number(key);
+    const game = gameById(id);
+    const stillRunning = game?.installDir ? await invoke<boolean>('games_is_running', { installDir: game.installDir }).catch(() => false) : false;
+    if (stillRunning) {
+      // Shown as running (Play and Uninstall stay disabled) and counted once it exits.
+      useGamesStore.setState((st) => ({ running: { ...st.running, [id]: true } }));
+      const watch = window.setInterval(async () => {
+        if (await invoke<boolean>('games_is_running', { installDir: game!.installDir }).catch(() => false)) {
+          markStillPlaying();
+          return;
+        }
+        window.clearInterval(watch);
+        const cur = readOpen();
+        const entry = cur[key];
+        delete cur[key];
+        writeOpen(cur);
+        useGamesStore.setState((st) => {
+          const running = { ...st.running };
+          delete running[id];
+          return { running };
+        });
+        if (entry) await creditPlayTime(id, Math.round((Date.now() - entry.start) / 1000));
+        await refresh();
+      }, 30_000);
+      continue;
+    }
+    delete open[key];
+    writeOpen(open);
+    if (game) await creditPlayTime(id, Math.round((s.seen - s.start) / 1000));
+  }
+  await refresh();
 }
 
 async function onSessionEnded(e: { gameId: string; seconds: number; error: string | null }) {
   const id = Number(e.gameId);
+  const open = readOpen();
+  delete open[e.gameId];
+  writeOpen(open);
   useGamesStore.setState((s) => {
     const running = { ...s.running };
     delete running[id];
@@ -411,7 +492,18 @@ async function onSessionEnded(e: { gameId: string; seconds: number; error: strin
 }
 
 export async function setGameExe(gameId: number, exePath: string) {
-  await patchGame(gameId, { exePath });
+  const game = gameById(gameId);
+  const norm = (p: string) => p.replace(/[\\/]+/g, '\\').replace(/\\$/, '').toLowerCase();
+  const dir = game?.installDir ? norm(game.installDir) : null;
+  const exe = norm(exePath);
+  if (!dir || exe.startsWith(dir + '\\')) return patchGame(gameId, { exePath });
+  // Play only runs a program inside the game's folder. A game moved to another drive keeps its
+  // folder name: that folder becomes the game's. Anything else is refused now, not at every Play.
+  const folderName = dir.split('\\').pop() ?? '';
+  const parts = exePath.split(/[\\/]/);
+  const moved = parts.findIndex((part, i) => i > 0 && i < parts.length - 1 && part.toLowerCase() === folderName);
+  if (moved > 0) return patchGame(gameId, { exePath, installDir: parts.slice(0, moved + 1).join('\\') });
+  throw new Error(`Choose a program inside the game’s folder (${game!.installDir}). If you moved the game, keep its folder name.`);
 }
 
 const samePlace = (a: string, b: string) => {

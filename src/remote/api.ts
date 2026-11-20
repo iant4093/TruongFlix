@@ -1,3 +1,5 @@
+import { timeoutSignal } from '../lib/timeout';
+
 /** Tiny client for the TruongFlix media server's `/api`. */
 
 const TOKEN = 'tf-remote-token';
@@ -21,7 +23,8 @@ export const getToken = () => localStorage.getItem(TOKEN) ?? '';
 export const setToken = (t: string) => (t ? localStorage.setItem(TOKEN, t) : localStorage.removeItem(TOKEN));
 
 /** `keepalive`: the request still completes if the page is closing (saving progress on the way out). */
-export async function api<T>(path: string, init: { method?: string; body?: unknown; keepalive?: boolean } = {}): Promise<T> {
+/** `timeout`: give up after this many ms (default 45 s). */
+export async function api<T>(path: string, init: { method?: string; body?: unknown; keepalive?: boolean; timeout?: number } = {}): Promise<T> {
   // A PC that went away mid-request (asleep, off the Wi-Fi) can leave a request hanging for minutes;
   // giving up counts as being offline (downloads pause and resume later, progress is queued).
   const res = await fetch(`/api${path}`, {
@@ -29,7 +32,7 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     headers: { 'Content-Type': 'application/json', 'X-TF-Token': getToken() },
     body: init.body ? JSON.stringify(init.body) : undefined,
     keepalive: init.keepalive,
-    signal: init.keepalive || typeof AbortSignal.timeout !== 'function' ? undefined : AbortSignal.timeout(45_000),
+    signal: init.keepalive ? undefined : timeoutSignal(init.timeout ?? 45_000),
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) {

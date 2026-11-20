@@ -1,13 +1,18 @@
 import { ArrowDown, ArrowUp, GripVertical, Repeat, Repeat1, Shuffle, X } from 'lucide-react';
 import { clearQueue, cycleRepeat, jumpTo, moveInQueue, removeFromQueue, toggleShuffle, useMusicPlayer } from '../player';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { useState } from 'react';
 import { Cover } from './ui';
 
 /** Playing Next: reorder (drag, or the arrows on touch screens), remove, clear, shuffle and repeat. */
 export default function QueuePanel({ className = '' }: { className?: string }) {
   const queue = useMusicPlayer((s) => s.queue);
   const byId = useMusicPlayer((s) => s.byId);
-  const next = queue.items.map((item, index) => ({ item, index })).slice(queue.index + 1);
+  // Shown in steps: shuffling a big library queues every song, and drawing 40,000 animated rows
+  // froze the panel (worst on phones).
+  const [shown, setShown] = useState(100);
+  const upcoming = queue.items.length - queue.index - 1;
+  const next = queue.items.slice(queue.index + 1, queue.index + 1 + shown).map((item, i) => ({ item, index: queue.index + 1 + i }));
   const reduce = useReducedMotion() ?? false;
   return (
     <div className={`flex min-h-0 flex-col ${className}`}>
@@ -36,7 +41,7 @@ export default function QueuePanel({ className = '' }: { className?: string }) {
       </div>
       {next.length > 0 && (
         <div className="flex items-center justify-between px-5 pb-1 text-xs text-white/50">
-          <span>{queue.repeat === 'all' ? 'Repeats when the queue ends' : `${next.length} song${next.length === 1 ? '' : 's'}`}</span>
+          <span>{queue.repeat === 'all' ? 'Repeats when the queue ends' : `${upcoming} song${upcoming === 1 ? '' : 's'}`}</span>
           <button type="button" onClick={clearQueue} className="font-semibold text-white/70 hover:text-white">
             Clear
           </button>
@@ -84,7 +89,7 @@ export default function QueuePanel({ className = '' }: { className?: string }) {
                 <button type="button" aria-label={`Move ${t.title} up`} disabled={n === 0} onClick={() => moveInQueue(index, index - 1)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/10 disabled:opacity-30">
                   <ArrowUp className="h-4 w-4" />
                 </button>
-                <button type="button" aria-label={`Move ${t.title} down`} disabled={n === next.length - 1} onClick={() => moveInQueue(index, index + 1)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/10 disabled:opacity-30">
+                <button type="button" aria-label={`Move ${t.title} down`} disabled={index === queue.items.length - 1} onClick={() => moveInQueue(index, index + 1)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/10 disabled:opacity-30">
                   <ArrowDown className="h-4 w-4" />
                 </button>
                 <button type="button" aria-label={`Remove ${t.title} from the queue`} onClick={() => removeFromQueue(index)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/10">
@@ -96,6 +101,11 @@ export default function QueuePanel({ className = '' }: { className?: string }) {
           );
         })}
         </AnimatePresence>
+        {upcoming > next.length && (
+          <button type="button" onClick={() => setShown((n) => n + 200)} className="mx-2 mt-2 w-[calc(100%-1rem)] rounded-lg bg-white/10 py-2 text-sm font-semibold text-white/80 hover:bg-white/15">
+            Show more ({upcoming - next.length} more)
+          </button>
+        )}
       </div>
     </div>
   );

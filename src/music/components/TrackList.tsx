@@ -15,13 +15,17 @@ interface Props {
   /** Inside a playlist: enables "Remove from Playlist" and drag handles via `onMove`. */
   playlistId?: number;
   onMove?: (from: number, to: number) => void;
+  /** The whole list being played when only part of it is shown (long lists load in steps). */
+  queueIds?: number[];
 }
 
 /** Songs as rows: tap to play the list from that song. */
-export default function TrackList({ tracks, lead = 'art', showAlbum = true, showArtist = true, playlistId, onMove }: Props) {
+export default function TrackList({ tracks, lead = 'art', showAlbum = true, showArtist = true, playlistId, onMove, queueIds }: Props) {
   const current = useMusicPlayer((s) => s.track?.id ?? null);
   const playing = useMusicPlayer((s) => s.playing);
-  const ids = tracks.map((t) => t.id);
+  // Tapping a song plays on through the whole list, not just the rows loaded so far (it stopped
+  // after song 250 of a big library). The shown rows are the start of `queueIds`.
+  const ids = queueIds ?? tracks.map((t) => t.id);
   const multiDisc = lead === 'number' && new Set(tracks.map((t) => t.discNo ?? 1)).size > 1;
 
   return (

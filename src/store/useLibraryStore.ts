@@ -323,8 +323,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     set({
       ready: true,
       onboardingOpen: onboarding,
-      // A PIN-protected profile never opens without its PIN.
-      profileGate: !onboarding && ((settings.ask_profile && profiles.length > 1) || !!active?.pin) ? 'select' : null,
+      // A PIN-protected profile never opens without its PIN, also when setup is due (a restored
+      // backup has no API keys, so setup opened and the last profile came up unlocked). The
+      // picker sits above setup: the profile is unlocked first.
+      profileGate: (settings.ask_profile && profiles.length > 1) || !!active?.pin ? 'select' : null,
     });
   })()),
 
@@ -416,7 +418,11 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   clearBrowseEntry: () => set({ browseEntry: null }),
   openDetail: (detailKey) => set({ detailKey, detailEpisodeId: null, hover: null }),
   openEpisode: (detailEpisodeId) => set({ detailEpisodeId, hover: null }),
-  openFixMatch: (fixMatchKey) => set({ fixMatchKey, hover: null }),
+  // Library housekeeping is for unrestricted profiles (every way in: details, hover card, menu).
+  openFixMatch: (fixMatchKey) => {
+    if (fixMatchKey && get().activeProfile?.maturity !== 'all') return;
+    set({ fixMatchKey, hover: null });
+  },
   setSettingsOpen: (settingsOpen, tab) => {
     const apply = () => set((s) => ({ settingsOpen, hover: null, settingsTab: tab ?? s.settingsTab }));
     if (settingsOpen && !get().settingsOpen) guardAdult(apply, { atGate: !!get().profileGate });

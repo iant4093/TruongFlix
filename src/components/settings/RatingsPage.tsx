@@ -27,6 +27,8 @@ export default function RatingsPage() {
           {tmdbKey.trim() !== settings.tmdb_api_key && (
             <button
               onClick={async () => {
+                // Without a key nothing can be matched (and setup would open again at launch).
+                if (!tmdbKey.trim()) return toast('TruongFlix needs a TMDB API key. Paste a new one to replace it.', 'error');
                 await updateSettings({ tmdb_api_key: tmdbKey.trim() });
                 toast('TMDB API key saved', 'success');
               }}

@@ -828,9 +828,27 @@ function WatchedMenu({ episodes, season, seasonLabel }: { episodes: EpisodeRow[]
   const inSeason = episodes.filter((e) => e.season_number === season);
   const run = async (list: EpisodeRow[], watched: boolean, label: string) => {
     setOpen(false);
-    await setEpisodesWatched(list.map((e) => e.id), watched);
-    await reload();
-    toast(`${label} marked ${watched ? 'watched' : 'unwatched'}`, 'success');
+    // Clears where every episode was left (there's no undo): asked first when anything is in progress
+    // or already watched.
+    const touched = list.filter((e) => e.watched || (e.progress_seconds ?? 0) > 0).length;
+    if (touched > 1) {
+      const ok = await useLibraryStore.getState().confirm({
+        title: `Mark ${label.toLowerCase()} ${watched ? 'watched' : 'unwatched'}?`,
+        message: watched
+          ? `${list.length} episodes are marked watched, and any place you stopped in them is cleared.`
+          : `Your progress in ${touched} episode${touched === 1 ? '' : 's'} is cleared. This can’t be undone.`,
+        confirmLabel: watched ? 'Mark watched' : 'Mark unwatched',
+        danger: !watched,
+      });
+      if (!ok) return;
+    }
+    try {
+      await setEpisodesWatched(list.map((e) => e.id), watched);
+      await reload();
+      toast(`${label} marked ${watched ? 'watched' : 'unwatched'}`, 'success');
+    } catch (e) {
+      toast(`Couldn’t update ${label.toLowerCase()}: ${errorMessage(e)}`, 'error');
+    }
   };
   const item = 'block w-full px-4 py-2 text-left text-sm hover:bg-white/10';
   return (

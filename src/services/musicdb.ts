@@ -565,7 +565,24 @@ export async function deletePlaylist(profileId: number, id: number) {
 }
 
 /** Replaces the songs (reorder, remove and add all use this). */
-export async function setPlaylistTracks(profileId: number, id: number, trackIds: unknown, now = Date.now()) {
+/**
+ * Writes to one playlist run one after another. Two quick reorders (two taps on "Move down", or the
+ * phone and the PC together) could interleave their steps, and the second one's clean-up then
+ * removed every entry: an emptied playlist.
+ */
+const playlistWrites = new Map<number, Promise<unknown>>();
+function onePlaylistAtATime<T>(id: number, work: () => Promise<T>): Promise<T> {
+  const run = (playlistWrites.get(id) ?? Promise.resolve()).catch(() => {}).then(work);
+  playlistWrites.set(id, run);
+  void run.finally(() => playlistWrites.get(id) === run && playlistWrites.delete(id)).catch(() => {});
+  return run;
+}
+
+export function setPlaylistTracks(profileId: number, id: number, trackIds: unknown, now = Date.now()) {
+  return onePlaylistAtATime(id, () => rewritePlaylist(profileId, id, trackIds, now));
+}
+
+async function rewritePlaylist(profileId: number, id: number, trackIds: unknown, now: number) {
   const db = await musicDb();
   await ownPlaylist(db, profileId, id);
   const ids = await existingIds(db, cleanTrackIds(trackIds));
@@ -580,7 +597,11 @@ export async function setPlaylistTracks(profileId: number, id: number, trackIds:
   return ids;
 }
 
-export async function addToPlaylist(profileId: number, id: number, trackIds: unknown, now = Date.now()) {
+export function addToPlaylist(profileId: number, id: number, trackIds: unknown, now = Date.now()) {
+  return onePlaylistAtATime(id, () => appendToPlaylist(profileId, id, trackIds, now));
+}
+
+async function appendToPlaylist(profileId: number, id: number, trackIds: unknown, now: number) {
   const db = await musicDb();
   await ownPlaylist(db, profileId, id);
   const [{ n, last }] = await db.select<{ n: number; last: number | null }[]>('SELECT COUNT(*) AS n, MAX(position) AS last FROM music_playlist_tracks WHERE playlist_id = $1', [id]);

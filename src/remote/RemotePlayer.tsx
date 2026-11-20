@@ -239,7 +239,8 @@ export default function RemotePlayer({
   async function loadOffline(seq: number, start?: number) {
     if (!offline) return null;
     try {
-      const { token } = await api<{ token: string }>('/offline/start', { body: { ...base, type: offline.type, id: offline.mediaId } });
+      // A few seconds at most: away from home the PC can't answer, and a saved copy should just play.
+      const { token } = await api<{ token: string }>('/offline/start', { body: { ...base, type: offline.type, id: offline.mediaId }, timeout: 4000 });
       if (!mounted.current || seq !== loadSeq.current) {
         void api('/stop', { body: { token } }).catch(() => {});
         return null;

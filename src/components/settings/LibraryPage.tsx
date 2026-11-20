@@ -38,7 +38,8 @@ export default function LibraryPage() {
     <Page title="Movies & TV" description="Where your movies and shows live, and how TruongFlix keeps up with them.">
       <Group title="Movie & TV folders">
         <Block>
-          <FolderList value={settings.media_directories} onChange={(dirs) => void updateSettings({ media_directories: dirs })} />
+          {/* Scanned straight away: an added folder's titles appear, a removed folder's leave. */}
+          <FolderList value={settings.media_directories} onChange={(dirs) => void updateSettings({ media_directories: dirs }).then(() => runScan({ quiet: true }))} />
         </Block>
       </Group>
 

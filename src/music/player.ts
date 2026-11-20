@@ -275,6 +275,10 @@ async function load(item: Q.QueueItem | null, autoplay: boolean, startAt = 0) {
     return;
   }
   prev.el.pause();
+  // The element no longer belongs to the song on screen: Play while the new one loads (or after it
+  // failed) loads it again, instead of playing the previous song under the new song's title.
+  prev.key = null;
+  prev.trackId = null;
   let url: string;
   try {
     url = await urlFor(track);
@@ -324,8 +328,10 @@ function onError() {
     // The server may have restarted on another port: ask for a fresh URL once.
     retried = true;
     const at = el.currentTime || get().time;
+    const seq = loadSeq;
     void urlFor(track)
       .then((url) => {
+        if (seq !== loadSeq) return; // another song was picked meanwhile
         const slot = activeSlot();
         slot.url = url;
         slot.el.src = url;
@@ -495,7 +501,7 @@ export function resume() {
     if (item) void load(item, true);
     return;
   }
-  if (!slot.key || !slot.el.src || slot.el.src === silentUrl) {
+  if (!slot.key || slot.trackId !== track.id || !slot.el.src || slot.el.src === silentUrl) {
     void load(Q.current(queue), true, get().time);
     return;
   }

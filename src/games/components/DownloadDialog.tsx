@@ -118,7 +118,8 @@ export default function DownloadDialog({ detail, onClose, onStarted }: { detail:
     return picked.map((f) => f.index).sort((a, b) => a - b);
   };
 
-  const canDownload = !working && !loadingList && !!downloadDir && (!autoInstall || !!installDir) && !!detail.magnet;
+  // A download that can't fit used to start anyway and fill the drive.
+  const canDownload = !working && !loadingList && !notEnoughSpace && !!downloadDir && (!autoInstall || !!installDir) && !!detail.magnet;
 
   const start = async () => {
     if (!canDownload) return;

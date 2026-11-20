@@ -81,6 +81,7 @@ function PreviewCard({ hover }: { hover: HoverState }) {
   const close = useCallback(() => setHover(null), [setHover]);
   const openDetail = useLibraryStore((s) => s.openDetail);
   const openFixMatch = useLibraryStore((s) => s.openFixMatch);
+  const adult = useLibraryStore((s) => s.activeProfile?.maturity === 'all');
   const toggleMyList = useLibraryStore((s) => s.toggleMyList);
   const liveItem = useLibraryStore((s) => s.items.find((i) => i.key === hover.item.key));
   const item = liveItem ?? hover.item;
@@ -143,9 +144,11 @@ function PreviewCard({ hover }: { hover: HoverState }) {
         <HoverButton label={item.myList ? 'Remove from My List' : 'Add to My List'} onClick={() => toggleMyList(item)}>
           {item.myList ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
         </HoverButton>
-        <HoverButton label="Fix match" onClick={() => openFixMatch(item.key)}>
-          <Wrench className="h-3.5 w-3.5" />
-        </HoverButton>
+        {adult && (
+          <HoverButton label="Fix match" onClick={() => openFixMatch(item.key)}>
+            <Wrench className="h-3.5 w-3.5" />
+          </HoverButton>
+        )}
         {torrent?.mode === 'stream' && (
           <HoverButton label="Keep permanently in library" onClick={() => void keepStreamPermanently(torrent.infoHash)} className="text-amber-200 hover:!border-amber-300">
             <HardDriveDownload className="h-4 w-4" />

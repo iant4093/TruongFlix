@@ -352,7 +352,7 @@ function Songs({ tracks }: { tracks: MusicTrack[] }) {
         <span className="text-sm text-white/50">{tracks.length} songs</span>
         <PlayButtons ids={ids} />
       </div>
-      <TrackList tracks={shown} />
+      <TrackList tracks={shown} queueIds={ids} />
       {sentinel}
     </div>
   );

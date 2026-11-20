@@ -77,7 +77,12 @@ export function playNext(q: QueueState, ids: number[]): QueueState {
   if (q.index < 0) return playList(q, ids, 0, false);
   const added = ids.map(item);
   const items = [...q.items.slice(0, q.index + 1), ...added, ...q.items.slice(q.index + 1)];
-  return { ...q, items, unshuffled: q.unshuffled ? [...q.unshuffled, ...added] : null };
+  if (!q.unshuffled) return { ...q, items, unshuffled: null };
+  // Also right after the current song in the original order: turning shuffle off used to move
+  // "Play Next" songs to the very end of the queue.
+  const at = q.unshuffled.findIndex((i) => i.key === q.items[q.index]?.key);
+  const unshuffled = at < 0 ? [...q.unshuffled, ...added] : [...q.unshuffled.slice(0, at + 1), ...added, ...q.unshuffled.slice(at + 1)];
+  return { ...q, items, unshuffled };
 }
 
 /** "Add to Queue": after everything already queued. */

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { SubtitleStyle } from '../../types/media';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { OpenSubtitlesFields, type SubtitleSettingsValue } from '../common/SetupControls';
@@ -25,6 +25,11 @@ export default function SubtitlesPage() {
     username: settings.opensubtitles_username,
     password: settings.opensubtitles_password,
   });
+  // The language is a dropdown like every other setting on this page, so it saves when picked
+  // (it waited for the Save button meant for the key and account, and was lost on leaving).
+  useEffect(() => {
+    if (subs.language && subs.language !== settings.subtitle_language) void updateSettings({ subtitle_language: subs.language });
+  }, [subs.language]); // eslint-disable-line react-hooks/exhaustive-deps
   const dirty =
     subs.apiKey.trim() !== settings.opensubtitles_api_key ||
     subs.language !== settings.subtitle_language ||
