@@ -1178,6 +1178,15 @@ export function pollTorrents(): Promise<TorrentItem[]> {
       let savePath = rec.save_path;
       let expiresAt = rec.expires_at;
 
+      // Marked complete but really downloading again (added again after its files were deleted):
+      // a fresh download, protected from scans, resumed at launch and finished like any other.
+      // (Not while the engine is still checking files that are all there.)
+      if (live && completedAt && !live.finished && live.state === 'downloading') {
+        completedAt = null;
+        seedingStopped = false;
+        await db.updateTorrentRecord(hash, { completed_at: null, seeding_stopped: false });
+      }
+
       // Transition from downloading -> finished!
       if (live?.finished && !completedAt) {
         completedAt = new Date().toISOString();
@@ -1403,11 +1412,23 @@ export async function fileToBase64TorrentSource(file: File): Promise<string> {
  * reading means the counter restarted), and the total is saved now and then.
  */
 const uploads = new Map<string, { last: number; total: number; saved: number; savedAt: number }>();
+// The engine reading each saved total already includes: the engine keeps running when the window
+// reloads, so its count must not be added a second time.
+const READINGS = 'tf-torrent-upload-readings';
+const readings = (): Record<string, number> => {
+  try {
+    return JSON.parse(localStorage.getItem(READINGS) ?? '{}') as Record<string, number>;
+  } catch {
+    return {};
+  }
+};
 function countUpload(hash: string, engineBytes: number, stored: number): number {
   let u = uploads.get(hash);
   if (!u) {
-    // Seen for the first time this run: whatever the engine reports now is on top of the saved total.
-    u = { last: 0, total: stored, saved: stored, savedAt: Date.now() };
+    // First seen in this window: a reading at or past the remembered one is the same engine run
+    // (only the rest is new); a smaller one means the engine started again from zero.
+    const known = readings()[hash] ?? 0;
+    u = { last: engineBytes >= known ? known : 0, total: stored, saved: stored, savedAt: Date.now() };
     uploads.set(hash, u);
   }
   u.total += engineBytes >= u.last ? engineBytes - u.last : engineBytes;
@@ -1416,6 +1437,11 @@ function countUpload(hash: string, engineBytes: number, stored: number): number 
     u.saved = u.total;
     u.savedAt = Date.now();
     void db.updateTorrentRecord(hash, { uploaded_total: u.total }).catch(() => {});
+    try {
+      localStorage.setItem(READINGS, JSON.stringify({ ...readings(), [hash]: u.last }));
+    } catch {
+      /* storage unavailable */
+    }
   }
   return u.total;
 }

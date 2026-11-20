@@ -149,6 +149,17 @@ async function ingestFile(file: RawVideoFile, ctx: ScanContext, hint?: MatchHint
   await db.upsertEpisode(series.id, info, meta, parsed.tech);
 }
 
+/** A re-matched file that changed between movie and episode: its watch state moves to the new
+ * entry and the old one goes (it would otherwise show twice). */
+async function settleKind(path: string, was: { type: 'movie' | 'episode'; id: number }) {
+  const now = was.type === 'movie' ? 'episodes' : 'movies';
+  const newId = await db.mediaIdByPath(now, path);
+  if (newId == null) return;
+  await db.copyProfileState({ type: was.type, id: was.id }, { type: was.type === 'movie' ? 'episode' : 'movie', id: newId });
+  if (was.type === 'movie') await db.deleteMediaPaths([path], []);
+  else await db.deleteMediaPaths([], [path]);
+}
+
 async function pool<T>(items: T[], size: number, worker: (item: T) => Promise<void>) {
   let i = 0;
   const run = async () => {
@@ -277,18 +288,19 @@ export async function runScan(opts: ScanOptions = {}) {
 
     // A moved file keeps its match (perhaps chosen with Fix Match) wherever it goes: another drive,
     // a genre folder, "Season 1" renamed "Season 01". Only a renamed show or movie folder ("The
-    // Office" → "The Office (US)") matches it again, from there; it stays a movie or an episode.
+    // Office" → "The Office (US)", or a misfiled episode moved into its show) is matched again from
+    // its new place, as a movie or an episode as it now reads; its history comes along.
     const SEASON_DIR = /^(?:season|series|staffel|saison|temporada)[ ._-]*\d{1,2}$|^s\d{1,2}$|^specials?$/i;
     const titleFolder = (p: string) => {
       const parts = p.split(/[\\/]/);
       const parent = parts[parts.length - 2] ?? '';
       return (SEASON_DIR.test(parent) ? parts[parts.length - 3] ?? '' : parent).toLowerCase();
     };
-    const rematch = new Map<string, MatchHint>();
+    const rematch = new Map<string, { type: 'movie' | 'episode'; id: number }>();
     for (const { from, to } of moved) {
       if (titleFolder(from) === titleFolder(to)) continue;
-      const was = index.get(to)?.type;
-      rematch.set(to, { kind: was === 'episode' ? 'tv' : 'movie' });
+      const was = index.get(to);
+      if (was) rematch.set(to, { type: was.type, id: was.id });
     }
     const todo = files.filter((f) => {
       const rec = index.get(f.file_path);
@@ -306,7 +318,9 @@ export async function runScan(opts: ScanOptions = {}) {
     await pool(todo, CONCURRENCY, async (file) => {
       if (networkFailures >= 6) return; // TMDB unreachable — leave the rest for next scan.
       try {
-        await ingestFile(file, ctx, rematch.get(file.file_path) ?? hints.get(file.file_path));
+        const was = rematch.get(file.file_path);
+        await ingestFile(file, ctx, was ? undefined : hints.get(file.file_path));
+        if (was) await settleKind(file.file_path, was);
         networkFailures = 0;
       } catch (e) {
         failures++;

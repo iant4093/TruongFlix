@@ -17,6 +17,31 @@ const EXTRAS_FOLDERS_IN_TITLE: &[&str] = &["extras", "extra", "interviews", "sce
 /// Plex's file-name form of the same: "Inception (2010)-deleted.mkv" ("-short" or "-interview"
 /// would also catch "The-Big-Short.mkv" and "The-Interview.mkv").
 const EXTRAS_SUFFIXES: &[&str] = &["-behindthescenes", "-deleted", "-featurette", "-trailer"];
+/// Plex's other suffixes, which also end real names: bonus material only inside a title's folder.
+const EXTRAS_SUFFIXES_IN_TITLE: &[&str] = &["-interview", "-scene", "-short", "-other", "-extra"];
+
+/// "Inception (2010)", "Severance [2022]".
+fn has_year(name: &str) -> bool {
+    name.as_bytes()
+        .windows(6)
+        .any(|w| (w[0] == b'(' || w[0] == b'[') && w[1..5].iter().all(u8::is_ascii_digit) && (w[5] == b')' || w[5] == b']'))
+}
+
+fn is_season_folder(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["season", "series", "staffel", "saison", "temporada", "specials", "special"].iter().any(|p| n.starts_with(p))
+        || (n.len() <= 3 && n.starts_with('s') && n[1..].bytes().all(|b| b.is_ascii_digit()) && n.len() > 1)
+}
+
+/// A movie's or show's own folder: it has a year, is a season folder, or holds season folders.
+fn is_title_folder(dir: &Path) -> bool {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    has_year(&name)
+        || is_season_folder(&name)
+        || std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|e| e.file_type().is_ok_and(|t| t.is_dir()) && is_season_folder(&e.file_name().to_string_lossy()))
+        })
+}
 /// `.ts` is also TypeScript; real MPEG transport streams are never this small.
 const MIN_TS_BYTES: u64 = 1024 * 1024;
 
@@ -62,17 +87,17 @@ pub(crate) fn is_library_video(path: &Path, size: u64) -> bool {
     if EXTRAS_SUFFIXES.iter().any(|s| stem.ends_with(s)) {
         return false;
     }
+    if EXTRAS_SUFFIXES_IN_TITLE.iter().any(|s| stem.ends_with(s)) && path.parent().is_some_and(|p| p.file_name().is_some_and(|n| has_year(&n.to_string_lossy()))) {
+        return false;
+    }
     let parent = path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     if EXTRAS_FOLDERS.contains(&parent.as_str()) {
         return false;
     }
-    if EXTRAS_FOLDERS_IN_TITLE.contains(&parent.as_str()) {
-        // A title folder carries its year: "Inception (2010)", "Severance (2022)".
-        let title = path.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let has_year = title.as_bytes().windows(6).any(|w| (w[0] == b'(' || w[0] == b'[') && w[1..5].iter().all(u8::is_ascii_digit) && (w[5] == b')' || w[5] == b']'));
-        if has_year {
-            return false;
-        }
+    // "Breaking Bad/Extras", "Show (2008)/Season 01/Extras", "Inception (2010)/Trailers"; not
+    // "Movies/Shorts" (short films) or the show "Extras".
+    if EXTRAS_FOLDERS_IN_TITLE.contains(&parent.as_str()) && path.parent().and_then(|p| p.parent()).is_some_and(is_title_folder) {
+        return false;
     }
     !(size < EXTRA_MAX_BYTES && EXTRA_KEYWORDS.iter().any(|k| lower.contains(k)))
 }
@@ -192,6 +217,9 @@ mod tests {
         touch(&root.join("Movies/Inception (2010)/Featurettes/Making Of.mkv"), big);
         touch(&root.join("Movies/Inception (2010)/Inception (2010)-deleted.mkv"), big);
         touch(&root.join("Movies/Inception (2010)/Extras/Interview.mkv"), big);
+        touch(&root.join("Shows/Breaking Bad/Season 1/Breaking.Bad.S01E01.mkv"), big);
+        touch(&root.join("Shows/Breaking Bad/Extras/Making Of.mkv"), big);
+        touch(&root.join("Movies/Inception (2010)/Inception-interview.mkv"), big);
         // ...but real titles in folders with those names stay.
         touch(&root.join("Movies/Shorts/Piper (2016).mkv"), big);
         touch(&root.join("Shows/Extras/Extras.S01E01.mkv"), big);
@@ -204,7 +232,7 @@ mod tests {
         assert!(unreadable.is_empty());
         let mut names: Vec<_> = out.iter().map(|f| f.filename.as_str()).collect();
         names.sort();
-        assert_eq!(names, ["Big.Trailer.Cut.2020.mkv", "Extras.S01E01.mkv", "Piper (2016).mkv", "S01E01.mkv", "The-Interview.mkv", "d-dune2-2160p.mkv"]);
+        assert_eq!(names, ["Big.Trailer.Cut.2020.mkv", "Breaking.Bad.S01E01.mkv", "Extras.S01E01.mkv", "Piper (2016).mkv", "S01E01.mkv", "The-Interview.mkv", "d-dune2-2160p.mkv"]);
 
         let ep = out.iter().find(|f| f.filename == "S01E01.mkv").unwrap();
         assert_eq!(ep.parent_folder_name, "Season 01");

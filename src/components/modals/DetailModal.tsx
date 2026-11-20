@@ -478,10 +478,15 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           )}
           {!item.matched && (
             <p className="text-sm text-nf-secondary">
-              This file couldn’t be identified automatically.{' '}
-              <button onClick={() => openFixMatch(item.key)} className="font-semibold text-white underline underline-offset-2">
-                Fix match
-              </button>
+              This file couldn’t be identified automatically.
+              {adultTools && (
+                <>
+                  {' '}
+                  <button onClick={() => openFixMatch(item.key)} className="font-semibold text-white underline underline-offset-2">
+                    Fix match
+                  </button>
+                </>
+              )}
             </p>
           )}
         </div>

@@ -8,6 +8,19 @@ import { clearLibrary } from '../../services/db';
 import { connectShare, refreshShares } from '../../services/nas';
 import { FolderList } from '../common/SetupControls';
 import { Block, BTN, BTN_DANGER, BTN_PRIMARY, Group, INPUT, Page, Row, StatusText, ToggleRow } from './ui';
+
+/**
+ * An added folder is scanned straight away (its titles appear, and files from a folder just
+ * removed are found there with their history: a library that moved drives). A removal alone waits
+ * a minute, so removing the old location before adding the new one doesn't erase its history.
+ */
+let removalScan: number | null = null;
+function scanAfterFolderChange(before: string[], after: string[]) {
+  if (removalScan != null) window.clearTimeout(removalScan);
+  removalScan = null;
+  if (after.some((d) => !before.includes(d))) void runScan({ quiet: true });
+  else removalScan = window.setTimeout(() => void runScan({ quiet: true }), 60_000);
+}
 import { closeSettingsAnd } from './nav';
 import BackupSettings from './BackupSettings';
 import Spinner from '../common/Spinner';
@@ -38,8 +51,7 @@ export default function LibraryPage() {
     <Page title="Movies & TV" description="Where your movies and shows live, and how TruongFlix keeps up with them.">
       <Group title="Movie & TV folders">
         <Block>
-          {/* Scanned straight away: an added folder's titles appear, a removed folder's leave. */}
-          <FolderList value={settings.media_directories} onChange={(dirs) => void updateSettings({ media_directories: dirs }).then(() => runScan({ quiet: true }))} />
+          <FolderList value={settings.media_directories} onChange={(dirs) => void updateSettings({ media_directories: dirs }).then(() => scanAfterFolderChange(settings.media_directories, dirs))} />
         </Block>
       </Group>
 
