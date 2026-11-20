@@ -42,7 +42,13 @@ export async function reconnectOfflineShares(): Promise<string[]> {
     );
     if (ok) back.push(dir);
   }
+  if (back.length) rewatch();
   return back;
+}
+
+/** A share that just came back is watched again for new files. */
+function rewatch() {
+  void import('./watch').then((m) => m.startFolderWatch()).catch(() => {});
 }
 
 /** Wakes the NAS (if needed) and reconnects the share behind `dir`. Returns true when reachable. */
@@ -58,6 +64,7 @@ export async function connectShare(dir: string, opts: { wake: boolean; quiet?: b
       });
   try {
     await invoke('connect_share', { share, wake: opts.wake });
+    rewatch();
     return true;
   } catch (e) {
     if (!opts.quiet) toast(errorMessage(e), 'error');

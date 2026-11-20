@@ -20,5 +20,12 @@ export async function startFolderWatch() {
   unlisten ??= await listen<string[]>('library-changed', () => void runScan({ quiet: true }));
   await invoke('watch_folders', { paths }).catch((e) => console.warn('[watch]', e));
   if (poll != null) window.clearInterval(poll);
-  poll = enabled && hasNetworkFolders() ? window.setInterval(() => void runScan({ quiet: true }), NETWORK_RESCAN_MS) : null;
+  // Also re-arms watching: a share that was offline at start, or dropped while the NAS slept, was
+  // never watched again until the folder settings changed.
+  poll = enabled && hasNetworkFolders()
+    ? window.setInterval(() => {
+        void invoke('watch_folders', { paths }).catch(() => {});
+        void runScan({ quiet: true });
+      }, NETWORK_RESCAN_MS)
+    : null;
 }

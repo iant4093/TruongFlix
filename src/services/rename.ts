@@ -36,14 +36,21 @@ const qualityTag = (resolution: string | null) => (resolution === '4K' ? '2160p'
  * Files never leave their media folder. Already-correct files are skipped.
  */
 export function planRenames(onlyKey?: string): { plan: RenamePlanItem[]; skipped: string[] } {
-  const { movies, series, episodes, settings, allItems } = useLibraryStore.getState();
+  const { movies, series, episodes, settings, allItems, torrents } = useLibraryStore.getState();
   const roots = settings.media_directories;
   const plan: RenamePlanItem[] = [];
   const skipped: string[] = [];
   const taken = new Set<string>();
+  // Files a torrent is still downloading or seeding stay as they are: renaming them under the
+  // torrent lost their library entry and history (it re-created them at the old names).
+  const busy = new Set(torrents.filter((t) => t.inSession && !t.seedingStopped).flatMap((t) => t.filePaths.map((p) => p.toLowerCase())));
 
   const add = (item: RenamePlanItem) => {
     if (item.from === item.to) return;
+    if (busy.has(item.from.toLowerCase())) {
+      skipped.push(`${item.label}: still downloading or seeding (stop seeding to rename it)`);
+      return;
+    }
     const key = item.to.toLowerCase();
     if (taken.has(key)) {
       skipped.push(`${item.label}: another file would get the same name`);

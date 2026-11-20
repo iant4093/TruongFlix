@@ -640,6 +640,9 @@ export async function removeTorrent(infoHash: string, deleteFilesAndLibraryRows:
     await pollInFlight?.catch(() => {});
     const records = await db.listTorrentRecords();
     const rec = records.find((r) => r.info_hash.toLowerCase() === hash);
+    // A stream's files are only a temporary cache: "Remove" used to leave gigabytes there for
+    // good (nothing cleared them once the record was gone), so it goes with the stream.
+    if (rec?.mode === 'stream') deleteFilesAndLibraryRows = true;
     const paths: string[] = rec && deleteFilesAndLibraryRows ? JSON.parse(rec.file_paths) : [];
     if (deleteFilesAndLibraryRows && isPlayingTorrent(paths)) {
       throw new Error('Stop playback before deleting this torrent’s files.');
@@ -1219,17 +1222,18 @@ export function pollTorrents(): Promise<TorrentItem[]> {
         }
       }
 
+      const uploadedEver = live ? countUpload(hash, live.uploaded_bytes, rec.uploaded_total ?? 0) : (rec.uploaded_total ?? 0);
       // Check global seed ratio / seed time limits for active seeders
       if (live && live.finished && !seedingStopped) {
         const total = live.total_bytes || rec.total_bytes;
-        const ratio = total > 0 ? live.uploaded_bytes / total : 0;
+        const ratio = total > 0 ? uploadedEver / total : 0;
         const ratioReached = settings.torrent_seed_ratio_limit > 0 && ratio >= settings.torrent_seed_ratio_limit;
         const elapsedMins = completedAt ? (Date.now() - Date.parse(completedAt)) / 60_000 : 0;
         const timeReached = settings.torrent_seed_time_mins > 0 && elapsedMins >= settings.torrent_seed_time_mins;
         if (ratioReached || timeReached || rec.delete_on_complete === 1) {
           await stopSeedingHandle(hash, filePaths);
           seedingStopped = true;
-          await db.updateTorrentRecord(hash, { seeding_stopped: true });
+          await db.updateTorrentRecord(hash, { seeding_stopped: true, uploaded_total: uploadedEver });
         }
       }
 
@@ -1249,7 +1253,7 @@ export function pollTorrents(): Promise<TorrentItem[]> {
       const totalBytes = live?.total_bytes || rec.total_bytes || 0;
       const finished = live ? live.finished : completedAt != null;
       const progressBytes = live ? live.progress_bytes : finished ? totalBytes : 0;
-      const uploadedBytes = live ? live.uploaded_bytes : 0;
+      const uploadedBytes = uploadedEver;
       const progressPct = live ? live.progress_pct : finished ? 100 : 0;
       const state: TorrentState = live
         ? seedingStopped && live.finished
@@ -1389,6 +1393,29 @@ export async function fileToBase64TorrentSource(file: File): Promise<string> {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return `base64:${btoa(binary)}`;
+}
+
+/**
+ * Lifetime upload per torrent. The engine's counter starts again from zero after a pause, an app
+ * start or a network change; each poll adds what was uploaded since the last one (a smaller
+ * reading means the counter restarted), and the total is saved now and then.
+ */
+const uploads = new Map<string, { last: number; total: number; saved: number; savedAt: number }>();
+function countUpload(hash: string, engineBytes: number, stored: number): number {
+  let u = uploads.get(hash);
+  if (!u) {
+    // Seen for the first time this run: whatever the engine reports now is on top of the saved total.
+    u = { last: 0, total: stored, saved: stored, savedAt: Date.now() };
+    uploads.set(hash, u);
+  }
+  u.total += engineBytes >= u.last ? engineBytes - u.last : engineBytes;
+  u.last = engineBytes;
+  if (u.total !== u.saved && Date.now() - u.savedAt > 60_000) {
+    u.saved = u.total;
+    u.savedAt = Date.now();
+    void db.updateTorrentRecord(hash, { uploaded_total: u.total }).catch(() => {});
+  }
+  return u.total;
 }
 
 let initialized = false;

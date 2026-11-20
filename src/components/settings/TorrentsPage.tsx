@@ -434,9 +434,22 @@ export default function TorrentsPage() {
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() => void runTransferAction(t, 'remove', () => removeTorrent(t.infoHash, false))}
+                      onClick={async () => {
+                        // A stream's cached video goes with it (it was only ever temporary).
+                        if (
+                          t.mode === 'stream' &&
+                          !(await useLibraryStore.getState().confirm({
+                            title: 'Remove this stream?',
+                            message: 'Its cached video is deleted and the title leaves your library.',
+                            confirmLabel: 'Remove',
+                            danger: true,
+                          }))
+                        )
+                          return;
+                        void runTransferAction(t, 'remove', () => removeTorrent(t.infoHash, false));
+                      }}
                       className="nf-btn-ghost h-8 px-2.5 py-0 text-xs"
-                      title="Remove transfer entry from this list without deleting files"
+                      title={t.mode === 'stream' ? 'Remove this stream and its cached video' : 'Remove transfer entry from this list without deleting files'}
                     >
                       Remove
                     </button>

@@ -529,6 +529,7 @@ export interface TorrentRecord {
   completed_at: string | null;
   seeding_stopped: number;
   created_at: string;
+  uploaded_total?: number;
 }
 
 export interface TorrentItem {

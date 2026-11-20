@@ -287,7 +287,12 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
   ],
 };
 
-ADDED_COLUMNS.torrents = [['purpose', "TEXT NOT NULL DEFAULT 'media'"]];
+ADDED_COLUMNS.torrents = [
+  ['purpose', "TEXT NOT NULL DEFAULT 'media'"],
+  // Bytes uploaded over the torrent's whole life (the engine's own count restarts with every
+  // pause, app start or network change, so a seed-ratio limit could never be reached).
+  ['uploaded_total', 'INTEGER NOT NULL DEFAULT 0'],
+];
 
 // Today's entries removed from Viewing activity are hidden, not deleted: they still count toward
 // the profile's daily limit (deleting them used to reset it).
@@ -1614,6 +1619,7 @@ export async function updateTorrentRecord(
     total_bytes: number;
     completed_at: string | null;
     seeding_stopped: boolean;
+    uploaded_total: number;
   }>,
 ) {
   const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
