@@ -24,6 +24,7 @@ const RELOAD_INTERVAL_MS = 2000;
 interface SeriesRef {
   id: number;
   tmdbId: number;
+  seasons?: number;
 }
 
 const normKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -72,7 +73,7 @@ class ScanContext {
         const tmdbId = knownTmdbId ?? (await tmdb.findSeries(title, year));
         const meta = tmdbId ? await tmdb.getSeriesDetails(tmdbId) : unmatchedSeries(title, year);
         const id = await db.upsertSeries(meta, folder);
-        return { id, tmdbId: meta.tmdb_id };
+        return { id, tmdbId: meta.tmdb_id, seasons: meta.number_of_seasons };
       })();
       this.series.set(key, p);
       p.catch(() => this.series.delete(key));
@@ -89,6 +90,17 @@ class ScanContext {
       p.catch(() => this.seasons.delete(key));
     }
     return p;
+  }
+
+  /** A daily show's episode by air date: the newest seasons are checked first (each season is
+   * fetched once per scan). */
+  async byAirDate(tvId: number, seasons: number, date: string): Promise<{ season: number; episode: number } | null> {
+    if (tvId <= 0) return null;
+    for (let s = Math.max(1, seasons); s >= 1; s--) {
+      const map = await this.season(tvId, s).catch(() => new Map<number, EpisodeMetadata>());
+      for (const e of map.values()) if (e.air_date === date) return { season: s, episode: e.episode_number };
+    }
+    return null;
   }
 
   async episodeMeta(tvId: number, season: number, episodes: number[]): Promise<EpisodeMetadata> {
@@ -132,7 +144,8 @@ async function ingestFile(file: RawVideoFile, ctx: ScanContext, hint?: MatchHint
   const episodes = parsed.kind === 'tv' ? parsed.episodes : [guessSeasonEpisode(file).episode];
   const folder = parsed.kind === 'tv' ? parsed.showFolder : null;
   const series = await ctx.seriesFor(title, parsed.year, folder, hint?.tmdbId);
-  const meta = await ctx.episodeMeta(series.tmdbId, season, episodes);
+  const found = parsed.kind === 'tv' && parsed.airDate ? await ctx.byAirDate(series.tmdbId, series.seasons ?? 1, parsed.airDate) : null;
+  const meta = found ? await ctx.episodeMeta(series.tmdbId, found.season, [found.episode]) : await ctx.episodeMeta(series.tmdbId, season, episodes);
   await db.upsertEpisode(series.id, info, meta, parsed.tech);
 }
 
@@ -381,17 +394,20 @@ async function refreshEpisodes(seriesId: number, tmdbId: number, ctx: ScanContex
 }
 
 /** Overwrites an item's metadata with a user-selected TMDB match (movie <-> TV conversions included). */
-export async function applyFixMatch(item: MediaItem, result: SearchResult): Promise<string | null> {
+/** `movieIds`: for a movie with several files, the copies to re-match (two different films matched
+ * as one title used to be re-matched together, and could never be told apart). */
+export async function applyFixMatch(item: MediaItem, result: SearchResult, movieIds?: number[]): Promise<string | null> {
   const { movies, episodesBySeries, reload } = useLibraryStore.getState();
   const ctx = new ScanContext();
   let newKey: string | null = null;
 
   if (item.kind === 'movie') {
-    const rows = movies.filter((m) => m.id === item.id || (item.tmdbId != null && m.tmdb_id === item.tmdbId));
+    const rows = movies.filter((m) => (movieIds ? movieIds.includes(m.id) : m.id === item.id || (item.tmdbId != null && m.tmdb_id === item.tmdbId)));
     if (result.kind === 'movie') {
       const meta = await tmdb.getMovieDetails(result.id);
       for (const r of rows) await db.updateMovieMetadata(r.id, meta);
-      newKey = item.key;
+      // Only some copies moved: they're a title of their own now (found after the reload).
+      newKey = movieIds && movieIds.length < item.versions.length ? null : item.key;
     } else {
       const series = await ctx.seriesFor(result.title, result.year, null, result.id);
       for (const r of rows) {
@@ -439,7 +455,9 @@ export async function applyFixMatch(item: MediaItem, result: SearchResult): Prom
   }
   await reload();
   if (!newKey && result.kind === 'movie') {
-    newKey = useLibraryStore.getState().items.find((i) => i.kind === 'movie' && i.tmdbId === result.id)?.key ?? null;
+    const moved = movieIds?.[0];
+    newKey =
+      useLibraryStore.getState().items.find((i) => i.kind === 'movie' && (moved != null ? i.versions.some((v) => v.id === moved) : i.tmdbId === result.id))?.key ?? null;
   }
   return newKey;
 }

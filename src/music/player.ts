@@ -420,9 +420,16 @@ function setMusicHandlers() {
     ['previoustrack', () => previous()],
     ['nexttrack', () => next()],
     ['seekto', (d) => d.seekTime != null && seek(d.seekTime)],
-    ['seekbackward', (d) => seek(get().time - (d.seekOffset ?? 10))],
-    ['seekforward', (d) => seek(get().time + (d.seekOffset ?? 10))],
   ];
+  // No ±10 s skip handlers for music: with them set, iPhones put skip buttons on the lock screen
+  // in place of previous/next song (as for a podcast). Cleared in case a video set them.
+  for (const action of ['seekbackward', 'seekforward'] as MediaSessionAction[]) {
+    try {
+      ms.setActionHandler(action, null);
+    } catch {
+      /* not supported */
+    }
+  }
   for (const [action, fn] of handlers) {
     try {
       ms.setActionHandler(action, fn);

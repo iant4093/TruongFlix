@@ -64,10 +64,32 @@ export async function runDownload(start: OfflineItem, deps: EngineDeps): Promise
   await save({});
 
   let dl: RemoteDownload;
+  // A conversion kept from before the pause, if the PC still has it (it lets one go after 30 idle minutes).
+  const kept = item.mode === 'convert' && item.bytes > 0 && item.job ? item.job : null;
+  const still = kept
+    ? await deps.api<RemoteDownloadStatus>(`/download/status?token=${encodeURIComponent(kept.token)}`).catch(() => null)
+    : null;
+  const reused = !!kept && !!still && still.state !== 'failed' && !!item.quality;
   try {
-    dl = await deps.api<RemoteDownload>('/download', {
-      body: { profile: item.profile, key: item.profileKey, type: item.type, id: item.mediaId, quality: item.requested },
-    });
+    dl = reused
+      ? {
+          token: kept!.token,
+          url: kept!.url,
+          mode: 'convert',
+          mime: item.mime,
+          quality: item.quality!,
+          itemKey: item.itemKey,
+          title: item.title,
+          subtitle: item.subtitle,
+          duration: item.duration,
+          estimate: null,
+          chapters: item.chapters,
+          segments: item.segments,
+          stinger: item.stinger,
+        }
+      : await deps.api<RemoteDownload>('/download', {
+          body: { profile: item.profile, key: item.profileKey, type: item.type, id: item.mediaId, quality: item.requested },
+        });
   } catch (e) {
     check();
     // A PIN profile whose unlock expired (the PC restarted, or 12 hours passed) waits for the PIN:
@@ -75,15 +97,20 @@ export async function runDownload(start: OfflineItem, deps: EngineDeps): Promise
     if (e instanceof ApiStatusError && e.status === 403 && e.message === PROFILE_LOCKED) return save({ state: 'paused', error: LOCKED_WAIT });
     return save({ state: e instanceof ApiStatusError ? 'failed' : 'paused', error: e instanceof ApiStatusError ? e.message : INTERRUPTED });
   }
+  // `stop` ends the PC's side for good (done, failed); `hold` is for a pause that will be resumed: a
+  // conversion is kept for the next try (a plain file costs the PC nothing to start again).
   const stop = () => void deps.api('/stop', { body: { token: dl.token } }).catch(() => {});
+  const hold = () => (dl.mode === 'convert' ? undefined : stop());
   try {
-    // Stored bytes are only kept for the same original file; a new conversion may differ.
-    const keep = item.bytes > 0 && item.mode === 'file' && dl.mode === 'file';
+    // Stored bytes are only kept for the same original file or the same conversion; a new
+    // conversion may differ.
+    const keep = item.bytes > 0 && ((item.mode === 'file' && dl.mode === 'file') || reused);
     if (!keep) {
       await store.clearChunks(item.id);
       item = { ...item, bytes: 0, chunks: 0, total: null };
     }
     await save({
+      job: dl.mode === 'convert' ? { token: dl.token, url: dl.url } : null,
       mode: dl.mode,
       mime: dl.mime,
       quality: dl.quality,
@@ -115,8 +142,9 @@ export async function runDownload(start: OfflineItem, deps: EngineDeps): Promise
           // The PC ended the conversion (e.g. it went idle while the phone slept): resumable, not failed.
           const gone = e instanceof ApiStatusError && e.status === 404;
           if ((e instanceof ApiStatusError && !gone) || ++misses > RETRIES || gone) {
-            stop();
-            return save({ state: 'paused', error: e instanceof ApiStatusError && !gone ? e.message : INTERRUPTED });
+            if (e instanceof ApiStatusError) stop();
+            else hold();
+            return save({ state: 'paused', error: e instanceof ApiStatusError && !gone ? e.message : INTERRUPTED, ...(gone ? { job: null } : {}) });
           }
           await deps.sleep(retryDelay(misses));
           continue;
@@ -172,22 +200,25 @@ export async function runDownload(start: OfflineItem, deps: EngineDeps): Promise
           // putChunk failed as a whole, so the stored item still has the previous count.
           const stored = (await store.get(item.id)) ?? item;
           item = { ...stored };
-          stop();
+          hold();
           return save({ state: 'paused', error: STORAGE_FULL });
         }
         if (++attempts > RETRIES) {
-          stop();
+          hold();
           return save({ state: 'paused', error: INTERRUPTED });
         }
         await deps.sleep(retryDelay(attempts));
       }
     }
     stop();
-    return save({ state: 'done', error: null });
+    return save({ state: 'done', error: null, job: null });
   } catch (e) {
+    if (isAbort(e)) {
+      hold(); // paused by the user: resumed later from the same conversion
+      throw e;
+    }
     stop();
-    if (isAbort(e)) throw e;
-    return save({ state: 'failed', error: errorMessage(e) });
+    return save({ state: 'failed', error: errorMessage(e), job: null });
   }
 }
 
@@ -335,6 +366,9 @@ export async function resumeDownload(id: string) {
 }
 
 export async function deleteDownload(id: string) {
+  // A conversion kept for resuming isn't needed any more.
+  const job = items.find((i) => i.id === id)?.job;
+  if (job) void api('/stop', { body: { token: job.token } }).catch(() => {});
   if (current?.id === id) {
     const run = current;
     run.ctrl.abort();

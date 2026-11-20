@@ -16,6 +16,8 @@ export interface ParsedEpisodeFile {
   episodes: number[];
   showFolder: string | null;
   tech: TechInfo;
+  /** Daily shows named by date ("2024-03-15"): the episode is looked up by when it aired. */
+  airDate?: string;
 }
 
 export type ParsedFile = ParsedMovieFile | ParsedEpisodeFile;
@@ -29,7 +31,9 @@ const TV_PATTERNS = [
   /(?:^|[^a-z0-9])\d{1,2}x\d{2,3}(?:[^a-z0-9]|$)/i, // 1x01
   /\bSeason[ ._-]*\d{1,2}[ ._-]*Episode[ ._-]*\d{1,3}\b/i, // Season 1 Episode 1
 ];
-const SEASON_FOLDER = /^(?:season|series|staffel|saison|temporada)[ ._-]*(\d{1,2})\b|^S(\d{1,2})$/i;
+const SEASON_FOLDER = /^(?:season|series|staffel|saison|temporada)[ ._-]*(\d{1,4})\b|^S(\d{1,2})$/i;
+/** A daily show's air date in the name: "The Daily Show - 2024-03-15", "Last.Week.Tonight.2024.03.17". */
+const AIR_DATE = /(?:^|[ ._-])((?:19|20)\d{2})[-. ](0[1-9]|1[0-2])[-. ](0[1-9]|[12]\d|3[01])(?=$|[ ._-])/;
 /** Sonarr's and Plex's folder for season 0. */
 const SPECIALS_FOLDER = /^specials?$/i;
 /** "S01E01", "S01E01E02", "S01E01-E03", "s01.e01": read directly when the parser library gives up. */
@@ -75,7 +79,9 @@ export function cleanTitle(raw: string): string {
   return raw
     .replace(/\.[a-z0-9]{2,4}$/i, (ext) => (/^\.(mkv|mp4|m4v|avi|mov|webm|ts)$/i.test(ext) ? '' : ext))
     .replace(/\[[^\]]*\]|\{[^}]*\}/g, ' ')
-    .replace(/\((?![12]\d{3}\))[^)]*\)/g, ' ')
+    // Parentheses are noise, except a year and a country ("The Office (US)" and "(UK)" are
+    // different shows).
+    .replace(/\((?![12]\d{3}\)|(?:US|UK|AU|CA|NZ|IE)\))[^)]*\)/g, ' ')
     .replace(/[._]+/g, ' ')
     .replace(JUNK_TOKENS, ' ')
     .replace(/\s-\s*[A-Za-z0-9]+$/, ' ')
@@ -177,6 +183,9 @@ function seasonFromFolder(name: string): number | null {
 
 function isTvFile(file: RawVideoFile): boolean {
   if (TV_PATTERNS.some((re) => re.test(file.filename)) || ANIME_RELEASE.test(file.filename)) return true;
+  // A dated name with a title before the date ("Show - 2024-03-15"), not a bare date.
+  const dated = file.filename.match(AIR_DATE);
+  if (dated && dated.index != null && dated.index > 1) return true;
   return seasonFromFolder(file.parent_folder_name) !== null;
 }
 
@@ -210,6 +219,15 @@ function parseEpisode(file: RawVideoFile): ParsedEpisodeFile | null {
       episodes = [parseInt(nx[2], 10)];
     }
   }
+  // A daily show: found by its air date once the show is known; until then it's numbered by date
+  // within the year (it used to become a movie per episode).
+  const dated = !explicitPattern && !anime ? stem.match(AIR_DATE) : null;
+  let airDate: string | undefined;
+  if (dated && dated.index != null && dated.index > 1) {
+    airDate = `${dated[1]}-${dated[2]}-${dated[3]}`;
+    season = folderSeason ?? parseInt(dated[1], 10);
+    episodes = [parseInt(dated[2], 10) * 100 + parseInt(dated[3], 10)];
+  }
   if (!episodes.length) {
     // No season marker: an absolute or plain episode number ("[Group] Show - 1085", "Show - 05",
     // "E05", "05 - Title"). The parser library would read "1085" as S10E85.
@@ -230,7 +248,9 @@ function parseEpisode(file: RawVideoFile): ParsedEpisodeFile | null {
     ? parseName(stem, true)
     : anime
       ? parseName(anime[1], true)
-      : { title: '', year: null as number | null };
+      : airDate && dated?.index
+        ? { title: cleanTitle(stem.slice(0, dated.index)), year: null as number | null }
+        : { title: '', year: null as number | null };
   const inSeasonFolder = folderSeason !== null;
   const showFolderName = inSeasonFolder ? file.grandparent_folder_name : file.parent_folder_name;
   const folderInfo = !isGenericFolder(showFolderName) ? parseFolderName(showFolderName) : { title: '', year: null };
@@ -263,6 +283,7 @@ function parseEpisode(file: RawVideoFile): ParsedEpisodeFile | null {
     episodes: [...new Set(episodes)].sort((a, b) => a - b),
     showFolder: folderTitleOk ? showFolderName : null,
     tech: extractTech(file.filename),
+    ...(airDate ? { airDate } : {}),
   };
 }
 

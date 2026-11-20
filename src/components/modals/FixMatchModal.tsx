@@ -31,6 +31,7 @@ export default function FixMatchModal() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [applying, setApplying] = useState<number | null>(null);
+  const [skipped, setSkipped] = useState<Set<number>>(() => new Set());
   const searchInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -64,12 +65,16 @@ export default function FixMatchModal() {
   if (!item) return null;
 
   const eps = item.kind === 'tv' ? (episodesBySeries.get(item.id) ?? []) : [];
-  const paths = item.kind === 'movie' ? [item.filePath ?? ''] : eps.map((e) => e.file_path);
+  const paths = item.kind === 'movie' ? item.versions.map((v) => v.filePath) : eps.map((e) => e.file_path);
+  // A movie with several files (often two different films matched as one): choose which to fix.
+  const versions = item.kind === 'movie' && item.versions.length > 1 ? item.versions : null;
+  const chosen = versions ? versions.filter((v) => !skipped.has(v.id)).map((v) => v.id) : undefined;
 
   const choose = async (r: SearchResult) => {
+    if (chosen && !chosen.length) return toast('Tick at least one file to fix.', 'error');
     setApplying(r.id);
     try {
-      const newKey = await applyFixMatch(item, r);
+      const newKey = await applyFixMatch(item, r, chosen);
       toast(`Matched to “${r.title}${r.year ? ` (${r.year})` : ''}”`, 'success');
       openFixMatch(null);
       if (detailKey) openDetail(newKey);
@@ -96,6 +101,29 @@ export default function FixMatchModal() {
       bodyClassName="flex min-h-0 flex-1 flex-col"
     >
         <div className="shrink-0 space-y-4 px-6 py-5">
+          {versions ? (
+            <div className="max-h-32 space-y-1 overflow-y-auto rounded bg-black/40 px-3 py-2 text-[11px] text-nf-secondary">
+              <div className="pb-1 text-xs text-nf-muted">Fix the match of:</div>
+              {versions.map((v) => (
+                <label key={v.id} className="flex cursor-pointer items-start gap-2 font-mono leading-relaxed">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={!skipped.has(v.id)}
+                    onChange={(e) =>
+                      setSkipped((s) => {
+                        const next = new Set(s);
+                        if (e.target.checked) next.delete(v.id);
+                        else next.add(v.id);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="selectable break-all">{v.filePath}</span>
+                </label>
+              ))}
+            </div>
+          ) : (
           <div className="selectable max-h-24 overflow-y-auto rounded bg-black/40 px-3 py-2 font-mono text-[11px] leading-relaxed text-nf-secondary">
             {paths.slice(0, 6).map((p) => (
               <div key={p} className="break-all">
@@ -104,6 +132,7 @@ export default function FixMatchModal() {
             ))}
             {paths.length > 6 && <div className="text-nf-muted">…and {paths.length - 6} more files</div>}
           </div>
+          )}
 
           <div className="flex gap-2">
             <SearchField

@@ -501,6 +501,7 @@ interface TvSearchHit {
   poster_path?: string | null;
   backdrop_path?: string | null;
   vote_average?: number;
+  origin_country?: string[];
 }
 
 async function rawSearchTv(query: string, year?: number | null) {
@@ -513,6 +514,17 @@ async function rawSearchTv(query: string, year?: number | null) {
 }
 
 export async function findSeries(title: string, year: number | null): Promise<number | null> {
+  // "The Office (US)" / "(UK)": searched without the tag, and that country's show wins (TMDB names
+  // both "The Office", so the tag used to be dropped and either could be picked).
+  const tagged = title.match(/^(.*?)\s*\((US|UK|AU|CA|NZ|IE)\)$/);
+  if (tagged) {
+    const country = tagged[2] === 'UK' ? 'GB' : tagged[2];
+    let hits = await rawSearchTv(tagged[1], year);
+    if (!hits.length && year != null) hits = await rawSearchTv(tagged[1]);
+    const local = hits.filter((r) => r.origin_country?.includes(country));
+    const best = pickBest(local.length ? local : hits, tagged[1], year, (r) => [r.name, r.original_name ?? ''], (r) => yearOf(r.first_air_date));
+    return best?.id ?? null;
+  }
   let results = await rawSearchTv(title, year);
   if (!results.length && year != null) results = await rawSearchTv(title);
   const best = pickBest(results, title, year, (r) => [r.name, r.original_name ?? ''], (r) => yearOf(r.first_air_date));

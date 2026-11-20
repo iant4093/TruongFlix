@@ -564,10 +564,28 @@ fn trash_entry(p: &Path) -> Option<(PathBuf, PathBuf)> {
     Some((entry.clone(), trash.parent()?.to_path_buf()))
 }
 
+/// A drive that's unplugged or a share that's offline: said plainly (it used to read "Not a
+/// TruongFlix trash entry").
+fn reachable(entry_dir: &str) -> Result<(), String> {
+    let trash = Path::new(entry_dir).parent().map(Path::to_path_buf).unwrap_or_default();
+    if !trash.exists() {
+        return Err("The drive or network folder holding this item isn’t connected right now.".into());
+    }
+    Ok(())
+}
+
+/// Entry folders are named "<seconds>-<8 hex digits>" when created (see `entry_name`).
+fn looks_like_entry(entry: &Path) -> bool {
+    entry.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+        n.split_once('-').is_some_and(|(secs, hex)| !secs.is_empty() && secs.bytes().all(|b| b.is_ascii_digit()) && hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+    })
+}
+
 fn restore_trash_inner(entry_dir: &str, items: &[FileMove], allowed: Option<&[PathBuf]>) -> Result<RestoreResult, String> {
+    reachable(entry_dir)?;
     let (entry, origin) = trash_entry(Path::new(entry_dir)).ok_or("Not a TruongFlix trash entry")?;
     if allowed.is_some_and(|roots| !roots.iter().any(|r| origin == *r || strictly_inside(&origin, r))) {
-        return Err("This trash entry isn't in a library folder".into());
+        return Err("This item was deleted from a folder that’s no longer in your library. Add the folder back to restore it, or delete it for good.".into());
     }
     let trash = origin.join(TRASH_DIR);
     // Items only come out of this entry, and only go back into the folder they were deleted from.
@@ -611,8 +629,13 @@ pub async fn restore_trash(app: AppHandle, entry_dir: String, items: Vec<FileMov
 }
 
 fn purge_trash_inner(entry_dir: &str, allowed: Option<&[PathBuf]>) -> Result<(), String> {
+    reachable(entry_dir)?;
     let (entry, origin) = trash_entry(Path::new(entry_dir)).ok_or("Not a TruongFlix trash entry")?;
-    if allowed.is_some_and(|roots| !roots.iter().any(|r| origin == *r || strictly_inside(&origin, r))) {
+    // An entry whose library folder was removed from Settings can still be deleted for good (it
+    // used to stay forever, past its 30 days): only a TruongFlix entry folder inside a
+    // .truongflix-trash folder is ever removed.
+    let in_library = allowed.is_none_or(|roots| roots.iter().any(|r| origin == *r || strictly_inside(&origin, r)));
+    if !in_library && !looks_like_entry(&entry) {
         return Err("This trash entry isn't in a library folder".into());
     }
     match std::fs::remove_dir_all(&entry) {
@@ -927,6 +950,11 @@ mod tests {
         let entry = shows_root.join(TRASH_DIR).join("123-abc");
         touch(&entry.join("0/file.mkv"), 10);
         assert!(purge_trash_inner(&s(&entry), Some(&resolve_roots(&[root.join("Movies")]))).is_err());
+        // A real entry whose library folder was removed from Settings can still be deleted for good.
+        let orphan = shows_root.join(TRASH_DIR).join("1700000000-0a1b2c3d");
+        touch(&orphan.join("0/file.mkv"), 10);
+        assert!(purge_trash_inner(&s(&orphan), Some(&resolve_roots(&[root.join("Movies")]))).is_ok());
+        assert!(!orphan.exists());
         assert!(purge_trash_inner(&s(&entry), Some(&allowed)).is_ok());
         assert!(!entry.exists());
         fs::remove_dir_all(&root).unwrap();

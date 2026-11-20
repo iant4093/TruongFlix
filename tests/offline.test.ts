@@ -127,6 +127,22 @@ describe('saving a title in the browser', () => {
     expect(await storedBytes(store, done.id)).toEqual([...BYTES]);
   });
 
+  it('carries on a paused conversion the PC still has, keeping the saved bytes', async () => {
+    const store = memoryStore();
+    const flaky = fakePc({ mode: 'convert', fail: (n) => n > 1 });
+    const paused = await runDownload(item(), deps(flaky, store));
+    expect(paused).toMatchObject({ state: 'paused', bytes: 4, job: { token: 't1' } });
+    // Paused, not ended: the conversion is kept for the next try.
+    expect(flaky.api).not.toHaveBeenCalledWith('/stop', expect.anything());
+
+    const pc = fakePc({ mode: 'convert' });
+    const done = await runDownload((await store.get(paused.id))!, deps(pc, store));
+    expect(done).toMatchObject({ state: 'done', job: null });
+    expect(pc.api).not.toHaveBeenCalledWith('/download', expect.anything());
+    expect(pc.ranges[0]).toBe('bytes=4-7');
+    expect(await storedBytes(store, done.id)).toEqual([...BYTES]);
+  });
+
   it('refuses a download that won’t fit, before fetching anything', async () => {
     const pc = fakePc({ estimate: 2000 * MB });
     const res = await runDownload(item(), deps(pc, memoryStore(), { estimate: async () => ({ quota: 1000 * MB, usage: 200 * MB }) }));

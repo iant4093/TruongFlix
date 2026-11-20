@@ -23,12 +23,15 @@ describe('episode names', () => {
     ['/TV/One Piece/Season 1/[SubsPlease] One Piece - 1085 (1080p) [ABCD1234].mkv', { show: 'One Piece', s: 1, e: [1085] }],
     ['/Anime/One Piece/[SubsPlease] One Piece - 1085 (1080p) [ABCD1234].mkv', { show: 'One Piece', s: 1, e: [1085] }],
     ['/TV/Show/Season 1/Show.S01E01-E03.1080p.mkv', { show: 'Show', s: 1, e: [1, 2, 3] }],
-    ['/TV/The Office (US)/Season 3/The Office (US) - S03E05 - Initiation.mkv', { s: 3, e: [5] }],
+    ['/TV/The Office (US)/Season 3/The Office (US) - S03E05 - Initiation.mkv', { show: 'The Office (US)', s: 3, e: [5] }],
+    ['/TV/The Office (UK)/Season 1/S01E01.mkv', { show: 'The Office (UK)', s: 1, e: [1] }],
     ['/TV/Lost/Season 2/01 - Man of Science.mkv', { show: 'Lost', s: 2, e: [1] }],
     ['/TV/Lost/Season 2/E05.mkv', { show: 'Lost', s: 2, e: [5] }],
     ['/TV/The Simpsons/Season 1/the.simpsons.105.hdtv.mkv', { show: 'The Simpsons', s: 1, e: [5] }],
     ['/TV/Chernobyl/Season 1/Chernobyl Part 2.mkv', { show: 'Chernobyl', s: 1, e: [2] }],
     ['/Anime/[Erai-raws] Frieren - S01E05 [1080p].mkv', { s: 1, e: [5] }],
+    ['/TV/The Daily Show/Season 2024/The Daily Show - 2024-03-15 - Guest.mkv', { show: 'The Daily Show', s: 2024, e: [315] }],
+    ['/TV/Last Week Tonight/Last.Week.Tonight.with.John.Oliver.2024.03.17.1080p.mkv', { s: 2024, e: [317] }],
   ])('%s', (path, want) => {
     expect(ep(path)).toMatchObject(want);
   });

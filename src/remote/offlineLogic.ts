@@ -45,6 +45,9 @@ export interface OfflineItem {
   createdAt: number;
   /** Where offline playback stopped (seconds). */
   position: number;
+  /** The PC's conversion for this download, kept while paused: resuming soon after (the phone
+   * slept, Wi-Fi dropped) carries on from the saved bytes instead of converting from 0%. */
+  job?: { token: string; url: string } | null;
 }
 
 /** Progress from offline playback, sent to the PC when it can be reached. */
