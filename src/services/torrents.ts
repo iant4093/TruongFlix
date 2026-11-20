@@ -701,7 +701,7 @@ export function planTorrentMoves(paths: string[], targetDir: string): FileMove[]
   }
   // A season folder is kept ("Season 2/E01.mkv"), so episodes of different seasons never collide,
   // even when only one season's files are moved (a retry).
-  if (common.length > 1 && /^(?:season|series|staffel|saison|temporada)[ ._-]*\d{1,2}$|^s\d{1,2}$|^specials?$/i.test(common[common.length - 1])) common = common.slice(0, -1);
+  if (common.length > 1 && /^(?:season|series|staffel|saison|temporada)[ ._-]*\d{1,4}$|^s\d{1,2}$|^specials?$/i.test(common[common.length - 1])) common = common.slice(0, -1);
   return paths.map((from) => {
     const rest = split(from).slice(common.length).filter(Boolean);
     return { from, to: (rest.length ? rest : [basename(from) || 'video.mkv']).reduce((dir, part) => joinPath(dir, part), targetDir) };

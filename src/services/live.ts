@@ -426,14 +426,20 @@ export function applyHealth(
       retryAt: now + 30 * 60_000,
       failures: 0,
     };
-  if (result.state !== 'failed')
+  if (result.state !== 'failed') {
+    // The same inconclusive answer again (a provider refusing checks, an encrypted stream) is asked
+    // less and less often: 5 min, 15, 45… up to 6 h. Every 5 minutes forever could push an IPTV
+    // account over its connection limit.
+    const base = Math.max(60, result.retryAfter || 300) * 1000;
+    const before = previous && previous.reason === result.reason ? previous.retryAt - previous.checkedAt : 0;
     return {
       state: previous?.state ?? 'unknown',
       failures: previous?.failures ?? 0,
       checkedAt: now,
-      retryAt: now + Math.max(60, result.retryAfter || 300) * 1000,
+      retryAt: now + Math.min(Math.max(base, before * 3), 6 * 3600_000),
       reason: result.reason,
     };
+  }
   const failures = (previous?.failures ?? 0) + 1;
   return {
     state: failures >= 2 ? 'unavailable' : 'suspect',

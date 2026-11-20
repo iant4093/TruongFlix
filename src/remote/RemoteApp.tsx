@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { restoreScroll, saveScroll } from './scrollMemory';
 import { leavingClass, useLeaving } from '../lib/leaving';
 import { Download, Lock, Search, X } from 'lucide-react';
@@ -393,25 +393,40 @@ function Browse({
     </>
   );
   const pad = now.np && musicPlaying ? 'pb-48' : now.np || musicPlaying ? 'pb-28' : 'pb-16';
+  // Loaded for the profile, and again on coming back Home if it's been a little while (progress and
+  // My List may have changed): not on every screen change, which re-sent the whole library each
+  // time a title was opened or closed.
+  const fetchedAt = useRef<{ who: typeof who | null; at: number }>({ who: null, at: 0 });
   useEffect(() => {
+    const stale = fetchedAt.current.who !== who || (screen.name === 'home' && Date.now() - fetchedAt.current.at > 20_000);
+    if (!stale) return;
+    fetchedAt.current = { who, at: Date.now() };
     api<RemoteLibrary>(`/library${qs({ profile: who.id, key: who.key })}`)
       .then(setLib)
       .catch((e) => {
+        fetchedAt.current.at = 0;
         onAuthError(e);
         setError(errorMessage(e));
       });
   }, [who, screen.name, onAuthError]);
 
   // Every word must match the title, year or a genre; accents and case don't matter ("amelie 2001").
+  // Typed ahead of the results (deferred), title matches first, and shown 60 at a time: one letter
+  // used to draw thousands of posters on every keystroke.
+  const searching = useDeferredValue(query);
+  const [shownResults, setShownResults] = useState(60);
+  useEffect(() => setShownResults(60), [searching]);
   const results = useMemo(() => {
     const fold = (s: string) => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
-    const words = fold(query ?? '').split(/\s+/).filter(Boolean);
+    const words = fold(searching ?? '').split(/\s+/).filter(Boolean);
     if (!words.length || !lib) return [];
-    return lib.all.filter((i) => {
+    const hits = lib.all.filter((i) => {
       const hay = fold(`${i.title} ${i.year ?? ''} ${(i.genres ?? []).join(' ')}`);
       return words.every((w) => hay.includes(w));
     });
-  }, [query, lib]);
+    const inTitle = (i: RemoteItem) => words.every((w) => fold(i.title).includes(w));
+    return [...hits.filter(inTitle), ...hits.filter((i) => !inTitle(i))];
+  }, [searching, lib]);
 
   // Keep the current section's tab in view on phones, where the tabs scroll sideways.
   const tabsRef = useRef<HTMLElement>(null);
@@ -492,10 +507,15 @@ function Browse({
             className="w-full rounded bg-white/10 px-4 py-3 outline-none placeholder:text-white/50"
           />
           <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-5 lg:grid-cols-7">
-            {results.map((i) => (
+            {results.slice(0, shownResults).map((i) => (
               <Poster key={i.key} item={i} onClick={() => open(i.key)} className="w-full" />
             ))}
           </div>
+          {results.length > shownResults && (
+            <button onClick={() => setShownResults((n) => n + 120)} className="nf-press mx-auto mt-4 block rounded-full bg-white/10 px-5 py-2 text-sm font-semibold hover:bg-white/20">
+              Show more ({results.length - shownResults})
+            </button>
+          )}
           {query.trim() && lib && !results.length && <p className="py-10 text-center text-nf-secondary">Nothing in your library matches “{query.trim()}”.</p>}
         </div>
       )}

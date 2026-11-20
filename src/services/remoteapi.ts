@@ -17,7 +17,8 @@ import type {
   RemoteTitle,
 } from '../remote/types';
 import * as db from './db';
-import { allowedForMaturity, buildItems, continueWatching, epLabel, episodeTarget, formatRemaining, genreBuckets, groupEpisodes, playTargetFor } from '../store/selectors';
+import { allowedForMaturity, buildItems, continueWatching, epLabel, episodeTarget, formatRemaining, genreBuckets, groupEpisodes, playTargetFor, sameEpisode } from '../store/selectors';
+import { daysUntil } from './airdates';
 import { blockedMessage, limitStatus } from './limits';
 import { verifyPin } from './pin';
 import { parseMediaInfo, parseSegments } from './mediainfo';
@@ -47,6 +48,7 @@ import { techBadgeList } from '../components/common/TechBadges';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
 import { endMusicSession, musicRoute } from './musicroute';
 import { togetherRoute } from './watchparty';
+import { watchMeta } from './watchMeta';
 
 /**
  * Answers the browser app's `/api/…` requests (forwarded by the Rust media server) with the same
@@ -228,6 +230,7 @@ function nextAirLabel(i: MediaItem): string | null {
   if (!n?.air_date) return null;
   const when = new Date(`${n.air_date}T12:00:00`);
   if (Number.isNaN(when.getTime())) return null;
+  if (daysUntil(n.air_date) < 0) return null; // already aired
   return `S${n.season}:E${n.episode} · ${when.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
 }
 
@@ -282,16 +285,28 @@ async function library(profile: Profile): Promise<RemoteLibrary> {
       hint: [e.episode ? epLabel(e.episode) : '', e.target.startTime > 0 ? formatRemaining(e.remainingSeconds) : 'Next Up'].filter(Boolean).join(' · '),
     }),
   );
+  // Home rows hold a screenful or two each: the TV, Movies and genre rows used to repeat the whole
+  // library (several MB for a big one, re-sent on every return to Home), which phones choked on.
+  // The full list is `all`, used by the TV and Movies tabs and search.
+  const ROW = 40;
   const rows = [
     { title: 'Continue Watching', items: cw },
     { title: 'My List', items: items.filter((i) => i.myList).map((i) => lite(i)) },
     { title: 'Recently Added', items: newest.slice(0, 24).map((i) => lite(i)) },
-    { title: 'TV Shows', items: items.filter((i) => i.kind === 'tv').map((i) => lite(i)) },
-    { title: 'Movies', items: items.filter((i) => i.kind === 'movie').map((i) => lite(i)) },
+    { title: 'TV Shows', items: newest.filter((i) => i.kind === 'tv').slice(0, ROW).map((i) => lite(i)) },
+    { title: 'Movies', items: newest.filter((i) => i.kind === 'movie').slice(0, ROW).map((i) => lite(i)) },
   ];
   const genres = new Map<string, MediaItem[]>();
-  for (const i of items) for (const g of genreBuckets(i.genres)) genres.set(g, [...(genres.get(g) ?? []), i]);
-  for (const [g, list] of [...genres.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 6)) rows.push({ title: g, items: list.map((i) => lite(i)) });
+  for (const i of items) {
+    for (const g of genreBuckets(i.genres)) {
+      const list = genres.get(g);
+      if (list) list.push(i);
+      else genres.set(g, [i]);
+    }
+  }
+  for (const [g, list] of [...genres.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 6)) {
+    rows.push({ title: g, items: [...list].sort((a, b) => b.voteAverage - a.voteAverage).slice(0, ROW).map((i) => lite(i)) });
+  }
   const withArt = items.filter((i) => i.backdrop && i.overview);
   return {
     featured: withArt.length ? lite(withArt[Math.floor(Math.random() * withArt.length)]) : null,
@@ -373,7 +388,8 @@ function describe(row: MovieRow | EpisodeRow, type: 'movie' | 'episode', items: 
     itemKey = show?.key ?? null;
     subtitle = `${epLabel(e)} · ${e.title}`;
     const list = bySeries.get(e.series_id) ?? [];
-    const n = list.slice(list.findIndex((x) => x.id === e.id) + 1).find((x) => x.season_number > 0);
+    // Another copy of the same episode (1080p and 4K) isn't the next one.
+    const n = list.slice(list.findIndex((x) => x.id === e.id) + 1).find((x) => x.season_number > 0 && !sameEpisode(x, e));
     if (n) next = { type: 'episode', id: n.id, label: `${epLabel(n)} · ${n.title}`, resume: 0 };
   } else {
     const m = row as MovieRow;
@@ -593,18 +609,7 @@ async function progress(caller: Caller, profile: Profile, body: { type: 'movie' 
   }
   body = { ...body, type, id, watched };
   if (body.watched && body.watched > 0) {
-    const { movies, episodes } = useLibraryStore.getState();
-    const meta =
-      body.type === 'movie'
-        ? (() => {
-            const m = movies.find((x) => x.id === body.id);
-            return { title: m?.title ?? '', series_id: null, series_title: null, genres: [], season: null, episode: null, poster: m?.poster_path ?? null };
-          })()
-        : (() => {
-            const e = episodes.find((x) => x.id === body.id);
-            const s = useLibraryStore.getState().series.find((x) => x.id === e?.series_id);
-            return { title: e?.title ?? '', series_id: s?.id ?? null, series_title: s?.title ?? null, genres: [], season: e?.season_number ?? null, episode: e?.episode_number ?? null, poster: s?.poster_path ?? null };
-          })();
+    const meta = watchMeta(body.type, body.id) ?? { title: '', series_id: null, series_title: null, genres: [], season: null, episode: null, poster: null };
     await db.logWatchTime(body.type, body.id, Math.min(body.watched, 120), meta, profile.id);
   }
   // Keep the desktop app's rows current when the same profile is open there.

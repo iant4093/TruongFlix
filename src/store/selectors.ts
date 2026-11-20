@@ -151,12 +151,16 @@ function seriesToItem(s: SeriesRow, eps: EpisodeRow[]): MediaItem {
   };
 }
 
-// The card shows the version being watched, otherwise the highest quality.
-const cardScore = (r: MovieRow) => (r.last_watched_at ? 1000 : 0) + qualityScore(r);
-
-/** One movie card from every file sharing its TMDB id (or a single unmatched file). */
+/** One movie card from every file sharing its TMDB id (or a single unmatched file). The card shows
+ * the copy watched most recently (a copy finished months ago used to win over the one in progress,
+ * dropping the film from Continue Watching), otherwise the highest quality. */
 export function buildMovieItem(rows: MovieRow[]): MediaItem {
-  return movieToItem(rows.reduce((a, b) => (cardScore(b) > cardScore(a) ? b : a)), rows);
+  const better = (a: MovieRow, b: MovieRow) => {
+    const [x, y] = [a.last_watched_at ?? '', b.last_watched_at ?? ''];
+    if (x !== y) return y > x;
+    return qualityScore(b) > qualityScore(a);
+  };
+  return movieToItem(rows.reduce((a, b) => (better(a, b) ? b : a)), rows);
 }
 
 export const buildSeriesItem = seriesToItem;
@@ -219,8 +223,16 @@ export function nextUpEpisode(eps: EpisodeRow[]): EpisodeRow | null {
   const last = touched.reduce((a, b) => ((b.last_watched_at ?? '') > (a.last_watched_at ?? '') ? b : a));
   if (!last.watched && last.progress_seconds > 0) return last;
   if (!last.watched) return null;
-  const idx = eps.indexOf(last);
-  return eps.slice(idx + 1).find((e) => e.season_number > 0 && !sameEpisode(e, last)) ?? null;
+  // A special watched last (S00, listed first) says nothing about where the series is: Next Up
+  // follows the latest regular episode watched (it used to jump back to S1E1).
+  const base =
+    last.season_number === 0
+      ? touched.filter((e) => e.season_number > 0).reduce<EpisodeRow | null>((a, b) => (!a || (b.last_watched_at ?? '') > (a.last_watched_at ?? '') ? b : a), null)
+      : last;
+  if (!base) return null;
+  if (!base.watched && base.progress_seconds > 0) return base;
+  const idx = eps.indexOf(base);
+  return eps.slice(idx + 1).find((e) => e.season_number > 0 && !sameEpisode(e, base)) ?? null;
 }
 
 /** Two files of the same episode (different copies or qualities). */

@@ -965,7 +965,8 @@ export async function upsertEpisode(seriesId: number, file: FileInfo, meta: Epis
   );
 }
 
-async function deleteByPaths(table: 'movies' | 'episodes', paths: string[]) {
+/** Deletes rows only (no clean-up of empty shows or orphaned state: safe while a scan is adding). */
+export async function deleteByPaths(table: 'movies' | 'episodes', paths: string[]) {
   for (let i = 0; i < paths.length; i += 200) {
     const chunk = paths.slice(i, i + 200);
     const placeholders = chunk.map((_, j) => `$${j + 1}`).join(',');
@@ -976,6 +977,13 @@ async function deleteByPaths(table: 'movies' | 'episodes', paths: string[]) {
 export async function deleteMediaPaths(moviePaths: string[], episodePaths: string[]) {
   await deleteByPaths('movies', moviePaths);
   await deleteByPaths('episodes', episodePaths);
+  await pruneEmptySeries();
+  await pruneOrphanSubtitles();
+  await pruneOrphanState();
+}
+
+/** The clean-up after rows were deleted with `deleteByPaths`. */
+export async function pruneAfterDeletes() {
   await pruneEmptySeries();
   await pruneOrphanSubtitles();
   await pruneOrphanState();
@@ -1195,7 +1203,12 @@ export async function logWatchTime(
        season_number, episode_number, poster)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT(profile_id, media_type, media_id, day) DO UPDATE SET seconds = watch_log.seconds + excluded.seconds, hidden = 0,
-       title = excluded.title, series_title = excluded.series_title, genres = excluded.genres, poster = excluded.poster`,
+       title = excluded.title,
+       -- Details missing from one report never erase what another already gave.
+       series_id = COALESCE(excluded.series_id, watch_log.series_id),
+       series_title = COALESCE(excluded.series_title, watch_log.series_title),
+       genres = CASE WHEN excluded.genres IS NULL OR excluded.genres IN ('[]', 'null') THEN watch_log.genres ELSE excluded.genres END,
+       poster = COALESCE(excluded.poster, watch_log.poster)`,
     [profileId, type, id, day, seconds, meta.title, meta.series_id, meta.series_title, json(meta.genres), meta.season, meta.episode, meta.poster],
   );
 }

@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useLibraryStore } from '../store/useLibraryStore';
 import type { CastDevice, CastState, EpisodeRow, MovieRow, PlayTarget } from '../types/media';
-import { epLabel, episodeTarget } from '../store/selectors';
+import { epLabel, episodeTarget, sameEpisode } from '../store/selectors';
 import { logWatchTime, recordProgress } from './db';
 import { closeBuiltin, startLimitWatch } from './player';
 import { durationOf, planStream, registerStream, releaseStream, streamUrl, type StreamClient } from './streaming';
@@ -11,6 +11,7 @@ import { ensureReachable } from './nas';
 import { blockedMessage, limitStatus } from './limits';
 import { downloadBlockingPlayback, stillDownloadingMessage } from './torrents';
 import { errorMessage } from '../lib/errors';
+import { watchMeta } from './watchMeta';
 
 export type { CastDevice, CastState } from '../types/media';
 
@@ -42,7 +43,7 @@ function describe(target: PlayTarget) {
   const row = rowFor(target) as EpisodeRow | undefined;
   const show = row ? allItems.find((i) => i.kind === 'tv' && i.id === row.series_id) : undefined;
   const list = row ? (episodesBySeries.get(row.series_id) ?? []) : [];
-  const n = row ? list.slice(list.findIndex((e) => e.id === row.id) + 1).find((e) => e.season_number > 0) : undefined;
+  const n = row ? list.slice(list.findIndex((e) => e.id === row.id) + 1).find((e) => e.season_number > 0 && !sameEpisode(e, row)) : undefined;
   return {
     title: show?.title ?? target.label,
     subtitle: row ? `${epLabel(row)} · ${row.title}` : null,
@@ -155,7 +156,8 @@ export async function initCastEvents() {
       if (lastTick && payload.time > lastTick.time && payload.time - lastTick.time < (now - lastTick.at) / 1000 + 3) {
         const seconds = payload.time - lastTick.time;
         const info = describe(cast.target);
-        void logWatchTime(cast.target.type, cast.target.id, seconds, { title: info.subtitle?.split(' · ')[1] ?? info.title, series_id: null, series_title: cast.target.type === 'episode' ? info.title : null, genres: [], season: null, episode: null, poster: null }, castFor);
+        const meta = watchMeta(cast.target.type, cast.target.id) ?? { title: info.subtitle?.split(' · ')[1] ?? info.title, series_id: null, series_title: cast.target.type === 'episode' ? info.title : null, genres: [], season: null, episode: null, poster: null };
+        void logWatchTime(cast.target.type, cast.target.id, seconds, meta, castFor);
       }
       lastTick = { time: payload.time, at: now };
       void saveProgress();

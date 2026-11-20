@@ -127,7 +127,8 @@ class ScanContext {
 // Ingestion
 // ---------------------------------------------------------------------------
 
-async function ingestFile(file: RawVideoFile, ctx: ScanContext, hint?: MatchHint) {
+/** Matches one file and saves it; returns what it was saved as. */
+async function ingestFile(file: RawVideoFile, ctx: ScanContext, hint?: MatchHint): Promise<'movie' | 'tv'> {
   const parsed = parseVideoFile(file);
   const info: FileInfo = { file_path: file.file_path, raw_filename: file.filename, file_mtime: file.mtime, file_size: file.file_size };
   const kind = hint?.kind ?? parsed.kind;
@@ -137,7 +138,7 @@ async function ingestFile(file: RawVideoFile, ctx: ScanContext, hint?: MatchHint
     const tmdbId = hint?.tmdbId ?? (await tmdb.findMovie(title, parsed.year));
     const meta = tmdbId ? await ctx.movieDetails(tmdbId) : unmatchedMovie(title, parsed.year);
     await db.upsertMovie(info, meta, parsed.tech);
-    return;
+    return 'movie';
   }
 
   const season = parsed.kind === 'tv' ? parsed.season : guessSeasonEpisode(file).season;
@@ -147,17 +148,20 @@ async function ingestFile(file: RawVideoFile, ctx: ScanContext, hint?: MatchHint
   const found = parsed.kind === 'tv' && parsed.airDate ? await ctx.byAirDate(series.tmdbId, series.seasons ?? 1, parsed.airDate) : null;
   const meta = found ? await ctx.episodeMeta(series.tmdbId, found.season, [found.episode]) : await ctx.episodeMeta(series.tmdbId, season, episodes);
   await db.upsertEpisode(series.id, info, meta, parsed.tech);
+  return 'tv';
 }
 
-/** A re-matched file that changed between movie and episode: its watch state moves to the new
- * entry and the old one goes (it would otherwise show twice). */
-async function settleKind(path: string, was: { type: 'movie' | 'episode'; id: number }) {
+/** A file that changed between movie and episode when matched again (moved, or read differently
+ * since an update): its watch state moves to the new entry and the old one goes (it would otherwise
+ * show twice). Only the row is deleted here; the clean-up runs once the scan's matching is done
+ * (pruning mid-scan could remove a show another file was just adding). Returns whether it moved. */
+async function settleKind(path: string, was: { type: 'movie' | 'episode'; id: number }): Promise<boolean> {
   const now = was.type === 'movie' ? 'episodes' : 'movies';
   const newId = await db.mediaIdByPath(now, path);
-  if (newId == null) return;
+  if (newId == null) return false;
   await db.copyProfileState({ type: was.type, id: was.id }, { type: was.type === 'movie' ? 'episode' : 'movie', id: newId });
-  if (was.type === 'movie') await db.deleteMediaPaths([path], []);
-  else await db.deleteMediaPaths([], [path]);
+  await db.deleteByPaths(was.type === 'movie' ? 'movies' : 'episodes', [path]);
+  return true;
 }
 
 async function pool<T>(items: T[], size: number, worker: (item: T) => Promise<void>) {
@@ -290,7 +294,7 @@ export async function runScan(opts: ScanOptions = {}) {
     // a genre folder, "Season 1" renamed "Season 01". Only a renamed show or movie folder ("The
     // Office" → "The Office (US)", or a misfiled episode moved into its show) is matched again from
     // its new place, as a movie or an episode as it now reads; its history comes along.
-    const SEASON_DIR = /^(?:season|series|staffel|saison|temporada)[ ._-]*\d{1,2}$|^s\d{1,2}$|^specials?$/i;
+    const SEASON_DIR = /^(?:season|series|staffel|saison|temporada)[ ._-]*\d{1,4}$|^s\d{1,2}$|^specials?$/i;
     const titleFolder = (p: string) => {
       const parts = p.split(/[\\/]/);
       const parent = parts[parts.length - 2] ?? '';
@@ -315,12 +319,16 @@ export async function runScan(opts: ScanOptions = {}) {
     let networkFailures = 0;
     // Bigger libraries take longer to reload: space reloads out so matching doesn't stutter.
     const reloads = createReloadThrottle(Math.max(RELOAD_INTERVAL_MS, Math.min(15_000, store.items.length * 2)), reload);
+    let kindChanged = false;
     await pool(todo, CONCURRENCY, async (file) => {
       if (networkFailures >= 6) return; // TMDB unreachable — leave the rest for next scan.
       try {
         const was = rematch.get(file.file_path);
-        await ingestFile(file, ctx, was ? undefined : hints.get(file.file_path));
-        if (was) await settleKind(file.file_path, was);
+        const savedAs = await ingestFile(file, ctx, was ? undefined : hints.get(file.file_path));
+        // Any file already in the library may now read as the other kind (moved, or a name the
+        // parser reads differently since an update: "Show - 2024-03-15" was a movie before).
+        const known = was ?? (index.get(file.file_path) ? { type: index.get(file.file_path)!.type, id: index.get(file.file_path)!.id } : null);
+        if (known && (savedAs === 'movie') !== (known.type === 'movie') && (await settleKind(file.file_path, known))) kindChanged = true;
         networkFailures = 0;
       } catch (e) {
         failures++;
@@ -333,6 +341,7 @@ export async function runScan(opts: ScanOptions = {}) {
       }
     });
 
+    if (kindChanged) await db.pruneAfterDeletes();
     // Titles appear while matching (throttled), then one final reload — skipped when nothing changed.
     if (todo.length || removed || organized) await reloads.flush();
     else reloads.cancel();
