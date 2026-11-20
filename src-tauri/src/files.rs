@@ -573,7 +573,14 @@ fn reachable(entry_dir: &str) -> Result<bool, String> {
     if !volume.as_os_str().is_empty() && !volume.exists() {
         return Err("The drive or network folder holding this item isn’t connected right now.".into());
     }
-    Ok(path.exists())
+    if path.exists() {
+        return Ok(true);
+    }
+    // Only a well-formed entry path ("…/.truongflix-trash/<entry>", no "..") counts as already
+    // gone; anything else goes on to the usual checks, which refuse it.
+    let plain = path.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::RootDir | std::path::Component::Prefix(_)));
+    let in_trash = path.parent().and_then(Path::file_name).is_some_and(|n| n == TRASH_DIR);
+    Ok(!(plain && in_trash && looks_like_entry(path)))
 }
 
 /// Entry folders are named "<seconds>-<8 hex digits>" when created (see `entry_name`).
@@ -961,6 +968,10 @@ mod tests {
         touch(&orphan.join("0/file.mkv"), 10);
         assert!(purge_trash_inner(&s(&orphan), Some(&resolve_roots(&[root.join("Movies")]))).is_ok());
         assert!(!orphan.exists());
+        // An entry whose trash folder was deleted by hand is simply gone (it used to stay stuck).
+        let vanished = root.join("Gone").join(TRASH_DIR).join("1700000001-0a1b2c3d");
+        assert!(purge_trash_inner(&s(&vanished), None).is_ok());
+        assert_eq!(restore_trash_inner(&s(&vanished), &[], None).unwrap().restored, 0);
         assert!(purge_trash_inner(&s(&entry), Some(&allowed)).is_ok());
         assert!(!entry.exists());
         fs::remove_dir_all(&root).unwrap();
