@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import useIdle from '../../hooks/useIdle';
+import useIdle, { isCursorNudge, useHideFrameCursor } from '../../hooks/useIdle';
 import { ArrowLeft, ChevronDown, ChevronUp, Globe, Maximize, PanelsTopLeft, PictureInPicture2, Play, RefreshCw } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { LivePlayerSession } from '../../types/live';
@@ -97,11 +97,15 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
     return () => window.removeEventListener('keydown', key);
   }, [blocked, mini, picking]);
   const show = visible || blocked || paused || picking || failed || status === 'loading';
+  useHideFrameCursor(!mini && !show);
+  const revealOnMove = (event: { clientX: number; clientY: number }) => {
+    if (!isCursorNudge(event)) reveal();
+  };
   return (
     // In the mini player this layer sits above the mini player's frame (z-120) so the video shows.
     <div
       className={`fixed inset-0 text-white ${mini ? 'pointer-events-none z-[121]' : `z-[110] bg-black ${show ? '' : 'cursor-none'}`}`}
-      onMouseMove={mini ? undefined : reveal}
+      onMouseMove={mini ? undefined : revealOnMove}
     >
       {showFrame && (
         <LiveWebFrame
@@ -126,7 +130,7 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
           {!show && (
             <div
               className="absolute inset-0 z-[5] cursor-none"
-              onMouseMove={reveal}
+              onMouseMove={revealOnMove}
               onMouseDown={reveal}
               onDoubleClick={() => void toggleFullscreen()}
               aria-hidden

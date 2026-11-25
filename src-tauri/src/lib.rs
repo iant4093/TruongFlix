@@ -211,6 +211,7 @@ pub fn run() {
             player::player_set,
             player::player_close,
             player::player_layout,
+            player::cursor_nudge,
             player::multiview::player_multiview_open,
             player::multiview::player_multiview_layout,
             player::multiview::player_multiview_audio,

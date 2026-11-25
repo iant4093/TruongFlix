@@ -21,7 +21,7 @@ import {
 import { button } from './ui';
 import { isPlayerShortcut } from '../player/shortcuts';
 import LiveWebFrame, { type WebFrameStatus } from './LiveWebFrame';
-import useIdle from '../../hooks/useIdle';
+import useIdle, { isCursorNudge, useHideFrameCursor } from '../../hooks/useIdle';
 
 function box(node: HTMLDivElement | null) {
   if (!node) return;
@@ -227,6 +227,10 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
     else void switchPlayer(() => retryLiveMultiview(session));
   };
   const show = active || !!prompt;
+  useHideFrameCursor(!show);
+  const wakeOnMove = (event: { clientX: number; clientY: number }) => {
+    if (!isCursorNudge(event)) wake();
+  };
   const fade = `transition-opacity duration-300 ${show ? 'opacity-100' : 'pointer-events-none opacity-0'}`;
   const grid = panes.length > 2;
 
@@ -234,7 +238,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
     <section
       className={`fixed inset-0 z-[110] overflow-hidden text-white ${mainPane < 0 ? 'bg-black' : ''} ${show ? '' : 'cursor-none'}`}
       aria-label="Live TV multiview"
-      onMouseMove={wake}
+      onMouseMove={wakeOnMove}
       onClick={wake}
     >
       <div className={`absolute inset-0 grid ${grid ? 'grid-cols-2 grid-rows-2' : 'grid-cols-2 grid-rows-1'}`}>
@@ -293,7 +297,7 @@ export default function LiveMultiview({ session }: { session: LivePlayerSession 
         {panes.length === 3 && <div className="bg-black" aria-hidden />}
       </div>
       {/* Wakes the controls (and shows the cursor) on the first move over a web player. */}
-      {!show && <div className="absolute inset-0 z-30 cursor-none" onMouseMove={wake} onMouseDown={wake} aria-hidden />}
+      {!show && <div className="absolute inset-0 z-30 cursor-none" onMouseMove={wakeOnMove} onMouseDown={wake} aria-hidden />}
       <header className={`absolute inset-x-0 top-0 z-20 flex items-center gap-4 bg-gradient-to-b from-black/90 to-transparent px-[4%] pb-8 pt-4 ${fade}`}>
         <button className={button} disabled={!!prompt} onClick={() => void closeBuiltin()} aria-label="Back to Live TV"><ArrowLeft className="h-5 w-5" /></button>
         <h1 className="flex-1 text-xl font-bold">Live TV multiview</h1>

@@ -17,8 +17,8 @@ use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, GetStockObject, BLACK_BR
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW, IsIconic, RegisterClassExW,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_HWNDPARENT, GWL_EXSTYLE, HTTRANSPARENT, MA_NOACTIVATE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
+    IsIconic, RegisterClassExW, SetCursorPos, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_HWNDPARENT, GWL_EXSTYLE, HTTRANSPARENT, MA_NOACTIVATE,
     SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSEXW,
     WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
 };
@@ -77,6 +77,34 @@ unsafe fn client_rect_on_screen(main: HWND) -> RECT {
     let mut origin = POINT { x: 0, y: 0 };
     ClientToScreen(main, &mut origin);
     RECT { left: origin.x, top: origin.y, right: origin.x + rect.right, bottom: origin.y + rect.bottom }
+}
+
+/// Moves the mouse one pixel when it rests over `main`'s page while that window is in front, and
+/// returns where it was in CSS pixels from the page's top-left. A web player's frame runs in its
+/// own WebView2 process, which keeps showing its cursor until the mouse moves, even once the page
+/// covers the frame to hide the cursor; the move hands the cursor back to the page.
+pub fn nudge_cursor(main_hwnd: isize) -> Option<(f64, f64)> {
+    unsafe {
+        let main = main_hwnd as HWND;
+        if main.is_null() || GetForegroundWindow() != main || IsIconic(main) != 0 {
+            return None;
+        }
+        let mut at = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut at) == 0 {
+            return None;
+        }
+        let client = client_rect_on_screen(main);
+        if at.x < client.left || at.x >= client.right || at.y < client.top || at.y >= client.bottom {
+            return None;
+        }
+        // Same-position moves are dropped as duplicates, so it really moves (inwards at the edge).
+        let x = if at.x + 1 < client.right { at.x + 1 } else { at.x - 1 };
+        if SetCursorPos(x, at.y) == 0 {
+            return None;
+        }
+        let scale = (GetDpiForWindow(main).max(1) as f64) / 96.0;
+        Some(((at.x - client.left) as f64 / scale, (at.y - client.top) as f64 / scale))
+    }
 }
 
 /// Creates the video popup behind `main` and returns its HWND for mpv's `wid`. Main thread only.

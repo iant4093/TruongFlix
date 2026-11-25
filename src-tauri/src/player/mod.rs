@@ -666,6 +666,22 @@ pub async fn player_layout(app: AppHandle, rect: Option<MiniRect>) -> Result<(),
     Ok(())
 }
 
+/// Called when an idle web player hides the cursor: see `win32::nudge_cursor`. Returns where the
+/// mouse rests (CSS pixels), or null when it wasn't moved (other platforms, window not in front).
+#[tauri::command]
+pub fn cursor_nudge(window: tauri::WebviewWindow) -> Option<(f64, f64)> {
+    #[cfg(windows)]
+    {
+        let main = window.hwnd().ok()?.0 as isize;
+        win32::nudge_cursor(main)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        None
+    }
+}
+
 fn number_in(value: &str, min: f64, max: f64) -> bool {
     value.len() <= 32 && value.trim().parse::<f64>().is_ok_and(|n| n.is_finite() && n >= min && n <= max)
 }
