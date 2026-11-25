@@ -119,25 +119,35 @@ function usePlayingRow(session: PlayerSession | null) {
 }
 
 // Scrub-bar thumbnails, generated in the background by a hidden player core.
-const thumbStore = { key: '', interval: 10, frames: new Map<number, string>(), listeners: new Set<() => void>() };
+const thumbStore = { key: '', started: '', interval: 10, frames: new Map<number, string>(), listeners: new Set<() => void>() };
 
 function useScrubThumbnails(session: PlayerSession | null) {
   const row = usePlayingRow(session);
-  const duration = useLibraryStore((s) => (s.playerState?.loaded ? s.playerState.duration : 0));
+  // Only whether the length is known: some files (MPEG-TS, AVI, files still downloading) refine
+  // their length while playing, and each change used to cancel the pending start for good.
+  const hasDuration = useLibraryStore((s) => !!s.playerState?.loaded && s.playerState.duration > 0);
   const path = session?.target.filePath;
   const mtime = row?.file_mtime ?? 0;
   useEffect(() => {
-    if (!path || !(duration > 0)) return;
+    if (!path || !hasDuration) return;
     const key = `${path}|${mtime}`;
-    if (thumbStore.key === key) return;
-    thumbStore.key = key;
-    thumbStore.frames = new Map();
-    const interval = Math.max(10, duration / MAX_THUMBS);
-    thumbStore.interval = interval;
-    const count = Math.floor((duration - 2) / interval) + 1;
-    const times = coarseToFine(count, interval, 1);
+    if (thumbStore.key !== key) {
+      // Another title: never show the previous one's frames while this one's are on their way.
+      thumbStore.key = key;
+      thumbStore.started = '';
+      thumbStore.frames = new Map();
+      thumbStore.listeners.forEach((l) => l());
+    }
+    if (thumbStore.started === key) return;
     // Give playback a head start before the second core begins decoding.
     const t = window.setTimeout(() => {
+      const duration = useLibraryStore.getState().playerState?.duration ?? 0;
+      if (!(duration > 0) || thumbStore.key !== key || thumbStore.started === key) return;
+      thumbStore.started = key;
+      const interval = Math.max(10, duration / MAX_THUMBS);
+      thumbStore.interval = interval;
+      const count = Math.floor((duration - 2) / interval) + 1;
+      const times = coarseToFine(count, interval, 1);
       void extractFrames({ path, mtime, times, width: THUMB_WIDTH, lane: 'scrub' }, (f) => {
         if (thumbStore.key !== key) return;
         thumbStore.frames.set(Math.round((f.time - 1) / interval), f.url);
@@ -145,10 +155,11 @@ function useScrubThumbnails(session: PlayerSession | null) {
       }).catch(() => {});
     }, 4000);
     return () => window.clearTimeout(t);
-  }, [path, mtime, duration]);
+  }, [path, mtime, hasDuration]);
   useEffect(() => {
     if (session) return;
     thumbStore.key = '';
+    thumbStore.started = '';
     thumbStore.frames = new Map();
     cancelFrames('scrub');
   }, [session]);

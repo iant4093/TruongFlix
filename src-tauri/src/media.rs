@@ -292,6 +292,48 @@ fn grab_frame(core: &Core, video: &str, time: f64, tmp: &Path, dest: &Path) -> b
     }
 }
 
+/// Options for the seeking frame grabber (see `open_seeker`); `scale` is the `vf` scale filter.
+fn seeker_options(scale: &str) -> [(&str, &str); 10] {
+    [
+        ("vo", "null"),
+        ("audio", "no"),
+        ("sid", "no"),
+        ("pause", "yes"),
+        ("keep-open", "yes"),
+        ("hr-seek", "no"),
+        ("hwdec", "auto-copy-safe"),
+        ("vf", scale),
+        ("screenshot-format", "jpg"),
+        ("screenshot-jpeg-quality", "72"),
+    ]
+}
+
+/// Opens `video` once, paused, for `seek_frame`. Reopening the file for every frame (`grab_frame`)
+/// repeats the container probe and decoder setup each time: about 10x slower, and much worse for
+/// slow-to-open files (MPEG-TS, large MP4s, network shares), so scrub previews took ages to appear.
+fn open_seeker(core: &Core, video: &str) -> bool {
+    core.api.command(core.h, &["loadfile", video, "replace"]).is_ok()
+        && core.wait_for(&[mpv::EVENT_PLAYBACK_RESTART], Duration::from_secs(20)).is_some()
+}
+
+/// Seeks the opened file to the keyframe at or before `time` and saves that frame as `dest`.
+fn seek_frame(core: &Core, time: f64, tmp: &Path, dest: &Path) -> bool {
+    if std::fs::create_dir_all(tmp).is_err() {
+        return false;
+    }
+    if core.api.command(core.h, &["seek", &format!("{time:.3}"), "absolute+keyframes"]).is_err()
+        || core.wait_for(&[mpv::EVENT_PLAYBACK_RESTART], Duration::from_secs(10)).is_none()
+    {
+        return false;
+    }
+    // Written beside the cache and moved in whole, so a half-written file is never taken as cached.
+    let file = tmp.join("frame.jpg");
+    let _ = std::fs::remove_file(&file);
+    core.api.command(core.h, &["screenshot-to-file", &file.to_string_lossy(), "video"]).is_ok()
+        && std::fs::metadata(&file).is_ok_and(|m| m.len() > 0)
+        && std::fs::rename(&file, dest).or_else(|_| std::fs::copy(&file, dest).map(|_| ())).is_ok()
+}
+
 /// Extracts JPEG frames at `times` into the app cache (`frames/<key>/<width>_<ms>.jpg`), emitting
 /// `frame-ready` for each one as it lands. Cached frames are returned immediately.
 #[tauri::command]
@@ -323,17 +365,10 @@ pub async fn extract_frames(
             return Ok(out);
         }
         let scale = format!("scale={width}:-2");
-        let core = Core::new(&[
-            ("vo", "image"),
-            ("vo-image-format", "jpg"),
-            ("vo-image-jpeg-quality", "72"),
-            ("audio", "no"),
-            ("sid", "no"),
-            ("frames", "1"),
-            ("hr-seek", "no"),
-            ("hwdec", "auto-copy-safe"),
-            ("vf", &scale),
-        ])?;
+        // Open the file once and seek between frames; if that doesn't work for this file, fall
+        // back to reopening it for each frame.
+        let mut seeker = Core::new(&seeker_options(&scale)).ok().filter(|core| open_seeker(core, &path));
+        let mut reopen: Option<Core> = None;
         // Each request gets its own scratch folder: overlapping requests used to share one, and an
         // older request could save a newer one's frame under its own (wrong) time, cached for good.
         let tmp = dir.join(format!(".tmp-{lane}-{generation}"));
@@ -341,7 +376,30 @@ pub async fn extract_frames(
             if !lane_is(&lane, generation) {
                 break; // superseded by a newer request
             }
-            if grab_frame(&core, &path, times[i], &tmp, &dests[i]) {
+            let mut saved = false;
+            if let Some(core) = &seeker {
+                saved = seek_frame(core, times[i], &tmp, &dests[i]);
+                if !saved {
+                    seeker = None; // a failed seek can leave it stuck; reopen per frame from here
+                }
+            }
+            if !saved {
+                if reopen.is_none() {
+                    reopen = Some(Core::new(&[
+                        ("vo", "image"),
+                        ("vo-image-format", "jpg"),
+                        ("vo-image-jpeg-quality", "72"),
+                        ("audio", "no"),
+                        ("sid", "no"),
+                        ("frames", "1"),
+                        ("hr-seek", "no"),
+                        ("hwdec", "auto-copy-safe"),
+                        ("vf", &scale),
+                    ])?);
+                }
+                saved = reopen.as_ref().is_some_and(|core| grab_frame(core, &path, times[i], &tmp, &dests[i]));
+            }
+            if saved {
                 let p = dests[i].to_string_lossy().into_owned();
                 let _ = app.emit("frame-ready", FrameReady { lane: lane.clone(), key: key.clone(), index: i, time: times[i], path: p.clone() });
                 out[i] = Some(p);
