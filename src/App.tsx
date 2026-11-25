@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 import { AnimatePresence, MotionConfig, motion, useIsPresent } from 'framer-motion';
 import { SectionMemory } from './lib/sectionMemory';
 import { fade } from './lib/motion';
@@ -159,7 +159,8 @@ export default function App() {
   // Built-in player: make the page transparent over the native video surface (not in the mini-player).
   const playerActive = useLibraryStore((s) => !!s.playerSession && !s.playerMini);
   const videoOpen = useLibraryStore((s) => !!s.playerSession);
-  useEffect(() => {
+  // Before paint, so the library never shows for a frame under the player as it opens.
+  useLayoutEffect(() => {
     document.documentElement.classList.toggle('player-mode', playerActive);
   }, [playerActive]);
 

@@ -192,10 +192,17 @@ html.tv-focus [data-hover-card] {
   }
 }
 
-/* Built-in player: the page turns transparent so the native video view underneath shows through. */
+/* Built-in player: the page turns transparent so the native video view underneath shows through,
+   but only once that view exists (`player-surface`). Until then it's black: a transparent page
+   before the video window was ready showed the desktop through the window on Windows. */
 html.player-mode,
 html.player-mode body,
 html.player-mode #app-root {
+  background: #000 !important;
+}
+html.player-mode.player-surface,
+html.player-mode.player-surface body,
+html.player-mode.player-surface #app-root {
   background: transparent !important;
 }
 html.player-mode {

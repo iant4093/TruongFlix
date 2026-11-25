@@ -496,6 +496,14 @@ export async function playBuiltin(target: PlayTarget) {
   }
 }
 
+/**
+ * The page turns transparent over the native video only once its surface exists: earlier, the
+ * window showed the desktop (Windows) or the library behind it for a moment.
+ */
+function setVideoSurface(ready: boolean) {
+  document.documentElement.classList.toggle('player-surface', ready);
+}
+
 let openGeneration = 0;
 let openQueue: Promise<unknown> = Promise.resolve();
 function queueOpen(generation: number, args: Record<string, unknown>) {
@@ -504,6 +512,7 @@ function queueOpen(generation: number, args: Record<string, unknown>) {
     .then(async () => {
       if (generation !== openGeneration) return;
       await invoke('player_open', args);
+      if (generation === openGeneration) setVideoSurface(true);
     });
   openQueue = next;
   return next;
@@ -623,6 +632,7 @@ export async function playLive(match: ChannelMatch, event?: SportsEvent, channel
   if (!nativeMatch) {
     // Web players draw their own video, so the native one is shut down.
     stopOutputWatch();
+    setVideoSurface(false);
     if (native) {
       const close = openQueue.catch(() => {}).then(async () => {
         if (generation === openGeneration) await invoke('player_close');
@@ -799,6 +809,7 @@ function finishSession(reload = true) {
   stopOutputWatch();
   store.setPlayerPrompt(null);
   store.setPlayerMini(false);
+  setVideoSurface(false);
   store.setPlayerSession(null);
   store.setPlayerState(null);
   store.setPlayerTracks([]);
