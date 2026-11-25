@@ -14,6 +14,8 @@ pub const KEYS: &[&str] = &[
     "opensubtitles_api_key",
     "opensubtitles_username",
     "opensubtitles_password",
+    "soulseek_username",
+    "soulseek_password",
     "remote_code",
 ];
 

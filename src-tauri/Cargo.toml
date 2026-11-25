@@ -34,6 +34,9 @@ native-tls = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 # Music library: tags, embedded covers and lyrics from mp3/flac/m4a/ogg/opus/wav files.
 lofty = "0.25"
+# Soulseek client for Browse → Music album downloads (MIT, no dependencies). Pinned: its major
+# version moves often.
+soulseek-rs-lib = "=20.0.0"
 # Decompresses IMDb's public .tsv.gz datasets (pure-Rust backend).
 flate2 = "1"
 # libmpv is loaded at runtime so the app still runs (falling back to VLC) when it's missing.

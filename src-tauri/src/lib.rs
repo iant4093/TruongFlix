@@ -8,6 +8,7 @@ mod imdb;
 mod live;
 mod media;
 mod music;
+mod music_catalog;
 mod nas;
 mod nowplaying;
 mod player;
@@ -17,6 +18,7 @@ mod scanner;
 mod secrets;
 mod source_blocker;
 mod source_browser;
+mod soulseek;
 mod stream;
 mod subsync;
 mod subtitles;
@@ -212,6 +214,14 @@ pub fn run() {
             player::player_close,
             player::player_layout,
             player::cursor_nudge,
+            music_catalog::music_catalog,
+            soulseek::slsk_status,
+            soulseek::slsk_connect,
+            soulseek::slsk_disconnect,
+            soulseek::slsk_download_album,
+            soulseek::slsk_jobs,
+            soulseek::slsk_cancel,
+            soulseek::slsk_dismiss,
             player::multiview::player_multiview_open,
             player::multiview::player_multiview_layout,
             player::multiview::player_multiview_audio,
