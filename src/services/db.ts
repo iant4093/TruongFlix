@@ -432,6 +432,8 @@ export const SECRET_SETTINGS = [
   'opensubtitles_api_key',
   'opensubtitles_username',
   'opensubtitles_password',
+  'soulseek_username',
+  'soulseek_password',
   'remote_code',
 ] as const satisfies readonly (keyof Settings)[];
 
@@ -526,6 +528,12 @@ export async function getSettings(): Promise<Settings> {
     torrent_tv_dir: map.torrent_tv_dir ?? '',
     music_directories: parseList(map.music_directories),
     music_lyrics_online: map.music_lyrics_online !== 'false',
+    soulseek_username: map.soulseek_username ?? '',
+    soulseek_password: map.soulseek_password ?? '',
+    soulseek_port: map.soulseek_port != null ? Math.min(65535, Math.max(0, Math.trunc(Number(map.soulseek_port)) || 0)) : 2234,
+    soulseek_quality: map.soulseek_quality === 'mp3' || map.soulseek_quality === 'any' ? map.soulseek_quality : 'lossless',
+    soulseek_share: map.soulseek_share === 'true',
+    music_download_dir: map.music_download_dir ?? '',
   };
 }
 

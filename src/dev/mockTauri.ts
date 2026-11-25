@@ -1518,6 +1518,28 @@ export function installMocks() {
           setTimeout(() => emit('vlc-exited', { ...base, final_time: start + 1200, length }), 4000);
           return null;
         }
+        // Browse → Music: the real catalogue (browsers can't send the app's User-Agent, which is
+        // fine for previews) and a pretend Soulseek.
+        case 'music_catalog':
+          return previewCatalog(String(a.url));
+        case 'live_artwork':
+          return String(a.url);
+        case 'slsk_status':
+          return previewSoulseek.status;
+        case 'slsk_jobs':
+          return [];
+        case 'slsk_connect':
+          return previewConnect(String(a.username));
+        case 'slsk_disconnect':
+          previewSoulseek.status = { state: 'offline', username: '', message: '' };
+          return null;
+        case 'slsk_download_album':
+          return previewDownload(a.request as PreviewAlbumRequest);
+        case 'slsk_cancel':
+          previewSoulseek.cancelled.add(String(a.id));
+          return null;
+        case 'slsk_dismiss':
+          return null;
         default:
           return null;
       }
@@ -1526,4 +1548,72 @@ export function installMocks() {
   );
   const internals = (window as unknown as { __TAURI_INTERNALS__: { convertFileSrc?: (p: string) => string } }).__TAURI_INTERNALS__;
   internals.convertFileSrc ??= (path: string) => path;
+}
+
+// ---------------------------------------------------------------------------
+// Browse → Music previews
+// ---------------------------------------------------------------------------
+
+const catalogQueues = new Map<string, Promise<unknown>>();
+/** One request per second per service, as the app does. */
+function previewCatalog(url: string) {
+  const host = new URL(url).host;
+  const previous = catalogQueues.get(host) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => new Promise((r) => setTimeout(r, 1100)))
+    .then(() => fetch(url, { headers: { Accept: 'application/json' } }))
+    .then((r) => {
+      if (r.status === 204) return null;
+      if (!r.ok) throw new Error(`The music catalogue answered ${r.status}`);
+      return r.json();
+    });
+  catalogQueues.set(host, next);
+  return next;
+}
+
+const previewSoulseek = {
+  status: { state: 'offline', username: '', message: '' },
+  cancelled: new Set<string>(),
+};
+
+async function previewConnect(username: string) {
+  const { emit } = await import('@tauri-apps/api/event');
+  previewSoulseek.status = { state: 'connecting', username, message: '' };
+  void emit('slsk-status', previewSoulseek.status);
+  await new Promise((r) => setTimeout(r, 600));
+  previewSoulseek.status = { state: 'online', username, message: '' };
+  void emit('slsk-status', previewSoulseek.status);
+  return previewSoulseek.status;
+}
+
+interface PreviewAlbumRequest {
+  id: string;
+  releaseMbid: string;
+  album: string;
+  albumArtist: string;
+  tracks: unknown[];
+}
+
+/** Walks a job through searching, waiting, downloading and filing. */
+async function previewDownload(req: PreviewAlbumRequest) {
+  const { emit } = await import('@tauri-apps/api/event');
+  const total = req.tracks.length * 32_000_000;
+  const job = { id: req.id, releaseMbid: req.releaseMbid, album: req.album, artist: req.albumArtist, state: 'searching', message: '', bytes: 0, total, filesDone: 0, filesTotal: req.tracks.length, source: null as null | { user: string; format: string }, path: null as null | string };
+  const step = async (ms: number, patch: Partial<typeof job>) => {
+    await new Promise((r) => setTimeout(r, ms));
+    if (previewSoulseek.cancelled.has(req.id)) return false;
+    Object.assign(job, patch);
+    void emit('slsk-job', { ...job });
+    return true;
+  };
+  void (async () => {
+    if (!(await step(2500, { state: 'queued', source: { user: 'vinyl_archivist', format: 'flac' } }))) return void emit('slsk-job', { ...job, state: 'cancelled' });
+    for (let i = 1; i <= 10; i++) {
+      if (!(await step(700, { state: 'downloading', bytes: (total * i) / 10, filesDone: Math.floor((job.filesTotal * i) / 10) }))) return void emit('slsk-job', { ...job, state: 'cancelled' });
+    }
+    await step(900, { state: 'checking' });
+    await step(900, { state: 'done', path: `/Music/${req.albumArtist}/${req.album}` });
+  })();
+  return { ...job };
 }

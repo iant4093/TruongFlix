@@ -1,11 +1,15 @@
-import { useEffect } from 'react';
-import { DatabaseZap, Music, RefreshCw } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { DatabaseZap, LogIn, LogOut, Music, RefreshCw } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { runMusicScan, useMusicScan } from '../../services/music';
 import { loadMusicLibrary } from '../../music/actions';
 import { useMusicPlayer } from '../../music/player';
 import { FolderList } from '../common/SetupControls';
-import { Block, BTN, BTN_PRIMARY, Group, Page, Row, ToggleRow } from './ui';
+import { Block, BTN, BTN_PRIMARY, Group, INPUT, NumberField, Page, Row, Segmented, StatusText, ToggleRow } from './ui';
+import Dropdown from '../common/Dropdown';
+import { connectSoulseek, disconnectSoulseek, initMusicDownloads, useMusicDownloads } from '../../services/musicDownloads';
+import { errorMessage } from '../../lib/errors';
+import type { MusicQuality } from '../../types/media';
 import { closeSettingsAnd } from './nav';
 
 /** Music folders, lyrics and the music library's own scan. */
@@ -76,6 +80,8 @@ export default function MusicPage() {
         </Row>
       </Group>
 
+      <SoulseekSettings />
+
       <Group title="Lyrics">
         <ToggleRow
           label="Find synced lyrics online"
@@ -85,5 +91,89 @@ export default function MusicPage() {
         />
       </Group>
     </Page>
+  );
+}
+
+/** The Soulseek account Browse → Music downloads albums with, and how it downloads. */
+function SoulseekSettings() {
+  const settings = useLibraryStore((s) => s.settings);
+  const updateSettings = useLibraryStore((s) => s.updateSettings);
+  const status = useMusicDownloads((s) => s.status);
+  const [username, setUsername] = useState(settings.soulseek_username);
+  const [password, setPassword] = useState(settings.soulseek_password);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => void initMusicDownloads().catch(() => {}), []);
+  const dirty = username.trim() !== settings.soulseek_username || password !== settings.soulseek_password;
+  const saveAndConnect = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await updateSettings({ soulseek_username: username.trim(), soulseek_password: password });
+      if (username.trim() && password) await connectSoulseek(true);
+      else await disconnectSoulseek();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // Changing sharing or the port applies at the next login; reconnect now when online.
+  const reconnectAfter = async (patch: Parameters<typeof updateSettings>[0]) => {
+    await updateSettings(patch);
+    if (useMusicDownloads.getState().status.state === 'online') await connectSoulseek(true).catch((e) => setError(errorMessage(e)));
+  };
+  const folders = settings.music_directories.map((d) => ({ value: d, label: d }));
+  const tone = status.state === 'online' ? 'good' : status.state === 'error' ? 'bad' : 'muted';
+  return (
+    <Group
+      title="Downloads · Soulseek"
+      description="Browse → Music downloads albums from the Soulseek network with your own Soulseek account."
+      footer="Soulseek creates the account the first time you sign in with a new name; there's no password reset, so keep it somewhere safe. Only audio files (FLAC, MP3, M4A, Ogg, Opus) are downloaded, every track is checked against the album's tracklist, and albums are tagged from MusicBrainz."
+    >
+      <Row label="Account" description={<StatusText tone={tone}>{status.state === 'online' ? `Connected as ${status.username}` : status.state === 'connecting' ? 'Connecting…' : status.state === 'error' ? status.message : settings.soulseek_username ? 'Not connected (connects when you download)' : 'No account yet'}</StatusText>} stacked>
+        <div className="flex flex-wrap gap-2">
+          <input className={`${INPUT} w-48`} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username" aria-label="Soulseek username" autoComplete="off" spellCheck={false} maxLength={30} />
+          <input className={`${INPUT} w-48`} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" aria-label="Soulseek password" autoComplete="off" />
+          {dirty ? (
+            <button className={BTN_PRIMARY} disabled={busy} onClick={() => void saveAndConnect()}>
+              <LogIn className="h-4 w-4" /> Save and sign in
+            </button>
+          ) : status.state === 'online' ? (
+            <button className={BTN} onClick={() => void disconnectSoulseek()}>
+              <LogOut className="h-4 w-4" /> Disconnect
+            </button>
+          ) : (
+            settings.soulseek_username && (
+              <button className={BTN} disabled={busy || status.state === 'connecting'} onClick={() => void saveAndConnect()}>
+                <LogIn className="h-4 w-4" /> Connect
+              </button>
+            )
+          )}
+        </div>
+        {error && <p role="alert" className="text-xs text-red-300">{error}</p>}
+      </Row>
+      <Row label="Quality" description="What the Download button takes by default (each album can pick its own).">
+        <Segmented<MusicQuality>
+          value={settings.soulseek_quality}
+          onChange={(soulseek_quality) => void updateSettings({ soulseek_quality })}
+          options={[['lossless', 'FLAC'], ['mp3', 'MP3'], ['any', 'Best']]}
+        />
+      </Row>
+      {folders.length > 1 && (
+        <Row label="Download into" description="Albums are filed here as Artist / Album (Year).">
+          <Dropdown value={settings.music_download_dir && settings.music_directories.includes(settings.music_download_dir) ? settings.music_download_dir : folders[0].value} options={folders} onChange={(music_download_dir) => void updateSettings({ music_download_dir })} ariaLabel="Download folder" align="right" />
+        </Row>
+      )}
+      <ToggleRow
+        label="Share my music folders"
+        description="Lets other Soulseek users download from your music folders, as the network expects. Off: you only download (some users may make you wait longer)."
+        checked={settings.soulseek_share}
+        onChange={(soulseek_share) => void reconnectAfter({ soulseek_share })}
+      />
+      <Row label="Listening port" description="Other users connect to you here; forwarding it on your router makes downloads start faster. 0 turns listening off.">
+        <NumberField value={settings.soulseek_port} min={0} max={65535} empty={2234} label="Soulseek listening port" className="w-24" onCommit={(soulseek_port) => void reconnectAfter({ soulseek_port })} />
+      </Row>
+    </Group>
   );
 }

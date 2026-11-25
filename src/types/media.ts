@@ -430,7 +430,21 @@ export interface Settings {
   music_directories: string[];
   /** Look up synced lyrics on LRCLIB when a song has none of its own. */
   music_lyrics_online: boolean;
+  /** Soulseek account for Browse → Music downloads (kept in the system keychain). */
+  soulseek_username: string;
+  soulseek_password: string;
+  /** Port other Soulseek users connect to (0: don't listen). */
+  soulseek_port: number;
+  /** Which files album downloads take. */
+  soulseek_quality: MusicQuality;
+  /** Offer the music folders to other Soulseek users. */
+  soulseek_share: boolean;
+  /** Where downloaded albums are filed ('' = the first music folder). */
+  music_download_dir: string;
 }
+
+/** Lossless: FLAC only. Mp3: MP3 at 256 kbps or better. Any: the best complete copy. */
+export type MusicQuality = 'lossless' | 'mp3' | 'any';
 
 export type TorrentMode = 'stream' | 'download';
 

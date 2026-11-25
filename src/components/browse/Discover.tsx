@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bookmark, Film, RefreshCw, Settings2, ShieldCheck } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -22,6 +22,7 @@ import { BillboardSkeleton, PosterGridSkeleton, SkeletonStatus } from '../common
 import { useSectionState } from '../../lib/sectionMemory';
 import { fade } from '../../lib/motion';
 import type { TorrentMode } from '../../types/media';
+import MusicBrowse from './music/MusicBrowse';
 
 const lists: { value: CatalogList; label: string }[] = [
   { value: 'trending', label: 'Trending this week' }, { value: 'popular', label: 'Popular' },
@@ -49,7 +50,18 @@ export default function Discover() {
   return <BrowseCatalog key={profile.id} profileId={profile.id} />;
 }
 
+type BrowseKind = 'movie' | 'tv' | 'music';
+
+/** Movies and TV shows come from TMDB; Music has its own catalogue and look. */
 function BrowseCatalog({ profileId }: { profileId: number }) {
+  const [kind, setKind] = useSectionState<BrowseKind>('kind', 'movie');
+  const kindControl = <SegmentedControl ariaLabel="Browse" value={kind} onChange={setKind}
+    options={[{ value: 'movie', label: 'Movies' }, { value: 'tv', label: 'TV shows' }, { value: 'music', label: 'Music' }]} />;
+  if (kind === 'music') return <MusicBrowse kindControl={kindControl} />;
+  return <VideoCatalog profileId={profileId} kind={kind} kindControl={kindControl} />;
+}
+
+function VideoCatalog({ profileId, kind, kindControl }: { profileId: number; kind: 'movie' | 'tv'; kindControl: ReactNode }) {
   const settings = useLibraryStore((s) => s.settings);
   const items = useLibraryStore((s) => s.items);
   // Which feed titles are already in the library, looked up by TMDB id (not a search per card).
@@ -57,7 +69,6 @@ function BrowseCatalog({ profileId }: { profileId: number }) {
   const episodes = useLibraryStore((s) => s.episodesBySeries);
   const browseEntry = useLibraryStore((s) => s.browseEntry);
   // Coming back to Browse returns to the same list, search and view.
-  const [kind, setKind] = useSectionState<'movie' | 'tv'>('kind', 'movie');
   const [list, setList] = useSectionState<CatalogList>('list', 'trending');
   const [query, setQuery] = useSectionState('query', '');
   const [savedOnly, setSavedOnly] = useSectionState('saved', false);
@@ -180,13 +191,13 @@ function BrowseCatalog({ profileId }: { profileId: number }) {
         <button className="nf-btn-ghost text-sm" onClick={() => setSourceOpen(true)}><ShieldCheck className="h-4 w-4" />{settings.browse_source_url ? 'Source settings' : 'Add torrent source'}<Settings2 className="h-4 w-4" /></button>
       </div>
       {!visibleFeed && <div>
+        {kindControl}
         <p className="my-5 text-nf-secondary">Connect TMDB under Ratings &amp; Data in Settings to discover movies and TV shows.</p>
         <button className="nf-btn-red" onClick={() => useLibraryStore.getState().setSettingsOpen(true, 'ratings')}>Connect TMDB</button>
       </div>}
       {visibleFeed && <div className="mb-7 flex min-h-[46px] flex-wrap items-center gap-4">
         {savedOnly ? <p className="text-sm text-white/55">Movies and TV shows saved from Browse.</p> : <>
-          <SegmentedControl ariaLabel="Title type" value={kind} onChange={setKind}
-            options={[{ value: 'movie', label: 'Movies' }, { value: 'tv', label: 'TV shows' }]} />
+          {kindControl}
           <Dropdown value={list} options={lists} onChange={setList} ariaLabel="Browse list" />
         </>}
         <SearchField className="ml-auto min-w-[220px]" inputClassName="w-60 scroll-mt-24" ariaLabel="Search titles to browse" value={query} onChange={setQuery} placeholder={savedOnly ? 'Search saved titles' : kind === 'movie' ? 'Search movies' : 'Search TV shows'} />
