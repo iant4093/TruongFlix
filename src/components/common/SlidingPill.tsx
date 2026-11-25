@@ -18,12 +18,22 @@ export default function SlidingPill({ row, watch, className = '', line = false }
       placed.current = false;
       return;
     }
-    const measure = () => setBox({ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight });
+    const measure = () =>
+      setBox((old) => {
+        const next = { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+        return old && old.x === next.x && old.y === next.y && old.w === next.w && old.h === next.h ? old : next;
+      });
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
+    // Again once the section has settled: a row measured mid-entrance can still shift.
+    const frame = requestAnimationFrame(measure);
+    if (typeof ResizeObserver === 'undefined') return () => cancelAnimationFrame(frame);
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    if (row.current) ro.observe(row.current);
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+    };
   }, [row, watch]);
   const animate = placed.current;
   placed.current = !!box;
@@ -34,7 +44,9 @@ export default function SlidingPill({ row, watch, className = '', line = false }
       aria-hidden
       className={`pointer-events-none absolute left-0 top-0 ${className}`}
       style={{
-        transform: `translate3d(${box.x}px, ${line ? box.y + box.h + 4 : box.y}px, 0)`,
+        // 2D, not translate3d: a 3D transform gives the pill its own layer, which WebKit (macOS)
+        // didn't paint when the row appeared during the section fade, leaving no highlight.
+        transform: `translate(${box.x}px, ${line ? box.y + box.h + 4 : box.y}px)`,
         width: box.w,
         height: line ? 2 : box.h,
         transition: animate ? `transform 0.38s ${ease}, width 0.38s ${ease}` : 'none',
