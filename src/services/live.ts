@@ -310,15 +310,43 @@ export function eventMatches(
 ): ChannelMatch[] {
   const networks = new Set(event.broadcasts.map(broadcasterKey));
   const manual = mappings[eventMappingKey(event)];
-  return playlists.flatMap((playlist) =>
-    playlist.channels
-      .filter(
-        (channel) =>
-          (networks.has(channelBroadcaster(channel)) || (!!manual && channelKey(playlist.id, channel.id) === manual)) &&
-          (showUnavailable || playlist.health[channel.id]?.state !== 'unavailable'),
-      )
-      .map((channel) => ({ playlist, channel, key: channelKey(playlist.id, channel.id) })),
-  );
+  return playlists.flatMap((playlist) => {
+    // Look the networks up in the playlist's index rather than reading every channel for every
+    // event: a big playlist and a busy day of games otherwise made Live TV lag on each update.
+    const index = playlistIndex(playlist);
+    const found = new Set<number>();
+    for (const network of networks) for (const i of index.byNetwork.get(network) ?? []) found.add(i);
+    if (manual) for (const i of index.byKey.get(manual) ?? []) found.add(i);
+    return [...found]
+      .sort((a, b) => a - b)
+      .map((i) => playlist.channels[i])
+      .filter((channel) => showUnavailable || playlist.health[channel.id]?.state !== 'unavailable')
+      .map((channel) => ({ playlist, channel, key: channelKey(playlist.id, channel.id) }));
+  });
+}
+
+interface PlaylistIndex {
+  id: string;
+  byNetwork: Map<string, number[]>;
+  byKey: Map<string, number[]>;
+}
+// Keyed by the channel list, which health updates keep (they only replace the playlist object).
+const playlistIndexes = new WeakMap<LiveChannel[], PlaylistIndex>();
+function playlistIndex(playlist: LivePlaylist): PlaylistIndex {
+  const cached = playlistIndexes.get(playlist.channels);
+  if (cached?.id === playlist.id) return cached;
+  const index: PlaylistIndex = { id: playlist.id, byNetwork: new Map(), byKey: new Map() };
+  const add = (map: Map<string, number[]>, key: string, i: number) => {
+    const list = map.get(key);
+    if (list) list.push(i);
+    else map.set(key, [i]);
+  };
+  playlist.channels.forEach((channel, i) => {
+    add(index.byNetwork, channelBroadcaster(channel), i);
+    add(index.byKey, channelKey(playlist.id, channel.id), i);
+  });
+  playlistIndexes.set(playlist.channels, index);
+  return index;
 }
 
 interface RawTeam {

@@ -220,9 +220,11 @@ export default function LiveTV() {
       ),
     [playlists],
   );
-  const groups = [...new Set(available.flatMap((m) => m.channel.group.split(';')))].sort();
+  const groups = useMemo(() => [...new Set(available.flatMap((m) => m.channel.group.split(';')))].sort(), [available]);
   const matchesQuery = (value: string) => value.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  const channels = available.filter(
+  // Every channel check re-renders Live TV; the sports tab doesn't list channels, so skip the
+  // filter over a big playlist there.
+  const channels = tab !== 'channels' ? [] : available.filter(
     (m) =>
       // A favourite is never hidden: a wrong "unavailable" would otherwise make it vanish.
       (state.preferences.showUnavailable || m.playlist.health[m.channel.id]?.state !== 'unavailable' || state.preferences.favourites.includes(m.key)) &&

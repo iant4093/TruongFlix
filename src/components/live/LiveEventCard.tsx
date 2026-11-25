@@ -1,10 +1,14 @@
+import { memo } from 'react';
 import { ArrowRight, Star } from 'lucide-react';
 import { setLivePreferences, useLiveStore, type ChannelMatch } from '../../services/live';
 import type { SportsEvent } from '../../types/live';
 import EventScoreboard from './LiveEventScoreboard';
 import { eventStatusLabel, leagueLabel } from './ui';
 
-export default function EventCard({
+// Live TV re-renders on every channel check; a card only changes with its event or feed count.
+export default memo(EventCard, (a, b) => a.event === b.event && a.matches.length === b.matches.length);
+
+function EventCard({
   event,
   matches,
   onOpen,
