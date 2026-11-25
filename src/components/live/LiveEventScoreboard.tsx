@@ -6,15 +6,20 @@ export default function EventScoreboard({ event, compact = false }: { event: Spo
   const teams = event.teams.slice(0, 2);
   const showScores = event.status !== 'upcoming' && !/cancel|postpon/i.test(event.detail);
   return (
-    <div className={`relative flex items-center justify-center overflow-hidden bg-gradient-to-br from-white/5 to-black/50 ${compact ? 'h-20' : 'h-44'}`}>
-      {/* Soft team-colour glows in the corners. Painted as gradients, not blurred circles: a blur
-          filter showed a hard edge partway across the card (WebKit clips it), and dozens of them
-          made a busy day of games slow to scroll. */}
-      <div aria-hidden className="pointer-events-none absolute inset-0" style={{ background: glows(teams[0]?.color, teams[1]?.color) }} />
+    // `isolate`: the glows sit behind the team names but above this background.
+    <div className={`relative isolate flex items-center justify-center overflow-hidden bg-gradient-to-br from-white/5 to-black/50 ${compact ? 'h-20' : 'h-44'}`}>
       <div className="relative grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-6">
         {teams.map((team, index) => (
           <Fragment key={team.id}>
-            <div className={`flex min-w-0 items-center text-center ${compact ? 'justify-center gap-3' : 'flex-col gap-2'}`}>
+            <div className={`relative flex min-w-0 items-center text-center ${compact ? 'justify-center gap-3' : 'flex-col gap-2'}`}>
+              {/* A soft glow in the team's colour, centred behind it. A gradient, not a blurred
+                  circle: the blur showed a hard edge partway across the card, and dozens of them
+                  made a busy day of games slow to scroll. */}
+              <span
+                aria-hidden
+                className={`pointer-events-none absolute left-1/2 top-1/2 -z-10 -translate-x-1/2 -translate-y-1/2 ${compact ? 'h-32 w-32' : 'h-60 w-60'}`}
+                style={{ background: glow(team.color) }}
+              />
               <LiveArtwork url={team.logo} className={compact ? 'h-8 w-8' : 'h-12 w-12'} />
               <span
                 className={`${compact ? 'max-w-24' : 'w-full'} truncate text-xs font-bold tracking-wider`}
@@ -40,16 +45,10 @@ export default function EventScoreboard({ event, compact = false }: { event: Spo
   );
 }
 
-/** The two corner glows as one background, `#rrggbb` (or `rrggbb`) team colours at 20%. */
-function glows(first?: string, second?: string) {
-  const layers = [
-    [first, '2.5rem 2.5rem'],
-    [second, 'calc(100% - 2.5rem) calc(100% - 2.5rem)'],
-  ].flatMap(([color, at]) => {
-    const rgb = color && /^#?([0-9a-f]{6})$/i.exec(color.trim())?.[1];
-    if (!rgb) return [];
-    const [r, g, b] = [0, 2, 4].map((i) => parseInt(rgb.slice(i, i + 2), 16));
-    return [`radial-gradient(circle 9rem at ${at}, rgba(${r},${g},${b},0.2), rgba(${r},${g},${b},0.08) 55%, transparent)`];
-  });
-  return layers.join(', ') || undefined;
+/** A radial glow in a `#rrggbb` team colour, fading out to its edge; none for other values. */
+function glow(color?: string) {
+  const rgb = color && /^#?([0-9a-f]{6})$/i.exec(color.trim())?.[1];
+  if (!rgb) return undefined;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(rgb.slice(i, i + 2), 16));
+  return `radial-gradient(closest-side, rgba(${r},${g},${b},0.28), rgba(${r},${g},${b},0.1) 55%, transparent)`;
 }
