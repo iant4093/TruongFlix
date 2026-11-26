@@ -360,6 +360,10 @@ const settings: Record<string, string> = {
   subtitle_language: 'en',
   imdb_last_sync: new Date().toISOString(),
   omdb_api_key: 'dev-omdb-key',
+  // Browse → Music previews show the Download button (Soulseek itself is pretend, see below).
+  music_directories: '["/Volumes/Media/Music"]',
+  soulseek_username: 'demo_listener',
+  soulseek_password: 'dev-mock-password',
 };
 /** In-memory stand-in for the system keychain; the keys above move here at startup. */
 const keychain = new Map<string, string>();

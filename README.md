@@ -4,7 +4,7 @@
 
 # TruongFlix
 
-A local media center for macOS and Windows that turns the movies and shows on your drives into a Netflix-style library, with a built-in player, Live TV, a torrent client and, on Windows, a games library.
+A local media center for macOS and Windows that turns the movies and shows on your drives into a Netflix-style library, with a built-in player, an Apple Music-style music library with album downloads, Live TV, a torrent client and, on Windows, a games library.
 
 [Download for macOS](https://github.com/iant4093/TruongFlix/releases/latest/download/TruongFlix-macOS.dmg) · [Download for Windows](https://github.com/iant4093/TruongFlix/releases/latest/download/TruongFlix-Windows-Setup.exe) · [Releases](https://github.com/iant4093/TruongFlix/releases) · [Build status](https://github.com/iant4093/TruongFlix/actions) · [Report an issue](https://github.com/iant4093/TruongFlix/issues)
 
@@ -22,11 +22,11 @@ A local media center for macOS and Windows that turns the movies and shows on yo
 
 ---
 
-TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Library metadata stays on your device. Network features include metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers, optional subtitles, Live TV sports schedules, and torrents you add yourself.
+TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Library metadata stays on your device. Network features include metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers, optional subtitles, synced lyrics, Live TV sports schedules, the music catalogue in Browse (iTunes charts, MusicBrainz, ListenBrainz, Cover Art Archive), and torrents and Soulseek album downloads you start yourself.
 
 ## Screenshots
 
-Screenshots use the development preview with sample metadata and artwork from [TMDB](https://www.themoviedb.org); the games are made-up demo titles. The player capture is the real macOS app playing [Big Buck Bunny](https://peach.blender.org) (© Blender Foundation, CC BY 3.0).
+Screenshots use the development preview with sample metadata and artwork from [TMDB](https://www.themoviedb.org); the games are made-up demo titles. The Browse → Music captures show the live iTunes chart and MusicBrainz data, with a simulated download. The player capture is the real macOS app playing [Big Buck Bunny](https://peach.blender.org) (© Blender Foundation, CC BY 3.0).
 
 <table>
   <tr>
@@ -47,6 +47,16 @@ Screenshots use the development preview with sample metadata and artwork from [T
     <td width="50%" valign="top">
       <img src="docs/screenshots/episode.webp" width="100%" alt="Episode page for Severance season 1 episode 3 with episode rating, season average, skippable recap, intro and credits, and the Subtitles section">
       <p align="center"><sub><b>Episode page</b> · per-episode ratings, skip markers and subtitles</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/music-browse.webp" width="100%" alt="Browse with the Music tab selected: genre chips, featured album cards, and a Top albums row of square covers with chart numbers">
+      <p align="center"><sub><b>Browse → Music</b> · top albums, new releases and genres</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/music-album.webp" width="100%" alt="Album page for Dandelion by Ella Langley with the cover, 18 songs, genre, a FLAC download in progress with a Cancel button, the edition picker and the tracklist">
+      <p align="center"><sub><b>Album page</b> · exact tracklist and one-click download</sub></p>
     </td>
   </tr>
   <tr>
@@ -113,6 +123,7 @@ Screenshots use the development preview with sample metadata and artwork from [T
 - Hover cards that crossfade through still frames taken from your actual file (screenshots for games)
 - TruongFlix's own right-click menu: play, details, My List, Fix Match and Show in folder on any title, and queue or playlist actions on songs
 - Continue Watching with TV "Next Up", My List, Top 10, genre rows and search
+- TV mode for the couch: bigger cards and text, a clear focus outline and no mouse cursor, driven by the arrow keys, a TV remote or a game controller (turns on by itself when you navigate that way)
 - A short animated launch intro with its own sound (both can be turned off)
 
 **Browse**
@@ -121,7 +132,18 @@ Screenshots use the development preview with sample metadata and artwork from [T
 - Expanded title pages with artwork, ratings, overview, cast, creators and release details; choose a movie, an exact episode with its synopsis, or an entire season
 - Quick stream or download for 1080p or 4K releases, ranked by seeders and checked against the torrent's actual files before starting
 - Season packs are only picked automatically when every episode is confirmed; otherwise you choose by hand
+- Save titles to "Saved in Browse" to come back to them
 - Available to unrestricted profiles
+
+**Browse → Music**
+
+- A music tab built like a streaming service, with square covers instead of posters: featured albums, the current top albums and new releases from the iTunes charts for your country, popular artists, a row per genre (Pop, Hip-Hop, Rock, Alternative, R&B, Country, Dance, Electronic, Latin, Metal, Jazz, Classical, K-Pop and more), and search across albums, artists and songs
+- Album pages with the exact tracklist from [MusicBrainz](https://musicbrainz.org) (discs, guest artists and lengths), an edition picker, and a Download button; albums already in your library show a check and play in Music
+- Artist pages with their most played albums ([ListenBrainz](https://listenbrainz.org)) and the full discography by albums, EPs and singles
+- Album downloads come from [Soulseek](https://www.slsknet.org) with your own account (Settings › Music): only a shared folder holding every track of that tracklist is used, matched by title, track number and length, in the quality you pick (FLAC, MP3 256–320 kbps or best available)
+- Only audio files (FLAC, MP3, M4A, Ogg, Opus) are ever downloaded, named by TruongFlix rather than by the person sharing them. Every file is checked to really be audio of the expected size and length, a copy that doesn't arrive or doesn't check out is replaced by the next best one, and the album is tagged from MusicBrainz with its cover and filed as `Artist/Album (Year)/01 - Title.flac` in your music folder
+- A Downloads panel with the Soulseek connection and each album's progress. Sharing your music folders back to the network is off unless you turn it on
+- Catalogue requests are paced and cached by the app, so browsing back and forth is instant
 
 **Torrents**
 
@@ -136,16 +158,18 @@ Screenshots use the development preview with sample metadata and artwork from [T
 - Your own music folders as an Apple Music-style library: albums, artists, songs, playlists and favourites per profile, on the desktop and in the browser app
 - Songs matched from their tags, then file and folder names (`Artist/Album (Year)/CD1/01 - Title.flac`); featured artists don't split an album, mixed-artist albums become Various Artists, and "Album (Disc 2)" joins its album
 - Music folders are kept out of Movies & TV, even inside a movie or TV folder, and new songs show up on their own while folder watching is on
-- Full-screen player with synced lyrics (from the file, a `.lrc` file or LRCLIB), queue, shuffle and repeat, and a Lossless / Hi-Res Lossless quality badge
+- Full-screen player with synced lyrics, word by word where available (from the file, a `.lrc` file, or looked up on Kugou, NetEase Cloud Music and LRCLIB), queue, shuffle and repeat, and a Lossless / Hi-Res Lossless quality badge
+- Animated like Apple Music: pages slide, covers and colours crossfade, and the now-playing bars move with the music
+- Albums downloaded from Browse → Music are added to the library on their own
 - The bottom music bar can be closed while music keeps playing; it comes back from the navbar or the Music section
 
 **Live TV**
 
-- Add IPTV playlists by URL, pasted M3U text or an `.m3u` file; playlists stay on your computer
+- Add IPTV playlists by URL, pasted M3U text or an `.m3u` file, or web channel lists whose channels play in their own web player; playlists stay on your computer
 - Grouped, searchable channels with favorites and a reachability check
 - Sports schedules and scores for the NFL, college football, NBA, WNBA, college basketball, MLB, NHL, MLS, Premier League and Champions League, with favorite teams, matched to your channels
-- Multiview: two channels side by side
-- Live player with pause and rewind, Go live, previous and next channel, mini-player and fullscreen
+- Multiview: up to four channels at once, choosing which one you hear
+- Live player with pause and rewind, Go live, previous and next channel, mini-player and fullscreen (double-click, or F)
 - Available to unrestricted profiles
 
 **Games** (Windows)
@@ -182,6 +206,7 @@ Screenshots use the development preview with sample metadata and artwork from [T
 - Speaker picker with Dolby Atmos, Dolby Digital, DTS and DTS-HD passthrough to an AV receiver, and audio timing remembered per device (handy for Bluetooth lag)
 - Pauses automatically when the screen locks, the display sleeps or you close the laptop lid (can be turned off)
 - Netflix-style controls: scrubbing, ±10 s, volume, speed, audio and subtitle tracks, and subtitle/audio timing
+- Audio and subtitle choices remembered per show, and the player's menus, Skip Intro and Next Episode work with a TV remote or game controller
 - Resume points saved as you watch; anything 90% watched is marked complete
 - Optional external VLC, as a fallback or as the default player
 
@@ -200,6 +225,7 @@ Screenshots use the development preview with sample metadata and artwork from [T
 
 - Cast to a TV: send playback to a Chromecast or a DLNA smart TV, with play/pause, seeking and progress kept in sync. Files the TV can't play are converted on the fly (H.264/AAC, HDR tone-mapped to SDR)
 - Watch in a browser on your home network: turn on browser access in Settings › Devices, scan the QR code with a phone or tablet and enter the 6-digit access code. Profiles, PINs, kids' ratings, limits and progress are shared with the desktop app, with full-length scrubbing, subtitles, audio tracks, chapters, Skip Intro and next-episode advance
+- The browser app on a phone also has music (with lyrics), Live TV, a remote for whatever the PC is playing, offline downloads that keep going while the phone sleeps, and "Watch together" parties that keep everyone's playback in sync
 - Watch away from home through [Tailscale](https://tailscale.com): Settings › Devices shows your private Tailscale address and can add an HTTPS address with Tailscale Serve, reachable only by devices on your Tailscale account
 - Browser access is locked down: connections from the public internet are always refused, five wrong codes lock a device out for 15 minutes, twenty in an hour pause sign-in until you make a new code, and browsers are signed out after 14 days unused (60 days at most). Settings › Devices lists every signed-in browser so you can sign any of them out
 
@@ -228,7 +254,8 @@ Installed copies check for a new version once a day (or from **Settings › Abou
 | Playback | libmpv with FFmpeg; macOS: CAOpenGLLayer under a transparent webview; Windows: owned video window behind a transparent window |
 | Streaming | Built-in HTTP server with byte ranges, on-demand VOD HLS and MPEG-TS conversion through a headless libmpv encoder (VideoToolbox / NVENC / Quick Sync / AMF / Media Foundation / x264), Cast v2 and UPnP AVTransport, Bonjour/mDNS and SSDP discovery, native HLS on Apple devices and hls.js elsewhere |
 | Torrents | librqbit, with small patches for rarest-first downloads |
-| Metadata | TMDB API v3, IMDb non-commercial datasets, OMDb, OpenSubtitles REST API, ESPN scoreboards for Live TV sports |
+| Music | lofty (tags, covers, tag writing), Soulseek through [soulseek-rs-lib](https://docs.rs/soulseek-rs-lib), synced lyrics from Kugou, NetEase Cloud Music and LRCLIB |
+| Metadata | TMDB API v3, IMDb non-commercial datasets, OMDb, OpenSubtitles REST API, ESPN scoreboards for Live TV sports, iTunes top-album charts, MusicBrainz, ListenBrainz and the Cover Art Archive for music |
 | Trailers | yt-dlp and Deno helpers, bundled and checksum-verified |
 | Storage | SQLite via tauri-plugin-sql, local file operations and a same-volume trash |
 | Delivery | GitHub Actions, macOS `.dmg`, Windows NSIS installer, signed auto-updates, SHA-256 checksums |
@@ -269,12 +296,17 @@ npm run build
 
 # Rust unit tests: scanner, subtitles and subtitle sync, file management and renaming, intro fingerprinting, NAS helpers,
 # IMDb parsing, VLC, cast protocols (incl. a simulated DLNA TV), torrents, backups, Live TV, browser-access security,
-# Tailscale and game installs
+# Tailscale, game installs, the music catalogue proxy, and album matching, checking and tagging for Soulseek downloads
 cd src-tauri && cargo test
 
 # Network and engine tests (real IMDb datasets, OpenSubtitles, VLC, a simulated Chromecast, Bonjour discovery,
 # and stream conversion with TRUONGFLIX_STREAM_TEST=/path/to/video.mkv)
 cd src-tauri && cargo test -- --ignored
+
+# A whole Soulseek album download through a local soulfind server (https://github.com/soulfind-dev/soulfind):
+# one client shares Test Artist/Test Album/0N - {Alpha,Beta,Gamma} Song.flac (31, 47 and 62 s long), and the app finds,
+# downloads, checks, tags and files it
+cd src-tauri && SOULFIND_BIN=/path/to/soulfind TRUONGFLIX_SLSK_TEST_SHARE=/path/to/share cargo test --lib -- --ignored real_album_download --nocapture
 
 # Built-in player smoke test on macOS: renders into a real window and reports drawn frames
 cd src-tauri && TRUONGFLIX_PLAYER_PROBE=1 cargo run --example player_smoke -- /path/to/video.mkv
@@ -300,9 +332,12 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 ```text
 .
 ├── src/                    React app
-│   ├── components/         Library, browse, Live TV, player, cast, torrents, profiles, modals, settings, layout and shared UI
+│   ├── components/         Library, browse (incl. Browse → Music), Live TV, player, cast, torrents, profiles, modals,
+│   │                       settings, layout and shared UI
 │   ├── services/           Scanner, parser, TMDB, IMDb, OMDb, subtitles, files, renaming, media analysis, player, torrents,
-│   │                       Live TV, casting, streaming, NAS, limits, Wrapped, browser access, updates, SQLite
+│   │                       Live TV, casting, streaming, NAS, limits, Wrapped, browser access, updates, SQLite,
+│   │                       music catalogue and Soulseek downloads
+│   ├── music/              Music library screens, player, queue and lyrics (shared with the browser app)
 │   ├── store/              Zustand store and library selectors
 │   ├── games/              Games (Windows only): catalog parsing, installer options, library and install jobs, screens
 │   ├── remote/             Browser app served to phones, tablets and other computers
@@ -311,9 +346,10 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 ├── src-tauri/              Rust backend
 │   ├── src/player/         libmpv bindings, macOS/Windows video surfaces and Live TV multiview
 │   ├── src/games/          Windows game installs: installer reading, install checks, hidden-wizard helper, verification, launching
+│   ├── src/soulseek/       Soulseek session, album matching against MusicBrainz tracklists, checking, tagging and filing
 │   ├── src/                Scanner, folder watcher, media analysis (probe, frames, intro detection), torrents, Live TV, VLC,
 │   │                       subtitles and sync, files, backups, IMDb, NAS, Now Playing, media server and stream conversion,
-│   │                       browser-access security, Tailscale, Chromecast/DLNA casting
+│   │                       browser-access security, Tailscale, Chromecast/DLNA casting, music library and catalogue proxy
 │   ├── vendor/             Patched librqbit (rarest-first downloads) and inno (installer conditions); see PATCHES.md
 │   ├── capabilities/       Tauri permissions
 │   └── examples/           Smoke tests
@@ -324,4 +360,4 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 └── README.md
 ```
 
-TruongFlix uses the TMDB API but is not endorsed or certified by TMDB. IMDb data is used under IMDb's non-commercial terms.
+TruongFlix uses the TMDB API but is not endorsed or certified by TMDB. IMDb data is used under IMDb's non-commercial terms. Music data comes from MusicBrainz (CC0) and ListenBrainz, covers from the Cover Art Archive, and charts from Apple's public iTunes feeds. TruongFlix is not affiliated with Soulseek; downloads use your own account, and what you download and share is up to you.
