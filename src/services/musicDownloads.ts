@@ -10,7 +10,8 @@ import type { MusicQuality } from '../types/media';
  * Album downloads from Soulseek: the session (logged in with the account from Settings → Music,
  * only when needed), the download jobs and their progress. The app finds a complete copy of the
  * exact edition shown, downloads only its audio, checks and tags it, and files it into the music
- * folder; the library then picks it up with a scan.
+ * folder; the library then picks it up with a scan. People can also search Soulseek themselves and
+ * pick a folder: one with the whole album is filed as that album, anything else as it is.
  */
 
 export interface SoulseekStatus {
@@ -109,8 +110,74 @@ export function downloadFolder(): string | null {
 
 const titleCase = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase());
 
-/** Starts downloading `release` (this exact edition and tracklist). */
-export async function downloadAlbum(release: CatalogRelease, quality: MusicQuality): Promise<AlbumJob> {
+/** An audio file in a shared folder found by searching Soulseek. */
+export interface SharedFile {
+  path: string;
+  size: number;
+  bitrate: number | null;
+  duration: number | null;
+  bitDepth: number | null;
+}
+
+/** A shared folder found by searching Soulseek: its audio files and who shares it. */
+export interface SharedFolder {
+  user: string;
+  folder: string;
+  format: string;
+  files: SharedFile[];
+  size: number;
+  freeSlot: boolean;
+  speed: number;
+  /** For an album: how many of its songs the folder has. */
+  matched: number | null;
+}
+
+export interface SoulseekSearchUpdate {
+  folders: SharedFolder[];
+  people: number;
+  done: boolean;
+  /** The phrase Soulseek blocks, when the search contains one (nothing can be found then). */
+  blocked: string | null;
+}
+
+/** "Starboy" from "Music\\The Weeknd\\Starboy" (either kind of slash). */
+export const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/** A file's path inside its folder ("CD1\\01 - Song.flac"). */
+export const pathInFolder = (folder: string, path: string) => path.slice(folder.length).replace(/^[\\/]+/, '');
+
+const tracksOf = (release: CatalogRelease) =>
+  release.tracks.map((t) => ({ title: t.title, position: t.position, disc: t.disc, lengthMs: t.lengthMs }));
+
+/**
+ * Searches Soulseek for `query` and reports what's found as it arrives (for about 25 seconds).
+ * With a release, each folder says how many of its songs it has. Returns a function that stops
+ * the search.
+ */
+export async function searchSoulseek(query: string, release: CatalogRelease | null, onUpdate: (update: SoulseekSearchUpdate) => void): Promise<() => void> {
+  await connectSoulseek();
+  const id = crypto.randomUUID();
+  const unlisten = await listen<SoulseekSearchUpdate & { id: string }>('slsk-search', ({ payload }) => {
+    if (payload.id !== id) return;
+    onUpdate(payload);
+    if (payload.done) unlisten();
+  });
+  try {
+    await invoke('slsk_search', { id, query, tracks: release ? tracksOf(release) : null });
+  } catch (e) {
+    unlisten();
+    throw e;
+  }
+  return () => {
+    unlisten();
+    void invoke('slsk_search_stop', { id }).catch(() => {});
+  };
+}
+
+const copyOf = (folder: SharedFolder) => ({ user: folder.user, folder: folder.folder, files: folder.files });
+
+/** Starts downloading `release` (this exact edition and tracklist), from `copy` when the user picked one. */
+export async function downloadAlbum(release: CatalogRelease, quality: MusicQuality, copy?: SharedFolder): Promise<AlbumJob> {
   const destination = downloadFolder();
   if (!destination) throw new Error('Add a music folder in Settings → Music first.');
   if (!release.tracks.length) throw new Error('The store doesn’t list this album’s songs.');
@@ -127,6 +194,7 @@ export async function downloadAlbum(release: CatalogRelease, quality: MusicQuali
       albumArtist: release.artist,
       date: release.date,
       genre: release.genres[0] ? titleCase(release.genres[0]) : null,
+      copy: copy ? copyOf(copy) : null,
       tracks: release.tracks.map((t) => ({
         title: t.title,
         position: t.position,
@@ -139,6 +207,16 @@ export async function downloadAlbum(release: CatalogRelease, quality: MusicQuali
       coverPath,
     },
   });
+  useMusicDownloads.setState((s) => ({ jobs: { ...s.jobs, [job.id]: job } }));
+  return job;
+}
+
+/** Downloads a shared folder's audio as it is (its own names and tags) into the music folder's "Soulseek" folder. */
+export async function downloadSharedFolder(folder: SharedFolder): Promise<AlbumJob> {
+  const destination = downloadFolder();
+  if (!destination) throw new Error('Add a music folder in Settings → Music first.');
+  await connectSoulseek();
+  const job = await invoke<AlbumJob>('slsk_download_folder', { request: { id: crypto.randomUUID(), copy: copyOf(folder), destination } });
   useMusicDownloads.setState((s) => ({ jobs: { ...s.jobs, [job.id]: job } }));
   return job;
 }

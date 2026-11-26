@@ -25,6 +25,29 @@ pub struct RequestTrack {
     pub track_mbid: Option<String>,
 }
 
+/// One audio file of a shared folder the user picked in Soulseek search.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedFile {
+    pub path: String,
+    pub size: u64,
+    #[serde(default)]
+    pub bitrate: Option<u32>,
+    #[serde(default)]
+    pub duration: Option<u32>,
+    #[serde(default)]
+    pub bit_depth: Option<u32>,
+}
+
+/// A shared folder the user picked in Soulseek search.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedCopy {
+    pub user: String,
+    pub folder: String,
+    pub files: Vec<PickedFile>,
+}
+
 /// The release to fetch, as the catalogue describes it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +75,9 @@ pub struct AlbumRequest {
     pub destination: String,
     /// The cover, already downloaded (JPEG or PNG).
     pub cover_path: Option<String>,
+    /// The copy to download, when the user picked one; otherwise the app searches.
+    #[serde(default)]
+    pub copy: Option<PickedCopy>,
 }
 
 impl AlbumRequest {
@@ -233,6 +259,7 @@ mod tests {
             quality: Quality::Any,
             destination: dest.into(),
             cover_path: None,
+            copy: None,
         }
     }
 

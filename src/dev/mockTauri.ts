@@ -1550,6 +1550,15 @@ export function installMocks() {
           return null;
         case 'slsk_dismiss':
           return null;
+        case 'slsk_search':
+          return previewSearch(String(a.id), String(a.query), (a.tracks as PreviewTrack[] | null) ?? null);
+        case 'slsk_search_stop':
+          return null;
+        case 'slsk_download_folder': {
+          const req = a.request as { id: string; copy: { user: string; folder: string; files: unknown[] } };
+          const name = req.copy.folder.split(/[\\/]/).pop() ?? req.copy.folder;
+          return previewDownload({ id: req.id, releaseId: `folder:${req.copy.user}:${req.copy.folder}`, coverUrl: null, album: name, albumArtist: req.copy.user, tracks: req.copy.files });
+        }
         default:
           return null;
       }
@@ -1607,6 +1616,44 @@ interface PreviewAlbumRequest {
   album: string;
   albumArtist: string;
   tracks: unknown[];
+}
+
+interface PreviewTrack {
+  title: string;
+  position: number;
+  disc: number;
+  lengthMs: number | null;
+}
+
+/** Answers a Soulseek search with a few made-up shared folders, in three batches. */
+async function previewSearch(id: string, query: string, tracks: PreviewTrack[] | null) {
+  const { emit } = await import('@tauri-apps/api/event');
+  const songs = tracks ?? Array.from({ length: 10 }, (_, i) => ({ title: `Track ${i + 1}`, position: i + 1, disc: 1, lengthMs: 200_000 + i * 7000 }));
+  const title = query.replace(/\b\w/g, (c) => c.toUpperCase());
+  const folder = (user: string, dir: string, ext: string, keep: number, extra: { bitrate?: number; bitDepth?: number; freeSlot?: boolean } = {}) => {
+    const files = songs.slice(0, keep).map((t) => ({
+      path: `${dir}\\${String(t.position).padStart(2, '0')} - ${t.title}.${ext}`,
+      size: ext === 'flac' ? (extra.bitDepth === 24 ? 78_000_000 : 31_000_000) : 9_500_000,
+      bitrate: extra.bitrate ?? null,
+      duration: t.lengthMs ? Math.round(t.lengthMs / 1000) : null,
+      bitDepth: extra.bitDepth ?? (ext === 'flac' ? 16 : null),
+    }));
+    return { user, folder: dir, format: ext, files, size: files.reduce((n, f) => n + f.size, 0), freeSlot: extra.freeSlot ?? true, speed: 2_400_000, matched: tracks ? keep : null };
+  };
+  const all = [
+    folder('vinyl_archivist', `@@music\\Lossless\\${title} (2016) [FLAC]`, 'flac', songs.length),
+    folder('night_owl_rips', `D:\\Rips\\${title} [24-96]`, 'flac', songs.length, { bitDepth: 24, freeSlot: false }),
+    folder('cratedigger88', `Music\\MP3\\${title}`, 'mp3', songs.length, { bitrate: 320 }),
+    folder('sundaysessions', `shared\\${title} (Deluxe)`, 'flac', Math.max(1, songs.length - 3)),
+    folder('m4a_mike', `iTunes\\${title}`, 'm4a', Math.max(1, songs.length - 1), { bitrate: 256, freeSlot: false }),
+  ];
+  void (async () => {
+    for (const [n, done] of [[2, false], [4, false], [5, true]] as const) {
+      await new Promise((r) => setTimeout(r, 900));
+      void emit('slsk-search', { id, folders: all.slice(0, n), people: n, done, blocked: null });
+    }
+  })();
+  return null;
 }
 
 /** Walks a job through searching, waiting, downloading and filing. */

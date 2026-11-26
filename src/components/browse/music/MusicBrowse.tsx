@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AlertCircle, ChevronLeft, Download, Music2, RefreshCw } from 'lucide-react';
+import { AlertCircle, ChevronLeft, Download, FolderSearch, Music2, RefreshCw } from 'lucide-react';
 import { useSectionState } from '../../../lib/sectionMemory';
 import { loadMusicLibrary } from '../../../music/actions';
 import { useMusicPlayer } from '../../../music/player';
@@ -25,6 +25,7 @@ import { ALBUM_GRID, AlbumTile, ArtistBubble, CoverArt, GridSkeleton, SHELF_TILE
 import MusicAlbumDialog from './MusicAlbumDialog';
 import MusicArtistView from './MusicArtistView';
 import MusicDownloadsDialog, { SoulseekDot } from './MusicDownloadsDialog';
+import SoulseekSearchDialog from './SoulseekSearchDialog';
 
 const COUNTRY = chartCountry().toUpperCase();
 
@@ -48,6 +49,7 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
   const [artist, setArtist] = useSectionState<CatalogArtist | null>('music:artist', null);
   const [album, setAlbum] = useState<CatalogAlbum | null>(null);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [soulseekOpen, setSoulseekOpen] = useState(false);
   const search = useDebounced(query.trim(), 400);
   const library = useMusicPlayer((s) => s.library);
   const jobs = useMusicDownloads((s) => s.jobs);
@@ -95,12 +97,18 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
           <h2 className="text-3xl font-bold">Browse</h2>
           {kindControl}
         </div>
-        <button className="nf-btn-ghost relative text-sm" onClick={() => setDownloadsOpen(true)} aria-label={`Music downloads${activeJobs ? `, ${activeJobs} in progress` : ''}`}>
-          <SoulseekDot state={status} />
-          <Download className="h-4 w-4" />
-          Downloads
-          {activeJobs > 0 && <span className="ml-1 rounded-full bg-[#ff4560] px-1.5 text-xs font-bold tabular-nums">{activeJobs}</span>}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button className="nf-btn-ghost text-sm" onClick={() => setSoulseekOpen(true)} title="Search Soulseek and download any folder">
+            <FolderSearch className="h-4 w-4" />
+            Search Soulseek
+          </button>
+          <button className="nf-btn-ghost relative text-sm" onClick={() => setDownloadsOpen(true)} aria-label={`Music downloads${activeJobs ? `, ${activeJobs} in progress` : ''}`}>
+            <SoulseekDot state={status} />
+            <Download className="h-4 w-4" />
+            Downloads
+            {activeJobs > 0 && <span className="ml-1 rounded-full bg-[#ff4560] px-1.5 text-xs font-bold tabular-nums">{activeJobs}</span>}
+          </button>
+        </div>
       </div>
 
       <div className="mb-6 flex flex-wrap items-center gap-4">
@@ -146,6 +154,7 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
 
       {album && <MusicAlbumDialog key={album.id} album={album} onClose={() => setAlbum(null)} onArtist={openArtist} active={!downloadsOpen} />}
       {downloadsOpen && <MusicDownloadsDialog onClose={() => setDownloadsOpen(false)} />}
+      {soulseekOpen && <SoulseekSearchDialog release={null} onClose={() => setSoulseekOpen(false)} />}
     </div>
   );
 }

@@ -21,7 +21,7 @@ pub enum Quality {
 
 pub const AUDIO: &[&str] = &["flac", "mp3", "m4a", "ogg", "opus"];
 
-/// A track of the release, from MusicBrainz.
+/// A track of the release, from the catalogue.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WantTrack {
@@ -80,7 +80,7 @@ fn disc_folder(name: &str) -> Option<u32> {
 }
 
 /// The album's folder: a "CD1"/"Disc 2" subfolder belongs to the folder above it.
-fn album_folder(path: &str) -> &str {
+pub fn album_folder(path: &str) -> &str {
     let dir = parent(path);
     if disc_folder(basename(dir)).is_some() { parent(dir) } else { dir }
 }
@@ -178,8 +178,8 @@ fn pair_score(track: &WantTrack, offer: &Offer, multi_disc: bool) -> f64 {
     title_hit + if number_hit { 0.5 } else { 0.0 } + length_hit.unwrap_or(0.25)
 }
 
-/// Pairs each track with its own file (best pairs first). None unless every track has one.
-fn assign(tracks: &[WantTrack], files: &[Offer]) -> Option<(Vec<usize>, f64)> {
+/// Pairs each track with its own file (best pairs first): the file for each track, if any.
+fn pairs(tracks: &[WantTrack], files: &[Offer]) -> (Vec<Option<usize>>, f64) {
     let multi_disc = tracks.iter().any(|t| t.disc > 1);
     let mut pairs = Vec::new();
     for (t, track) in tracks.iter().enumerate() {
@@ -201,7 +201,25 @@ fn assign(tracks: &[WantTrack], files: &[Offer]) -> Option<(Vec<usize>, f64)> {
             total += score;
         }
     }
-    chosen.iter().all(|&f| f != usize::MAX).then_some((chosen, total / tracks.len().max(1) as f64))
+    (chosen.into_iter().map(|f| (f != usize::MAX).then_some(f)).collect(), total / tracks.len().max(1) as f64)
+}
+
+/// Pairs every track with its own file; None unless every track has one.
+fn assign(tracks: &[WantTrack], files: &[Offer]) -> Option<(Vec<usize>, f64)> {
+    let (chosen, fit) = pairs(tracks, files);
+    chosen.into_iter().collect::<Option<Vec<_>>>().map(|c| (c, fit))
+}
+
+/// How many of the tracks a folder's files play (in its most common audio format).
+pub fn coverage(tracks: &[WantTrack], files: &[Offer]) -> usize {
+    let mut by_ext: HashMap<String, Vec<Offer>> = HashMap::new();
+    for f in files {
+        let ext = extension(&f.path);
+        if AUDIO.contains(&ext.as_str()) {
+            by_ext.entry(ext).or_default().push(f.clone());
+        }
+    }
+    by_ext.values().map(|group| pairs(tracks, group).0.iter().flatten().count()).max().unwrap_or(0)
 }
 
 /// Every folder that holds the whole album in an allowed format, best first.
@@ -261,20 +279,42 @@ pub fn rank(tracks: &[WantTrack], album: &str, offers: &[Offer], quality: Qualit
     out
 }
 
-/// What to type into Soulseek's search: artist and album words, most specific first.
-pub fn queries(artist: &str, album: &str) -> Vec<String> {
-    let artist_words = words(artist);
-    // "(Deluxe Edition)" and the like rarely appear in shared folder names.
-    let base = album.split(['(', '[']).next().unwrap_or(album);
-    let album_words = words(base);
-    let mut out = Vec::new();
-    let both: Vec<&str> = artist_words.iter().chain(album_words.iter()).map(String::as_str).collect();
-    if !both.is_empty() {
-        out.push(both.join(" "));
+/// The album's name as shared folders spell it: no "(Deluxe Edition)", "[Remastered]",
+/// " - EP" or " - Single".
+fn plain_album(album: &str) -> &str {
+    let base = album.split(['(', '[']).next().unwrap_or(album).trim();
+    for suffix in [" - EP", " - Single"] {
+        if let Some(stripped) = base.strip_suffix(suffix) {
+            return stripped.trim();
+        }
     }
-    // Short or common album names need the artist; long ones can stand alone as a fallback.
-    if album_words.len() >= 2 {
-        out.push(album_words.join(" "));
+    base
+}
+
+/// "Various Artists" and the like: never part of a shared folder's name.
+pub fn various(artist: &str) -> bool {
+    matches!(words(artist).join(" ").as_str(), "various artists" | "various" | "va" | "verschiedene interpreten" | "artistes divers")
+}
+
+/// What to type into Soulseek's search, all run at once: artist and album words, and the
+/// album on its own when its name is distinctive enough to stand alone.
+pub fn queries(artist: &str, album: &str) -> Vec<String> {
+    let mut artist_words = if various(artist) { Vec::new() } else { words(artist) };
+    // "The Weeknd" is shared as "Weeknd, The" as often as not.
+    if artist_words.len() > 1 && artist_words[0] == "the" {
+        artist_words.remove(0);
+    }
+    let album_words = words(plain_album(album));
+    let mut out = Vec::new();
+    if !artist_words.is_empty() && !album_words.is_empty() {
+        out.push(artist_words.iter().chain(album_words.iter()).map(String::as_str).collect::<Vec<_>>().join(" "));
+    }
+    // Short or common album names need the artist; distinctive ones can stand alone.
+    let letters: usize = album_words.iter().map(|w| w.chars().count()).sum();
+    if album_words.len() >= 2 || letters >= 6 || artist_words.is_empty() {
+        if !album_words.is_empty() {
+            out.push(album_words.join(" "));
+        }
     }
     out.dedup();
     out
@@ -391,6 +431,17 @@ mod tests {
     }
 
     #[test]
+    fn coverage_counts_the_songs_a_folder_has() {
+        let offers = vec![
+            offer("a", r"x\OK Computer\01 - Airbag.flac", Some(284), None),
+            offer("a", r"x\OK Computer\03 - Subterranean Homesick Alien.flac", Some(267), None),
+            offer("a", r"x\OK Computer\folder.jpg", None, None),
+        ];
+        assert_eq!(coverage(&album(), &offers), 2);
+        assert_eq!(coverage(&album(), &[]), 0);
+    }
+
+    #[test]
     fn track_numbers_in_names() {
         assert_eq!(leading_number("03 - Song"), Some((None, 3)));
         assert_eq!(leading_number("1-03 Song"), Some((Some(1), 3)));
@@ -401,8 +452,12 @@ mod tests {
 
     #[test]
     fn search_words() {
-        assert_eq!(queries("Beyoncé", "Lemonade"), ["beyonce lemonade"]);
+        assert_eq!(queries("Beyoncé", "Lemonade"), ["beyonce lemonade", "lemonade"]);
         assert_eq!(queries("Radiohead", "OK Computer (Collector's Edition)"), ["radiohead ok computer", "ok computer"]);
+        assert_eq!(queries("The Weeknd", "Starboy"), ["weeknd starboy", "starboy"]);
+        assert_eq!(queries("Taylor Swift", "1989"), ["taylor swift 1989"]);
+        assert_eq!(queries("Various Artists", "Grand Theft Auto VI: The Album"), ["grand theft auto vi the album"]);
+        assert_eq!(queries("SZA", "SOS - EP"), ["sza sos"]);
         assert_eq!(words("Song (feat. Someone)"), ["song"]);
     }
 }

@@ -3,7 +3,15 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { invoke } from '@tauri-apps/api/core';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined), convertFileSrc: (s: string) => s }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
+const events = vi.hoisted(() => new Map<string, Set<(e: { payload: unknown }) => void>>());
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: async (name: string, cb: (e: { payload: unknown }) => void) => {
+    if (!events.has(name)) events.set(name, new Set());
+    events.get(name)!.add(cb);
+    return () => events.get(name)?.delete(cb);
+  },
+}));
+const emit = (name: string, payload: unknown) => events.get(name)?.forEach((cb) => cb({ payload }));
 
 import {
   albumFrom,
@@ -24,6 +32,8 @@ import { useMusicDownloads } from '../src/services/musicDownloads';
 import { useLibraryStore } from '../src/store/useLibraryStore';
 import MusicAlbumDialog from '../src/components/browse/music/MusicAlbumDialog';
 import MusicDownloadsDialog from '../src/components/browse/music/MusicDownloadsDialog';
+import { albumQuery } from '../src/components/browse/music/SoulseekSearchDialog';
+import type { CatalogRelease } from '../src/services/musicCatalog';
 
 const album = (id: string, extra: Partial<CatalogAlbum> = {}): CatalogAlbum => ({ id, title: `Album ${id}`, artist: `Artist ${id}`, artistId: `a${id}`, cover: null, year: 2026, type: 'Album', ...extra });
 
@@ -193,4 +203,84 @@ it('without an account, the album page points to Settings instead of downloading
   render(<MusicAlbumDialog album={{ id: '1097861387', title: 'OK Computer', artist: 'Radiohead', artistId: null, cover: null, year: 1997, type: 'Album' }} onClose={() => {}} onArtist={() => {}} />);
   expect(await screen.findByRole('button', { name: /Set up downloads/ })).toBeTruthy();
   expect(screen.queryByRole('button', { name: /^Download$/ })).toBeNull();
+});
+
+const folder = (user: string, dir: string, ext: string, matched: number, extra: { bitrate?: number; bitDepth?: number; freeSlot?: boolean } = {}) => ({
+  user,
+  folder: dir,
+  format: ext,
+  files: ['01 - Airbag', '02 - Paranoid Android', '01 - Bonus'].slice(0, matched).map((name) => ({ path: `${dir}/${name}.${ext}`, size: 30_000_000, bitrate: extra.bitrate ?? null, duration: 200, bitDepth: extra.bitDepth ?? null })),
+  size: matched * 30_000_000,
+  freeSlot: extra.freeSlot ?? true,
+  speed: 1_000_000,
+  matched,
+});
+
+it('Choose a copy searches Soulseek, says how many songs each folder has, and downloads a complete one as this album', async () => {
+  useLibraryStore.setState((s) => ({
+    settings: { ...s.settings, music_directories: ['C:/Music'], soulseek_username: 'me', soulseek_password: 'pw', soulseek_quality: 'lossless' },
+  }));
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+    if (cmd === 'music_catalog') return LOOKUP;
+    if (cmd === 'slsk_status') return { state: 'online', username: 'me', message: '' };
+    if (cmd === 'slsk_jobs') return [];
+    if (cmd === 'slsk_connect') return { state: 'online', username: 'me', message: '' };
+    if (cmd === 'live_artwork') return 'C:/cache/cover.img';
+    if (cmd === 'slsk_download_album') {
+      const request = (args as { request: { id: string; releaseId: string; album: string; albumArtist: string; tracks: unknown[] } }).request;
+      return { id: request.id, releaseId: request.releaseId, cover: null, album: request.album, artist: request.albumArtist, state: 'queued', message: '', bytes: 0, total: 0, filesDone: 0, filesTotal: request.tracks.length, source: null, path: null };
+    }
+    return undefined;
+  });
+  render(<MusicAlbumDialog album={{ id: '1097861387', title: 'OK Computer', artist: 'Radiohead', artistId: '657515', cover: null, year: 1997, type: 'Album' }} onClose={() => {}} onArtist={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: /Choose a copy/ }));
+  await screen.findByRole('dialog', { name: 'Search Soulseek' });
+  await vi.waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'slsk_search')).toBe(true));
+  const search = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'slsk_search')![1] as { id: string; query: string; tracks: unknown[] };
+  // The album's own words, and its tracklist so each folder can be checked against it.
+  expect(search.query).toBe('Radiohead OK Computer');
+  expect(search.tracks).toHaveLength(3);
+  expect(screen.getByRole('textbox', { name: 'Search Soulseek' })).toHaveProperty('value', 'Radiohead OK Computer');
+
+  act(() =>
+    emit('slsk-search', {
+      id: search.id,
+      folders: [folder('flacfan', 'Music/Radiohead - OK Computer', 'flac', 3, { bitDepth: 24 }), folder('mp3guy', 'mp3/OK Computer', 'mp3', 2, { bitrate: 320, freeSlot: false })],
+      people: 2,
+      done: true,
+      blocked: null,
+    }),
+  );
+  expect(screen.getByText('2 folders from 2 people')).toBeTruthy();
+  expect(screen.getByText('3 of 3 songs')).toBeTruthy();
+  expect(screen.getByText('2 of 3 songs')).toBeTruthy();
+  expect(screen.getByText('FLAC 24-bit')).toBeTruthy();
+  expect(screen.getByText('MP3 320')).toBeTruthy();
+  // An incomplete folder can only be downloaded as it is.
+  expect(screen.getAllByRole('button', { name: /Download album/ })).toHaveLength(1);
+  expect(screen.getByRole('button', { name: /Download as is/ })).toBeTruthy();
+  // The format filter hides the others.
+  fireEvent.click(screen.getByRole('button', { name: 'MP3' }));
+  expect(screen.queryByText('FLAC 24-bit')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'All formats' }));
+
+  fireEvent.click(screen.getByRole('button', { name: /Download album/ }));
+  await vi.waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'slsk_download_album')).toBe(true));
+  const request = (vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'slsk_download_album')![1] as { request: Record<string, unknown> }).request;
+  expect(request).toMatchObject({
+    album: 'OK Computer',
+    // A copy picked by hand is taken in whatever format it's in.
+    quality: 'any',
+    copy: { user: 'flacfan', folder: 'Music/Radiohead - OK Computer' },
+  });
+  expect((request.copy as { files: unknown[] }).files).toHaveLength(3);
+  await vi.waitFor(() => expect(screen.queryByRole('dialog', { name: 'Search Soulseek' })).toBeNull());
+});
+
+it('searches for an album by its artist and plain title', () => {
+  const release = (title: string, artist: string) => ({ title, artist }) as CatalogRelease;
+  expect(albumQuery(release('Starboy', 'The Weeknd'))).toBe('The Weeknd Starboy');
+  expect(albumQuery(release('Grand Theft Auto VI: The Album', 'Various Artists'))).toBe('Grand Theft Auto VI The Album');
+  expect(albumQuery(release('SOS (Deluxe) - EP', 'SZA'))).toBe('SZA SOS');
+  expect(albumQuery(release('Midnights (3am Edition)', 'Taylor Swift'))).toBe('Taylor Swift Midnights');
 });

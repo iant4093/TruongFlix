@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { AlertCircle, Download, Loader2, Music2, Play, RefreshCw, Settings2, X } from 'lucide-react';
+import { AlertCircle, Download, Loader2, Music2, Play, RefreshCw, Search, Settings2, X } from 'lucide-react';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { albumDetail, albumKey, type CatalogAlbum, type CatalogArtist, type CatalogRelease } from '../../../services/musicCatalog';
 import { cancelAlbumJob, downloadAlbum, hasSoulseekAccount, isActive, jobLabel, useMusicDownloads } from '../../../services/musicDownloads';
@@ -12,6 +12,7 @@ import Dialog from '../../common/Dialog';
 import Dropdown from '../../common/Dropdown';
 import { Bone } from '../../common/Skeleton';
 import { CoverArt } from './MusicArt';
+import SoulseekSearchDialog from './SoulseekSearchDialog';
 
 const QUALITIES: { value: MusicQuality; label: string }[] = [
   { value: 'lossless', label: 'Lossless (FLAC)' },
@@ -35,59 +36,63 @@ export default function MusicAlbumDialog({ album, onClose, onArtist, active = tr
   const release = detail.data;
   const cover = release?.cover ?? album.cover;
   const artistId = release?.artistId ?? album.artistId;
+  const [picking, setPicking] = useState(false);
   return (
-    // `overflow-hidden` keeps the blurred cover inside the panel's rounded corners.
-    <Dialog label={album.title} onClose={onClose} open={active} priority={100} size="xl" align="top" chrome="floating" className="overflow-hidden">
-      <div className="relative">
-        {/* The cover, blurred, behind the header. */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-80 opacity-60 [mask-image:linear-gradient(to_bottom,black,transparent)]">
-          <CoverArt url={cover} px={100} className="h-full w-full scale-125 blur-3xl" rounded="" eager />
-        </div>
-        <div className="relative flex flex-col gap-7 p-6 pt-10 sm:flex-row sm:items-end sm:p-9 sm:pt-12">
-          <CoverArt url={cover} px={600} alt="" eager className="w-52 shrink-0 shadow-[0_18px_50px_rgba(0,0,0,0.6)] sm:w-60" rounded="rounded-lg" />
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/60">
-              {[release?.type ?? album.type ?? 'Album', release?.year ?? album.year].filter(Boolean).join(' · ')}
-              {(release?.explicit ?? album.explicit) && <span className="ml-2 rounded-sm bg-white/25 px-1 text-[10px] text-white">E</span>}
-            </p>
-            <h2 className="mt-2 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">{release?.title ?? album.title}</h2>
-            <button
-              type="button"
-              className="mt-1 text-lg font-semibold text-[#ff4560] hover:underline disabled:no-underline"
-              disabled={!artistId}
-              onClick={() => artistId && onArtist({ id: artistId, name: release?.artist ?? album.artist })}
-            >
-              {release?.artist ?? album.artist}
-            </button>
-            {release && (
-              <p className="mt-2 text-sm text-white/55">
-                {[`${release.tracks.length} ${release.tracks.length === 1 ? 'song' : 'songs'}`, minutes(release.tracks.reduce((n, t) => n + (t.lengthMs ?? 0), 0)), release.genres[0], release.label].filter(Boolean).join(' · ')}
+    <>
+      {/* `overflow-hidden` keeps the blurred cover inside the panel's rounded corners. */}
+      <Dialog label={album.title} onClose={onClose} open={active} active={!picking} priority={100} size="xl" align="top" chrome="floating" className="overflow-hidden">
+        <div className="relative">
+          {/* The cover, blurred, behind the header. */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-80 opacity-60 [mask-image:linear-gradient(to_bottom,black,transparent)]">
+            <CoverArt url={cover} px={100} className="h-full w-full scale-125 blur-3xl" rounded="" eager />
+          </div>
+          <div className="relative flex flex-col gap-7 p-6 pt-10 sm:flex-row sm:items-end sm:p-9 sm:pt-12">
+            <CoverArt url={cover} px={600} alt="" eager className="w-52 shrink-0 shadow-[0_18px_50px_rgba(0,0,0,0.6)] sm:w-60" rounded="rounded-lg" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/60">
+                {[release?.type ?? album.type ?? 'Album', release?.year ?? album.year].filter(Boolean).join(' · ')}
+                {(release?.explicit ?? album.explicit) && <span className="ml-2 rounded-sm bg-white/25 px-1 text-[10px] text-white">E</span>}
               </p>
-            )}
-            {release ? <AlbumActions release={release} onClose={onClose} /> : !detail.error && <Bone className="mt-6 h-11 w-64 rounded" tone="soft" />}
+              <h2 className="mt-2 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">{release?.title ?? album.title}</h2>
+              <button
+                type="button"
+                className="mt-1 text-lg font-semibold text-[#ff4560] hover:underline disabled:no-underline"
+                disabled={!artistId}
+                onClick={() => artistId && onArtist({ id: artistId, name: release?.artist ?? album.artist })}
+              >
+                {release?.artist ?? album.artist}
+              </button>
+              {release && (
+                <p className="mt-2 text-sm text-white/55">
+                  {[`${release.tracks.length} ${release.tracks.length === 1 ? 'song' : 'songs'}`, minutes(release.tracks.reduce((n, t) => n + (t.lengthMs ?? 0), 0)), release.genres[0], release.label].filter(Boolean).join(' · ')}
+                </p>
+              )}
+              {release ? <AlbumActions release={release} onClose={onClose} onPick={() => setPicking(true)} /> : !detail.error && <Bone className="mt-6 h-11 w-64 rounded" tone="soft" />}
+            </div>
           </div>
         </div>
-      </div>
-      <div className="px-6 pb-9 sm:px-9">
-        {detail.error ? (
-          <div role="alert" className="flex items-center gap-3 rounded-lg border border-white/10 bg-white/5 p-4 text-sm text-white/70">
-            <AlertCircle className="h-5 w-5 shrink-0 text-nf-red" />
-            <span className="flex-1">Couldn’t load this album: {detail.error}</span>
-            <button className="nf-btn-ghost" onClick={detail.retry}>
-              <RefreshCw className="h-4 w-4" /> Retry
-            </button>
-          </div>
-        ) : !release ? (
-          <div role="status" aria-label="Loading tracklist" className="space-y-2">
-            {Array.from({ length: 8 }, (_, i) => (
-              <Bone key={i} className="h-10 w-full rounded" tone="soft" />
-            ))}
-          </div>
-        ) : (
-          <Tracklist release={release} />
-        )}
-      </div>
-    </Dialog>
+        <div className="px-6 pb-9 sm:px-9">
+          {detail.error ? (
+            <div role="alert" className="flex items-center gap-3 rounded-lg border border-white/10 bg-white/5 p-4 text-sm text-white/70">
+              <AlertCircle className="h-5 w-5 shrink-0 text-nf-red" />
+              <span className="flex-1">Couldn’t load this album: {detail.error}</span>
+              <button className="nf-btn-ghost" onClick={detail.retry}>
+                <RefreshCw className="h-4 w-4" /> Retry
+              </button>
+            </div>
+          ) : !release ? (
+            <div role="status" aria-label="Loading tracklist" className="space-y-2">
+              {Array.from({ length: 8 }, (_, i) => (
+                <Bone key={i} className="h-10 w-full rounded" tone="soft" />
+              ))}
+            </div>
+          ) : (
+            <Tracklist release={release} />
+          )}
+        </div>
+      </Dialog>
+      {picking && release && active && <SoulseekSearchDialog release={release} onClose={() => setPicking(false)} />}
+    </>
   );
 }
 
@@ -118,7 +123,7 @@ function Tracklist({ release }: { release: CatalogRelease }) {
   );
 }
 
-function AlbumActions({ release, onClose }: { release: CatalogRelease; onClose: () => void }) {
+function AlbumActions({ release, onClose, onPick }: { release: CatalogRelease; onClose: () => void; onPick: () => void }) {
   const settings = useLibraryStore((s) => s.settings);
   const library = useMusicPlayer((s) => s.library);
   // The latest download of this album (an object from the store, so it's stable between reads).
@@ -205,6 +210,9 @@ function AlbumActions({ release, onClose }: { release: CatalogRelease; onClose: 
           {job?.state === 'failed' ? 'Try again' : 'Download'}
         </button>
         <Dropdown value={quality} options={QUALITIES} onChange={setQuality} ariaLabel="Download quality" />
+        <button className="nf-btn-ghost" onClick={onPick} title="Search Soulseek and pick a copy yourself">
+          <Search className="h-4 w-4" /> Choose a copy
+        </button>
       </div>
       {(error || job?.state === 'failed') && (
         <p role="alert" className="mt-3 flex max-w-xl items-start gap-2 text-sm text-red-300">
@@ -219,7 +227,7 @@ function AlbumActions({ release, onClose }: { release: CatalogRelease; onClose: 
       )}
       {!error && job?.state !== 'failed' && (
         <p className="mt-3 max-w-xl text-xs leading-relaxed text-white/45">
-          Finds a complete copy of this album on Soulseek, downloads only its audio files, checks every track against this tracklist, then tags it and adds it to your music folder.
+          Finds a complete copy of this album on Soulseek, downloads only its audio files, checks every track against this tracklist, then tags it and adds it to your music folder. Or choose a copy yourself.
         </p>
       )}
     </div>
