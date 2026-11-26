@@ -22,6 +22,10 @@ export interface SoulseekStatus {
 
 export interface AlbumJob {
   id: string;
+  /** An album, a folder downloaded as it is, or one song of an imported playlist. */
+  kind?: 'album' | 'folder' | 'song';
+  /** The playlist import a song belongs to. */
+  group?: string | null;
   releaseId: string;
   album: string;
   artist: string;
@@ -58,6 +62,8 @@ export function initMusicDownloads(): Promise<void> {
     await listen<AlbumJob>('slsk-job', ({ payload }) => {
       const before = useMusicDownloads.getState().jobs[payload.id];
       useMusicDownloads.setState((s) => ({ jobs: { ...s.jobs, [payload.id]: payload } }));
+      // A playlist's songs are reported (and scanned in) by the import, not one by one.
+      if (payload.group) return;
       if (payload.state === 'done' && before?.state !== 'done') {
         useLibraryStore.getState().toast(`${payload.album} is in your music library`, 'success');
         void runMusicScan();
@@ -132,8 +138,27 @@ export interface SharedFolder {
   matched: number | null;
 }
 
+/** A single shared file, from a search for a song. */
+export interface SharedFileHit extends SharedFile {
+  user: string;
+  freeSlot: boolean;
+  speed: number;
+  /** It is the song searched for (title, artist, version and length). */
+  matches: boolean;
+}
+
+/** The song a search by hand is for. */
+export interface SongSearch {
+  title: string;
+  artists: string[];
+  album: string | null;
+  lengthMs: number | null;
+}
+
 export interface SoulseekSearchUpdate {
   folders: SharedFolder[];
+  /** For a song: single files instead of folders. */
+  files: SharedFileHit[];
   people: number;
   done: boolean;
   /** The phrase Soulseek blocks, when the search contains one (nothing can be found then). */
@@ -154,7 +179,7 @@ const tracksOf = (release: CatalogRelease) =>
  * With a release, each folder says how many of its songs it has. Returns a function that stops
  * the search.
  */
-export async function searchSoulseek(query: string, release: CatalogRelease | null, onUpdate: (update: SoulseekSearchUpdate) => void): Promise<() => void> {
+export async function searchSoulseek(query: string, release: CatalogRelease | null, onUpdate: (update: SoulseekSearchUpdate) => void, song: SongSearch | null = null): Promise<() => void> {
   await connectSoulseek();
   const id = crypto.randomUUID();
   const unlisten = await listen<SoulseekSearchUpdate & { id: string }>('slsk-search', ({ payload }) => {
@@ -163,7 +188,7 @@ export async function searchSoulseek(query: string, release: CatalogRelease | nu
     if (payload.done) unlisten();
   });
   try {
-    await invoke('slsk_search', { id, query, tracks: release ? tracksOf(release) : null });
+    await invoke('slsk_search', { id, query, tracks: release ? tracksOf(release) : null, song });
   } catch (e) {
     unlisten();
     throw e;

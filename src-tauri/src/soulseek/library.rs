@@ -4,7 +4,7 @@
 //! embedded and saved beside them; and the files are named and filed by the app, never by the
 //! names other people gave them: `Album Artist/Album (Year)/01 - Title.flac`.
 
-use super::matching::WantTrack;
+use super::matching::{WantSong, WantTrack};
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, FileType, TaggedFileExt};
 use lofty::picture::{Picture, PictureType};
@@ -80,9 +80,119 @@ pub struct AlbumRequest {
     pub copy: Option<PickedCopy>,
 }
 
+/// One song to fetch on its own (from an imported playlist), with the details to tag it with.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SongRequest {
+    pub id: String,
+    /// The playlist import it belongs to.
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(flatten)]
+    pub want: WantSong,
+    /// The artist credit as shown ("Justice, Tame Impala & SZA").
+    pub artist: String,
+    #[serde(default)]
+    pub album_artist: Option<String>,
+    #[serde(default)]
+    pub track: Option<u32>,
+    #[serde(default)]
+    pub disc: Option<u32>,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    pub quality: super::matching::Quality,
+    pub destination: String,
+    #[serde(default)]
+    pub cover_path: Option<String>,
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    /// The file to download, when the user picked one; otherwise the app searches.
+    #[serde(default)]
+    pub copy: Option<PickedSong>,
+}
+
+/// A shared file the user picked for a song.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedSong {
+    pub user: String,
+    #[serde(flatten)]
+    pub file: PickedFile,
+}
+
+fn year_of(date: Option<&str>) -> Option<u16> {
+    date.and_then(|d| d.get(..4)).and_then(|y| y.parse().ok())
+}
+
+impl SongRequest {
+    pub fn year(&self) -> Option<u16> {
+        year_of(self.date.as_deref())
+    }
+
+    /// Who the song is filed under: the album's artist, else its main artist.
+    pub fn filed_artist(&self) -> String {
+        self.album_artist.clone().filter(|a| !a.trim().is_empty()).or_else(|| self.want.artists.first().cloned()).filter(|a| !a.trim().is_empty()).unwrap_or_else(|| "Unknown Artist".into())
+    }
+
+    /// Where the song goes: `Artist/Album (Year)/01 - Title.flac`, or `Artist/Singles/Title.flac`
+    /// when its album isn't known.
+    pub fn target(&self, ext: &str) -> PathBuf {
+        let base = Path::new(&self.destination).join(safe_name(&self.filed_artist()));
+        let dir = match self.want.album.as_deref().filter(|a| !a.trim().is_empty()) {
+            Some(album) => base.join(safe_name(&match self.year() {
+                Some(year) => format!("{album} ({year})"),
+                None => album.to_string(),
+            })),
+            None => base.join("Singles"),
+        };
+        let name = match (self.track, self.disc) {
+            (Some(n), Some(d)) if d > 1 => format!("{d}-{n:02} - {}.{ext}", self.want.title),
+            (Some(n), _) => format!("{n:02} - {}.{ext}", self.want.title),
+            _ => format!("{}.{ext}", self.want.title),
+        };
+        dir.join(safe_name(&name))
+    }
+}
+
+/// Replaces a song's tags with the playlist's (and the store's) details and its cover.
+pub fn tag_song(path: &Path, req: &SongRequest, cover: Option<&[u8]>) -> Result<(), String> {
+    let mut file = lofty::read_from_path(path).map_err(|e| format!("Couldn’t open the file to tag it: {e}"))?;
+    let mut tag = Tag::new(file.primary_tag_type());
+    tag.set_title(req.want.title.clone());
+    tag.set_artist(req.artist.clone());
+    if let Some(album) = req.want.album.as_ref().filter(|a| !a.trim().is_empty()) {
+        tag.set_album(album.clone());
+        tag.insert_text(ItemKey::AlbumArtist, req.filed_artist());
+    }
+    if let Some(n) = req.track {
+        tag.set_track(n);
+    }
+    if let Some(d) = req.disc {
+        tag.set_disk(d);
+    }
+    if let Some(year) = req.year() {
+        let mut parts = req.date.as_deref().unwrap_or("").split('-').skip(1).filter_map(|p| p.parse::<u8>().ok());
+        tag.set_date(lofty::tag::items::Timestamp { year, month: parts.next(), day: parts.next(), ..Default::default() });
+    }
+    if let Some(genre) = req.genre.as_ref().filter(|g| !g.is_empty()) {
+        tag.set_genre(genre.clone());
+    }
+    if let Some(data) = cover {
+        if let Ok(mut picture) = Picture::from_reader(&mut &data[..]) {
+            picture.set_pic_type(PictureType::CoverFront);
+            tag.push_picture(picture);
+        }
+    }
+    file.clear();
+    file.insert_tag(tag);
+    file.save_to_path(path, WriteOptions::default()).map_err(|e| format!("Couldn’t write the tags: {e}"))
+}
+
 impl AlbumRequest {
     pub fn year(&self) -> Option<u16> {
-        self.date.as_deref().and_then(|d| d.get(..4)).and_then(|y| y.parse().ok())
+        year_of(self.date.as_deref())
     }
 }
 

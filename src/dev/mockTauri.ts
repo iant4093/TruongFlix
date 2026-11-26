@@ -1551,9 +1551,13 @@ export function installMocks() {
         case 'slsk_dismiss':
           return null;
         case 'slsk_search':
-          return previewSearch(String(a.id), String(a.query), (a.tracks as PreviewTrack[] | null) ?? null);
+          return previewSearch(String(a.id), String(a.query), (a.tracks as PreviewTrack[] | null) ?? null, (a.song as { title: string; artists: string[]; lengthMs: number | null } | null) ?? null);
         case 'slsk_search_stop':
           return null;
+        case 'music_playlist':
+          return previewPlaylist(String(a.link));
+        case 'slsk_download_song':
+          return previewSong(a.request as PreviewSongRequest);
         case 'slsk_download_folder': {
           const req = a.request as { id: string; copy: { user: string; folder: string; files: unknown[] } };
           const name = req.copy.folder.split(/[\\/]/).pop() ?? req.copy.folder;
@@ -1626,7 +1630,7 @@ interface PreviewTrack {
 }
 
 /** Answers a Soulseek search with a few made-up shared folders, in three batches. */
-async function previewSearch(id: string, query: string, tracks: PreviewTrack[] | null) {
+async function previewSearch(id: string, query: string, tracks: PreviewTrack[] | null, song: { title: string; artists: string[]; lengthMs: number | null } | null = null) {
   const { emit } = await import('@tauri-apps/api/event');
   const songs = tracks ?? Array.from({ length: 10 }, (_, i) => ({ title: `Track ${i + 1}`, position: i + 1, disc: 1, lengthMs: 200_000 + i * 7000 }));
   const title = query.replace(/\b\w/g, (c) => c.toUpperCase());
@@ -1647,13 +1651,76 @@ async function previewSearch(id: string, query: string, tracks: PreviewTrack[] |
     folder('sundaysessions', `shared\\${title} (Deluxe)`, 'flac', Math.max(1, songs.length - 3)),
     folder('m4a_mike', `iTunes\\${title}`, 'm4a', Math.max(1, songs.length - 1), { bitrate: 256, freeSlot: false }),
   ];
+  const secs = Math.round((song?.lengthMs ?? 200_000) / 1000);
+  const files = song
+    ? [
+        { user: 'vinyl_archivist', path: `@@music/${song.artists[0]}/Singles/${song.title}.flac`, size: 31_000_000, bitrate: null, duration: secs, bitDepth: 16, freeSlot: true, speed: 2_000_000, matches: true },
+        { user: 'cratedigger88', path: `Music/MP3/${song.artists[0]} - ${song.title}.mp3`, size: 9_000_000, bitrate: 320, duration: secs + 1, bitDepth: null, freeSlot: true, speed: 900_000, matches: true },
+        { user: 'night_owl_rips', path: `Live/${song.title} (Live).flac`, size: 40_000_000, bitrate: null, duration: secs + 40, bitDepth: 24, freeSlot: false, speed: 400_000, matches: false },
+      ]
+    : [];
   void (async () => {
     for (const [n, done] of [[2, false], [4, false], [5, true]] as const) {
       await new Promise((r) => setTimeout(r, 900));
-      void emit('slsk-search', { id, folders: all.slice(0, n), people: n, done, blocked: null });
+      void emit('slsk-search', { id, folders: song ? [] : all.slice(0, n), files: files.slice(0, Math.ceil((files.length * n) / 5)), people: n, done, blocked: null });
     }
   })();
   return null;
+}
+
+/** Songs from a real Spotify playlist (title, artists, length), for the import preview. */
+const PREVIEW_PLAYLIST: [string, string[], number][] = [["Flower In A Hurricane (feat. Tame Impala, SZA, King Gizzard & the Lizard Wizard) [From GTAVI: Original Score]", ["Justice", "Tame Impala", "SZA", "Grand Theft Auto VI", "King Gizzard & The Lizard Wizard"], 224877], ["Housewife", ["Tate McRae"], 208810], ["Stop The Wedding!", ["Ashe"], 198840], ["BbY WOW", ["KAROL G", "Judeline", "rusowsky"], 225834], ["Nicole Kidman", ["ADÉLA"], 181270], ["Earrings", ["Malcolm Todd"], 151500], ["Babydoll", ["Jamie Miller"], 178822], ["the cure", ["Olivia Rodrigo"], 297090], ["Great Expectation", ["SIENNA SPIRO"], 173975], ["Loser", ["Tame Impala"], 223069], ["hate that i made you love me", ["Ariana Grande"], 197949], ["Go Easy (from GTAVI: The Album)", ["Dua Lipa", "Grand Theft Auto VI"], 191500], ["Coming Up Roses", ["Harry Styles"], 248866], ["Choosin' Texas", ["Ella Langley"], 232226], ["Man I Need", ["Olivia Dean"], 184000], ["Self Aware", ["Temper City"], 180740], ["Patient Zero", ["Taylor Swift"], 225868], ["Dai Dai", ["Shakira", "Burna Boy"], 223448], ["Babydoll", ["Dominic Fike"], 97960], ["expectations (feat. Chappell Roan)", ["Olivia Rodrigo", "Chappell Roan"], 223935], ["Ain't In LA", ["ADÉLA"], 184927], ["brand new chanel$", ["Slayyyter"], 238505], ["Animal", ["KATSEYE"], 158494], ["Rein Me In (with Olivia Dean)", ["Sam Fender", "Olivia Dean"], 339410]];
+
+async function previewPlaylist(link: string) {
+  await new Promise((r) => setTimeout(r, 900));
+  if (!/spotify|apple|youtu/.test(link)) throw new Error('Paste a link to a Spotify, Apple Music or YouTube playlist.');
+  return {
+    source: 'spotify',
+    id: '37i9dQZF1DXcBWIGoYBM5M',
+    name: 'Today’s Top Hits',
+    owner: 'Spotify',
+    cover: 'https://i.scdn.co/image/ab67706f00000002ffe80c69d2e795ea01e63447',
+    total: null,
+    songs: PREVIEW_PLAYLIST.map(([title, artists, lengthMs]) => ({ title, artists, album: null, lengthMs, appleId: null, cover: null, explicit: false })),
+  };
+}
+
+interface PreviewSongRequest {
+  id: string;
+  group: string | null;
+  title: string;
+  artist: string;
+  coverUrl: string | null;
+  copy: unknown;
+}
+
+let previewSongs = 0;
+
+/** Walks a song through searching and downloading; every fifth isn't found (unless picked by hand). */
+async function previewSong(req: PreviewSongRequest) {
+  const { emit } = await import('@tauri-apps/api/event');
+  const n = previewSongs++;
+  const job = { id: req.id, kind: 'song', group: req.group, releaseId: `song:${req.title}`, cover: req.coverUrl, album: req.title, artist: req.artist, state: req.copy ? 'queued' : 'searching', message: '', bytes: 0, total: 30_000_000, filesDone: 0, filesTotal: 1, source: null as null | { user: string; format: string }, path: null as null | string };
+  const step = async (ms: number, patch: Partial<typeof job>) => {
+    await new Promise((r) => setTimeout(r, ms));
+    if (previewSoulseek.cancelled.has(req.id)) {
+      void emit('slsk-job', { ...job, state: 'cancelled' });
+      return false;
+    }
+    Object.assign(job, patch);
+    void emit('slsk-job', { ...job });
+    return true;
+  };
+  void (async () => {
+    if (!req.copy && n % 5 === 3) {
+      await step(2500, { state: 'failed', message: 'Found 14 files, but none that is this recording (right artist, title and length).' });
+      return;
+    }
+    if (!(await step(1800, { state: 'queued', source: { user: 'vinyl_archivist', format: 'flac' } }))) return;
+    for (let i = 1; i <= 4; i++) if (!(await step(500, { state: 'downloading', bytes: (job.total * i) / 4 }))) return;
+    await step(400, { state: 'done', path: `/Volumes/Media/Music/${req.artist}/Singles/${req.title}.flac` });
+  })();
+  return { ...job };
 }
 
 /** Walks a job through searching, waiting, downloading and filing. */

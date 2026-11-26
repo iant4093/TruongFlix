@@ -14,8 +14,8 @@
 pub mod library;
 pub mod matching;
 
-use library::{AlbumRequest, PickedCopy};
-use matching::{basename, extension, Candidate, Offer, WantTrack};
+use library::{AlbumRequest, PickedCopy, SongRequest};
+use matching::{basename, extension, Candidate, Offer, WantSong, WantTrack};
 use serde::{Deserialize, Serialize};
 use soulseek_rs::{Client, ClientSettings, ClientVersion, DownloadStatus, PeerAddress};
 use std::collections::HashMap;
@@ -43,6 +43,12 @@ const FILE_TRIES: u32 = 2;
 const QUEUE_PATIENCE: Duration = Duration::from_secs(150);
 /// How long a transfer may stall once it has started.
 const STALL_PATIENCE: Duration = Duration::from_secs(90);
+/// A song search stops early once a few ready-to-send copies have answered…
+const SONG_SEARCH_MIN: Duration = Duration::from_secs(4);
+/// …or any copy at all…
+const SONG_SEARCH_TIME: Duration = Duration::from_secs(8);
+/// …and gives up after this.
+const SONG_SEARCH_MAX: Duration = Duration::from_secs(15);
 /// How long the last files may sit in the queue after the person's others have arrived (the
 /// next one normally starts within seconds).
 const TAIL_PATIENCE: Duration = Duration::from_secs(45);
@@ -192,6 +198,10 @@ pub struct Source {
 #[serde(rename_all = "camelCase")]
 pub struct Job {
     pub id: String,
+    /// "album" | "folder" | "song"
+    pub kind: String,
+    /// The playlist import a song belongs to.
+    pub group: Option<String>,
     pub release_id: String,
     pub album: String,
     pub artist: String,
@@ -275,7 +285,7 @@ fn spawn_job(
         let mut jobs = JOBS.lock().unwrap();
         let map = jobs.get_or_insert_with(HashMap::new);
         if map.values().any(|r| r.job.release_id == job.release_id && !matches!(r.job.state.as_str(), "done" | "failed" | "cancelled")) {
-            return Err("This album is already downloading.".into());
+            return Err(if job.kind == "song" { "This song is already downloading." } else { "This album is already downloading." }.into());
         }
         map.insert(job.id.clone(), Running { job: job.clone(), cancel: cancel.clone() });
     }
@@ -329,6 +339,7 @@ pub fn slsk_download_album(app: AppHandle, request: AlbumRequest) -> Result<Job,
     }
     let job = Job {
         id: request.id.clone(),
+        kind: "album".into(),
         release_id: request.release_id.clone(),
         album: request.album.clone(),
         artist: request.album_artist.clone(),
@@ -368,6 +379,7 @@ pub fn slsk_download_folder(app: AppHandle, request: FolderRequest) -> Result<Jo
     })?;
     let job = Job {
         id: request.id.clone(),
+        kind: "folder".into(),
         release_id: format!("folder:{}:{}", request.copy.user, request.copy.folder),
         album: basename(&request.copy.folder).to_string(),
         artist: request.copy.user.clone(),
@@ -378,6 +390,35 @@ pub fn slsk_download_folder(app: AppHandle, request: FolderRequest) -> Result<Jo
     };
     let destination = request.destination.clone();
     spawn_job(app, job, destination, move |report, client, cancel, staging| run_folder(report, client, &request, cancel, staging))
+}
+
+/// Starts downloading one song (from an imported playlist); progress arrives as `slsk-job` events.
+#[tauri::command]
+pub fn slsk_download_song(app: AppHandle, request: SongRequest) -> Result<Job, String> {
+    if !valid_id(&request.id) || request.group.as_ref().is_some_and(|g| !valid_id(g)) {
+        return Err("Invalid download id".into());
+    }
+    if request.want.title.trim().is_empty() || request.want.title.len() > 300 || request.want.artists.len() > 20 {
+        return Err("This song has no title to search for.".into());
+    }
+    if !Path::new(&request.destination).is_dir() {
+        return Err("Choose a music folder in Settings → Music first.".into());
+    }
+    let job = Job {
+        id: request.id.clone(),
+        kind: "song".into(),
+        group: request.group.clone(),
+        release_id: format!("song:{}:{}", request.artist.to_lowercase(), request.want.title.to_lowercase()),
+        album: request.want.title.clone(),
+        artist: request.artist.clone(),
+        cover: request.cover_url.clone(),
+        state: if request.copy.is_some() { "queued" } else { "searching" }.into(),
+        files_total: 1,
+        source: request.copy.as_ref().map(|c| Source { user: c.user.clone(), format: extension(&c.file.path) }),
+        ..Default::default()
+    };
+    let destination = request.destination.clone();
+    spawn_job(app, job, destination, move |report, client, cancel, staging| run_song(report, client, &request, cancel, staging))
 }
 
 enum Stop {
@@ -598,11 +639,57 @@ pub struct FolderHit {
     pub matched: Option<usize>,
 }
 
+/// One shared file in a search by hand for a song, and whether it is that song.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHit {
+    pub user: String,
+    pub path: String,
+    pub size: u64,
+    pub bitrate: Option<u32>,
+    pub duration: Option<u32>,
+    pub bit_depth: Option<u32>,
+    pub free_slot: bool,
+    pub speed: u32,
+    pub matches: bool,
+}
+
+/// The audio files found for a song: the ones that are it first, then by quality and readiness.
+fn file_hits(offers: &[Offer], song: &WantSong) -> Vec<FileHit> {
+    let mut hits: Vec<FileHit> = offers
+        .iter()
+        .filter(|o| matching::AUDIO.contains(&extension(&o.path).as_str()) && o.size > 0)
+        .map(|o| FileHit {
+            matches: matching::song_matches(song, o),
+            user: o.user.clone(),
+            path: o.path.clone(),
+            size: o.size,
+            bitrate: o.bitrate,
+            duration: o.duration,
+            bit_depth: o.bit_depth,
+            free_slot: o.free_slot,
+            speed: o.speed,
+        })
+        .collect();
+    hits.sort_by(|a, b| {
+        b.matches
+            .cmp(&a.matches)
+            .then(b.free_slot.cmp(&a.free_slot))
+            .then(format_rank(&extension(&b.path)).cmp(&format_rank(&extension(&a.path))))
+            .then(b.speed.cmp(&a.speed))
+            .then(a.path.cmp(&b.path))
+    });
+    hits.truncate(MANUAL_FILES);
+    hits
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchUpdate {
     id: String,
     folders: Vec<FolderHit>,
+    /// For a song: single files instead of folders.
+    files: Vec<FileHit>,
     people: usize,
     done: bool,
     blocked: Option<String>,
@@ -611,6 +698,7 @@ struct SearchUpdate {
 static MANUAL: Mutex<Option<HashMap<String, Arc<AtomicBool>>>> = Mutex::new(None);
 const MANUAL_TIME: Duration = Duration::from_secs(25);
 const MANUAL_FOLDERS: usize = 150;
+const MANUAL_FILES: usize = 200;
 
 fn format_rank(ext: &str) -> u8 {
     match ext {
@@ -665,9 +753,10 @@ fn folder_hits(offers: &[Offer], tracks: Option<&[WantTrack]>) -> Vec<FolderHit>
 }
 
 /// Searches Soulseek for `query`; folders arrive as `slsk-search` events for about 25 seconds.
-/// With `tracks` (an album's tracklist), each folder says how many of its songs it has.
+/// With `tracks` (an album's tracklist), each folder says how many of its songs it has; with
+/// `song`, single files come instead of folders, the ones that are that song first.
 #[tauri::command]
-pub fn slsk_search(app: AppHandle, id: String, query: String, tracks: Option<Vec<WantTrack>>) -> Result<(), String> {
+pub fn slsk_search(app: AppHandle, id: String, query: String, tracks: Option<Vec<WantTrack>>, song: Option<WantSong>) -> Result<(), String> {
     let client = session()?;
     let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
     if !valid_id(&id) || query.is_empty() || query.len() > 200 {
@@ -680,11 +769,15 @@ pub fn slsk_search(app: AppHandle, id: String, query: String, tracks: Option<Vec
     std::thread::Builder::new()
         .name("slsk-search".into())
         .spawn(move || {
-            let send = |folders: Vec<FolderHit>, people: usize, done: bool, blocked: Option<String>| {
-                let _ = app.emit("slsk-search", SearchUpdate { id: id.clone(), folders, people, done, blocked });
+            let send = |offers: &[Offer], people: usize, done: bool, blocked: Option<String>| {
+                let (folders, files) = match &song {
+                    Some(song) => (Vec::new(), file_hits(offers, song)),
+                    None => (folder_hits(offers, tracks.as_deref()), Vec::new()),
+                };
+                let _ = app.emit("slsk-search", SearchUpdate { id: id.clone(), folders, files, people, done, blocked });
             };
             if let Some(phrase) = blocked_phrase(&client, &query) {
-                send(Vec::new(), 0, true, Some(phrase));
+                send(&[], 0, true, Some(phrase));
             } else if let Ok(search) = Searching::start(&client, vec![query]) {
                 let started = Instant::now();
                 loop {
@@ -692,13 +785,13 @@ pub fn slsk_search(app: AppHandle, id: String, query: String, tracks: Option<Vec
                     let offers = search.offers();
                     let people = offers.iter().map(|o| o.user.as_str()).collect::<std::collections::HashSet<_>>().len();
                     let done = stopped || started.elapsed() >= MANUAL_TIME;
-                    send(folder_hits(&offers, tracks.as_deref()), people, done, None);
+                    send(&offers, people, done, None);
                     if done {
                         break;
                     }
                 }
             } else {
-                send(Vec::new(), 0, true, None);
+                send(&[], 0, true, None);
             }
             let mut manual = MANUAL.lock().unwrap();
             let map = manual.get_or_insert_with(HashMap::new);
@@ -785,6 +878,115 @@ fn run_job(report: &Reporter, client: &Client, req: &AlbumRequest, cancel: &Atom
     };
     report.set(|j| j.state = "checking".into());
     file_album(req, format.as_deref().unwrap_or("flac"), &paths).map_err(Stop::Failed)
+}
+
+/// Copies of a song tried before giving up.
+const SONG_SOURCES: usize = 5;
+
+/// Searches for a song until a few ready-to-send copies have answered, or the search has run its
+/// course.
+fn find_song(client: &Client, req: &SongRequest, cancel: &AtomicBool) -> Result<Vec<Offer>, Stop> {
+    if let Some(phrase) = blocked_phrase(client, &format!("{} {}", req.artist, req.want.title)) {
+        return Err(Stop::Failed(format!("Soulseek blocks searches for “{phrase}”, so this song can’t be found there.")));
+    }
+    let queries = matching::song_queries(&req.want);
+    if queries.is_empty() {
+        return Err(Stop::Failed("This song’s title has nothing to search for.".into()));
+    }
+    let search = Searching::start(client, queries.clone()).map_err(Stop::Failed)?;
+    let started = Instant::now();
+    loop {
+        wait(Duration::from_secs(1), cancel)?;
+        let offers = search.offers();
+        let found = matching::rank_song(&req.want, &offers, req.quality);
+        let t = started.elapsed();
+        let free = found.iter().filter(|o| o.free_slot).count();
+        let enough = (t >= SONG_SEARCH_MIN && free >= 3) || (t >= SONG_SEARCH_TIME && !found.is_empty()) || t >= SONG_SEARCH_MAX;
+        if !enough {
+            continue;
+        }
+        if !found.is_empty() {
+            return Ok(found);
+        }
+        return Err(Stop::Failed(song_not_found(req, &offers, &queries)));
+    }
+}
+
+/// Why no copy of a song was good enough.
+fn song_not_found(req: &SongRequest, offers: &[Offer], queries: &[String]) -> String {
+    let audio = offers.iter().filter(|o| matching::AUDIO.contains(&extension(&o.path).as_str())).count();
+    if audio == 0 {
+        let searched = queries.first().map(|q| format!(" (searched for “{q}”)")).unwrap_or_default();
+        return format!("Nobody on Soulseek is sharing this song right now{searched}.");
+    }
+    if req.quality != matching::Quality::Any && !matching::rank_song(&req.want, offers, matching::Quality::Any).is_empty() {
+        let what = match req.quality {
+            matching::Quality::Lossless => "lossless (FLAC)",
+            _ => "MP3 (256 kbps or better)",
+        };
+        return format!("There are copies of this song, but none in {what}.");
+    }
+    format!("Found {audio} files, but none that is this recording (right artist, title and length).")
+}
+
+fn run_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &AtomicBool, staging: &Path) -> Result<PathBuf, Stop> {
+    // A file the user picked is taken as it is (its length isn't held against it).
+    let (candidates, length) = match &req.copy {
+        Some(copy) => {
+            let offers = picked_offers(&PickedCopy { user: copy.user.clone(), folder: String::new(), files: vec![copy.file.clone()] })?;
+            (offers, None)
+        }
+        None => (find_song(client, req, cancel)?, req.want.length_ms),
+    };
+    let mut last_error = String::new();
+    for (k, offer) in candidates.iter().take(SONG_SOURCES).enumerate() {
+        report.set(|j| {
+            j.state = "queued".into();
+            j.message = if k == 0 { String::new() } else { format!("Trying another copy ({last_error})") };
+            j.bytes = 0;
+            j.total = offer.size;
+            j.source = Some(Source { user: offer.user.clone(), format: extension(&offer.path) });
+        });
+        let items = [Item { index: 0, offer: offer.clone(), length_ms: length }];
+        let mut got = vec![None];
+        match fetch(report, client, &offer.user, &items, &staging.join(k.to_string()), cancel, &mut got, 0) {
+            Ok(()) => {
+                let Some((path, _)) = got[0].take() else { continue };
+                report.set(|j| j.state = "checking".into());
+                return file_song(req, &path, &extension(&offer.path)).map_err(Stop::Failed);
+            }
+            Err(Stop::Cancelled) => return Err(Stop::Cancelled),
+            Err(Stop::Failed(e)) => last_error = e,
+        }
+    }
+    Err(Stop::Failed(format!("No copy of this song could be downloaded. Last problem: {last_error}")))
+}
+
+/// Tags a checked song and files it; returns the file. A song already there is kept as it is.
+fn file_song(req: &SongRequest, path: &Path, ext: &str) -> Result<PathBuf, String> {
+    let target = req.target(ext);
+    if target.exists() {
+        let _ = std::fs::remove_file(path);
+        return Ok(target);
+    }
+    let cover = req
+        .cover_path
+        .as_deref()
+        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() < 8 * 1024 * 1024))
+        .and_then(|p| std::fs::read(p).ok());
+    library::tag_song(path, req, cover.as_deref())?;
+    let dir = target.parent().ok_or("No folder for the song")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Couldn’t create {}: {e}", dir.display()))?;
+    library::move_into(path, &target)?;
+    // An album folder gets its cover beside the songs (unless it has one).
+    if let Some(data) = cover.filter(|_| req.want.album.is_some()) {
+        let ext = if data.starts_with(&[0x89, b'P', b'N', b'G']) { "png" } else { "jpg" };
+        let file = dir.join(format!("cover.{ext}"));
+        if !dir.join("cover.jpg").exists() && !dir.join("cover.png").exists() {
+            let _ = std::fs::write(file, data);
+        }
+    }
+    Ok(target)
 }
 
 /// Downloads a picked folder as it is into `<music folder>/Soulseek/<folder>/`.
@@ -1253,6 +1455,50 @@ mod tests {
         let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         assert_eq!(names, ["01 - Alpha Song.flac", "02 - Beta Song.flac", "03 - Gamma Song.flac", "04 - Bonus Song.flac"]);
+
+        // One song from a playlist: found on its own, tagged with the playlist's details, filed
+        // under its artist and album.
+        let song = |title: &str, secs: u32, album: Option<&str>| SongRequest {
+            id: "e2e-song".into(),
+            group: Some("e2e-playlist".into()),
+            want: WantSong { title: title.into(), artists: vec!["Test Artist".into()], album: album.map(Into::into), length_ms: Some(secs * 1000) },
+            artist: "Test Artist feat. Guest".into(),
+            album_artist: None,
+            track: Some(2),
+            disc: None,
+            date: Some("2024-03-01".into()),
+            genre: Some("Electronic".into()),
+            quality: Quality::Lossless,
+            destination: dest.to_string_lossy().into_owned(),
+            cover_path: None,
+            cover_url: None,
+            copy: None,
+        };
+        let req = song("Beta Song (feat. Guest) - 2024 Remaster", 47, Some("Playlist Album"));
+        let file = match run_song(&report, &ours, &req, &cancel, &dest.join(STAGING).join("e2e6")) {
+            Ok(file) => file,
+            Err(Stop::Failed(e)) => panic!("song download failed: {e}"),
+            Err(Stop::Cancelled) => panic!("cancelled"),
+        };
+        println!("song filed: {}", file.display());
+        assert_eq!(file, dest.join("Test Artist").join("Playlist Album (2024)").join("02 - Beta Song (feat. Guest) - 2024 Remaster.flac"));
+        let tagged = lofty::read_from_path(&file).unwrap();
+        let tag = tagged.primary_tag().unwrap();
+        assert_eq!(tag.artist().as_deref(), Some("Test Artist feat. Guest"));
+        assert_eq!(tag.album().as_deref(), Some("Playlist Album"));
+        // Asked for again, the song already there is kept.
+        assert_eq!(run_song(&report, &ours, &req, &cancel, &dest.join(STAGING).join("e2e7")).ok(), Some(file));
+        // A recording of another length isn't this song.
+        match run_song(&report, &ours, &song("Beta Song", 90, None), &cancel, &dest.join(STAGING).join("e2e8")) {
+            Err(Stop::Failed(e)) => assert!(e.contains("none that is this recording"), "{e}"),
+            _ => panic!("a song of the wrong length must not be downloaded"),
+        }
+        // Manual search for a song lists single files, the ones that are it first.
+        let search = Searching::start(&ours, vec!["beta song".into()]).unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+        let hits = file_hits(&search.offers(), &req.want);
+        drop(search);
+        assert!(hits.len() >= 2 && hits[0].matches && hits[0].path.ends_with("02 - Beta Song.flac"), "{hits:?}");
 
         let _ = std::fs::remove_dir_all(&work);
     }

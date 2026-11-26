@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { AlertCircle, ChevronDown, Download, Folder, Loader2, Search } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Download, Folder, Loader2, Music2, Search } from 'lucide-react';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import type { CatalogRelease } from '../../../services/musicCatalog';
-import { downloadAlbum, downloadSharedFolder, folderName, pathInFolder, searchSoulseek, type SharedFolder, type SoulseekSearchUpdate } from '../../../services/musicDownloads';
+import { downloadAlbum, downloadSharedFolder, folderName, pathInFolder, searchSoulseek, type SharedFileHit, type SharedFolder, type SoulseekSearchUpdate } from '../../../services/musicDownloads';
+import { coreTitle, pickSongFile } from '../../../services/playlistImport';
 import { errorMessage } from '../../../lib/errors';
 import Dialog from '../../common/Dialog';
 import SegmentedControl from '../../common/SegmentedControl';
@@ -34,13 +35,37 @@ export function albumQuery(release: CatalogRelease) {
   return `${artist} ${title}`.replace(/[^\p{L}\p{N}'&]+/gu, ' ').trim();
 }
 
+/** A playlist song being found by hand. */
+export interface SongTarget {
+  importId: string;
+  key: string;
+  title: string;
+  artists: string[];
+  album: string | null;
+  lengthMs: number | null;
+}
+
+/** The search to start with for a song: its main artist and its title's own words. */
+export function songQuery(song: Pick<SongTarget, 'title' | 'artists'>) {
+  const artist = song.artists[0] ?? '';
+  return `${artist} ${coreTitle(song.title)}`.replace(/[^\p{L}\p{N}'&]+/gu, ' ').trim();
+}
+
+/** "FLAC 24-bit", "MP3 320" for one file. */
+function fileFormat(file: SharedFileHit) {
+  const ext = file.path.split('.').pop()?.toLowerCase() ?? '';
+  if (ext === 'flac') return file.bitDepth && file.bitDepth > 16 ? `FLAC ${file.bitDepth}-bit` : 'FLAC';
+  if (ext === 'mp3' && file.bitrate) return `MP3 ${file.bitrate}`;
+  return ext.toUpperCase();
+}
+
 /**
  * Searching Soulseek by hand: every shared folder that answers, with its format, size and
  * whether its owner can send right away. For an album, folders with all its songs come first and
  * download as that album (checked, tagged and filed); any other folder downloads as it is.
  */
-export default function SoulseekSearchDialog({ release, onClose, onStarted }: { release: CatalogRelease | null; onClose: () => void; onStarted?: () => void }) {
-  const [query, setQuery] = useState(() => (release ? albumQuery(release) : ''));
+export default function SoulseekSearchDialog({ release, song = null, onClose, onStarted }: { release: CatalogRelease | null; song?: SongTarget | null; onClose: () => void; onStarted?: () => void }) {
+  const [query, setQuery] = useState(() => (song ? songQuery(song) : release ? albumQuery(release) : ''));
   const [result, setResult] = useState<SoulseekSearchUpdate | null>(null);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState('');
@@ -60,10 +85,15 @@ export default function SoulseekSearchDialog({ release, onClose, onStarted }: { 
     setOpen(null);
     setSearching(true);
     try {
-      stop.current = await searchSoulseek(text.trim(), release, (update) => {
-        setResult(update);
-        if (update.done) setSearching(false);
-      });
+      stop.current = await searchSoulseek(
+        text.trim(),
+        release,
+        (update) => {
+          setResult(update);
+          if (update.done) setSearching(false);
+        },
+        song && { title: song.title, artists: song.artists, album: song.album, lengthMs: song.lengthMs },
+      );
     } catch (e) {
       setSearching(false);
       setError(errorMessage(e));
@@ -71,14 +101,32 @@ export default function SoulseekSearchDialog({ release, onClose, onStarted }: { 
   };
 
   useEffect(() => {
-    // An album's search starts by itself; otherwise there's nothing to search for yet.
-    if (release) void run(query);
+    // An album's or a song's search starts by itself; otherwise there's nothing to search for yet.
+    if (release || song) void run(query);
     else input.current?.focus();
     return () => stop.current?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const folders = useMemo(() => (result?.folders ?? []).filter((f) => filter === 'all' || f.format === filter), [result, filter]);
+
+  const files = useMemo(() => (result?.files ?? []).filter((f) => filter === 'all' || f.path.toLowerCase().endsWith(`.${filter}`)), [result, filter]);
+
+  const pickFile = async (file: SharedFileHit) => {
+    if (!song) return;
+    const key = `${file.user}\n${file.path}`;
+    setStarting(key);
+    setError('');
+    try {
+      await pickSongFile(song.importId, song.key, { user: file.user, path: file.path, size: file.size, bitrate: file.bitrate, duration: file.duration, bitDepth: file.bitDepth });
+      stop.current?.();
+      onClose();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setStarting(null);
+    }
+  };
 
   const download = async (folder: SharedFolder, asAlbum: boolean) => {
     const key = `${folder.user}\n${folder.folder}`;
@@ -103,7 +151,7 @@ export default function SoulseekSearchDialog({ release, onClose, onStarted }: { 
   };
 
   return (
-    <Dialog title="Search Soulseek" icon={<Search className="h-5 w-5" />} onClose={onClose} priority={120} size="xl" divided>
+    <Dialog title={song ? `Find “${song.title}”` : 'Search Soulseek'} icon={<Search className="h-5 w-5" />} onClose={onClose} priority={120} size="xl" divided>
       <form onSubmit={submit} className="flex flex-wrap items-center gap-3">
         <label className="flex min-w-[240px] flex-1 items-center gap-2 rounded border border-white/25 bg-black/40 px-3 py-2.5 transition-colors focus-within:border-white/60">
           <Search className="h-4 w-4 shrink-0 text-white/60" aria-hidden />
@@ -127,12 +175,19 @@ export default function SoulseekSearchDialog({ release, onClose, onStarted }: { 
           {result?.blocked
             ? null
             : result
-              ? `${result.folders.length} ${result.folders.length === 1 ? 'folder' : 'folders'} from ${result.people} ${result.people === 1 ? 'person' : 'people'}${searching ? ' so far' : ''}`
+              ? song
+                ? `${result.files.length} ${result.files.length === 1 ? 'file' : 'files'} from ${result.people} ${result.people === 1 ? 'person' : 'people'}${searching ? ' so far' : ''}`
+                : `${result.folders.length} ${result.folders.length === 1 ? 'folder' : 'folders'} from ${result.people} ${result.people === 1 ? 'person' : 'people'}${searching ? ' so far' : ''}`
               : searching
                 ? 'Asking everyone on Soulseek…'
                 : ''}
         </p>
       </div>
+      {song && (
+        <p className="mt-3 text-xs leading-relaxed text-white/45">
+          Files marked <span className="text-emerald-300">Matches</span> have the title, the artist and the length of <span className="text-white/70">{song.title}</span>. Whichever you pick is downloaded, tagged as this song and added to the playlist.
+        </p>
+      )}
       {release && (
         <p className="mt-3 text-xs leading-relaxed text-white/45">
           Folders with all {total} songs download as <span className="text-white/70">{release.title}</span>: checked against the tracklist, tagged and filed like any album. Other folders download as they are, into your music folder’s Soulseek folder.
@@ -143,6 +198,40 @@ export default function SoulseekSearchDialog({ release, onClose, onStarted }: { 
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           {error || `Soulseek blocks searches for “${result?.blocked}”, so nothing can be found for it there.`}
         </p>
+      )}
+      {song && (
+        <ul className="mt-4 space-y-1" aria-label="Shared files">
+          {files.map((f) => {
+            const key = `${f.user}\n${f.path}`;
+            return (
+              <li key={key} className="flex items-center gap-3 rounded-lg bg-white/[0.04] p-2.5 pl-3">
+                <Music2 className="h-4 w-4 shrink-0 text-white/40" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium" title={f.path}>
+                    {folderName(f.path)}
+                  </span>
+                  <span className="flex flex-wrap items-center gap-x-2 text-xs text-white/50">
+                    <span className={`inline-block h-1.5 w-1.5 rounded-full ${f.freeSlot ? 'bg-emerald-400' : 'bg-amber-400'}`} aria-hidden />
+                    <span>{f.user}</span>
+                    <span>{f.freeSlot ? 'ready to send' : 'has a queue'}</span>
+                    {f.duration != null && <span>· {clock(f.duration)}</span>}
+                    <span>· {megabytes(f.size)}</span>
+                  </span>
+                </span>
+                <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[11px] font-bold">{fileFormat(f)}</span>
+                {f.matches && (
+                  <span className="flex shrink-0 items-center gap-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-300">
+                    <Check className="h-3 w-3" strokeWidth={3} /> Matches
+                  </span>
+                )}
+                <button type="button" className={`${f.matches ? 'nf-btn-red' : 'nf-btn-ghost'} h-9 shrink-0 px-3 text-xs`} disabled={starting != null} onClick={() => void pickFile(f)}>
+                  {starting === key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  Download
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
       <ul className="mt-4 space-y-1.5" aria-label="Shared folders">
         {folders.map((f) => {
@@ -200,9 +289,9 @@ export default function SoulseekSearchDialog({ release, onClose, onStarted }: { 
           );
         })}
       </ul>
-      {result?.done && !result.blocked && folders.length === 0 && (
+      {result?.done && !result.blocked && (song ? files.length === 0 : folders.length === 0) && (
         <p className="py-10 text-center text-sm text-white/50">
-          {result.folders.length ? 'No folders in this format.' : 'Nobody is sharing anything that matches. Try fewer or different words.'}
+          {(song ? result.files.length : result.folders.length) ? `No ${song ? 'files' : 'folders'} in this format.` : 'Nobody is sharing anything that matches. Try fewer or different words.'}
         </p>
       )}
     </Dialog>

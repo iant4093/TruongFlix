@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AlertCircle, ChevronLeft, Download, FolderSearch, Music2, RefreshCw } from 'lucide-react';
+import { AlertCircle, ChevronLeft, Download, FolderSearch, ListMusic, Music2, RefreshCw } from 'lucide-react';
 import { useSectionState } from '../../../lib/sectionMemory';
 import { loadMusicLibrary } from '../../../music/actions';
 import { useMusicPlayer } from '../../../music/player';
@@ -26,6 +26,7 @@ import MusicAlbumDialog from './MusicAlbumDialog';
 import MusicArtistView from './MusicArtistView';
 import MusicDownloadsDialog, { SoulseekDot } from './MusicDownloadsDialog';
 import SoulseekSearchDialog from './SoulseekSearchDialog';
+import MusicPlaylistImport from './MusicPlaylistImport';
 
 const COUNTRY = chartCountry().toUpperCase();
 
@@ -48,6 +49,9 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
   const [genre, setGenre] = useSectionState<string | null>('music:genre', null);
   const [artist, setArtist] = useSectionState<CatalogArtist | null>('music:artist', null);
   const [album, setAlbum] = useState<CatalogAlbum | null>(null);
+  // Import playlist: open, and which import is shown.
+  const [importing, setImporting] = useSectionState('music:importing', false);
+  const [importId, setImportId] = useSectionState<string | null>('music:import-id', null);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [soulseekOpen, setSoulseekOpen] = useState(false);
   const search = useDebounced(query.trim(), 400);
@@ -73,17 +77,20 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
   };
   const openArtist = (a: CatalogArtist) => {
     setAlbum(null);
+    setImporting(false);
     setArtist(a);
     setQuery('');
     window.scrollTo({ top: 0 });
   };
   const goHome = () => {
+    setImporting(false);
     setQuery('');
     setArtist(null);
     setGenre(null);
     window.scrollTo({ top: 0 });
   };
   const pickGenre = (key: string | null) => {
+    setImporting(false);
     setArtist(null);
     setQuery('');
     setGenre(key);
@@ -98,6 +105,21 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
           {kindControl}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            className={`nf-btn-ghost text-sm ${importing ? 'bg-white/15' : ''}`}
+            aria-pressed={importing}
+            onClick={() => {
+              setImporting(true);
+              setImportId(null);
+              setQuery('');
+              setArtist(null);
+              window.scrollTo({ top: 0 });
+            }}
+            title="Import a playlist from Spotify, Apple Music or YouTube"
+          >
+            <ListMusic className="h-4 w-4" />
+            Import playlist
+          </button>
           <button className="nf-btn-ghost text-sm" onClick={() => setSoulseekOpen(true)} title="Search Soulseek and download any folder">
             <FolderSearch className="h-4 w-4" />
             Search Soulseek
@@ -119,11 +141,14 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
           value={query}
           onChange={(v) => {
             setQuery(v);
-            if (v.trim()) setArtist(null);
+            if (v.trim()) {
+              setArtist(null);
+              setImporting(false);
+            }
           }}
           placeholder="Albums, artists, songs"
         />
-        {searching || artist ? (
+        {searching || artist || importing ? (
           <button type="button" onClick={goHome} className="inline-flex items-center gap-1 rounded-full bg-white/10 py-1.5 pl-2 pr-4 text-sm font-semibold hover:bg-white/15">
             <ChevronLeft className="h-4 w-4" /> Back to Music
           </button>
@@ -142,7 +167,9 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
         )}
       </div>
 
-      {search ? (
+      {importing && !search ? (
+        <MusicPlaylistImport openId={importId} onOpen={setImportId} />
+      ) : search ? (
         <SearchResults query={search} onAlbum={setAlbum} onArtist={openArtist} tileState={tileState} />
       ) : artist ? (
         <MusicArtistView artist={artist} onAlbum={setAlbum} tileState={tileState} />

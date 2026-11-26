@@ -1,0 +1,170 @@
+import { beforeEach, expect, it, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined), convertFileSrc: (s: string) => s }));
+const events = vi.hoisted(() => new Map<string, Set<(e: { payload: unknown }) => void>>());
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: async (name: string, cb: (e: { payload: unknown }) => void) => {
+    if (!events.has(name)) events.set(name, new Set());
+    events.get(name)!.add(cb);
+    return () => events.get(name)?.delete(cb);
+  },
+}));
+const scan = vi.hoisted(() => ({ files: new Map<string, { id: number; mtime: number; size: number }>() }));
+vi.mock('../src/services/music', async () => {
+  const { create } = await import('zustand');
+  return { runMusicScan: vi.fn(async () => {}), useMusicScan: create(() => ({ running: false })) };
+});
+vi.mock('../src/services/musicdb', () => ({ musicFileIndex: async () => scan.files }));
+vi.mock('../src/music/actions', () => ({
+  createPlaylist: vi.fn(async (name: string, trackIds: number[]) => ({ id: 77, name, trackIds, updatedAt: 0 })),
+  setPlaylistTracks: vi.fn(async () => {}),
+}));
+
+import { createPlaylist } from '../src/music/actions';
+import { useMusicPlayer } from '../src/music/player';
+import type { MusicTrack } from '../src/music/types';
+import { useMusicDownloads } from '../src/services/musicDownloads';
+import {
+  addImport,
+  coreTitle,
+  inLibrary,
+  parseSongList,
+  pickStoreSong,
+  songArtists,
+  songFromVideo,
+  splitArtists,
+  startImport,
+  usePlaylistImports,
+  type ImportSong,
+} from '../src/services/playlistImport';
+import { useLibraryStore } from '../src/store/useLibraryStore';
+
+const emit = (name: string, payload: unknown) => events.get(name)?.forEach((cb) => cb({ payload }));
+
+beforeEach(() => {
+  vi.mocked(invoke).mockReset();
+  useLibraryStore.setState(useLibraryStore.getInitialState(), true);
+  useMusicDownloads.setState({ status: { state: 'offline', username: '', message: '' }, jobs: {} });
+  usePlaylistImports.setState({ imports: {}, order: [] });
+  scan.files = new Map();
+});
+
+it('reads pasted songs: an exported CSV, or one "Artist - Title" per line', () => {
+  const csv = 'Track URI,Track Name,Artist Name(s),Album Name,Duration (ms)\nspotify:track:1,"Mo Money Mo Problems (feat. Puff Daddy & Mase)","The Notorious B.I.G., Puff Daddy",Life After Death,257000\nspotify:track:2,Hey Ya!,Outkast,Speakerboxxx,235213';
+  expect(parseSongList(csv)).toEqual([
+    { title: 'Mo Money Mo Problems (feat. Puff Daddy & Mase)', artists: ['The Notorious B.I.G.', 'Puff Daddy'], album: 'Life After Death', lengthMs: 257000, appleId: null, cover: null, explicit: false },
+    { title: 'Hey Ya!', artists: ['Outkast'], album: 'Speakerboxxx', lengthMs: 235213, appleId: null, cover: null, explicit: false },
+  ]);
+  const lines = parseSongList('1. Radiohead - Paranoid Android\nDaft Punk – One More Time\n\nJust A Title');
+  expect(lines.map((s) => [s.artists, s.title])).toEqual([
+    [['Radiohead'], 'Paranoid Android'],
+    [['Daft Punk'], 'One More Time'],
+    [[], 'Just A Title'],
+  ]);
+});
+
+it('works out the song in a music video title', () => {
+  expect(songFromVideo('BELLAKEO (Video Oficial) - Peso Pluma, Anitta', 'PesoPluma')).toEqual({ title: 'BELLAKEO', artists: ['Peso Pluma', 'Anitta'] });
+  expect(songFromVideo('Taylor Swift - Anti-Hero (Official Music Video)', 'TaylorSwift')).toEqual({ title: 'Anti-Hero', artists: ['Taylor Swift'] });
+  expect(songFromVideo('Becky G - POR EL CONTRARIO (Performance Video) ft. Ángela Aguilar, Leonardo Aguilar', 'Becky G')).toEqual({ title: 'POR EL CONTRARIO', artists: ['Becky G', 'Ángela Aguilar', 'Leonardo Aguilar'] });
+  // No "Artist - Title": the channel is the artist.
+  expect(songFromVideo('Blinding Lights [Lyrics]', 'The Weeknd')).toEqual({ title: 'Blinding Lights', artists: ['The Weeknd'] });
+});
+
+it('titles and credits are compared by their own words', () => {
+  expect(coreTitle('Mo Money Mo Problems (feat. Puff Daddy & Mase) - 2014 Remaster')).toBe('mo money mo problems');
+  expect(coreTitle('Flower In A Hurricane [From GTAVI: Original Score]')).toBe('flower in a hurricane');
+  expect(splitArtists('KAROL G, Judeline & rusowsky')).toEqual(['KAROL G', 'Judeline', 'rusowsky']);
+  expect(songArtists({ artists: ['Karol G', 'Judeline'], store: { artist: 'KAROL G, Judeline & rusowsky' } as ImportSong['store'] })).toEqual(['KAROL G', 'Judeline', 'rusowsky']);
+});
+
+const row = (trackName: string, artistName: string, trackTimeMillis: number, extra: Record<string, unknown> = {}) => ({
+  wrapperType: 'track',
+  kind: 'song',
+  trackId: 1,
+  trackName,
+  artistName,
+  collectionName: `${trackName} - Single`,
+  trackTimeMillis,
+  trackNumber: 1,
+  discNumber: 1,
+  releaseDate: '2025-10-01T07:00:00Z',
+  primaryGenreName: 'Pop',
+  artworkUrl100: 'https://is1-ssl.mzstatic.com/x.jpg/100x100bb.jpg',
+  ...extra,
+});
+
+it('matches each song to the store by title, artist and length', () => {
+  const song = { title: 'Housewife', artists: ['Tate McRae'], lengthMs: 208810, lengthTrusted: true, explicit: false };
+  const found = pickStoreSong(song, [row('Housewife', 'Karaoke Kings', 208000), row('Housewife (Sped Up)', 'Tate McRae', 150000), row('Housewife', 'Tate McRae', 208810)]);
+  expect(found).toMatchObject({ title: 'Housewife', artist: 'Tate McRae', album: 'Housewife', track: 1, date: '2025-10-01', cover: 'https://is1-ssl.mzstatic.com/x.jpg/600x600bb.jpg' });
+  // Another recording's length is never it.
+  expect(pickStoreSong(song, [row('Housewife', 'Tate McRae', 260000)])).toBeNull();
+  // A music video runs longer than the song: its length is only a hint.
+  expect(pickStoreSong({ ...song, lengthMs: 240000, lengthTrusted: false }, [row('Housewife', 'Tate McRae', 208810)])).not.toBeNull();
+});
+
+it('songs already in the library are recognised', () => {
+  const track = { id: 5, title: 'Paranoid Android', artist: 'Radiohead', albumArtist: 'Radiohead' } as MusicTrack;
+  expect(inLibrary({ title: 'Paranoid Android - Remastered', artists: ['Radiohead'] }, null, [track])?.id).toBe(5);
+  expect(inLibrary({ title: 'Paranoid Android', artists: ['Someone Else'] }, null, [track])).toBeNull();
+});
+
+it('an import skips songs you have, downloads the rest one by one, and makes the playlist in Music', async () => {
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, music_directories: ['C:/Music'], soulseek_username: 'me', soulseek_password: 'pw' } }));
+  useMusicPlayer.setState({
+    api: {} as never,
+    library: { tracks: [{ id: 5, title: 'Paranoid Android', artist: 'Radiohead', albumArtist: 'Radiohead' } as MusicTrack], albums: [], artists: [], playlists: [] },
+  });
+  const requests: Record<string, unknown>[] = [];
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (cmd === 'slsk_status') return { state: 'online', username: 'me', message: '' };
+    if (cmd === 'slsk_jobs') return [];
+    if (cmd === 'slsk_connect') return { state: 'online', username: 'me', message: '' };
+    if (cmd === 'live_artwork') return 'C:/cache/cover.img';
+    if (cmd === 'music_catalog') return String(a.url).includes('Housewife') ? { results: [row('Housewife', 'Tate McRae', 208810)] } : { results: [] };
+    if (cmd === 'slsk_download_song') {
+      const request = a.request as Record<string, unknown>;
+      requests.push(request);
+      return { id: request.id, kind: 'song', group: request.group, releaseId: 'x', album: request.title, artist: request.artist, cover: null, state: 'searching', message: '', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null };
+    }
+    return undefined;
+  });
+  const id = addImport(
+    {
+      source: 'spotify',
+      id: 'p',
+      name: 'Mix',
+      owner: null,
+      cover: null,
+      total: null,
+      songs: [
+        { title: 'Housewife', artists: ['Tate McRae'], album: null, lengthMs: 208810, appleId: null, cover: null, explicit: false },
+        { title: 'Paranoid Android', artists: ['Radiohead'], album: null, lengthMs: 387000, appleId: null, cover: null, explicit: false },
+        { title: 'Nowhere To Be Found', artists: ['Nobody'], album: null, lengthMs: 200000, appleId: null, cover: null, explicit: false },
+      ],
+    },
+    'lossless',
+  );
+  await startImport(id);
+  await vi.waitFor(() => expect(requests).toHaveLength(2));
+  const songs = () => usePlaylistImports.getState().imports[id].songs;
+  expect(songs()[1].state).toBe('owned');
+  // Tagged and searched with the store's details.
+  expect(requests[0]).toMatchObject({ group: id, title: 'Housewife', artists: ['Tate McRae'], album: 'Housewife', lengthMs: 208810, track: 1, date: '2025-10-01', quality: 'lossless', destination: 'C:/Music', coverPath: 'C:/cache/cover.img' });
+  expect(requests[1]).toMatchObject({ title: 'Nowhere To Be Found', album: null, track: null });
+
+  const job = (n: number, patch: Record<string, unknown>) => ({ id: requests[n].id, kind: 'song', group: id, releaseId: 'x', album: 'x', artist: 'x', cover: null, message: '', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null, ...patch });
+  emit('slsk-job', job(1, { state: 'failed', message: 'Nobody on Soulseek is sharing this song right now.' }));
+  expect(songs()[2]).toMatchObject({ state: 'failed', message: 'Nobody on Soulseek is sharing this song right now.' });
+  scan.files = new Map([['C:\\Music\\Tate McRae\\Housewife (2025)\\01 - Housewife.flac', { id: 9, mtime: 0, size: 1 }]]);
+  emit('slsk-job', job(0, { state: 'done', path: 'C:/Music/Tate McRae/Housewife (2025)/01 - Housewife.flac' }));
+  expect(songs()[0].state).toBe('done');
+  // Downloaded and already-owned songs, in the playlist's order.
+  await vi.waitFor(() => expect(createPlaylist).toHaveBeenCalledWith('Mix', [9, 5]));
+  await vi.waitFor(() => expect(usePlaylistImports.getState().imports[id].playlistId).toBe(77));
+  // Each song isn't announced on its own.
+  expect(useLibraryStore.getState().toasts.map((t) => t.message)).toEqual(['Mix is in your music library (1 song not found)']);
+});

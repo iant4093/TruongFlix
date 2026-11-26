@@ -22,7 +22,7 @@ A local media center for macOS and Windows that turns the movies and shows on yo
 
 ---
 
-TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Library metadata stays on your device. Network features include metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers, optional subtitles, synced lyrics, Live TV sports schedules, the music catalogue in Browse (Apple Music charts, the iTunes Search API and artist photos from Apple Music), and torrents and Soulseek album downloads you start yourself.
+TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Library metadata stays on your device. Network features include metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers, optional subtitles, synced lyrics, Live TV sports schedules, the music catalogue in Browse (Apple Music charts, the iTunes Search API and artist photos from Apple Music), the public pages of playlists you import (Spotify, Apple Music, YouTube), and torrents and Soulseek album downloads you start yourself.
 
 ## Screenshots
 
@@ -144,6 +144,8 @@ Screenshots use the development preview with sample metadata and artwork from [T
 - Album downloads come from [Soulseek](https://www.slsknet.org) with your own account (Settings › Music): only a shared folder holding every track of that tracklist is used, matched by title, track number and length, in the quality you pick (FLAC, MP3 256–320 kbps or best available)
 - Only audio files (FLAC, MP3, M4A, Ogg, Opus) are ever downloaded, named by TruongFlix rather than by the person sharing them. Every file is checked to really be audio of the expected size and length. A file that fails is asked for again, songs one person can't send come from the next copy in the same format, and the album is tagged with the store's details and its cover and filed as `Artist/Album (Year)/01 - Title.flac` in your music folder
 - Choose a copy yourself: search Soulseek from an album page and see every shared folder with its format, size, whether its owner can send right away, and how many of the album's songs it has. A folder with all of them downloads as that album (checked, tagged and filed); any other folder, or anything found with Search Soulseek in Browse → Music, downloads as it is into your music folder's `Soulseek` folder
+- Import playlists: paste a Spotify (first 100 songs), Apple Music or YouTube / YouTube Music (first 100 videos) playlist link, or a list of songs or an exported CSV for Tidal, Deezer and the rest. Each song is matched to the store for its exact title, album, cover and length, songs already in your library are skipped, and the rest are found one by one on Soulseek: only a file with the song's title and artist and the right length is taken, never a live take, remix, karaoke or sped-up version the playlist didn't ask for. Each song is tagged and filed under its artist and album, and the playlist appears in Music in its original order
+- Songs an import couldn't find stay listed with the reason, and Find it searches Soulseek for that song so you can pick a file yourself; imports are kept between sessions
 - When an album can't be found, it says why: nobody is sharing it, no copy is in the quality you picked, the closest copy is missing songs, or Soulseek blocks searches for that name
 - A Downloads panel with the Soulseek connection and each album's progress. Sharing your music folders back to the network is off unless you turn it on
 - Catalogue requests are cached by the app, so browsing back and forth is instant; charts start loading as soon as Browse opens, and a chart feed that stalls is skipped rather than waited for
@@ -299,7 +301,8 @@ npm run build
 
 # Rust unit tests: scanner, subtitles and subtitle sync, file management and renaming, intro fingerprinting, NAS helpers,
 # IMDb parsing, VLC, cast protocols (incl. a simulated DLNA TV), torrents, backups, Live TV, browser-access security,
-# Tailscale, game installs, the music catalogue proxy, and album matching, checking and tagging for Soulseek downloads
+# Tailscale, game installs, the music catalogue proxy, playlist pages, and album and song matching, checking and tagging
+# for Soulseek downloads
 cd src-tauri && cargo test
 
 # Network and engine tests (real IMDb datasets, OpenSubtitles, VLC, a simulated Chromecast, Bonjour discovery,
@@ -308,8 +311,12 @@ cd src-tauri && cargo test -- --ignored
 
 # A whole Soulseek album download through a local soulfind server (https://github.com/soulfind-dev/soulfind):
 # one client shares Test Artist/Test Album/0N - {Alpha,Beta,Gamma} Song.flac (31, 47 and 62 s long), and the app finds,
-# downloads, checks, tags and files it
+# downloads, checks, tags and files it, falls back to another copy for a song one person can't send, downloads a folder
+# as it is, and finds a single playlist song
 cd src-tauri && SOULFIND_BIN=/path/to/soulfind TRUONGFLIX_SLSK_TEST_SHARE=/path/to/share cargo test --lib -- --ignored real_album_download --nocapture
+
+# Reading real Spotify, Apple Music and YouTube playlists
+cd src-tauri && cargo test --lib -- --ignored real_playlists --nocapture
 
 # Built-in player smoke test on macOS: renders into a real window and reports drawn frames
 cd src-tauri && TRUONGFLIX_PLAYER_PROBE=1 cargo run --example player_smoke -- /path/to/video.mkv
@@ -339,7 +346,7 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 │   │                       settings, layout and shared UI
 │   ├── services/           Scanner, parser, TMDB, IMDb, OMDb, subtitles, files, renaming, media analysis, player, torrents,
 │   │                       Live TV, casting, streaming, NAS, limits, Wrapped, browser access, updates, SQLite,
-│   │                       music catalogue and Soulseek downloads
+│   │                       music catalogue, Soulseek downloads and playlist imports
 │   ├── music/              Music library screens, player, queue and lyrics (shared with the browser app)
 │   ├── store/              Zustand store and library selectors
 │   ├── games/              Games (Windows only): catalog parsing, installer options, library and install jobs, screens
@@ -349,10 +356,10 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 ├── src-tauri/              Rust backend
 │   ├── src/player/         libmpv bindings, macOS/Windows video surfaces and Live TV multiview
 │   ├── src/games/          Windows game installs: installer reading, install checks, hidden-wizard helper, verification, launching
-│   ├── src/soulseek/       Soulseek session, album matching against the album's tracklist, checking, tagging and filing
+│   ├── src/soulseek/       Soulseek session, album and single-song matching, checking, tagging and filing
 │   ├── src/                Scanner, folder watcher, media analysis (probe, frames, intro detection), torrents, Live TV, VLC,
 │   │                       subtitles and sync, files, backups, IMDb, NAS, Now Playing, media server and stream conversion,
-│   │                       browser-access security, Tailscale, Chromecast/DLNA casting, music library and catalogue proxy
+│   │                       browser-access security, Tailscale, Chromecast/DLNA casting, music library, catalogue proxy and playlist pages
 │   ├── vendor/             Patched librqbit (rarest-first downloads) and inno (installer conditions); see PATCHES.md
 │   ├── capabilities/       Tauri permissions
 │   └── examples/           Smoke tests

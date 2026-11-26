@@ -320,6 +320,171 @@ pub fn queries(artist: &str, album: &str) -> Vec<String> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Single songs (playlist imports)
+// ---------------------------------------------------------------------------
+
+/// One song to find on its own, as a playlist lists it.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WantSong {
+    pub title: String,
+    /// Credited artists, main artist first.
+    pub artists: Vec<String>,
+    #[serde(default)]
+    pub album: Option<String>,
+    /// Unknown (or not trusted, like a music video's) when absent.
+    #[serde(default)]
+    pub length_ms: Option<u32>,
+}
+
+/// Words that make a recording a different version of a song. A file named with one is only
+/// taken when the song's own title names it too.
+const VERSIONS: &[&str] = &[
+    "live", "remix", "remixed", "mix", "instrumental", "instrumentals", "karaoke", "acapella", "cappella", "acoustic", "demo", "cover", "covers", "sped",
+    "slowed", "nightcore", "reverb", "8d", "unplugged", "remake", "tribute", "bootleg", "mashup", "rework", "vip", "extended", "orchestral", "piano",
+];
+
+/// A song title's own words, and the version words it names: "Song (feat. X) - 2014 Remaster"
+/// is "song"; "Song (Live at Wembley)" is "song" and "live".
+pub fn song_words(title: &str) -> (Vec<String>, Vec<String>) {
+    let cut = title.find(['(', '[']).into_iter().chain(title.find(" - ")).min().unwrap_or(title.len());
+    let (core, extras) = title.split_at(cut);
+    let mut own = words(core);
+    // "(I Can't Get No) Satisfaction": the brackets are the start of the name.
+    if own.is_empty() {
+        own = words(&title.replace(['(', ')', '[', ']'], " "));
+    }
+    let extra: Vec<String> = extras.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.chars().map(fold).collect()).collect();
+    let versions = VERSIONS.iter().filter(|v| extra.iter().any(|w| w == *v)).map(|v| v.to_string()).collect();
+    (own, versions)
+}
+
+/// An artist's words, without a leading "The".
+fn artist_words(artist: &str) -> Vec<String> {
+    let mut w = words(artist);
+    if w.len() > 1 && w[0] == "the" {
+        w.remove(0);
+    }
+    w
+}
+
+/// Whether a shared file is this song (in any format): the title in its name, an artist of the
+/// song somewhere in its path, no version the song doesn't name, and the right length.
+pub fn song_matches(want: &WantSong, offer: &Offer) -> bool {
+    song_fit(want, offer).is_some()
+}
+
+/// How closely a file fits the song, or None when it isn't the song.
+fn song_fit(want: &WantSong, offer: &Offer) -> Option<f64> {
+    if !AUDIO.contains(&extension(&offer.path).as_str()) || offer.size < 300_000 {
+        return None;
+    }
+    let stem = basename(&offer.path).rsplit_once('.').map(|(s, _)| s).unwrap_or(basename(&offer.path));
+    let name = words(&stem.replace(['(', ')', '[', ']'], " "));
+    // `words` stops at "feat"; a version can follow it ("Song (feat. X) [Live]").
+    let name_all: Vec<String> = stem.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.chars().map(fold).collect()).collect();
+    let path: Vec<String> = offer.path.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.chars().map(fold).collect()).collect();
+    let (title, versions) = song_words(&want.title);
+    if title.is_empty() {
+        return None;
+    }
+    let found = title.iter().filter(|w| name.contains(w)).count();
+    if found < title.len() && !(title.len() >= 4 && found + 1 >= title.len()) {
+        return None;
+    }
+    if versions.iter().any(|v| !path.contains(v)) {
+        return None;
+    }
+    let artists: Vec<Vec<String>> = want.artists.iter().map(|a| artist_words(a)).filter(|w| !w.is_empty()).collect();
+    let album: Vec<String> = want.album.as_deref().map(|a| words(a.split(['(', '[']).next().unwrap_or(a))).unwrap_or_default();
+    // A live take, a remix or a karaoke track is another recording, in the name or the folder
+    // (unless the word is the song's, its artist's or its album's: Little Mix, "Live Forever").
+    let ours = |v: &str| versions.iter().chain(title.iter()).chain(album.iter()).chain(artists.iter().flatten()).any(|x| x == v);
+    if VERSIONS.iter().any(|v| path.iter().any(|w| w == v) && !ours(v)) {
+        return None;
+    }
+    if !artists.is_empty() && !artists.iter().any(|a| a.iter().all(|w| path.contains(w))) {
+        return None;
+    }
+    let gap = match (want.length_ms, offer.duration) {
+        (Some(ms), Some(s)) => Some((ms as f64 / 1000.0 - s as f64).abs()),
+        _ => None,
+    };
+    if gap.is_some_and(|g| g > 6.0) {
+        return None;
+    }
+    let mut score = match gap {
+        Some(g) if g <= 2.0 => 10.0,
+        Some(g) if g <= 4.0 => 6.0,
+        Some(_) => 2.0,
+        None => 4.0,
+    };
+    if found == title.len() {
+        score += 4.0;
+    }
+    // Words in the name that are neither the title, an artist nor a track number: likely another
+    // edition or a mislabelled file.
+    let known = |w: &String| title.contains(w) || artists.iter().any(|a| a.contains(w)) || w.chars().all(|c| c.is_ascii_digit()) || matches!(w.as_str(), "feat" | "ft" | "featuring" | "the" | "and" | "x");
+    score -= name_all.iter().filter(|w| !known(w)).count().min(8) as f64;
+    if !album.is_empty() && album.iter().all(|w| path.contains(w)) {
+        score += 6.0;
+    }
+    Some(score)
+}
+
+/// Every file that is the song in an allowed format, best first.
+pub fn rank_song(want: &WantSong, offers: &[Offer], quality: Quality) -> Vec<Offer> {
+    let mut scored: Vec<(f64, &Offer)> = offers
+        .iter()
+        .filter(|o| format_allowed(&extension(&o.path), o, quality))
+        .filter_map(|o| {
+            let mut score = song_fit(want, o)?;
+            score += match extension(&o.path).as_str() {
+                "flac" => 30.0 + if o.bit_depth.is_some_and(|d| d >= 24) { 3.0 } else { 0.0 },
+                "mp3" => match o.bitrate {
+                    Some(b) if b >= 320 => 22.0,
+                    Some(b) if b >= 256 => 15.0,
+                    Some(_) => 5.0,
+                    None => 12.0,
+                },
+                _ => 10.0,
+            };
+            if o.free_slot {
+                score += 20.0;
+            }
+            score += (o.speed as f64 / 1_000_000.0).clamp(0.0, 1.0) * 12.0;
+            Some((score, o))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.user.cmp(&b.1.user)));
+    let mut seen = std::collections::HashSet::new();
+    scored.into_iter().filter(|(_, o)| seen.insert((o.user.clone(), o.path.clone()))).map(|(_, o)| o.clone()).collect()
+}
+
+/// What to search Soulseek for to find a song: its main artist and title, and the title alone
+/// when it's distinctive enough.
+pub fn song_queries(want: &WantSong) -> Vec<String> {
+    // One-letter words ("Don't" → "don", "t") match almost anything.
+    let keep = |w: &Vec<String>| w.iter().filter(|w| w.chars().count() > 1).cloned().collect::<Vec<_>>();
+    let (title, versions) = song_words(&want.title);
+    let title: Vec<String> = keep(&title).into_iter().chain(versions).collect();
+    let artist = keep(&want.artists.first().map(|a| artist_words(a)).unwrap_or_default());
+    let mut out = Vec::new();
+    if title.is_empty() {
+        return out;
+    }
+    if !artist.is_empty() {
+        out.push(artist.iter().chain(title.iter()).cloned().collect::<Vec<_>>().join(" "));
+    }
+    let letters: usize = title.iter().map(|w| w.chars().count()).sum();
+    if title.len() >= 3 || letters >= 10 || artist.is_empty() {
+        out.push(title.join(" "));
+    }
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +604,52 @@ mod tests {
         ];
         assert_eq!(coverage(&album(), &offers), 2);
         assert_eq!(coverage(&album(), &[]), 0);
+    }
+
+    fn song(title: &str, artist: &str, secs: Option<u32>) -> WantSong {
+        WantSong { title: title.into(), artists: vec![artist.into()], album: None, length_ms: secs.map(|s| s * 1000) }
+    }
+
+    #[test]
+    fn song_titles_drop_credits_and_remasters_but_keep_versions() {
+        assert_eq!(song_words("Mo Money Mo Problems (feat. Puff Daddy & Mase) - 2014 Remaster"), (vec!["mo".into(), "money".into(), "mo".into(), "problems".into()], vec![]));
+        assert_eq!(song_words("Flower In A Hurricane [From GTAVI: Original Score]").0, ["flower", "in", "a", "hurricane"]);
+        assert_eq!(song_words("Use Somebody (Live at Wembley)"), (vec!["use".into(), "somebody".into()], vec!["live".into()]));
+        assert_eq!(song_words("(I Can't Get No) Satisfaction").0, ["i", "can", "t", "get", "no", "satisfaction"]);
+    }
+
+    #[test]
+    fn songs_are_searched_by_artist_and_title() {
+        assert_eq!(song_queries(&song("Don't Stop Me Now - Remastered 2011", "Queen", None)), ["queen don stop me now", "don stop me now"]);
+        assert_eq!(song_queries(&song("Hello", "Adele", None)), ["adele hello"]);
+        assert_eq!(song_queries(&song("Blinding Lights", "The Weeknd", None)), ["weeknd blinding lights", "blinding lights"]);
+        assert_eq!(song_queries(&song("Shout (Live)", "Tears for Fears", None)), ["tears for fears shout live"]);
+    }
+
+    #[test]
+    fn only_the_song_itself_is_taken() {
+        let want = song("Blinding Lights", "The Weeknd", Some(200));
+        let file = |user: &str, path: &str, secs: u32| Offer { user: user.into(), path: path.into(), size: 25_000_000, bitrate: None, duration: Some(secs), bit_depth: None, free_slot: true, speed: 1 };
+        let offers = vec![
+            file("good", r"Music\The Weeknd\After Hours\09 - Blinding Lights.flac", 201),
+            file("live", r"Music\The Weeknd\Live\Blinding Lights (Live).flac", 203),
+            file("karaoke", r"Karaoke Hits\Blinding Lights.flac", 200),
+            file("other", r"Music\Someone Else\Blinding Lights.flac", 200),
+            file("edit", r"Music\The Weeknd\Blinding Lights (Extended).flac", 260),
+            file("long", r"Music\The Weeknd\Blinding Lights.flac", 230),
+            file("sped", r"Music\The Weeknd\Blinding Lights (sped up).flac", 200),
+        ];
+        let found: Vec<String> = rank_song(&want, &offers, Quality::Any).into_iter().map(|o| o.user).collect();
+        assert_eq!(found, ["good"]);
+        // Asked for by name, a version is fine; and an artist named like one isn't refused.
+        assert!(song_matches(&song("Use Somebody (Live)", "Kings of Leon", None), &file("a", r"Kings of Leon\Live\Use Somebody (Live).mp3", 1)));
+        assert!(song_matches(&song("Shout Out to My Ex", "Little Mix", Some(246)), &file("a", r"Little Mix\Glory Days\01 Shout Out to My Ex.mp3", 246)));
+        // Without a trusted length, the name decides.
+        assert!(song_matches(&song("Blinding Lights", "The Weeknd", None), &file("a", r"x\The Weeknd - Blinding Lights.mp3", 999)));
+        // Formats follow the chosen quality.
+        let mp3 = Offer { path: r"x\The Weeknd - Blinding Lights.mp3".into(), bitrate: Some(320), ..file("m", "", 200) };
+        assert!(rank_song(&want, &[mp3.clone()], Quality::Lossless).is_empty());
+        assert_eq!(rank_song(&want, &[mp3], Quality::Mp3).len(), 1);
     }
 
     #[test]

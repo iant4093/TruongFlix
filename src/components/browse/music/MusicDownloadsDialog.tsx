@@ -1,8 +1,9 @@
-import { Download, FolderOpen, Loader2, Music2, X } from 'lucide-react';
+import { Download, FolderOpen, ListMusic, Loader2, Music2, X } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { cancelAlbumJob, connectSoulseek, dismissAlbumJob, hasSoulseekAccount, isActive, jobLabel, useMusicDownloads, type AlbumJob } from '../../../services/musicDownloads';
 import { errorMessage } from '../../../lib/errors';
+import { SOURCE_NAMES, importCounts, usePlaylistImports } from '../../../services/playlistImport';
 import Dialog from '../../common/Dialog';
 import { CoverArt } from './MusicArt';
 
@@ -13,7 +14,11 @@ export default function MusicDownloadsDialog({ onClose }: { onClose: () => void 
   const status = useMusicDownloads((s) => s.status);
   // A new array on every read would re-render forever: compare the jobs themselves.
   const jobs = useMusicDownloads(useShallow((s) => Object.values(s.jobs)));
-  const ordered = [...jobs].sort((a, b) => Number(isActive(b)) - Number(isActive(a)));
+  // A playlist's songs show as one row for the playlist.
+  const ordered = jobs.filter((j) => !j.group).sort((a, b) => Number(isActive(b)) - Number(isActive(a)));
+  const importOrder = usePlaylistImports((s) => s.order);
+  const imports = usePlaylistImports((s) => s.imports);
+  const playlists = importOrder.map((id) => imports[id]).filter((p) => p && (p.running || p.songs.some((x) => x.state !== 'waiting')));
   const reconnect = () =>
     void connectSoulseek(true).catch((e) => useLibraryStore.getState().toast(errorMessage(e), 'error'));
   return (
@@ -49,7 +54,33 @@ export default function MusicDownloadsDialog({ onClose }: { onClose: () => void 
           </button>
         )}
       </div>
-      {ordered.length === 0 ? (
+      {playlists.length > 0 && (
+        <ul className="mb-2 space-y-2" aria-label="Playlist imports">
+          {playlists.map((p) => {
+            const c = importCounts(p);
+            const got = c.done + c.owned;
+            return (
+              <li key={p.id} className="flex items-center gap-4 rounded-lg p-2">
+                <CoverArt url={p.cover} className="w-14 shrink-0" rounded="rounded" />
+                <div className="min-w-0 flex-1">
+                  <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
+                    <ListMusic className="h-3.5 w-3.5 shrink-0 text-white/50" /> {p.name}
+                  </p>
+                  <p className="truncate text-xs text-white/55">{SOURCE_NAMES[p.source]} playlist</p>
+                  <p className="mt-1 flex items-center gap-1.5 text-xs text-white/65">
+                    {p.running && <Loader2 className="h-3 w-3 animate-spin" />}
+                    {got} of {c.total} songs in your library{c.failed ? ` · ${c.failed} not found` : ''}
+                  </p>
+                  <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/15">
+                    <div className="h-full rounded-full bg-[#ff4560] transition-[width] duration-500" style={{ width: `${c.total ? (got / c.total) * 100 : 0}%` }} />
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {ordered.length === 0 && playlists.length === 0 ? (
         <div className="py-12 text-center text-white/50">
           <Music2 className="mx-auto mb-3 h-9 w-9" />
           Albums you download from Browse appear here.

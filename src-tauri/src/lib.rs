@@ -9,6 +9,7 @@ mod live;
 mod media;
 mod music;
 mod music_catalog;
+mod playlists;
 mod nas;
 mod nowplaying;
 mod player;
@@ -216,6 +217,7 @@ pub fn run() {
             player::cursor_nudge,
             music_catalog::music_catalog,
             music_catalog::music_artist_photo,
+            playlists::music_playlist,
             soulseek::slsk_status,
             soulseek::slsk_connect,
             soulseek::slsk_disconnect,
@@ -224,6 +226,7 @@ pub fn run() {
             soulseek::slsk_cancel,
             soulseek::slsk_dismiss,
             soulseek::slsk_download_folder,
+            soulseek::slsk_download_song,
             soulseek::slsk_search,
             soulseek::slsk_search_stop,
             player::multiview::player_multiview_open,
