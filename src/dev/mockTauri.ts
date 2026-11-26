@@ -1526,6 +1526,12 @@ export function installMocks() {
         // fine for previews) and a pretend Soulseek.
         case 'music_catalog':
           return previewCatalog(String(a.url));
+        case 'music_artist_photo':
+          // Read through the dev server, with the app's rule: only a real artist photo counts.
+          return fetch(`/__apple-music/${a.country}/artist/${a.id}`).then(async (r) => {
+            if (!r.ok) throw new Error(`Apple Music answered ${r.status}`);
+            return /<meta property="og:image" content="([^"]*(?:ArtistImages|\/Features)[^"]*)"/.exec(await r.text())?.[1] ?? null;
+          });
         case 'live_artwork':
           return String(a.url);
         case 'slsk_status':
@@ -1559,19 +1565,22 @@ export function installMocks() {
 // ---------------------------------------------------------------------------
 
 const catalogQueues = new Map<string, Promise<unknown>>();
-/** One request per second per service, as the app does. */
+const get = (url: string) =>
+  fetch(url, { headers: { Accept: 'application/json' } }).then((r) => {
+    if (!r.ok) throw new Error(`The music catalogue answered ${r.status}`);
+    return r.json();
+  });
+/** As the app does: chart feeds straight away, search and lookups 350 ms apart. */
 function previewCatalog(url: string) {
-  const host = new URL(url).host;
+  const parsed = new URL(url);
+  const host = parsed.host;
+  if (host === 'rss.marketingtools.apple.com') return get(`/__apple-charts${parsed.pathname}`);
+  if (host !== 'itunes.apple.com') return get(url);
   const previous = catalogQueues.get(host) ?? Promise.resolve();
   const next = previous
     .catch(() => {})
-    .then(() => new Promise((r) => setTimeout(r, 1100)))
-    .then(() => fetch(url, { headers: { Accept: 'application/json' } }))
-    .then((r) => {
-      if (r.status === 204) return null;
-      if (!r.ok) throw new Error(`The music catalogue answered ${r.status}`);
-      return r.json();
-    });
+    .then(() => new Promise((r) => setTimeout(r, 350)))
+    .then(() => get(url));
   catalogQueues.set(host, next);
   return next;
 }
@@ -1593,7 +1602,8 @@ async function previewConnect(username: string) {
 
 interface PreviewAlbumRequest {
   id: string;
-  releaseMbid: string;
+  releaseId: string;
+  coverUrl: string | null;
   album: string;
   albumArtist: string;
   tracks: unknown[];
@@ -1603,7 +1613,7 @@ interface PreviewAlbumRequest {
 async function previewDownload(req: PreviewAlbumRequest) {
   const { emit } = await import('@tauri-apps/api/event');
   const total = req.tracks.length * 32_000_000;
-  const job = { id: req.id, releaseMbid: req.releaseMbid, album: req.album, artist: req.albumArtist, state: 'searching', message: '', bytes: 0, total, filesDone: 0, filesTotal: req.tracks.length, source: null as null | { user: string; format: string }, path: null as null | string };
+  const job = { id: req.id, releaseId: req.releaseId, cover: req.coverUrl, album: req.album, artist: req.albumArtist, state: 'searching', message: '', bytes: 0, total, filesDone: 0, filesTotal: req.tracks.length, source: null as null | { user: string; format: string }, path: null as null | string };
   const step = async (ms: number, patch: Partial<typeof job>) => {
     await new Promise((r) => setTimeout(r, ms));
     if (previewSoulseek.cancelled.has(req.id)) return false;

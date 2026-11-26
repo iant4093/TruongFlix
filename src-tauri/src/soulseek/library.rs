@@ -1,5 +1,5 @@
 //! What happens to a downloaded album before it joins the music library: every file is checked to
-//! really be audio of the expected kind, size and length; tags are rewritten from MusicBrainz (so
+//! really be audio of the expected kind, size and length; tags are rewritten from the album's catalogue details (so
 //! the library shows exactly the album that was asked for, whatever the files said); the cover is
 //! embedded and saved beside them; and the files are named and filed by the app, never by the
 //! names other people gave them: `Album Artist/Album (Year)/01 - Title.flac`.
@@ -19,19 +19,30 @@ pub struct RequestTrack {
     #[serde(flatten)]
     pub want: WantTrack,
     pub artist: String,
+    #[serde(default)]
     pub recording_mbid: Option<String>,
+    #[serde(default)]
     pub track_mbid: Option<String>,
 }
 
-/// The release to fetch, as MusicBrainz describes it.
+/// The release to fetch, as the catalogue describes it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumRequest {
     pub id: String,
-    pub release_mbid: String,
+    /// The catalogue's id for this release (one download of it at a time).
+    pub release_id: String,
+    /// Written into the tags when the release is known to MusicBrainz.
+    #[serde(default)]
+    pub release_mbid: Option<String>,
+    /// Where the cover came from, for the downloads list.
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    #[serde(default)]
     pub release_group_mbid: Option<String>,
     pub album: String,
     pub album_artist: String,
+    #[serde(default)]
     pub album_artist_mbid: Option<String>,
     pub date: Option<String>,
     pub genre: Option<String>,
@@ -108,7 +119,9 @@ pub fn tag(path: &Path, req: &AlbumRequest, index: usize, cover: Option<&[u8]>) 
     if let Some(genre) = req.genre.as_ref().filter(|g| !g.is_empty()) {
         tag.set_genre(genre.clone());
     }
-    tag.insert_text(ItemKey::MusicBrainzReleaseId, req.release_mbid.clone());
+    if let Some(id) = &req.release_mbid {
+        tag.insert_text(ItemKey::MusicBrainzReleaseId, id.clone());
+    }
     if let Some(id) = &req.release_group_mbid {
         tag.insert_text(ItemKey::MusicBrainzReleaseGroupId, id.clone());
     }
@@ -199,7 +212,9 @@ mod tests {
     fn request(dest: &str, tracks: Vec<(&str, u32, u32)>) -> AlbumRequest {
         AlbumRequest {
             id: "job".into(),
-            release_mbid: "rel".into(),
+            release_id: "itunes:1".into(),
+            release_mbid: Some("rel".into()),
+            cover_url: None,
             release_group_mbid: Some("rg".into()),
             album: "OK Computer".into(),
             album_artist: "Radiohead".into(),

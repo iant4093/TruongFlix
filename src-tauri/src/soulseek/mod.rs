@@ -2,7 +2,7 @@
 //!
 //! One session, logged in with the user's own Soulseek account (from Settings). An album download
 //! searches the network for "artist album", keeps only folders that hold every track of the
-//! MusicBrainz tracklist in an allowed audio format (`matching`), downloads the best one (falling
+//! album's tracklist in an allowed audio format (`matching`), downloads the best one (falling
 //! back to the next when its owner doesn't send them), checks each file, rewrites the tags, and
 //! files the album into the music folder (`library`). Files arrive in a hidden staging folder
 //! inside the music folder, so the library never sees half an album.
@@ -178,9 +178,10 @@ pub struct Source {
 #[serde(rename_all = "camelCase")]
 pub struct Job {
     pub id: String,
-    pub release_mbid: String,
+    pub release_id: String,
     pub album: String,
     pub artist: String,
+    pub cover: Option<String>,
     /// "searching" | "queued" | "downloading" | "checking" | "done" | "failed" | "cancelled"
     pub state: String,
     pub message: String,
@@ -258,9 +259,10 @@ pub fn slsk_download_album(app: AppHandle, request: AlbumRequest) -> Result<Job,
     }
     let job = Job {
         id: request.id.clone(),
-        release_mbid: request.release_mbid.clone(),
+        release_id: request.release_id.clone(),
         album: request.album.clone(),
         artist: request.album_artist.clone(),
+        cover: request.cover_url.clone(),
         state: "searching".into(),
         files_total: request.tracks.len(),
         ..Default::default()
@@ -269,7 +271,7 @@ pub fn slsk_download_album(app: AppHandle, request: AlbumRequest) -> Result<Job,
     {
         let mut jobs = JOBS.lock().unwrap();
         let map = jobs.get_or_insert_with(HashMap::new);
-        if map.values().any(|r| r.job.release_mbid == request.release_mbid && !matches!(r.job.state.as_str(), "done" | "failed" | "cancelled")) {
+        if map.values().any(|r| r.job.release_id == request.release_id && !matches!(r.job.state.as_str(), "done" | "failed" | "cancelled")) {
             return Err("This album is already downloading.".into());
         }
         map.insert(job.id.clone(), Running { job: job.clone(), cancel: cancel.clone() });
@@ -542,7 +544,9 @@ mod tests {
     fn request(dest: &Path, cover: Option<String>, titles: &[(&str, u32)]) -> AlbumRequest {
         AlbumRequest {
             id: "e2e".into(),
-            release_mbid: "11111111-2222-3333-4444-555555555555".into(),
+            release_id: "itunes:e2e".into(),
+            release_mbid: Some("11111111-2222-3333-4444-555555555555".into()),
+            cover_url: None,
             release_group_mbid: None,
             album: "Test Album".into(),
             album_artist: "Test Artist".into(),

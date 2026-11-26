@@ -1,37 +1,38 @@
 import { invoke } from '@tauri-apps/api/core';
 
 /**
- * Browse → Music's catalogue. What's popular and new comes from the iTunes Store's public top-album
- * charts (overall and per genre, for the user's country), the mainstream charts a streaming
- * service would show. Everything exact comes from MusicBrainz: search, artists, discographies and
- * the tracklists downloads are matched and tagged against (chart albums are looked up there when
- * opened). Covers come from Apple's chart artwork and the Cover Art Archive. Requests go through
- * the app (`music_catalog`), which paces them per service and caches the answers.
+ * Browse → Music's catalogue, all from Apple's public data: Apple Music's most-played charts (what
+ * people are actually streaming), and the iTunes Search API for search, artists' discographies and
+ * album tracklists. Each album is one specific release, with exact track titles, numbers, discs and
+ * lengths, which is what downloads are matched against and tagged with. Covers and artist photos
+ * come straight from Apple's image CDN. Requests go through the app (`music_catalog`), which paces
+ * searches and caches answers.
  */
 
-const MB = 'https://musicbrainz.org/ws/2';
-const LB = 'https://api.listenbrainz.org/1';
-
 export interface CatalogAlbum {
-  /** MusicBrainz release group, or `itunes:<id>` for a chart album not looked up yet. */
+  /** iTunes collection id. */
   id: string;
   title: string;
   artist: string;
+  /** iTunes artist id. */
   artistId: string | null;
-  /** Remote cover URL (load it through `CoverArt`). */
+  /** Cover URL (resized with `sizedCover`). */
   cover: string | null;
   year: number | null;
-  /** "Album" | "EP" | "Single" | … */
+  /** "Album" | "EP" | "Single" */
   type: string | null;
-  /** YYYY-MM-DD, when the chart says. */
+  /** YYYY-MM-DD, when known. */
   released?: string | null;
+  explicit?: boolean;
+  /** Genre names, as the store gives them. */
+  genres?: string[];
 }
 
 export interface CatalogArtist {
-  /** MusicBrainz artist id, or `name:<name>` for a chart artist not looked up yet. */
+  /** iTunes artist id. */
   id: string;
   name: string;
-  /** e.g. "Group · United Kingdom". */
+  /** e.g. "Alternative". */
   detail?: string;
 }
 
@@ -49,14 +50,12 @@ export interface CatalogTrack {
   position: number;
   disc: number;
   lengthMs: number | null;
-  recordingId: string | null;
-  trackId: string | null;
 }
 
-/** One edition of an album, with its tracklist: what's downloaded and how it's tagged. */
+/** An album with its tracklist: what's downloaded and how it's tagged. */
 export interface CatalogRelease {
+  /** `itunes:<collection id>`. */
   id: string;
-  groupId: string;
   title: string;
   artist: string;
   artistId: string | null;
@@ -67,84 +66,47 @@ export interface CatalogRelease {
   label: string | null;
   tracks: CatalogTrack[];
   cover: string | null;
-  /** Other editions of the album, for the picker. */
-  editions: { id: string; title: string; date: string | null; country: string | null; tracks: number | null; format: string | null }[];
+  explicit: boolean;
 }
 
 export interface ArtistPage {
-  artist: CatalogArtist & { genres: string[]; begin: string | null; type: string | null; area: string | null };
+  artist: CatalogArtist & { genre: string | null };
   popular: CatalogAlbum[];
   albums: CatalogAlbum[];
   eps: CatalogAlbum[];
   singles: CatalogAlbum[];
 }
 
-/** Genres, as the iTunes Store numbers them. */
-export const GENRES: { id: number; label: string }[] = [
-  { id: 14, label: 'Pop' },
-  { id: 18, label: 'Hip-Hop' },
-  { id: 21, label: 'Rock' },
-  { id: 20, label: 'Alternative' },
-  { id: 15, label: 'R&B' },
-  { id: 6, label: 'Country' },
-  { id: 17, label: 'Dance' },
-  { id: 7, label: 'Electronic' },
-  { id: 12, label: 'Latin' },
-  { id: 10, label: 'Singer/Songwriter' },
-  { id: 1153, label: 'Metal' },
-  { id: 11, label: 'Jazz' },
-  { id: 5, label: 'Classical' },
-  { id: 16, label: 'Soundtrack' },
-  { id: 51, label: 'K-Pop' },
-];
 
 type Json = Record<string, unknown>;
 
-export const catalog = <T = Json>(url: string) => invoke<T>('music_catalog', { url });
+const inflight = new Map<string, Promise<unknown>>();
+/** One request per URL at a time: rows that need the same chart share it. */
+export function catalog<T = Json>(url: string): Promise<T> {
+  let job = inflight.get(url) as Promise<T> | undefined;
+  if (!job) {
+    job = invoke<T>('music_catalog', { url }).finally(() => inflight.delete(url));
+    inflight.set(url, job);
+  }
+  return job;
+}
 
-const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : typeof v === 'number' && Number.isFinite(v) ? String(v) : null);
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const list = (v: unknown) => (Array.isArray(v) ? (v as Json[]) : []);
 const yearOf = (date: unknown) => {
   const y = Number(String(date ?? '').slice(0, 4));
   return y > 1000 ? y : null;
 };
-const label = (v: unknown) => str((v as Json | undefined)?.label);
 
-/** A specific cover image from the Cover Art Archive (as ListenBrainz names them). */
-export const caaCover = (release: unknown, caaId: unknown, size: 250 | 500 = 500) =>
-  str(release) && (num(caaId) || str(caaId)) ? `https://coverartarchive.org/release/${release}/${caaId}-${size}.jpg` : null;
-
-/** An album's chosen front cover (404 when it has none). */
-export const groupCover = (groupId: string, size: 250 | 500 = 250) => `https://coverartarchive.org/release-group/${groupId}/front-${size}`;
-
-/** "Artist & Other feat. Third", as MusicBrainz credits it. */
-export function creditName(credit: unknown): string {
-  return list(credit)
-    .map((c) => `${str(c.name) ?? str((c.artist as Json)?.name) ?? ''}${typeof c.joinphrase === 'string' ? c.joinphrase : ''}`)
-    .join('')
-    .trim();
+/** Apple's artwork at `px` pixels square (its image URLs name their size and crop). */
+export function sizedCover(url: string | null, px: number): string | null {
+  if (!url) return null;
+  const sized = /\/\d+x\d+(bb|cw|cc)\.(png|jpe?g|webp)$/;
+  return sized.test(url) ? url.replace(sized, (_, crop: string) => `/${px}x${px}${crop === 'cw' ? 'cc' : crop}.jpg`) : url;
 }
 
-const firstArtistId = (credit: unknown) => str((list(credit)[0]?.artist as Json | undefined)?.id);
-
-/** The same album appears once, however many editions or rows mention it. */
-export function uniqueAlbums(albums: CatalogAlbum[]): CatalogAlbum[] {
-  const seen = new Set<string>();
-  return albums.filter((a) => {
-    const key = albumKey(a.title, a.artist);
-    if (seen.has(a.id) || seen.has(key)) return false;
-    seen.add(a.id);
-    seen.add(key);
-    return true;
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Charts (iTunes Store)
-// ---------------------------------------------------------------------------
-
-/** The user's country for the charts (from the system language, e.g. en-GB → gb), else the US. */
+/** The user's country for the store (from the system language, e.g. en-GB → gb), else the US. */
 export function chartCountry(locale = typeof navigator === 'undefined' ? 'en-US' : navigator.language): string {
   const region = locale.split(/[-_]/)[1]?.toLowerCase();
   return region && /^[a-z]{2}$/.test(region) ? region : 'us';
@@ -156,303 +118,336 @@ function splitKind(title: string): [string, string] {
   return m ? [m[1], m[2].toUpperCase() === 'EP' ? 'EP' : 'Single'] : [title.trim(), 'Album'];
 }
 
-/** Chart entries from an iTunes top-albums feed, in chart order. */
-export function chartFromFeed(feed: unknown): CatalogAlbum[] {
-  const entries = list(((feed as Json | null)?.feed as Json | undefined)?.entry);
-  return uniqueAlbums(
-    entries.flatMap((e) => {
-      const id = str(((e.id as Json | undefined)?.attributes as Json | undefined)?.['im:id']);
-      const name = label(e['im:name']);
-      const artist = label(e['im:artist']);
-      if (!id || !name || !artist) return [];
-      const [title, type] = splitKind(name);
-      const images = list(e['im:image']);
-      // The biggest thumbnail, asked for at 600px (Apple's image URLs name their size).
-      const art = label(images[images.length - 1]);
-      const cover = art ? art.replace(/\/\d+x\d+bb\.(png|jpg)$/, '/600x600bb.jpg') : null;
-      const released = label(e['im:releaseDate'])?.slice(0, 10) ?? null;
-      return [{ id: `itunes:${id}`, title, artist, artistId: null, cover, year: yearOf(released), type, released }];
-    }),
-  );
-}
-
-/** The top albums now, overall or in one genre. */
-export async function chartAlbums(genre?: number, limit = 100): Promise<CatalogAlbum[]> {
-  const country = chartCountry();
-  const url = `https://itunes.apple.com/${country}/rss/topalbums/limit=${limit}${genre ? `/genre=${genre}` : ''}/json`;
-  return chartFromFeed(await catalog(url));
-}
-
-/** Albums and EPs out in the last six weeks that are charting, newest first. */
-export function recentFrom(charts: CatalogAlbum[][], today = new Date()): CatalogAlbum[] {
-  const cutoff = new Date(today.getTime() - 42 * 86400_000).toISOString().slice(0, 10);
-  const recent = uniqueAlbums(charts.flat()).filter((a) => a.released && a.released >= cutoff && a.type !== 'Single' && !/^various artists$/i.test(a.artist));
-  return recent.sort((a, b) => (b.released ?? '').localeCompare(a.released ?? ''));
-}
-
-export async function newReleases(): Promise<CatalogAlbum[]> {
-  const genres = [undefined, 14, 18, 21, 20, 15, 6, 17];
-  const charts = await Promise.all(genres.map((g) => chartAlbums(g).catch(() => [] as CatalogAlbum[])));
-  return recentFrom(charts);
-}
-
-/** The artists behind the top albums, in chart order. */
-export function artistsFrom(albums: CatalogAlbum[]): CatalogArtist[] {
-  const seen = new Set<string>();
-  return albums.flatMap((a) => {
-    // A shared credit ("A & B") counts for its first artist.
-    const name = a.artist.split(/\s+(?:&|feat\.?|ft\.?|x|with)\s+|,\s*/i)[0].trim();
-    const key = name.toLowerCase();
-    if (!name || seen.has(key) || /^(various artists|cast of|original .*cast)/i.test(name)) return [];
-    seen.add(key);
-    return [{ id: `name:${name}`, name }];
-  });
-}
-
-export async function topArtists(): Promise<CatalogArtist[]> {
-  return artistsFrom(await chartAlbums()).slice(0, 24);
-}
-
-// ---------------------------------------------------------------------------
-// Matching chart entries to MusicBrainz
-// ---------------------------------------------------------------------------
-
-/** A chart title without the edition noise MusicBrainz keeps elsewhere. */
-export function baseTitle(title: string): string {
-  return title
-    .replace(/\s*[([](?:[^)\]]*\b(?:deluxe|edition|remaster(?:ed)?|expanded|anniversary|bonus|version|explicit|clean)\b[^)\]]*)[)\]]/gi, '')
-    .trim();
-}
-
-/** The MusicBrainz release group of an album (chart albums are looked up by title and artist). */
-export async function resolveAlbumId(album: CatalogAlbum): Promise<string> {
-  if (!album.id.startsWith('itunes:')) return album.id;
-  const title = baseTitle(album.title);
-  const q = `releasegroup:${phrase(title)} AND artist:${phrase(album.artist)}`;
-  const data = await catalog(`${MB}/release-group?query=${encodeURIComponent(q)}&limit=10&fmt=json`);
-  const hits = list((data as Json)['release-groups']).filter((g) => (num(g.score) ?? 0) >= 80);
-  // An exact title match wins; then the album over a single of the same name.
-  const exact = hits.find((g) => albumKey(String(g.title), '') === albumKey(title, '') && g['primary-type'] === (album.type ?? 'Album'));
-  const best = exact ?? hits.find((g) => g['primary-type'] === (album.type ?? 'Album')) ?? hits[0];
-  const id = str(best?.id);
-  if (!id) throw new Error('MusicBrainz doesn’t have this album yet, so it can’t be downloaded with an exact tracklist.');
-  return id;
-}
-
-/** The MusicBrainz id of an artist (chart artists are looked up by name). */
-export async function resolveArtistId(artist: CatalogArtist): Promise<string> {
-  if (!artist.id.startsWith('name:')) return artist.id;
-  const data = await catalog(`${MB}/artist?query=${encodeURIComponent(`artist:${phrase(artist.name)}`)}&limit=5&fmt=json`);
-  const hits = list((data as Json).artists).filter((a) => (num(a.score) ?? 0) >= 90);
-  const exact = hits.find((a) => String(a.name).toLowerCase() === artist.name.toLowerCase()) ?? hits[0];
-  const id = str(exact?.id);
-  if (!id) throw new Error(`MusicBrainz doesn’t know ${artist.name} yet.`);
-  return id;
-}
-
-// ---------------------------------------------------------------------------
-// MusicBrainz: search, albums, artists
-// ---------------------------------------------------------------------------
-
-/** Quotes and escapes for MusicBrainz's search syntax. */
-const phrase = (text: string) => `"${text.replace(/["\\]/g, ' ').trim()}"`;
-
-function groupFromSearch(g: Json): CatalogAlbum | null {
-  const id = str(g.id);
-  const title = str(g.title);
-  if (!id || !title) return null;
-  return { id, title, artist: creditName(g['artist-credit']) || 'Unknown artist', artistId: firstArtistId(g['artist-credit']), cover: groupCover(id), year: yearOf(g['first-release-date']), type: str(g['primary-type']) };
-}
-
-export async function searchAlbums(query: string): Promise<CatalogAlbum[]> {
-  const q = `${phrase(query)} AND (primarytype:album OR primarytype:ep) AND status:official`;
-  const data = await catalog(`${MB}/release-group?query=${encodeURIComponent(q)}&limit=30&fmt=json`);
-  return uniqueAlbums(list((data as Json)['release-groups']).filter((g) => (num(g.score) ?? 0) >= 60).map(groupFromSearch).filter((a): a is CatalogAlbum => !!a));
-}
-
-export async function searchArtists(query: string): Promise<CatalogArtist[]> {
-  const data = await catalog(`${MB}/artist?query=${encodeURIComponent(phrase(query))}&limit=10&fmt=json`);
-  return list((data as Json).artists)
-    .filter((a) => (num(a.score) ?? 0) >= 70)
-    .flatMap((a) => {
-      const id = str(a.id);
-      const name = str(a.name);
-      if (!id || !name) return [];
-      const detail = [str(a.type), str((a.area as Json | undefined)?.name), str(a.disambiguation)].filter(Boolean).join(' · ');
-      return [{ id, name, detail }];
-    });
-}
-
-export async function searchSongs(query: string): Promise<CatalogSong[]> {
-  const q = `${phrase(query)} AND status:official`;
-  const data = await catalog(`${MB}/recording?query=${encodeURIComponent(q)}&limit=25&fmt=json`);
-  const seen = new Set<string>();
-  return list((data as Json).recordings)
-    .filter((r) => (num(r.score) ?? 0) >= 70)
-    .flatMap((r) => {
-      const id = str(r.id);
-      const title = str(r.title);
-      // The song's album: its first official album or EP.
-      const release = list(r.releases).find((x) => ['Album', 'EP'].includes(String(((x['release-group'] as Json | undefined) ?? {})['primary-type'])));
-      const group = release?.['release-group'] as Json | undefined;
-      const groupId = str(group?.id);
-      if (!id || !title) return [];
-      const artist = creditName(r['artist-credit']) || 'Unknown artist';
-      const key = `${title.toLowerCase()}|${artist.toLowerCase()}`;
-      if (seen.has(key)) return [];
-      seen.add(key);
-      const album: CatalogAlbum | null = groupId
-        ? { id: groupId, title: str(group?.title) ?? str(release?.title) ?? title, artist, artistId: firstArtistId(r['artist-credit']), cover: groupCover(groupId), year: yearOf(release?.date), type: str(group?.['primary-type']) }
-        : null;
-      return [{ id, title, artist, lengthMs: num(r.length), album }];
-    });
-}
-
-interface ReleaseSummary {
-  id: string;
-  title: string;
-  status: string | null;
-  date: string | null;
-  country: string | null;
-  tracks: number | null;
-  format: string | null;
-}
-
-/**
- * The edition to download: an official one on CD or digital, with the most common tracklist
- * length (not a deluxe box or a one-off bonus edition), released worldwide or in a big market
- * first, earliest first.
- */
-export function pickEdition(releases: ReleaseSummary[]): ReleaseSummary | null {
-  const official = releases.filter((r) => r.status === 'Official' || r.status == null);
-  const pool = official.length ? official : releases;
-  if (!pool.length) return null;
-  const lengths = new Map<number, number>();
-  for (const r of pool) if (r.tracks) lengths.set(r.tracks, (lengths.get(r.tracks) ?? 0) + 1);
-  const common = [...lengths.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
-  const countries = ['XW', 'US', 'GB', 'XE', 'CA', 'AU'];
-  const formatRank = (f: string | null) => (f === 'Digital Media' ? 0 : f === 'CD' ? 1 : f ? 2 : 3);
-  return [...pool].sort((a, b) => {
-    const len = Number(b.tracks === common) - Number(a.tracks === common);
-    if (len) return len;
-    const fmt = formatRank(a.format) - formatRank(b.format);
-    if (fmt) return fmt;
-    const ca = countries.indexOf(a.country ?? '');
-    const cb = countries.indexOf(b.country ?? '');
-    const country = (ca < 0 ? 99 : ca) - (cb < 0 ? 99 : cb);
-    if (country) return country;
-    return (a.date || '9999').localeCompare(b.date || '9999');
-  })[0];
-}
-
-export function releaseFrom(data: Json, editions: CatalogRelease['editions']): CatalogRelease {
-  const group = (data['release-group'] ?? {}) as Json;
-  const groupId = str(group.id) ?? '';
-  const tracks: CatalogTrack[] = list(data.media).flatMap((medium, m) =>
-    list(medium.tracks).map((t, i) => {
-      const recording = (t.recording ?? {}) as Json;
-      return {
-        title: str(t.title) ?? str(recording.title) ?? `Track ${i + 1}`,
-        artist: creditName(t['artist-credit'] ?? recording['artist-credit']) || creditName(data['artist-credit']),
-        position: num(t.position) ?? i + 1,
-        disc: num(medium.position) ?? m + 1,
-        lengthMs: num(t.length) ?? num(recording.length),
-        recordingId: str(recording.id),
-        trackId: str(t.id),
-      };
-    }),
-  );
-  const genres = [...list(data.genres), ...list(group.genres)]
-    .sort((a, b) => (num(b.count) ?? 0) - (num(a.count) ?? 0))
-    .map((g) => str(g.name))
-    .filter((g, i, all): g is string => !!g && all.indexOf(g) === i)
-    .slice(0, 4);
-  const coverArt = (data['cover-art-archive'] ?? {}) as Json;
-  const id = str(data.id) ?? '';
-  return {
-    id,
-    groupId,
-    title: str(data.title) ?? str(group.title) ?? 'Unknown album',
-    artist: creditName(data['artist-credit']) || 'Unknown artist',
-    artistId: firstArtistId(data['artist-credit']),
-    date: str(data.date) ?? str(group['first-release-date']),
-    year: yearOf(data.date ?? group['first-release-date']),
-    type: str(group['primary-type']),
-    genres,
-    label: str(((list(data['label-info'])[0]?.label as Json | undefined) ?? {}).name),
-    tracks,
-    cover: coverArt.front ? `https://coverartarchive.org/release/${id}/front-500` : groupId ? groupCover(groupId, 500) : null,
-    editions,
-  };
-}
-
-/** An album's editions, and the chosen (or given) edition with its tracklist. */
-export async function albumDetail(groupId: string, editionId?: string): Promise<CatalogRelease> {
-  const browse = await catalog(`${MB}/release?release-group=${groupId}&inc=media&limit=100&fmt=json`);
-  const editions: ReleaseSummary[] = list((browse as Json).releases).flatMap((r) => {
-    const id = str(r.id);
-    if (!id) return [];
-    const media = list(r.media);
-    const tracks = media.reduce((n, m) => n + (num(m['track-count']) ?? 0), 0) || null;
-    return [{ id, title: str(r.title) ?? '', status: str(r.status), date: str(r.date), country: str(r.country), tracks, format: str(media[0]?.format) }];
-  });
-  const chosen = (editionId && editions.find((e) => e.id === editionId)) || pickEdition(editions);
-  if (!chosen) throw new Error('MusicBrainz has no tracklist for this album yet.');
-  const data = await catalog(`${MB}/release/${chosen.id}?inc=recordings+artist-credits+genres+release-groups+labels&fmt=json`);
-  return releaseFrom(data as Json, editions.map(({ id, title, date, country, tracks, format }) => ({ id, title, date, country, tracks, format })));
-}
-
-export async function artistDetail(who: CatalogArtist): Promise<ArtistPage> {
-  const id = await resolveArtistId(who);
-  const [info, groups] = await Promise.all([
-    catalog(`${MB}/artist/${id}?inc=genres&fmt=json`),
-    catalog(`${MB}/release-group?artist=${id}&type=album|ep|single&limit=100&fmt=json`),
-  ]);
-  const popularRaw = await catalog<Json[]>(`${LB}/popularity/top-release-groups-for-artist/${id}`).catch(() => [] as Json[]);
-  const a = info as Json;
-  const all = list((groups as Json)['release-groups'])
-    // Compilations, live albums and remixes aren't the discography people browse first.
-    .filter((g) => !list(g['secondary-types']).length)
-    .map(groupFromSearch)
-    .filter((g): g is CatalogAlbum => !!g)
-    .sort((x, y) => (y.year ?? 0) - (x.year ?? 0));
-  const popular = uniqueAlbums(
-    list(popularRaw).flatMap((p) => {
-      const group = (p.release_group ?? {}) as Json;
-      const gid = str(p.release_group_mbid);
-      const title = str(group.name);
-      if (!gid || !title || !['Album', 'EP'].includes(String(group.type)) || list(group.secondary_types ?? []).length) return [];
-      return [{ id: gid, title, artist: str((p.artist as Json | undefined)?.name) ?? str(a.name) ?? '', artistId: id, cover: caaCover(group.caa_release_mbid, group.caa_id) ?? groupCover(gid), year: yearOf(group.date), type: str(group.type) }];
-    }),
-  ).slice(0, 12);
-  return {
-    artist: {
-      id,
-      name: str(a.name) ?? 'Unknown artist',
-      type: str(a.type),
-      area: str((a.area as Json | undefined)?.name),
-      begin: str((a['life-span'] as Json | undefined)?.begin),
-      genres: list(a.genres).sort((x, y) => (num(y.count) ?? 0) - (num(x.count) ?? 0)).map((g) => str(g.name)).filter((g): g is string => !!g).slice(0, 5),
-    },
-    popular,
-    albums: all.filter((g) => g.type === 'Album'),
-    eps: all.filter((g) => g.type === 'EP'),
-    singles: all.filter((g) => g.type === 'Single'),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Library matching
-// ---------------------------------------------------------------------------
-
 const norm = (s: string) =>
   s
     .toLowerCase()
     .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/\(.*?\)|\[.*?\]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
 /** Keys an album by its title and artist, the way the library and the catalogue can both name it. */
 export const albumKey = (title: string, artist: string) => `${norm(title)}|${norm(artist)}`;
+
+/**
+ * Each album once, in the order first seen: the store lists clean and explicit releases (and
+ * chart rows) separately. The explicit release is kept, as that's what people share.
+ */
+export function uniqueAlbums(albums: CatalogAlbum[]): CatalogAlbum[] {
+  const chosen = new Map<string, CatalogAlbum>();
+  const order: string[] = [];
+  for (const a of albums) {
+    const key = albumKey(a.title, a.artist);
+    const seen = chosen.get(key);
+    if (!seen) order.push(key);
+    if (!seen || (a.explicit && !seen.explicit)) chosen.set(key, a);
+  }
+  return order.map((key) => chosen.get(key)!);
+}
+
+// ---------------------------------------------------------------------------
+// Charts (Apple Music's most played)
+// ---------------------------------------------------------------------------
+
+const FEEDS = 'https://rss.marketingtools.apple.com/api/v2';
+
+/** The numeric id at the end of a store link (".../album/name/1097861387?i=1097861390"). */
+export const idFromLink = (href: unknown) => /\/(?:id)?(\d+)(?:\?|$)/.exec(String(href ?? ''))?.[1] ?? null;
+
+const genreNames = (r: Json) => list(r.genres).map((g) => str(g.name)).filter((g): g is string => !!g && g !== 'Music');
+
+/** Albums from a most-played albums feed, in chart order. */
+export function feedAlbums(feed: unknown): CatalogAlbum[] {
+  const rows = list(((feed as Json | null)?.feed as Json | undefined)?.results);
+  return uniqueAlbums(
+    rows.flatMap((r) => {
+      const id = str(r.id);
+      const name = str(r.name);
+      if (!id || !name) return [];
+      const [title, type] = splitKind(name);
+      const released = str(r.releaseDate)?.slice(0, 10) ?? null;
+      return [{
+        id,
+        title,
+        artist: str(r.artistName) ?? 'Unknown artist',
+        artistId: str(r.artistId),
+        cover: sizedCover(str(r.artworkUrl100), 600),
+        year: yearOf(released),
+        type,
+        released,
+        explicit: r.contentAdvisoryRating === 'Explict' || r.contentAdvisoryRating === 'Explicit',
+        genres: genreNames(r),
+      }];
+    }),
+  );
+}
+
+/** The albums behind a most-played songs feed: album id and genres, in chart order. */
+export function feedSongAlbums(feed: unknown): { id: string; genres: string[] }[] {
+  const rows = list(((feed as Json | null)?.feed as Json | undefined)?.results);
+  return rows.flatMap((r) => {
+    const id = /\/album\/[^/]*\/(\d+)/.exec(String(r.url ?? ''))?.[1];
+    return id ? [{ id, genres: genreNames(r) }] : [];
+  });
+}
+
+const mostPlayed = (country: string, kind: 'albums' | 'songs') => catalog(`${FEEDS}/${country}/music/most-played/100/${kind}.json`);
+
+/** Resolves to null after `ms`: a feed that stalls never holds the page up. */
+const within = <T,>(job: Promise<T>, ms: number) => Promise.race([job.catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+
+/**
+ * What's most played right now in the user's country. A request the CDN leaves hanging is
+ * abandoned after a few seconds and asked again once; then the multi-country pool stands in.
+ */
+export async function topAlbums(): Promise<CatalogAlbum[]> {
+  const url = `${FEEDS}/${chartCountry()}/music/most-played/100/albums.json`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const albums = feedAlbums(await within(catalog(url), 4500));
+    if (albums.length) return albums;
+    inflight.delete(url);
+  }
+  const pool = await chartPool();
+  if (!pool.length) throw new Error('Apple Music’s charts couldn’t be reached.');
+  return pool;
+}
+
+/** Countries whose charts fill the genre rows (big English-language markets, plus the user's). */
+const POOL_COUNTRIES = ['us', 'gb', 'ca', 'au'];
+
+/**
+ * Albums people are streaming most, ranked by how high they and their songs chart in the user's
+ * country and the big English-language markets; each carries the genres its chart entries name.
+ */
+export async function chartPool(): Promise<CatalogAlbum[]> {
+  const countries = [...new Set([chartCountry(), ...POOL_COUNTRIES])];
+  // Every feed at once; one that's slow to answer (Apple's CDN sometimes stalls) is left out.
+  const feeds = await Promise.all(
+    countries.map(async (cc) => {
+      const [albums, songs] = await Promise.all([within(mostPlayed(cc, 'albums'), 4000), within(mostPlayed(cc, 'songs'), 4000)]);
+      return { cc, albums: feedAlbums(albums), songs: feedSongAlbums(songs) };
+    }),
+  );
+  if (!feeds.some((f) => f.albums.length || f.songs.length)) throw new Error('Apple Music’s charts couldn’t be reached.');
+  const score = new Map<string, number>();
+  const genres = new Map<string, Set<string>>();
+  const known = new Map<string, CatalogAlbum>();
+  const add = (id: string, rank: number, names: string[]) => {
+    score.set(id, (score.get(id) ?? 0) + (101 - Math.min(rank, 100)));
+    const set = genres.get(id) ?? new Set<string>();
+    names.forEach((g) => set.add(g));
+    genres.set(id, set);
+  };
+  for (const feed of feeds) {
+    feed.albums.forEach((a, i) => {
+      known.set(a.id, known.get(a.id) ?? a);
+      add(a.id, i + 1, a.genres ?? []);
+    });
+    feed.songs.forEach((s, i) => add(s.id, i + 1, s.genres));
+  }
+  // Albums known only from their songs are looked up together, 50 at a time (the store's limit
+  // for one lookup), most played first.
+  const missing = [...new Set(feeds.flatMap((f) => f.songs.map((s) => s.id)))]
+    .filter((id) => !known.has(id))
+    .sort((a, b) => (score.get(b) ?? 0) - (score.get(a) ?? 0))
+    .slice(0, 200);
+  const batches = Array.from({ length: Math.ceil(missing.length / 50) }, (_, i) => missing.slice(i * 50, i * 50 + 50));
+  const answers = await Promise.all(batches.map((ids) => within(catalog(`${API}/lookup?id=${ids.join(',')}&country=${chartCountry()}`), 8000)));
+  for (const data of answers) {
+    for (const r of list((data as Json | null)?.results)) {
+      const album = r.wrapperType === 'collection' ? albumFrom(r) : null;
+      if (album && !known.has(album.id)) known.set(album.id, { ...album, genres: [str(r.primaryGenreName)].filter((g): g is string => !!g) });
+    }
+  }
+  const ranked = [...known.values()]
+    .map((a) => ({ ...a, genres: [...new Set([...(genres.get(a.id) ?? []), ...(a.genres ?? [])])] }))
+    .sort((a, b) => (score.get(b.id) ?? 0) - (score.get(a.id) ?? 0));
+  return uniqueAlbums(ranked);
+}
+
+/** Genres as chips, each matching the store's genre names; only those with enough music show. */
+export const GENRES: { key: string; label: string; names: string[] }[] = [
+  { key: 'pop', label: 'Pop', names: ['Pop', 'K-Pop', 'Pop Latino'] },
+  { key: 'hiphop', label: 'Hip-Hop', names: ['Hip-Hop/Rap', 'Hip-Hop', 'Rap', 'UK Hip-Hop', 'Drill', 'Trap'] },
+  { key: 'rnb', label: 'R&B', names: ['R&B/Soul', 'Soul', 'Contemporary R&B'] },
+  { key: 'country', label: 'Country', names: ['Country', 'Contemporary Country'] },
+  { key: 'alternative', label: 'Alternative', names: ['Alternative', 'Indie Rock', 'Indie Pop'] },
+  { key: 'rock', label: 'Rock', names: ['Rock', 'Hard Rock', 'Metal', 'Punk', 'Classic Rock'] },
+  { key: 'latin', label: 'Latin', names: ['Latin', 'Urbano latino', 'Música Mexicana', 'Regional Mexicano', 'Pop Latino', 'Reggaeton'] },
+  { key: 'dance', label: 'Dance & Electronic', names: ['Dance', 'Electronic', 'House', 'Techno', 'Electronica'] },
+  { key: 'kpop', label: 'K-Pop', names: ['K-Pop'] },
+  { key: 'singer', label: 'Singer/Songwriter', names: ['Singer/Songwriter', 'Folk'] },
+  { key: 'soundtrack', label: 'Soundtracks', names: ['Soundtrack', 'Original Score'] },
+  { key: 'holiday', label: 'Holiday', names: ['Holiday', 'Christmas', 'Christmas: Pop'] },
+];
+
+export const inGenre = (album: CatalogAlbum, key: string) => {
+  const genre = GENRES.find((g) => g.key === key);
+  return !!genre && (album.genres ?? []).some((g) => genre.names.includes(g));
+};
+
+/** The genres with enough charting albums to fill a row. */
+export const genresIn = (pool: CatalogAlbum[], min = 6) => GENRES.filter((g) => pool.filter((a) => inGenre(a, g.key)).length >= min);
+
+/** Albums and EPs out in the last six weeks, most played first. */
+export function recentFrom(pool: CatalogAlbum[], today = new Date()): CatalogAlbum[] {
+  const cutoff = new Date(today.getTime() - 42 * 86400_000).toISOString().slice(0, 10);
+  return pool.filter((a) => a.released && a.released >= cutoff && a.type !== 'Single' && !/^various artists$/i.test(a.artist));
+}
+
+/** The artists behind the most played albums, in order. */
+export function artistsFrom(albums: CatalogAlbum[]): CatalogArtist[] {
+  const seen = new Set<string>();
+  return albums.flatMap((a) => {
+    const name = a.artist.split(/\s+(?:&|feat\.?|ft\.?|x|with)\s+|,\s*/i)[0].trim();
+    const key = name.toLowerCase();
+    if (!a.artistId || !name || seen.has(key) || seen.has(a.artistId) || /^(various artists|cast of|original .*cast)/i.test(name)) return [];
+    seen.add(key);
+    seen.add(a.artistId);
+    return [{ id: a.artistId, name }];
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Search, albums and artists (iTunes Search API)
+// ---------------------------------------------------------------------------
+
+const API = 'https://itunes.apple.com';
+
+/** An album from a search or lookup result. */
+export function albumFrom(r: Json): CatalogAlbum | null {
+  const id = str(r.collectionId);
+  const name = str(r.collectionName);
+  if (!id || !name) return null;
+  const [title, kind] = splitKind(name);
+  const tracks = num(r.trackCount);
+  // The store marks EPs and singles in the title; very short releases without one are singles.
+  const type = kind !== 'Album' ? kind : tracks != null && tracks <= 2 ? 'Single' : 'Album';
+  const released = str(r.releaseDate)?.slice(0, 10) ?? null;
+  return {
+    id,
+    title,
+    artist: str(r.artistName) ?? 'Unknown artist',
+    artistId: str(r.artistId),
+    cover: sizedCover(str(r.artworkUrl100), 600),
+    year: yearOf(released),
+    type,
+    released,
+    explicit: r.collectionExplicitness === 'explicit',
+  };
+}
+
+export async function searchMusic(query: string): Promise<{ albums: CatalogAlbum[]; artists: CatalogArtist[]; songs: CatalogSong[] }> {
+  const term = encodeURIComponent(query.trim());
+  const country = chartCountry();
+  const [albumData, songData] = await Promise.all([
+    catalog(`${API}/search?term=${term}&media=music&entity=album&limit=50&country=${country}`),
+    catalog(`${API}/search?term=${term}&media=music&entity=song&limit=40&country=${country}`),
+  ]);
+  const albumRows = list((albumData as Json | null)?.results);
+  const songRows = list((songData as Json | null)?.results).filter((r) => r.wrapperType === 'track' && r.kind === 'song');
+  const albums = uniqueAlbums(albumRows.map(albumFrom).filter((a): a is CatalogAlbum => !!a));
+  const seen = new Set<string>();
+  const songs: CatalogSong[] = songRows.flatMap((r) => {
+    const id = str(r.trackId);
+    const title = str(r.trackName);
+    const artist = str(r.artistName) ?? 'Unknown artist';
+    const key = `${title?.toLowerCase()}|${artist.toLowerCase()}`;
+    if (!id || !title || seen.has(key)) return [];
+    seen.add(key);
+    return [{ id, title, artist, lengthMs: num(r.trackTimeMillis), album: albumFrom(r) }];
+  });
+  // Artists whose name matches what was typed, as they appear in the results.
+  const words = norm(query).split(' ').filter(Boolean);
+  const artists = new Map<string, CatalogArtist>();
+  for (const r of [...albumRows, ...songRows]) {
+    const id = str(r.artistId);
+    const name = str(r.artistName);
+    if (!id || !name || artists.has(id) || /^various artists$/i.test(name)) continue;
+    const nameWords = norm(name).split(' ');
+    if (words.length && words.every((w) => nameWords.some((n) => n.startsWith(w)))) artists.set(id, { id, name, detail: str(r.primaryGenreName) ?? undefined });
+  }
+  return { albums, artists: [...artists.values()].slice(0, 10), songs };
+}
+
+/** "℗ 1997 XL Recordings Ltd" → "XL Recordings Ltd". */
+export function labelFrom(copyright: unknown): string | null {
+  const text = str(copyright);
+  if (!text) return null;
+  const cleaned = text
+    .replace(/^(?:[℗©]|\([cCpP]\))\s*/, '')
+    .replace(/^\d{4}(?:\s*[-,]\s*\d{4})*\s*/, '')
+    .trim();
+  return cleaned || null;
+}
+
+/** An album and its tracklist from an iTunes lookup. */
+export function releaseFrom(lookup: unknown): CatalogRelease {
+  const rows = list((lookup as Json | null)?.results);
+  const collection = rows.find((r) => r.wrapperType === 'collection');
+  const album = collection && albumFrom(collection);
+  if (!collection || !album) throw new Error('This album isn’t in the store any more.');
+  const tracks: CatalogTrack[] = rows
+    .filter((r) => r.wrapperType === 'track' && (r.kind === 'song' || r.kind == null))
+    .map((r) => ({
+      title: str(r.trackName) ?? 'Untitled',
+      artist: str(r.artistName) ?? album.artist,
+      position: num(r.trackNumber) ?? 0,
+      disc: num(r.discNumber) ?? 1,
+      lengthMs: num(r.trackTimeMillis),
+    }))
+    .filter((t) => t.position > 0)
+    .sort((a, b) => a.disc - b.disc || a.position - b.position);
+  return {
+    id: `itunes:${album.id}`,
+    title: album.title,
+    artist: album.artist,
+    artistId: album.artistId,
+    date: album.released ?? null,
+    year: album.year,
+    type: album.type,
+    genres: [str(collection.primaryGenreName)].filter((g): g is string => !!g && g !== 'Music'),
+    label: labelFrom(collection.copyright),
+    tracks,
+    cover: album.cover,
+    explicit: !!album.explicit,
+  };
+}
+
+export async function albumDetail(id: string): Promise<CatalogRelease> {
+  const release = releaseFrom(await catalog(`${API}/lookup?id=${encodeURIComponent(id)}&entity=song&limit=200&country=${chartCountry()}`));
+  if (!release.tracks.length) throw new Error('The store doesn’t list this album’s songs, so it can’t be downloaded.');
+  return release;
+}
+
+export async function artistDetail(who: CatalogArtist): Promise<ArtistPage> {
+  const data = await catalog(`${API}/lookup?id=${encodeURIComponent(who.id)}&entity=album&limit=200&country=${chartCountry()}`);
+  const rows = list((data as Json | null)?.results);
+  const info = rows.find((r) => r.wrapperType === 'artist');
+  // The store lists an artist's albums most popular first.
+  const all = uniqueAlbums(rows.filter((r) => r.wrapperType === 'collection').map(albumFrom).filter((a): a is CatalogAlbum => !!a));
+  const byDate = (items: CatalogAlbum[]) => [...items].sort((a, b) => (b.released ?? '').localeCompare(a.released ?? ''));
+  return {
+    artist: { id: who.id, name: str(info?.artistName) ?? who.name, genre: str(info?.primaryGenreName) },
+    popular: all.filter((a) => a.type !== 'Single').slice(0, 12),
+    albums: byDate(all.filter((a) => a.type === 'Album')),
+    eps: byDate(all.filter((a) => a.type === 'EP')),
+    singles: byDate(all.filter((a) => a.type === 'Single')),
+  };
+}
+
+const photos = new Map<string, Promise<string | null>>();
+/** An artist's photo from their Apple Music page (null when they have none, or for now). */
+export function artistPhoto(id: string): Promise<string | null> {
+  let job = photos.get(id);
+  if (!job) {
+    job = invoke<string | null>('music_artist_photo', { id, country: chartCountry() }).catch(() => {
+      // Not remembered: the next time this artist shows, it's asked for again.
+      photos.delete(id);
+      return null;
+    });
+    photos.set(id, job);
+  }
+  return job;
+}

@@ -215,6 +215,7 @@ pub fn run() {
             player::player_layout,
             player::cursor_nudge,
             music_catalog::music_catalog,
+            music_catalog::music_artist_photo,
             soulseek::slsk_status,
             soulseek::slsk_connect,
             soulseek::slsk_disconnect,

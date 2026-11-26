@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AlertCircle, Download, Music2, RefreshCw } from 'lucide-react';
+import { AlertCircle, ChevronLeft, Download, Music2, RefreshCw } from 'lucide-react';
 import { useSectionState } from '../../../lib/sectionMemory';
 import { loadMusicLibrary } from '../../../music/actions';
 import { useMusicPlayer } from '../../../music/player';
 import {
   albumKey,
-  chartAlbums,
+  artistsFrom,
   chartCountry,
+  chartPool,
   GENRES,
-  newReleases,
-  searchAlbums,
-  searchArtists,
-  searchSongs,
-  topArtists,
+  genresIn,
+  inGenre,
+  recentFrom,
+  searchMusic,
+  topAlbums,
   type CatalogAlbum,
   type CatalogArtist,
 } from '../../../services/musicCatalog';
@@ -37,22 +38,24 @@ function useDebounced<T>(value: T, ms: number) {
 }
 
 /**
- * Browse → Music: what's popular and new, genres, search, artists and albums, built like a
+ * Browse → Music: what people are streaming, genres, search, artists and albums, built like a
  * streaming service's browse page (square covers, rows that scroll sideways) rather than the
  * movie posters. Albums open a page with their tracklist and a Download button.
  */
 export default function MusicBrowse({ kindControl }: { kindControl: ReactNode }) {
   const [query, setQuery] = useSectionState('music:query', '');
-  const [genre, setGenre] = useSectionState<number | null>('music:genre', null);
+  const [genre, setGenre] = useSectionState<string | null>('music:genre', null);
   const [artist, setArtist] = useSectionState<CatalogArtist | null>('music:artist', null);
   const [album, setAlbum] = useState<CatalogAlbum | null>(null);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
-  const search = useDebounced(query.trim(), 450);
+  const search = useDebounced(query.trim(), 400);
   const library = useMusicPlayer((s) => s.library);
   const jobs = useMusicDownloads((s) => s.jobs);
   const status = useMusicDownloads((s) => s.status.state);
   const activeJobs = Object.values(jobs).filter(isActive).length;
-  const top = useRef<HTMLDivElement>(null);
+  // One pool of what's most played feeds new releases, artists and every genre.
+  const pool = useCatalogQuery('chart-pool', chartPool);
+  const genres = useMemo(() => (pool.data ? genresIn(pool.data) : []), [pool.data]);
 
   useEffect(() => {
     void initMusicDownloads().catch(() => {});
@@ -72,14 +75,21 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
     setQuery('');
     window.scrollTo({ top: 0 });
   };
-  const pickGenre = (id: number | null) => {
+  const goHome = () => {
+    setQuery('');
+    setArtist(null);
+    setGenre(null);
+    window.scrollTo({ top: 0 });
+  };
+  const pickGenre = (key: string | null) => {
     setArtist(null);
     setQuery('');
-    setGenre(id);
+    setGenre(key);
   };
+  const searching = !!query.trim();
 
   return (
-    <div ref={top} className="px-[4%] pb-24 pt-[108px]">
+    <div className="px-[4%] pb-24 pt-[108px]">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-4">
           <h2 className="text-3xl font-bold">Browse</h2>
@@ -93,7 +103,7 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
         </button>
       </div>
 
-      <div className="mb-8 flex flex-wrap items-center gap-4">
+      <div className="mb-6 flex flex-wrap items-center gap-4">
         <SearchField
           className="min-w-[260px] flex-1 sm:flex-none"
           inputClassName="w-full sm:w-80 scroll-mt-24"
@@ -105,16 +115,21 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
           }}
           placeholder="Albums, artists, songs"
         />
-        {!query.trim() && !artist && (
+        {searching || artist ? (
+          <button type="button" onClick={goHome} className="inline-flex items-center gap-1 rounded-full bg-white/10 py-1.5 pl-2 pr-4 text-sm font-semibold hover:bg-white/15">
+            <ChevronLeft className="h-4 w-4" /> Back to Music
+          </button>
+        ) : (
           <div className="-my-1 flex min-w-0 flex-1 gap-2 overflow-x-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="group" aria-label="Genres">
             <Chip active={!genre} onClick={() => pickGenre(null)}>
               For you
             </Chip>
-            {GENRES.map((g) => (
-              <Chip key={g.id} active={genre === g.id} onClick={() => pickGenre(g.id)}>
+            {genres.map((g) => (
+              <Chip key={g.key} active={genre === g.key} onClick={() => pickGenre(g.key)}>
                 {g.label}
               </Chip>
             ))}
+            {!pool.data && !pool.error && Array.from({ length: 6 }, (_, i) => <Bone key={i} className="h-8 w-20 shrink-0 rounded-full" tone="soft" />)}
           </div>
         )}
       </div>
@@ -122,11 +137,11 @@ export default function MusicBrowse({ kindControl }: { kindControl: ReactNode })
       {search ? (
         <SearchResults query={search} onAlbum={setAlbum} onArtist={openArtist} tileState={tileState} />
       ) : artist ? (
-        <MusicArtistView artist={artist} onBack={() => setArtist(null)} onAlbum={setAlbum} tileState={tileState} />
+        <MusicArtistView artist={artist} onAlbum={setAlbum} tileState={tileState} />
       ) : genre ? (
-        <GenreView genre={genre} onAlbum={setAlbum} tileState={tileState} />
+        <GenreView genre={genre} pool={pool} onAlbum={setAlbum} tileState={tileState} />
       ) : (
-        <Home onAlbum={setAlbum} onArtist={openArtist} onGenre={pickGenre} tileState={tileState} />
+        <Home pool={pool} genres={genres} onAlbum={setAlbum} onArtist={openArtist} onGenre={pickGenre} tileState={tileState} />
       )}
 
       {album && <MusicAlbumDialog key={album.id} album={album} onClose={() => setAlbum(null)} onArtist={openArtist} active={!downloadsOpen} />}
@@ -160,59 +175,57 @@ function ShelfError({ message, retry }: { message: string; retry: () => void }) 
   );
 }
 
-/** Mounts its content once it's near the screen, so rows further down load as you get to them. */
-function WhenNear({ children, height = 300 }: { children: ReactNode; height?: number }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [near, setNear] = useState(false);
-  useEffect(() => {
-    if (!ref.current) return;
-    const observer = new IntersectionObserver(([e]) => e.isIntersecting && setNear(true), { rootMargin: '400px' });
-    observer.observe(ref.current);
-    return () => observer.disconnect();
-  }, []);
-  return <div ref={ref} style={near ? undefined : { minHeight: height }}>{near && children}</div>;
-}
-
 interface ViewProps {
   onAlbum: (album: CatalogAlbum) => void;
   tileState: (album: CatalogAlbum) => TileState;
 }
 
-function Home({ onAlbum, onArtist, onGenre, tileState }: ViewProps & { onArtist: (a: CatalogArtist) => void; onGenre: (id: number) => void }) {
-  const charts = useCatalogQuery('chart:all', () => chartAlbums());
-  const fresh = useCatalogQuery('new-releases', newReleases);
-  const artists = useCatalogQuery('top-artists', topArtists);
+type Pool = ReturnType<typeof useCatalogQuery<CatalogAlbum[]>>;
+
+function Home({ pool, genres, onAlbum, onArtist, onGenre, tileState }: ViewProps & { pool: Pool; genres: typeof GENRES; onArtist: (a: CatalogArtist) => void; onGenre: (key: string) => void }) {
+  const charts = useCatalogQuery('top-albums', topAlbums);
+  const fresh = useMemo(() => (pool.data ? recentFrom(pool.data) : null), [pool.data]);
+  const artists = useMemo(() => (pool.data ? artistsFrom(pool.data).slice(0, 24) : null), [pool.data]);
   const top = charts.data?.[0];
   const featured = [
-    top && { album: top, label: 'Number one album' },
-    ...(fresh.data ?? []).filter((a) => a.id !== top?.id).slice(0, top ? 2 : 3).map((album) => ({ album, label: 'New release' })),
+    top && { album: top, label: 'Most played album' },
+    ...(fresh ?? []).filter((a) => a.id !== top?.id).slice(0, top ? 2 : 3).map((album) => ({ album, label: 'New release' })),
   ].filter((f): f is { album: CatalogAlbum; label: string } => !!f);
 
   return (
     <>
-      <section className="mb-10 grid gap-4 md:grid-cols-3" aria-label="Featured">
-        {featured.length
+      <section className="mb-8 grid gap-4 md:grid-cols-3" aria-label="Featured">
+        {featured.length >= 3 || (featured.length && pool.error)
           ? featured.map((f) => <FeatureCard key={f.album.id + f.label} album={f.album} label={f.label} onOpen={onAlbum} />)
           : Array.from({ length: 3 }, (_, i) => <Bone key={i} className="h-40 rounded-xl" />)}
       </section>
 
-      <Shelf title="Top albums" subtitle={`The most popular albums right now · ${COUNTRY}`} loading={charts.loading}>
-        {charts.error ? <ShelfError message={charts.error} retry={charts.retry} /> : charts.data?.slice(0, 40).map((a, i) => <AlbumTile key={a.id} album={a} rank={i < 10 ? i + 1 : undefined} state={tileState(a)} onOpen={onAlbum} className={SHELF_TILE} />)}
+      <Shelf title="Top albums" subtitle={`Most played on Apple Music right now · ${COUNTRY}`} loading={charts.loading}>
+        {charts.error ? <ShelfError message={charts.error} retry={charts.retry} /> : charts.data?.slice(0, 50).map((a, i) => <AlbumTile key={a.id} album={a} rank={i < 10 ? i + 1 : undefined} state={tileState(a)} onOpen={onAlbum} className={SHELF_TILE} />)}
       </Shelf>
 
-      <Shelf title="New releases" subtitle="Charting albums and EPs from the last six weeks" loading={fresh.loading} empty={fresh.data && !fresh.data.length ? 'Nothing new is charting right now.' : undefined}>
-        {fresh.error ? <ShelfError message={fresh.error} retry={fresh.retry} /> : fresh.data?.slice(0, 30).map((a) => <AlbumTile key={a.id} album={a} state={tileState(a)} onOpen={onAlbum} className={SHELF_TILE} />)}
+      <Shelf title="New releases" subtitle="Albums and EPs out in the last six weeks that people are playing" loading={!fresh && !pool.error} empty={fresh && !fresh.length ? 'Nothing new is charting right now.' : undefined}>
+        {pool.error ? <ShelfError message={pool.error} retry={pool.retry} /> : fresh?.slice(0, 30).map((a) => <AlbumTile key={a.id} album={a} state={tileState(a)} onOpen={onAlbum} className={SHELF_TILE} />)}
       </Shelf>
 
-      <Shelf title="Popular artists" subtitle="From this week’s top albums" loading={artists.loading}>
-        {artists.error ? <ShelfError message={artists.error} retry={artists.retry} /> : artists.data?.map((a) => <ArtistBubble key={a.id} artist={a} onOpen={onArtist} />)}
+      <Shelf title="Popular artists" subtitle="Behind the most played music" loading={!artists && !pool.error} round>
+        {artists?.map((a) => <ArtistBubble key={a.id} artist={a} onOpen={onArtist} />)}
       </Shelf>
 
-      {GENRES.slice(0, 8).map((g) => (
-        <WhenNear key={g.id}>
-          <GenreShelf genre={g.id} label={g.label} onAlbum={onAlbum} onMore={() => onGenre(g.id)} tileState={tileState} />
-        </WhenNear>
-      ))}
+      {pool.data &&
+        genres.map((g) => (
+          <Shelf
+            key={g.key}
+            title={g.label}
+            action={
+              <button className="text-sm font-semibold text-white/60 hover:text-white" onClick={() => onGenre(g.key)}>
+                See all
+              </button>
+            }
+          >
+            {pool.data!.filter((a) => inGenre(a, g.key)).slice(0, 20).map((a) => <AlbumTile key={a.id} album={a} state={tileState(a)} onOpen={onAlbum} className={SHELF_TILE} />)}
+          </Shelf>
+        ))}
     </>
   );
 }
@@ -221,10 +234,10 @@ function FeatureCard({ album, label, onOpen }: { album: CatalogAlbum; label: str
   return (
     <button type="button" onClick={() => onOpen(album)} className="group relative flex h-40 items-center gap-5 overflow-hidden rounded-xl bg-white/5 p-4 text-left outline-none ring-white/70 focus-visible:ring-2">
       <div className="pointer-events-none absolute inset-0 opacity-70">
-        <CoverArt url={album.cover} className="h-full w-full scale-150 blur-2xl" rounded="" eager />
+        <CoverArt url={album.cover} px={100} className="h-full w-full scale-150 blur-2xl" rounded="" eager />
       </div>
       <div className="absolute inset-0 bg-gradient-to-r from-black/30 to-black/70" />
-      <CoverArt url={album.cover} eager className="relative w-32 shrink-0 shadow-xl transition duration-300 group-hover:scale-[1.03]" />
+      <CoverArt url={album.cover} px={300} eager className="relative w-32 shrink-0 shadow-xl transition duration-300 group-hover:scale-[1.03]" />
       <div className="relative min-w-0">
         <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-white/70">{label}</p>
         <p className="mt-1 line-clamp-2 text-lg font-bold leading-tight">{album.title}</p>
@@ -234,42 +247,25 @@ function FeatureCard({ album, label, onOpen }: { album: CatalogAlbum; label: str
   );
 }
 
-function GenreShelf({ genre, label, onAlbum, onMore, tileState }: ViewProps & { genre: number; label: string; onMore: () => void }) {
-  const q = useCatalogQuery(`chart:${genre}`, () => chartAlbums(genre));
-  return (
-    <Shelf
-      title={`Top ${label}`}
-      loading={q.loading}
-      action={
-        <button className="text-sm font-semibold text-white/60 hover:text-white" onClick={onMore}>
-          See all
-        </button>
-      }
-    >
-      {q.error ? <ShelfError message={q.error} retry={q.retry} /> : q.data?.slice(0, 20).map((a) => <AlbumTile key={a.id} album={a} state={tileState(a)} onOpen={onAlbum} className={SHELF_TILE} />)}
-    </Shelf>
-  );
-}
-
-function GenreView({ genre, onAlbum, tileState }: ViewProps & { genre: number }) {
-  const q = useCatalogQuery(`chart:${genre}`, () => chartAlbums(genre));
-  const label = GENRES.find((g) => g.id === genre)?.label ?? 'Genre';
+function GenreView({ genre, pool, onAlbum, tileState }: ViewProps & { genre: string; pool: Pool }) {
+  const label = GENRES.find((g) => g.key === genre)?.label ?? 'Genre';
+  const albums = pool.data?.filter((a) => inGenre(a, genre));
   return (
     <section>
-      <h3 className="mb-1 text-2xl font-bold tracking-tight">Top {label} albums</h3>
-      <p className="mb-6 text-sm text-white/50">The most popular right now · {COUNTRY}</p>
-      {q.error ? (
-        <ShelfError message={q.error} retry={q.retry} />
-      ) : !q.data ? (
+      <h3 className="mb-1 text-2xl font-bold tracking-tight">{label}</h3>
+      <p className="mb-6 text-sm text-white/50">The most played {label === 'Holiday' ? 'holiday music' : `${label} albums`} right now</p>
+      {pool.error ? (
+        <ShelfError message={pool.error} retry={pool.retry} />
+      ) : !albums ? (
         <GridSkeleton />
-      ) : q.data.length ? (
+      ) : albums.length ? (
         <div className={ALBUM_GRID}>
-          {q.data.map((a, i) => (
-            <AlbumTile key={a.id} album={a} rank={i < 10 ? i + 1 : undefined} state={tileState(a)} onOpen={onAlbum} />
+          {albums.map((a) => (
+            <AlbumTile key={a.id} album={a} state={tileState(a)} onOpen={onAlbum} />
           ))}
         </div>
       ) : (
-        <p className="py-16 text-center text-white/50">Nothing here yet.</p>
+        <p className="py-16 text-center text-white/50">Nothing here right now.</p>
       )}
     </section>
   );
@@ -282,11 +278,11 @@ const clock = (ms: number | null) => {
 };
 
 function SearchResults({ query, onAlbum, onArtist, tileState }: ViewProps & { query: string; onArtist: (a: CatalogArtist) => void }) {
-  const albums = useCatalogQuery(`search-albums:${query}`, () => searchAlbums(query));
-  const artists = useCatalogQuery(`search-artists:${query}`, () => searchArtists(query));
-  const songs = useCatalogQuery(`search-songs:${query}`, () => searchSongs(query));
-  const nothing = !albums.loading && !artists.loading && !songs.loading && !albums.data?.length && !artists.data?.length && !songs.data?.length;
-  if (nothing && !albums.error && !artists.error && !songs.error)
+  const results = useCatalogQuery(`search:${query.toLowerCase()}`, () => searchMusic(query));
+  const top = useRef<HTMLDivElement>(null);
+  if (results.error) return <ShelfError message={`Search didn’t work: ${results.error}`} retry={results.retry} />;
+  const data = results.data;
+  if (data && !data.albums.length && !data.artists.length && !data.songs.length)
     return (
       <div className="py-20 text-center text-white/50">
         <Music2 className="mx-auto mb-3 h-10 w-10" />
@@ -294,21 +290,19 @@ function SearchResults({ query, onAlbum, onArtist, tileState }: ViewProps & { qu
       </div>
     );
   return (
-    <>
-      {(artists.loading || !!artists.data?.length) && (
-        <Shelf title="Artists" loading={artists.loading}>
-          {artists.data?.map((a) => <ArtistBubble key={a.id} artist={a} onOpen={onArtist} />)}
+    <div ref={top}>
+      {(!data || data.artists.length > 0) && (
+        <Shelf title="Artists" loading={!data} round>
+          {data?.artists.map((a) => <ArtistBubble key={a.id} artist={a} onOpen={onArtist} />)}
         </Shelf>
       )}
       <section className="mb-10">
         <h3 className="mb-3 text-xl font-bold tracking-tight">Albums</h3>
-        {albums.error ? (
-          <ShelfError message={albums.error} retry={albums.retry} />
-        ) : !albums.data ? (
+        {!data ? (
           <GridSkeleton count={7} />
-        ) : albums.data.length ? (
+        ) : data.albums.length ? (
           <div className={ALBUM_GRID}>
-            {albums.data.map((a) => (
+            {data.albums.map((a) => (
               <AlbumTile key={a.id} album={a} state={tileState(a)} onOpen={onAlbum} />
             ))}
           </div>
@@ -318,17 +312,15 @@ function SearchResults({ query, onAlbum, onArtist, tileState }: ViewProps & { qu
       </section>
       <section className="mb-10">
         <h3 className="mb-3 text-xl font-bold tracking-tight">Songs</h3>
-        {songs.error ? (
-          <ShelfError message={songs.error} retry={songs.retry} />
-        ) : !songs.data ? (
+        {!data ? (
           <div className="space-y-2">
             {Array.from({ length: 5 }, (_, i) => (
               <Bone key={i} className="h-14 w-full rounded" tone="soft" />
             ))}
           </div>
-        ) : songs.data.length ? (
+        ) : data.songs.length ? (
           <ul className="grid gap-x-8 md:grid-cols-2">
-            {songs.data.map((s) => (
+            {data.songs.map((s) => (
               <li key={s.id}>
                 <button
                   type="button"
@@ -336,7 +328,7 @@ function SearchResults({ query, onAlbum, onArtist, tileState }: ViewProps & { qu
                   onClick={() => s.album && onAlbum(s.album)}
                   className="flex w-full items-center gap-3 rounded-md p-2 text-left hover:bg-white/[0.06] disabled:cursor-default"
                 >
-                  <CoverArt url={s.album?.cover ?? null} className="w-11 shrink-0" rounded="rounded" />
+                  <CoverArt url={s.album?.cover ?? null} px={100} className="w-11 shrink-0" rounded="rounded" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{s.title}</span>
                     <span className="block truncate text-xs text-white/50">
@@ -353,6 +345,6 @@ function SearchResults({ query, onAlbum, onArtist, tileState }: ViewProps & { qu
           <p className="text-sm text-white/45">No songs.</p>
         )}
       </section>
-    </>
+    </div>
   );
 }

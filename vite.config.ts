@@ -16,6 +16,12 @@ export default defineConfig({
     host: host || false,
     hmr: host ? { protocol: 'ws', host, port: 1421 } : undefined,
     watch: { ignored: ['**/src-tauri/**'] },
+    // Browser previews only: Apple's chart feeds don't allow pages from other sites to read them
+    // (the app reads them from Rust), so the dev server fetches them for the preview's mock.
+    proxy: {
+      '/__apple-charts': { target: 'https://rss.marketingtools.apple.com', changeOrigin: true, rewrite: (path) => path.replace(/^\/__apple-charts/, '') },
+      '/__apple-music': { target: 'https://music.apple.com', changeOrigin: true, followRedirects: true, rewrite: (path) => path.replace(/^\/__apple-music/, '') },
+    },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
   build: {

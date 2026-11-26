@@ -1,4 +1,5 @@
 import { Download, FolderOpen, Loader2, Music2, X } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { cancelAlbumJob, connectSoulseek, dismissAlbumJob, hasSoulseekAccount, isActive, jobLabel, useMusicDownloads, type AlbumJob } from '../../../services/musicDownloads';
 import { errorMessage } from '../../../lib/errors';
@@ -10,8 +11,8 @@ const size = (bytes: number) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB`
 /** Soulseek's connection and every album download, newest first. */
 export default function MusicDownloadsDialog({ onClose }: { onClose: () => void }) {
   const status = useMusicDownloads((s) => s.status);
-  const jobs = useMusicDownloads((s) => Object.values(s.jobs));
-  const covers = useMusicDownloads((s) => s.covers);
+  // A new array on every read would re-render forever: compare the jobs themselves.
+  const jobs = useMusicDownloads(useShallow((s) => Object.values(s.jobs)));
   const ordered = [...jobs].sort((a, b) => Number(isActive(b)) - Number(isActive(a)));
   const reconnect = () =>
     void connectSoulseek(true).catch((e) => useLibraryStore.getState().toast(errorMessage(e), 'error'));
@@ -56,7 +57,7 @@ export default function MusicDownloadsDialog({ onClose }: { onClose: () => void 
       ) : (
         <ul className="space-y-2">
           {ordered.map((job) => (
-            <JobRow key={job.id} job={job} cover={covers[job.id] ?? `https://coverartarchive.org/release/${job.releaseMbid}/front-250`} />
+            <JobRow key={job.id} job={job} cover={job.cover} />
           ))}
         </ul>
       )}

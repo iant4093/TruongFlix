@@ -55,10 +55,23 @@ type BrowseKind = 'movie' | 'tv' | 'music';
 /** Movies and TV shows come from TMDB; Music has its own catalogue and look. */
 function BrowseCatalog({ profileId }: { profileId: number }) {
   const [kind, setKind] = useSectionState<BrowseKind>('kind', 'movie');
-  const kindControl = <SegmentedControl ariaLabel="Browse" value={kind} onChange={setKind}
+  // Music's charts start loading as soon as Browse opens, so the tab is ready when chosen.
+  useEffect(() => {
+    void import('../../services/musicCatalog').then((m) => Promise.all([m.topAlbums(), m.chartPool()])).catch(() => {});
+  }, []);
+  const choose = (next: BrowseKind) => {
+    // Music has its own layout: move to it (and back) from the top of the page.
+    if ((next === 'music') !== (kind === 'music')) window.scrollTo({ top: 0, behavior: 'instant' });
+    setKind(next);
+  };
+  const kindControl = <SegmentedControl ariaLabel="Browse" value={kind} onChange={choose}
     options={[{ value: 'movie', label: 'Movies' }, { value: 'tv', label: 'TV shows' }, { value: 'music', label: 'Music' }]} />;
-  if (kind === 'music') return <MusicBrowse kindControl={kindControl} />;
-  return <VideoCatalog profileId={profileId} kind={kind} kindControl={kindControl} />;
+  // A short fade between the video and music layouts instead of a jump.
+  return <AnimatePresence mode="wait" initial={false}>
+    <motion.div key={kind === 'music' ? 'music' : 'video'} variants={fade} initial="initial" animate="animate" exit="exit">
+      {kind === 'music' ? <MusicBrowse kindControl={kindControl} /> : <VideoCatalog profileId={profileId} kind={kind} kindControl={kindControl} />}
+    </motion.div>
+  </AnimatePresence>;
 }
 
 function VideoCatalog({ profileId, kind, kindControl }: { profileId: number; kind: 'movie' | 'tv'; kindControl: ReactNode }) {

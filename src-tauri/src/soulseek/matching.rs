@@ -1,5 +1,5 @@
 //! Picks the shared folder that really is the album asked for. Search results are grouped by user
-//! and folder; a folder only counts when every track of the MusicBrainz tracklist can be paired
+//! and folder; a folder only counts when every track of the album's tracklist can be paired
 //! with one of its audio files (by title, track number and length), and only audio in the chosen
 //! format is ever taken from it. Candidates are then ranked by quality and by how soon the person
 //! sharing them is likely to send the files.

@@ -21,9 +21,10 @@ export interface SoulseekStatus {
 
 export interface AlbumJob {
   id: string;
-  releaseMbid: string;
+  releaseId: string;
   album: string;
   artist: string;
+  cover: string | null;
   state: 'searching' | 'queued' | 'downloading' | 'checking' | 'done' | 'failed' | 'cancelled';
   message: string;
   bytes: number;
@@ -37,14 +38,11 @@ export interface AlbumJob {
 interface DownloadsState {
   status: SoulseekStatus;
   jobs: Record<string, AlbumJob>;
-  /** Covers of the albums being downloaded (the jobs don't carry them). */
-  covers: Record<string, string | null>;
 }
 
 export const useMusicDownloads = create<DownloadsState>(() => ({
   status: { state: 'offline', username: '', message: '' },
   jobs: {},
-  covers: {},
 }));
 
 export const isActive = (job: AlbumJob) => !['done', 'failed', 'cancelled'].includes(job.state);
@@ -112,23 +110,21 @@ export function downloadFolder(): string | null {
 const titleCase = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase());
 
 /** Starts downloading `release` (this exact edition and tracklist). */
-export async function downloadAlbum(release: CatalogRelease, quality: MusicQuality, cover = release.cover): Promise<AlbumJob> {
+export async function downloadAlbum(release: CatalogRelease, quality: MusicQuality): Promise<AlbumJob> {
   const destination = downloadFolder();
   if (!destination) throw new Error('Add a music folder in Settings → Music first.');
-  if (!release.tracks.length) throw new Error('MusicBrainz has no tracklist for this edition.');
+  if (!release.tracks.length) throw new Error('The store doesn’t list this album’s songs.');
   await connectSoulseek();
   // The cover is fetched once (and cached) so it can be embedded in every file.
-  const fetchCover = (url: string | null) => (url ? invoke<string>('live_artwork', { url }).catch(() => null) : Promise.resolve(null));
-  const coverPath = (await fetchCover(cover)) ?? (cover !== release.cover ? await fetchCover(release.cover) : null);
+  const coverPath = release.cover ? await invoke<string>('live_artwork', { url: release.cover }).catch(() => null) : null;
   const id = crypto.randomUUID();
   const job = await invoke<AlbumJob>('slsk_download_album', {
     request: {
       id,
-      releaseMbid: release.id,
-      releaseGroupMbid: release.groupId || null,
+      releaseId: release.id,
+      coverUrl: release.cover,
       album: release.title,
       albumArtist: release.artist,
-      albumArtistMbid: release.artistId,
       date: release.date,
       genre: release.genres[0] ? titleCase(release.genres[0]) : null,
       tracks: release.tracks.map((t) => ({
@@ -137,15 +133,13 @@ export async function downloadAlbum(release: CatalogRelease, quality: MusicQuali
         disc: t.disc,
         lengthMs: t.lengthMs,
         artist: t.artist,
-        recordingMbid: t.recordingId,
-        trackMbid: t.trackId,
       })),
       quality,
       destination,
       coverPath,
     },
   });
-  useMusicDownloads.setState((s) => ({ jobs: { ...s.jobs, [job.id]: job }, covers: { ...s.covers, [job.id]: cover } }));
+  useMusicDownloads.setState((s) => ({ jobs: { ...s.jobs, [job.id]: job } }));
   return job;
 }
 

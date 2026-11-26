@@ -129,7 +129,7 @@ function SoulseekSettings() {
     <Group
       title="Downloads · Soulseek"
       description="Browse → Music downloads albums from the Soulseek network with your own Soulseek account."
-      footer="Soulseek creates the account the first time you sign in with a new name; there's no password reset, so keep it somewhere safe. Only audio files (FLAC, MP3, M4A, Ogg, Opus) are downloaded, every track is checked against the album's tracklist, and albums are tagged from MusicBrainz."
+      footer="Soulseek creates the account the first time you sign in with a new name; there's no password reset, so keep it somewhere safe. Only audio files (FLAC, MP3, M4A, Ogg, Opus) are downloaded, every track is checked against the album's tracklist, and albums are tagged with the store's album details."
     >
       <Row label="Account" description={<StatusText tone={tone}>{status.state === 'online' ? `Connected as ${status.username}` : status.state === 'connecting' ? 'Connecting…' : status.state === 'error' ? status.message : settings.soulseek_username ? 'Not connected (connects when you download)' : 'No account yet'}</StatusText>} stacked>
         <div className="flex flex-wrap gap-2">
@@ -172,7 +172,7 @@ function SoulseekSettings() {
         onChange={(soulseek_share) => void reconnectAfter({ soulseek_share })}
       />
       <Row label="Listening port" description="Other users connect to you here; forwarding it on your router makes downloads start faster. 0 turns listening off.">
-        <NumberField value={settings.soulseek_port} min={0} max={65535} empty={2234} label="Soulseek listening port" className="w-24" onCommit={(soulseek_port) => void reconnectAfter({ soulseek_port })} />
+        <NumberField value={settings.soulseek_port} min={0} max={65535} empty={2234} label="Soulseek listening port" className={`${INPUT} w-24 text-right tabular-nums`} onCommit={(soulseek_port) => void reconnectAfter({ soulseek_port })} />
       </Row>
     </Group>
   );

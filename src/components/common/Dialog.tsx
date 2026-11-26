@@ -141,11 +141,9 @@ export default function Dialog({
           centered ? 'flex max-h-[90vh] flex-col overflow-hidden' : 'mx-auto h-max'
         } ${className}`}
       >
-        {chrome === 'floating' && (
-          <div className="pointer-events-none sticky top-0 z-20 flex h-0 items-start justify-end">
-            <div className="pointer-events-auto mr-4 mt-4">{close}</div>
-          </div>
-        )}
+        {/* Pinned to the card's top-right corner: it scrolls away with the card rather than
+            sliding down the page beside it. */}
+        {chrome === 'floating' && <div className="absolute right-4 top-4 z-20">{close}</div>}
         {chrome === 'header' && (
           <div className={`flex shrink-0 items-start justify-between gap-4 px-6 pb-4 pt-5 ${divided ? 'border-b border-white/10' : ''}`}>
             <div className="flex min-w-0 items-center gap-3">

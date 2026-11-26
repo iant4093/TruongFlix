@@ -22,11 +22,11 @@ A local media center for macOS and Windows that turns the movies and shows on yo
 
 ---
 
-TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Library metadata stays on your device. Network features include metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers, optional subtitles, synced lyrics, Live TV sports schedules, the music catalogue in Browse (iTunes charts, MusicBrainz, ListenBrainz, Cover Art Archive), and torrents and Soulseek album downloads you start yourself.
+TruongFlix scans the folders you choose, works out what each file is from its name (even scene-release names like `The.Matrix.1999.2160p.UHD.BluRay.x265.HDR.DV-GROUP.mkv`), and fetches artwork, title logos, cast and episode details from TMDB. Everything is cached locally in SQLite, and playback happens inside the app through an embedded mpv engine, with progress synced to Continue Watching. Library metadata stays on your device. Network features include metadata and ratings lookups (TMDB, IMDb datasets, optional OMDb), trailers, optional subtitles, synced lyrics, Live TV sports schedules, the music catalogue in Browse (Apple Music charts, the iTunes Search API and artist photos from Apple Music), and torrents and Soulseek album downloads you start yourself.
 
 ## Screenshots
 
-Screenshots use the development preview with sample metadata and artwork from [TMDB](https://www.themoviedb.org); the games are made-up demo titles. The Browse → Music captures show the live iTunes chart and MusicBrainz data, with a simulated download. The player capture is the real macOS app playing [Big Buck Bunny](https://peach.blender.org) (© Blender Foundation, CC BY 3.0).
+Screenshots use the development preview with sample metadata and artwork from [TMDB](https://www.themoviedb.org); the games are made-up demo titles. The Browse → Music captures show the live Apple Music chart and store data, with a simulated download. The player capture is the real macOS app playing [Big Buck Bunny](https://peach.blender.org) (© Blender Foundation, CC BY 3.0).
 
 <table>
   <tr>
@@ -51,11 +51,11 @@ Screenshots use the development preview with sample metadata and artwork from [T
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/music-browse.webp" width="100%" alt="Browse with the Music tab selected: genre chips, featured album cards, and a Top albums row of square covers with chart numbers">
+      <img src="docs/screenshots/music-browse.webp" width="100%" alt="Browse with the Music tab selected: genre chips, featured album cards, and a Top albums row of square covers with chart numbers and explicit badges">
       <p align="center"><sub><b>Browse → Music</b> · top albums, new releases and genres</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/music-album.webp" width="100%" alt="Album page for Dandelion by Ella Langley with the cover, 18 songs, genre, a FLAC download in progress with a Cancel button, the edition picker and the tracklist">
+      <img src="docs/screenshots/music-album.webp" width="100%" alt="Album page for you seem pretty sad for a girl so in love by Olivia Rodrigo with the cover, 13 songs, genre and label, a FLAC download in progress with a Cancel button, and the tracklist">
       <p align="center"><sub><b>Album page</b> · exact tracklist and one-click download</sub></p>
     </td>
   </tr>
@@ -137,13 +137,14 @@ Screenshots use the development preview with sample metadata and artwork from [T
 
 **Browse → Music**
 
-- A music tab built like a streaming service, with square covers instead of posters: featured albums, the current top albums and new releases from the iTunes charts for your country, popular artists, a row per genre (Pop, Hip-Hop, Rock, Alternative, R&B, Country, Dance, Electronic, Latin, Metal, Jazz, Classical, K-Pop and more), and search across albums, artists and songs
-- Album pages with the exact tracklist from [MusicBrainz](https://musicbrainz.org) (discs, guest artists and lengths), an edition picker, and a Download button; albums already in your library show a check and play in Music
-- Artist pages with their most played albums ([ListenBrainz](https://listenbrainz.org)) and the full discography by albums, EPs and singles
+- A music tab built like a streaming service, with square covers instead of posters: featured albums, the top albums people are streaming on Apple Music in your country, new releases, popular artists with their photos, a row per genre (Pop, Hip-Hop, R&B, Country, Alternative, Rock and more, shown when enough music is charting), and search across albums, artists and songs
+- Charts come from what's actually being played, not sales charts, so there's no filler: Apple Music's most-played albums and songs in your country and the big English-language markets
+- Album pages with the exact tracklist (discs, guest artists and lengths), genre, label and an explicit badge, and a Download button; albums already in your library show a check and play in Music
+- Artist pages with their photo, best-known albums and the full discography by albums, EPs and singles
 - Album downloads come from [Soulseek](https://www.slsknet.org) with your own account (Settings › Music): only a shared folder holding every track of that tracklist is used, matched by title, track number and length, in the quality you pick (FLAC, MP3 256–320 kbps or best available)
-- Only audio files (FLAC, MP3, M4A, Ogg, Opus) are ever downloaded, named by TruongFlix rather than by the person sharing them. Every file is checked to really be audio of the expected size and length, a copy that doesn't arrive or doesn't check out is replaced by the next best one, and the album is tagged from MusicBrainz with its cover and filed as `Artist/Album (Year)/01 - Title.flac` in your music folder
+- Only audio files (FLAC, MP3, M4A, Ogg, Opus) are ever downloaded, named by TruongFlix rather than by the person sharing them. Every file is checked to really be audio of the expected size and length, a copy that doesn't arrive or doesn't check out is replaced by the next best one, and the album is tagged with the store's details and its cover and filed as `Artist/Album (Year)/01 - Title.flac` in your music folder
 - A Downloads panel with the Soulseek connection and each album's progress. Sharing your music folders back to the network is off unless you turn it on
-- Catalogue requests are paced and cached by the app, so browsing back and forth is instant
+- Catalogue requests are cached by the app, so browsing back and forth is instant; charts start loading as soon as Browse opens, and a chart feed that stalls is skipped rather than waited for
 
 **Torrents**
 
@@ -255,7 +256,7 @@ Installed copies check for a new version once a day (or from **Settings › Abou
 | Streaming | Built-in HTTP server with byte ranges, on-demand VOD HLS and MPEG-TS conversion through a headless libmpv encoder (VideoToolbox / NVENC / Quick Sync / AMF / Media Foundation / x264), Cast v2 and UPnP AVTransport, Bonjour/mDNS and SSDP discovery, native HLS on Apple devices and hls.js elsewhere |
 | Torrents | librqbit, with small patches for rarest-first downloads |
 | Music | lofty (tags, covers, tag writing), Soulseek through [soulseek-rs-lib](https://docs.rs/soulseek-rs-lib), synced lyrics from Kugou, NetEase Cloud Music and LRCLIB |
-| Metadata | TMDB API v3, IMDb non-commercial datasets, OMDb, OpenSubtitles REST API, ESPN scoreboards for Live TV sports, iTunes top-album charts, MusicBrainz, ListenBrainz and the Cover Art Archive for music |
+| Metadata | TMDB API v3, IMDb non-commercial datasets, OMDb, OpenSubtitles REST API, ESPN scoreboards for Live TV sports, Apple Music charts, the iTunes Search API and Apple Music artist pages for music |
 | Trailers | yt-dlp and Deno helpers, bundled and checksum-verified |
 | Storage | SQLite via tauri-plugin-sql, local file operations and a same-volume trash |
 | Delivery | GitHub Actions, macOS `.dmg`, Windows NSIS installer, signed auto-updates, SHA-256 checksums |
@@ -346,7 +347,7 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 ├── src-tauri/              Rust backend
 │   ├── src/player/         libmpv bindings, macOS/Windows video surfaces and Live TV multiview
 │   ├── src/games/          Windows game installs: installer reading, install checks, hidden-wizard helper, verification, launching
-│   ├── src/soulseek/       Soulseek session, album matching against MusicBrainz tracklists, checking, tagging and filing
+│   ├── src/soulseek/       Soulseek session, album matching against the album's tracklist, checking, tagging and filing
 │   ├── src/                Scanner, folder watcher, media analysis (probe, frames, intro detection), torrents, Live TV, VLC,
 │   │                       subtitles and sync, files, backups, IMDb, NAS, Now Playing, media server and stream conversion,
 │   │                       browser-access security, Tailscale, Chromecast/DLNA casting, music library and catalogue proxy
@@ -360,4 +361,4 @@ The updater signing key is stored as the `TAURI_SIGNING_PRIVATE_KEY` repository 
 └── README.md
 ```
 
-TruongFlix uses the TMDB API but is not endorsed or certified by TMDB. IMDb data is used under IMDb's non-commercial terms. Music data comes from MusicBrainz (CC0) and ListenBrainz, covers from the Cover Art Archive, and charts from Apple's public iTunes feeds. TruongFlix is not affiliated with Soulseek; downloads use your own account, and what you download and share is up to you.
+TruongFlix uses the TMDB API but is not endorsed or certified by TMDB. IMDb data is used under IMDb's non-commercial terms. Music charts, album details, covers and artist photos come from Apple's public Apple Music and iTunes data; TruongFlix is not affiliated with Apple. TruongFlix is not affiliated with Soulseek; downloads use your own account, and what you download and share is up to you.

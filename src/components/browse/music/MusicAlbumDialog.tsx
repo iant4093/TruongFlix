@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { AlertCircle, Download, Loader2, Music2, Play, RefreshCw, Settings2, X } from 'lucide-react';
 import { useLibraryStore } from '../../../store/useLibraryStore';
-import { albumDetail, albumKey, resolveAlbumId, type CatalogAlbum, type CatalogArtist, type CatalogRelease } from '../../../services/musicCatalog';
+import { albumDetail, albumKey, type CatalogAlbum, type CatalogArtist, type CatalogRelease } from '../../../services/musicCatalog';
 import { cancelAlbumJob, downloadAlbum, hasSoulseekAccount, isActive, jobLabel, useMusicDownloads } from '../../../services/musicDownloads';
 import { openRoute, openTab } from '../../../music/nav';
 import { useMusicPlayer } from '../../../music/player';
@@ -31,49 +31,40 @@ const clock = (ms: number | null) => {
 
 /** An album's page: cover, details, its tracklist, and downloading it (or playing it once it's yours). */
 export default function MusicAlbumDialog({ album, onClose, onArtist, active = true }: { album: CatalogAlbum; onClose: () => void; onArtist: (artist: CatalogArtist) => void; active?: boolean }) {
-  const [edition, setEdition] = useState<string | null>(null);
-  // Chart albums are found on MusicBrainz first; their tracklist comes from there.
-  const detail = useCatalogQuery(`album:${album.id}:${edition ?? ''}`, async () => albumDetail(await resolveAlbumId(album), edition ?? undefined));
+  const detail = useCatalogQuery(`album:${album.id}`, () => albumDetail(album.id));
   const release = detail.data;
-  // The chart's artwork is the sharpest; MusicBrainz's cover otherwise.
-  const cover = album.id.startsWith('itunes:') ? album.cover : release?.cover ?? album.cover;
+  const cover = release?.cover ?? album.cover;
+  const artistId = release?.artistId ?? album.artistId;
   return (
-    <Dialog label={album.title} onClose={onClose} open={active} priority={100} size="xl" align="top" chrome="floating">
-      <div className="relative overflow-hidden">
+    // `overflow-hidden` keeps the blurred cover inside the panel's rounded corners.
+    <Dialog label={album.title} onClose={onClose} open={active} priority={100} size="xl" align="top" chrome="floating" className="overflow-hidden">
+      <div className="relative">
         {/* The cover, blurred, behind the header. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 h-80 opacity-60 [mask-image:linear-gradient(to_bottom,black,transparent)]">
-          <CoverArt url={cover} className="h-full w-full scale-125 blur-3xl" rounded="" eager />
+          <CoverArt url={cover} px={100} className="h-full w-full scale-125 blur-3xl" rounded="" eager />
         </div>
         <div className="relative flex flex-col gap-7 p-6 pt-10 sm:flex-row sm:items-end sm:p-9 sm:pt-12">
-          <CoverArt url={cover} alt="" eager className="w-52 shrink-0 shadow-[0_18px_50px_rgba(0,0,0,0.6)] sm:w-60" rounded="rounded-lg" />
+          <CoverArt url={cover} px={600} alt="" eager className="w-52 shrink-0 shadow-[0_18px_50px_rgba(0,0,0,0.6)] sm:w-60" rounded="rounded-lg" />
           <div className="min-w-0 flex-1">
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/60">
               {[release?.type ?? album.type ?? 'Album', release?.year ?? album.year].filter(Boolean).join(' · ')}
+              {(release?.explicit ?? album.explicit) && <span className="ml-2 rounded-sm bg-white/25 px-1 text-[10px] text-white">E</span>}
             </p>
             <h2 className="mt-2 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">{release?.title ?? album.title}</h2>
             <button
               type="button"
               className="mt-1 text-lg font-semibold text-[#ff4560] hover:underline disabled:no-underline"
-              disabled={!(release?.artistId ?? album.artistId)}
-              onClick={() => onArtist({ id: (release?.artistId ?? album.artistId)!, name: release?.artist ?? album.artist })}
+              disabled={!artistId}
+              onClick={() => artistId && onArtist({ id: artistId, name: release?.artist ?? album.artist })}
             >
               {release?.artist ?? album.artist}
             </button>
             {release && (
               <p className="mt-2 text-sm text-white/55">
-                {[`${release.tracks.length} ${release.tracks.length === 1 ? 'song' : 'songs'}`, minutes(release.tracks.reduce((n, t) => n + (t.lengthMs ?? 0), 0)), release.label].filter(Boolean).join(' · ')}
+                {[`${release.tracks.length} ${release.tracks.length === 1 ? 'song' : 'songs'}`, minutes(release.tracks.reduce((n, t) => n + (t.lengthMs ?? 0), 0)), release.genres[0], release.label].filter(Boolean).join(' · ')}
               </p>
             )}
-            {!!release?.genres.length && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {release.genres.map((g) => (
-                  <span key={g} className="rounded-full bg-white/10 px-2.5 py-0.5 text-xs capitalize text-white/75">
-                    {g}
-                  </span>
-                ))}
-              </div>
-            )}
-            {release && <AlbumActions release={release} cover={cover} onClose={onClose} />}
+            {release ? <AlbumActions release={release} onClose={onClose} /> : !detail.error && <Bone className="mt-6 h-11 w-64 rounded" tone="soft" />}
           </div>
         </div>
       </div>
@@ -93,31 +84,10 @@ export default function MusicAlbumDialog({ album, onClose, onArtist, active = tr
             ))}
           </div>
         ) : (
-          <>
-            {release.editions.length > 1 && <EditionPicker release={release} onPick={setEdition} />}
-            <Tracklist release={release} />
-          </>
+          <Tracklist release={release} />
         )}
       </div>
     </Dialog>
-  );
-}
-
-function EditionPicker({ release, onPick }: { release: CatalogRelease; onPick: (id: string) => void }) {
-  const options = release.editions
-    .slice()
-    .sort((a, b) => (a.date ?? '9999').localeCompare(b.date ?? '9999'))
-    .slice(0, 40)
-    .map((e) => ({
-      value: e.id,
-      label: [e.date?.slice(0, 4), e.country, e.format, e.tracks ? `${e.tracks} tracks` : null, e.title !== release.title ? e.title : null].filter(Boolean).join(' · ') || 'Edition',
-    }));
-  return (
-    <div className="mb-4 flex flex-wrap items-center gap-3 text-sm text-white/60">
-      <span>Edition</span>
-      <Dropdown value={release.id} options={options} onChange={onPick} ariaLabel="Album edition" />
-      <span className="text-xs text-white/40">The tracklist below is what gets downloaded.</span>
-    </div>
   );
 }
 
@@ -148,10 +118,15 @@ function Tracklist({ release }: { release: CatalogRelease }) {
   );
 }
 
-function AlbumActions({ release, cover, onClose }: { release: CatalogRelease; cover: string | null; onClose: () => void }) {
+function AlbumActions({ release, onClose }: { release: CatalogRelease; onClose: () => void }) {
   const settings = useLibraryStore((s) => s.settings);
   const library = useMusicPlayer((s) => s.library);
-  const job = useMusicDownloads((s) => Object.values(s.jobs).filter((j) => j.releaseMbid === release.id || (j.album === release.title && j.artist === release.artist)).at(-1));
+  // The latest download of this album (an object from the store, so it's stable between reads).
+  const job = useMusicDownloads((s) => {
+    let found;
+    for (const j of Object.values(s.jobs)) if (j.releaseId === release.id || (j.album === release.title && j.artist === release.artist)) found = j;
+    return found;
+  });
   const [quality, setQuality] = useState<MusicQuality>(settings.soulseek_quality);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState('');
@@ -161,7 +136,7 @@ function AlbumActions({ release, cover, onClose }: { release: CatalogRelease; co
     setStarting(true);
     setError('');
     try {
-      await downloadAlbum(release, quality, cover);
+      await downloadAlbum(release, quality);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -244,7 +219,7 @@ function AlbumActions({ release, cover, onClose }: { release: CatalogRelease; co
       )}
       {!error && job?.state !== 'failed' && (
         <p className="mt-3 max-w-xl text-xs leading-relaxed text-white/45">
-          Downloads a complete copy of this edition from Soulseek, only its audio files, checks every track against this tracklist, then tags it and adds it to your music folder.
+          Finds a complete copy of this album on Soulseek, downloads only its audio files, checks every track against this tracklist, then tags it and adds it to your music folder.
         </p>
       )}
     </div>
