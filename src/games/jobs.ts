@@ -395,7 +395,7 @@ export async function launchGame(gameId: number) {
   await invoke('games_launch', { gameId });
   useGamesStore.setState((s) => ({ running: { ...s.running, [gameId]: true } }));
   const now = Date.now();
-  writeOpen({ ...readOpen(), [gameId]: { start: now, seen: now } });
+  writeOpen({ ...readOpen(), [gameId]: { start: now, seen: now, profile: useLibraryStore.getState().activeProfile?.id ?? null } });
 }
 
 // Play time is measured until the game exits. Closing TruongFlix while a game runs used to lose
@@ -403,7 +403,8 @@ export async function launchGame(gameId: number) {
 // settled on the next start: still running → watched until it ends; ended → counted up to the
 // last check-in.
 const OPEN_SESSIONS = 'tf-game-sessions';
-type OpenSessions = Record<string, { start: number; seen: number }>;
+/** `profile`: who started the game, so its play time shows in that profile's Wrapped. */
+type OpenSessions = Record<string, { start: number; seen: number; profile?: number | null }>;
 const readOpen = (): OpenSessions => {
   try {
     return JSON.parse(localStorage.getItem(OPEN_SESSIONS) ?? '{}') as OpenSessions;
@@ -430,11 +431,11 @@ function markStillPlaying() {
   }
   if (changed) writeOpen(open);
 }
-async function creditPlayTime(id: number, seconds: number) {
+async function creditPlayTime(id: number, seconds: number, profile: number | null = null, endedAt = new Date()) {
   if (seconds <= 0) return;
   const game = gameById(id);
   await lib.addPlayTime(id, seconds);
-  if (game) await lib.recordPlaySession(game, seconds).catch(() => {});
+  if (game) await lib.recordPlaySession(game, seconds, endedAt, profile).catch(() => {});
 }
 async function settleOpenSessions() {
   const open = readOpen();
@@ -460,14 +461,14 @@ async function settleOpenSessions() {
           delete running[id];
           return { running };
         });
-        if (entry) await creditPlayTime(id, Math.round((Date.now() - entry.start) / 1000));
+        if (entry) await creditPlayTime(id, Math.round((Date.now() - entry.start) / 1000), entry.profile ?? null);
         await refresh();
       }, 30_000);
       continue;
     }
     delete open[key];
     writeOpen(open);
-    if (game) await creditPlayTime(id, Math.round((s.seen - s.start) / 1000));
+    if (game) await creditPlayTime(id, Math.round((s.seen - s.start) / 1000), s.profile ?? null, new Date(s.seen));
   }
   await refresh();
 }
@@ -475,6 +476,7 @@ async function settleOpenSessions() {
 async function onSessionEnded(e: { gameId: string; seconds: number; error: string | null }) {
   const id = Number(e.gameId);
   const open = readOpen();
+  const profile = open[e.gameId]?.profile ?? null;
   delete open[e.gameId];
   writeOpen(open);
   useGamesStore.setState((s) => {
@@ -483,11 +485,7 @@ async function onSessionEnded(e: { gameId: string; seconds: number; error: strin
     return { running };
   });
   if (e.error) toast(e.error, 'error');
-  const game = gameById(id);
-  if (e.seconds > 0) {
-    await lib.addPlayTime(id, e.seconds);
-    if (game) await lib.recordPlaySession(game, e.seconds).catch(() => {});
-  }
+  if (e.seconds > 0) await creditPlayTime(id, e.seconds, profile);
   await refresh();
 }
 

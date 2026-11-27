@@ -130,11 +130,19 @@ Somewhere past the breakwater, under a star
 And if it comes back to me, I'll know what it means
 Salt in the envelope, sand in the seam`;
 
+interface MockPlay {
+  profile: number;
+  trackId: number;
+  playedAt: number;
+  seconds: number | null;
+}
+
 interface MockState {
   tracks: MusicTrack[];
   lyrics: Map<number, MusicLyrics>;
   playlists: MusicPlaylist[];
   covers: Map<string, string>;
+  plays: MockPlay[];
 }
 
 let state: MockState | null = null;
@@ -191,7 +199,54 @@ function build(): MockState {
     { id: 1, name: 'Late Night Drive', trackIds: [2, 8, 20, 22, 5, 23], updatedAt: now - 3600_000 },
     { id: 2, name: 'Sunday Morning', trackIds: [12, 13, 17, 18, 15], updatedAt: now - 86400_000 },
   ];
-  return { tracks, lyrics, playlists, covers };
+  return { tracks, lyrics, playlists, covers, plays: seedPlays(tracks) };
+}
+
+/** This year's listening for profile 1 ("Ian"), so Wrapped has a Music section. */
+function seedPlays(tracks: MusicTrack[]): MockPlay[] {
+  const plays: MockPlay[] = [];
+  const now = new Date();
+  let seed = 5;
+  const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  // Neon Harbour (and Luma Vale) most, then the rest.
+  const weight = (t: MusicTrack) => (t.albumId === 1 ? 6 : t.artist === 'Luma Vale' ? 3 : t.albumId === 3 ? 2.5 : 1) / (t.trackNo ?? 1) ** 0.3;
+  const total = tracks.reduce((n, t) => n + weight(t), 0);
+  const pick = () => {
+    let r = rand() * total;
+    for (const t of tracks) if ((r -= weight(t)) <= 0) return t;
+    return tracks[0];
+  };
+  const add = (day: Date, hour: number, t: MusicTrack) => {
+    const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, Math.floor(rand() * 60)).getTime();
+    if (at > now.getTime() || new Date(at).getFullYear() !== now.getFullYear()) return;
+    // Most plays have a recorded time; some were cut short, some predate it (counted as the song's length).
+    const r = rand();
+    plays.push({ profile: 1, trackId: t.id, playedAt: at, seconds: r < 0.15 ? null : r < 0.35 ? Math.round(t.duration * (0.4 + rand() * 0.5)) : t.duration });
+  };
+  for (let d = 0; d < 320; d += 1 + Math.floor(rand() * 3)) {
+    const day = new Date(now.getTime() - d * 864e5);
+    const hour = rand() < 0.5 ? 22 + Math.floor(rand() * 2) : rand() < 0.6 ? 18 + Math.floor(rand() * 3) : 8 + Math.floor(rand() * 4);
+    for (let n = 2 + Math.floor(rand() * 8); n > 0; n--) add(day, hour, pick());
+  }
+  // Ten days in a row, and one day with Glass Tides on repeat.
+  for (let d = 1; d <= 10; d++) for (let n = 0; n < 4; n++) add(new Date(now.getTime() - d * 864e5), 21, pick());
+  for (let n = 0; n < 7; n++) add(new Date(now.getTime() - 25 * 864e5), 23, tracks[0]);
+  return plays.sort((a, b) => a.playedAt - b.playedAt);
+}
+
+/** Rows for musicdb's `listMusicPlays` query, answered by the desktop preview's SQL mock. */
+export function mockMusicPlayRows(profileId: number) {
+  const s = mock();
+  const byId = new Map(s.tracks.map((t) => [t.id, t]));
+  return s.plays
+    .filter((p) => p.profile === profileId && byId.has(p.trackId))
+    .map((p) => {
+      const t = byId.get(p.trackId)!;
+      return {
+        track_id: t.id, title: t.title, artist: t.artist, artist_id: t.artistId, album: t.album, album_id: t.albumId, album_artist: t.albumArtist,
+        genre: t.genre, art: t.art, duration: t.duration, played_at: p.playedAt, seconds: p.seconds,
+      };
+    });
 }
 
 const mock = () => (state ??= build());
@@ -254,6 +309,13 @@ export function mockMusicRoute(method: string, path: string, query: URLSearchPar
   if (method === 'POST' && path === '/music/played') {
     const t = s.tracks.find((x) => x.id === id);
     if (t) Object.assign(t, { plays: t.plays + 1, lastPlayed: Date.now() });
+    if (t) s.plays.push({ profile: 1, trackId: t.id, playedAt: Date.now(), seconds: null });
+    return [200, { ok: true }];
+  }
+  if (method === 'POST' && path === '/music/listened') {
+    const play = [...s.plays].reverse().find((p) => p.trackId === id && p.seconds == null);
+    const t = s.tracks.find((x) => x.id === id);
+    if (play && t) play.seconds = Math.min(Number(body.seconds) || 0, t.duration);
     return [200, { ok: true }];
   }
   if (method === 'POST' && path === '/music/favourite') {

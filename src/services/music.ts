@@ -151,6 +151,9 @@ function localApi(artDir: string): MusicApi {
     played: async (id) => {
       await mdb.recordPlay(profileId(), id);
     },
+    listened: async (id, seconds) => {
+      await mdb.setPlaySeconds(profileId(), id, seconds);
+    },
     setFavourite: async (id, value) => {
       await mdb.setFavourite(profileId(), id, value);
     },

@@ -183,3 +183,47 @@ describe('playlists', () => {
     expect((await mdb.listPlaylists(1)).map((p) => p.id)).toEqual([a.id, b.id]);
   });
 });
+
+describe('plays for Wrapped', () => {
+  it('lists a profile’s plays with their songs, oldest first', async () => {
+    const t = await seed();
+    await mdb.recordPlay(1, t.Song.id, 2000);
+    await mdb.recordPlay(1, t.Intro.id, 1000);
+    await mdb.recordPlay(2, t.Other.id, 1500);
+    const plays = await mdb.listMusicPlays(1);
+    expect(plays.map((p) => [p.title, p.playedAt])).toEqual([['Intro', 1000], ['Song', 2000]]);
+    expect(plays[1]).toMatchObject({ artist: 'Guest', album: 'Neon', albumArtist: 'Luma', duration: 200, seconds: null });
+    expect(await mdb.listMusicPlays(3)).toEqual([]);
+  });
+
+  it('stores how long the latest play was listened to, once, capped at the song’s length', async () => {
+    const t = await seed();
+    const now = 10_000_000;
+    await mdb.recordPlay(1, t.Song.id, now - 60_000);
+    await mdb.recordPlay(1, t.Song.id, now - 30_000);
+    expect(await mdb.setPlaySeconds(1, t.Song.id, 150.26, now)).toBe(true);
+    // A second report finds the earlier play; a third has nothing left to fill.
+    expect(await mdb.setPlaySeconds(1, t.Song.id, 999, now)).toBe(true);
+    expect(await mdb.setPlaySeconds(1, t.Song.id, 50, now)).toBe(false);
+    expect((await mdb.listMusicPlays(1)).map((p) => p.seconds)).toEqual([200, 150.3]);
+  });
+
+  it('ignores reports for other profiles, old plays and bad values', async () => {
+    const t = await seed();
+    const now = 100_000_000;
+    await mdb.recordPlay(1, t.Song.id, now - 3 * 3600_000);
+    expect(await mdb.setPlaySeconds(2, t.Song.id, 100, now)).toBe(false);
+    expect(await mdb.setPlaySeconds(1, t.Song.id, 100, now)).toBe(false); // counted hours ago
+    expect(await mdb.setPlaySeconds(1, t.Song.id, Number.NaN, now)).toBe(false);
+    expect(await mdb.setPlaySeconds(1, 4242, 100, now)).toBe(false);
+    expect((await mdb.listMusicPlays(1))[0].seconds).toBeNull();
+  });
+
+  it('adds the seconds column to a plays table made before it existed', async () => {
+    conn.raw.exec('CREATE TABLE music_plays (profile_id INTEGER NOT NULL, track_id INTEGER NOT NULL, played_at INTEGER NOT NULL)');
+    conn.raw.exec('INSERT INTO music_plays VALUES (1, 1, 5)');
+    await mdb.musicDb();
+    const cols = (conn.raw.prepare('PRAGMA table_info(music_plays)').all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toEqual(['profile_id', 'track_id', 'played_at', 'seconds']);
+  });
+});

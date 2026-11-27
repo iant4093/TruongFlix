@@ -89,6 +89,9 @@ const MUSIC_ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['provider', 'TEXT'],
     ['lookup', 'INTEGER'],
   ],
+  // How long the play was actually listened to (set when the song is left). Older plays and plays
+  // cut short by quitting have none; Wrapped counts those as the song's length.
+  music_plays: [['seconds', 'REAL']],
 };
 
 let ready: Promise<Database> | null = null;
@@ -466,6 +469,79 @@ export async function recordPlay(profileId: number, trackId: number, now = Date.
   if (!(await trackExists(db, trackId))) return false;
   await db.execute('INSERT INTO music_plays (profile_id, track_id, played_at) VALUES ($1, $2, $3)', [profileId, trackId, now]);
   return true;
+}
+
+/**
+ * How long the latest counted play of a song was listened to, sent when the song is left. Only a
+ * play counted in the last stretch that has no time yet is changed (a late or repeated report never
+ * rewrites an older play), and the time is capped at the song's length.
+ */
+export async function setPlaySeconds(profileId: number, trackId: number, seconds: number, now = Date.now()) {
+  if (!Number.isInteger(trackId) || !Number.isFinite(seconds) || seconds <= 0) return false;
+  const db = await musicDb();
+  const [track] = await db.select<{ duration: number }[]>('SELECT duration FROM music_tracks WHERE id = $1', [trackId]);
+  if (!track) return false;
+  const secs = Math.round(Math.min(seconds, track.duration > 0 ? track.duration : 6 * 3600) * 10) / 10;
+  const since = now - (secs + 600) * 1000;
+  const result = await db.execute(
+    `UPDATE music_plays SET seconds = $3 WHERE rowid = (
+       SELECT rowid FROM music_plays WHERE profile_id = $1 AND track_id = $2 AND seconds IS NULL AND played_at >= $4 ORDER BY played_at DESC LIMIT 1)`,
+    [profileId, trackId, secs, since],
+  );
+  return (result.rowsAffected ?? 0) > 0;
+}
+
+/** One play with its song, for Wrapped. */
+export interface MusicPlayRow {
+  trackId: number;
+  title: string;
+  artist: string;
+  artistId: number;
+  album: string;
+  albumId: number;
+  albumArtist: string;
+  genre: string | null;
+  art: string | null;
+  /** Song length (seconds). */
+  duration: number;
+  /** Epoch ms. */
+  playedAt: number;
+  /** Listened seconds, when recorded. */
+  seconds: number | null;
+}
+
+/** Every play by this profile, oldest first (songs since removed from the library are gone). */
+export async function listMusicPlays(profileId: number): Promise<MusicPlayRow[]> {
+  const db = await musicDb();
+  const rows = await db.select<{
+    track_id: number; title: string; artist: string; artist_id: number; album: string; album_id: number; album_artist: string;
+    genre: string | null; art: string | null; duration: number; played_at: number; seconds: number | null;
+  }[]>(
+    `SELECT p.track_id, t.title, ar.name AS artist, t.artist_id, al.title AS album, t.album_id, aa.name AS album_artist,
+            t.genre, t.art, t.duration, p.played_at, p.seconds
+     FROM music_plays p
+     JOIN music_tracks t ON t.id = p.track_id
+     JOIN music_artists ar ON ar.id = t.artist_id
+     JOIN music_albums al ON al.id = t.album_id
+     JOIN music_artists aa ON aa.id = al.artist_id
+     WHERE p.profile_id = $1
+     ORDER BY p.played_at`,
+    [profileId],
+  );
+  return rows.map((r) => ({
+    trackId: r.track_id,
+    title: r.title,
+    artist: r.artist,
+    artistId: r.artist_id,
+    album: r.album,
+    albumId: r.album_id,
+    albumArtist: r.album_artist,
+    genre: r.genre,
+    art: r.art,
+    duration: r.duration || 0,
+    playedAt: r.played_at,
+    seconds: r.seconds ?? null,
+  }));
 }
 
 export async function setFavourite(profileId: number, trackId: number, value: boolean, now = Date.now()) {

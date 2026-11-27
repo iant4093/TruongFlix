@@ -72,7 +72,37 @@ export const popularPage = `<div class="jetpack_top_posts_widget"><h2 class="wid
 
 type Row = Record<string, unknown>;
 const library: Row[] = [];
-const sessions: Row[] = [];
+
+/** Genres shown for the demo games in Wrapped (real ones come from each game's source page). */
+const DEMO_GENRES: string[][] = [
+  ['Action', 'RPG', 'Open World'], ['Strategy', 'Simulation'], ['Puzzle', 'Indie'], ['RPG', 'Action'], ['Racing', 'Arcade'], ['Strategy', 'Tactics'],
+  ['Simulation', 'Casual'], ['Adventure', 'Puzzle'], ['Racing', 'Action'], ['Adventure', 'Indie'], ['Action', 'Shooter'], ['Casual', 'Indie'],
+];
+
+/** A year of play sessions for the "Ian" profile (profile 1), so Wrapped has a Games section. */
+const sessions: Row[] = (() => {
+  const out: Row[] = [];
+  const now = new Date();
+  const year = now.getFullYear();
+  let seed = 11;
+  const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  // Mostly the first few games, with the occasional other one.
+  const pick = () => { const r = rand(); return r < 0.4 ? 0 : r < 0.62 ? 3 : r < 0.78 ? 4 : r < 0.9 ? 1 : Math.floor(rand() * TITLES.length); };
+  const add = (day: Date, hour: number, i: number, seconds: number) => {
+    const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, Math.floor(rand() * 60));
+    if (start > now || start.getFullYear() !== year) return;
+    out.push({ game_id: null, slug: slugOf(TITLES[i][0]), title: TITLES[i][0], cover: `https://img.example/cover-${i}.jpg`, started_at: start.toISOString(), seconds: Math.round(seconds), estimated: 0, profile_id: 1 });
+  };
+  for (let d = 0; d < 330; d += 1 + Math.floor(rand() * 4)) {
+    const day = new Date(now.getTime() - d * 864e5);
+    add(day, rand() < 0.6 ? 21 + Math.floor(rand() * 3) : 18 + Math.floor(rand() * 3), pick(), 1800 + rand() * 7200);
+    if (rand() < 0.25) add(day, 14, pick(), 1200 + rand() * 3600);
+  }
+  // A week-long run on Starfall Odyssey, and one marathon night.
+  for (let d = 12; d < 19; d++) add(new Date(now.getTime() - d * 864e5), 20, 0, 3600 + rand() * 3600);
+  add(new Date(now.getTime() - 40 * 864e5), 19, 3, 6.5 * 3600);
+  return out;
+})();
 const gameSettings: Record<string, string> = {
   games_source_url: 'https://games.example',
   games_download_dir: 'D:\\Downloads\\Game Installers',
@@ -90,12 +120,18 @@ export function handleGamesSql(q: string, values: unknown[]): unknown | undefine
   }
   if (q.includes('games_play_sessions')) {
     if (q.includes('sqlite_master')) return [{ name: 'games_play_sessions' }];
+    if (q.startsWith('PRAGMA')) return ['id', 'game_id', 'slug', 'title', 'cover', 'started_at', 'seconds', 'estimated', 'profile_id'].map((name) => ({ name }));
     if (q.startsWith('SELECT * FROM games_play_sessions')) return [...sessions].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
     if (q.startsWith('INSERT INTO games_play_sessions') && q.includes('VALUES')) {
-      const [game_id, slug, title, cover, started_at, seconds] = values;
-      sessions.push({ game_id, slug, title, cover, started_at, seconds, estimated: 0 });
+      const [game_id, slug, title, cover, started_at, seconds, profile_id] = values;
+      sessions.push({ game_id, slug, title, cover, started_at, seconds, estimated: 0, profile_id: profile_id ?? null });
     }
     return q.startsWith('SELECT') ? [] : [1, 0];
+  }
+  if (q.startsWith('SELECT slug, detail FROM games_library')) {
+    // Library games, plus the demo games played above (which aren't in the library).
+    const demo = TITLES.map(([title], i) => ({ slug: slugOf(title), detail: JSON.stringify({ genres: DEMO_GENRES[i] }) }));
+    return [...library.map((r) => ({ slug: r.slug, detail: r.detail })), ...demo.filter((d) => !library.some((r) => r.slug === d.slug))];
   }
   if (!q.includes('games_library')) return undefined;
   if (q.startsWith('CREATE')) return [0, 0];

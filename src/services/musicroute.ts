@@ -56,6 +56,11 @@ export async function musicRoute(caller: Caller, profile: Profile, method: strin
       rateLimit(caller, 'music-played', 30, 60_000);
       if (!(await mdb.recordPlay(profile.id, id(body.id)))) throw new ApiError(404, 'Not found');
       return { ok: true };
+    case '/music/listened':
+      rateLimit(caller, 'music-listened', 60, 60_000);
+      // A report that matches no recent play is ignored (the play still counts, as its song's length).
+      await mdb.setPlaySeconds(profile.id, id(body.id), Number(body.seconds));
+      return { ok: true };
     case '/music/favourite':
       if (!(await mdb.setFavourite(profile.id, id(body.id), !!body.value))) throw new ApiError(404, 'Not found');
       return { ok: true };

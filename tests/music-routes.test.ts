@@ -132,6 +132,16 @@ describe('/api/music', () => {
     await expect(post('/music/played', { profile: 1, id: 4242 })).rejects.toMatchObject({ status: 404 });
   });
 
+  it('stores how long a play was listened to, for this profile only', async () => {
+    await post('/music/played', { profile: 1, id: ids.Lossless });
+    await post('/music/listened', { profile: 2, id: ids.Lossless, seconds: 5 }, B);
+    await post('/music/listened', { profile: 1, id: ids.Lossless, seconds: 'nope' });
+    expect((await mdb.listMusicPlays(1))[0].seconds).toBeNull();
+    await post('/music/listened', { profile: 1, id: ids.Lossless, seconds: 42 });
+    expect((await mdb.listMusicPlays(1))[0].seconds).toBe(42);
+    await expect(post('/music/listened', { profile: 1, id: 0, seconds: 1 })).rejects.toMatchObject({ status: 400 });
+  });
+
   it('rejects unknown music endpoints', async () => {
     await expect(post('/music/nope', { profile: 1 })).rejects.toMatchObject({ status: 404 });
   });

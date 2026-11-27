@@ -44,10 +44,11 @@ describe('games sessions migration', () => {
     expect(backfills(d)).toHaveLength(1);
   });
 
-  it('only adds tables (never drops or rewrites the library)', async () => {
+  it('only adds tables and columns (never drops or rewrites the library)', async () => {
     const d = fakeDb();
     await migrateGamesDb(d);
-    expect(d.statements.some((st) => /^\s*(DROP|ALTER|DELETE|UPDATE)\b/i.test(st.query))).toBe(false);
+    expect(d.statements.some((st) => /^\s*(DROP|DELETE|UPDATE)\b/i.test(st.query))).toBe(false);
+    expect(d.statements.filter((st) => /^\s*ALTER\b/i.test(st.query)).map((st) => st.query)).toEqual(['ALTER TABLE games_play_sessions ADD COLUMN profile_id INTEGER']);
     expect(d.tables).toEqual(new Set(['games_library', 'games_play_sessions']));
   });
 });
@@ -58,7 +59,12 @@ describe('recordPlaySession', () => {
   it('stores when the session started, from its end time and length', async () => {
     const ended = new Date('2026-11-07T20:00:00.000Z');
     await recordPlaySession({ id: 3, slug: 'trees', title: 'Trees', cover: 'c.jpg' }, 5400.4, ended);
-    expect(db.sessions).toEqual([[3, 'trees', 'Trees', 'c.jpg', '2026-11-07T18:30:00.000Z', 5400]]);
+    expect(db.sessions).toEqual([[3, 'trees', 'Trees', 'c.jpg', '2026-11-07T18:30:00.000Z', 5400, null]]);
+  });
+
+  it('notes which profile played', async () => {
+    await recordPlaySession({ id: 3, slug: 'trees', title: 'Trees', cover: null }, 60, new Date('2026-11-07T20:00:00.000Z'), 2);
+    expect(db.sessions[0][6]).toBe(2);
   });
 
   it('ignores empty sessions', async () => {

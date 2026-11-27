@@ -33,7 +33,8 @@ const SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS games_play_sessions (
   cover TEXT,
   started_at TEXT NOT NULL,          -- ISO time the session started
   seconds INTEGER NOT NULL,
-  estimated INTEGER NOT NULL DEFAULT 0 -- 1 = rebuilt from a game's total play time
+  estimated INTEGER NOT NULL DEFAULT 0, -- 1 = rebuilt from a game's total play time
+  profile_id INTEGER                 -- profile that started the game (NULL: recorded before profiles were noted)
 )`;
 
 type SqlDb = {
@@ -51,6 +52,9 @@ export async function migrateGamesDb(database: SqlDb) {
   const existing = await database.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'games_play_sessions'");
   await database.execute(SESSIONS_SCHEMA);
   await database.execute('CREATE INDEX IF NOT EXISTS idx_games_play_sessions_started ON games_play_sessions(started_at)');
+  // Sessions note which profile played (added later; older sessions keep NULL).
+  const columns = await database.select<{ name: string }[]>('PRAGMA table_info(games_play_sessions)');
+  if (!columns.some((c) => c.name === 'profile_id')) await database.execute('ALTER TABLE games_play_sessions ADD COLUMN profile_id INTEGER');
   if (existing.length) return;
   await database.execute(
     `INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated)
@@ -218,6 +222,10 @@ export interface PlaySession {
   seconds: number;
   /** Rebuilt from play time recorded before sessions were logged: its day isn't known exactly. */
   estimated: boolean;
+  /** Profile that started the game; null for sessions recorded before that was noted. */
+  profileId: number | null;
+  /** The game's genres/tags from its source page, when it is still in the library. */
+  genres: string[];
 }
 
 interface SessionRowDb {
@@ -228,19 +236,28 @@ interface SessionRowDb {
   started_at: string;
   seconds: number;
   estimated: number;
+  profile_id?: number | null;
 }
 
-export async function recordPlaySession(game: Pick<LibraryGame, 'id' | 'slug' | 'title' | 'cover'>, seconds: number, endedAt = new Date()) {
+export async function recordPlaySession(game: Pick<LibraryGame, 'id' | 'slug' | 'title' | 'cover'>, seconds: number, endedAt = new Date(), profileId: number | null = null) {
   const secs = Math.max(0, Math.round(seconds));
   if (!secs) return;
   await (await db()).execute(
-    'INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated) VALUES ($1,$2,$3,$4,$5,$6,0)',
-    [game.id, game.slug, game.title, game.cover, new Date(endedAt.getTime() - secs * 1000).toISOString(), secs],
+    'INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated, profile_id) VALUES ($1,$2,$3,$4,$5,$6,0,$7)',
+    [game.id, game.slug, game.title, game.cover, new Date(endedAt.getTime() - secs * 1000).toISOString(), secs, profileId],
   );
 }
 
+function genresOf(detail: string | null): string[] {
+  const genres = parseJson<GameDetail>(detail)?.genres;
+  return Array.isArray(genres) ? genres.map((g) => String(g).trim()).filter(Boolean) : [];
+}
+
 export async function listPlaySessions(): Promise<PlaySession[]> {
-  const rows = await (await db()).select<SessionRowDb[]>('SELECT * FROM games_play_sessions ORDER BY started_at');
+  const database = await db();
+  const rows = await database.select<SessionRowDb[]>('SELECT * FROM games_play_sessions ORDER BY started_at');
+  const games = await database.select<{ slug: string; detail: string | null }[]>('SELECT slug, detail FROM games_library');
+  const genres = new Map(games.map((g) => [g.slug, genresOf(g.detail)]));
   return rows.map((r) => ({
     gameId: r.game_id,
     slug: r.slug,
@@ -249,6 +266,8 @@ export async function listPlaySessions(): Promise<PlaySession[]> {
     startedAt: r.started_at,
     seconds: r.seconds,
     estimated: r.estimated === 1,
+    profileId: r.profile_id ?? null,
+    genres: genres.get(r.slug) ?? [],
   }));
 }
 

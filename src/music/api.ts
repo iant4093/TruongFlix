@@ -13,6 +13,8 @@ export interface MusicApi {
   stream(track: MusicTrack, keep?: string[]): Promise<MusicStream>;
   /** The song was listened to (counts toward Listen Now and plays). */
   played(trackId: number): Promise<void>;
+  /** How long the counted play was listened to, sent when the song is left (for Wrapped). */
+  listened(trackId: number, seconds: number): Promise<void>;
   setFavourite(trackId: number, value: boolean): Promise<void>;
   createPlaylist(name: string, trackIds?: number[]): Promise<MusicPlaylist>;
   renamePlaylist(id: number, name: string): Promise<void>;
@@ -61,6 +63,7 @@ export function httpMusicApi(fetcher: Fetcher, who: { id: number; key?: string }
     lyrics: (trackId, refresh) => fetcher<MusicLyrics | null>(`/music/lyrics${query}&id=${trackId}${refresh ? '&refresh=1' : ''}`),
     stream: (track, keep = []) => post<MusicStream>('/music/stream', { id: track.id, codecs: (codecs ??= playableCodecs()), keep }),
     played: (trackId) => post<unknown>('/music/played', { id: trackId }).then(() => undefined),
+    listened: (trackId, seconds) => post<unknown>('/music/listened', { id: trackId, seconds }).then(() => undefined),
     setFavourite: (trackId, value) => post<unknown>('/music/favourite', { id: trackId, value }).then(() => undefined),
     createPlaylist: (name, trackIds = []) => post<MusicPlaylist>('/music/playlists/create', { name, trackIds }),
     renamePlaylist: (id, name) => post<unknown>('/music/playlists/rename', { id, name }).then(() => undefined),

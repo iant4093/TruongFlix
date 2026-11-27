@@ -80,6 +80,8 @@ let loadSeq = 0;
 let options = { mediaSession: false, visualizer: false };
 let listened = 0;
 let counted = false;
+/** The song whose play was counted, until its listened time is reported. */
+let countedTrack: number | null = null;
 let lastTick = 0;
 let retried = false;
 let unlocked = false;
@@ -205,10 +207,18 @@ function maybeCount() {
   if (counted || !track || !api) return;
   if (listened >= Math.min(30, Math.max(5, track.duration * 0.5))) {
     counted = true;
+    countedTrack = track.id;
     const now = Date.now();
     void api.played(track.id).catch(() => {});
     patchTrack(track.id, { plays: track.plays + 1, lastPlayed: now });
   }
+}
+
+/** Leaving a counted song: how long it was listened to goes with its play (Wrapped's listening time). */
+function reportListened() {
+  const api = get().api;
+  if (countedTrack != null && api && listened > 0) void api.listened(countedTrack, listened).catch(() => {});
+  countedTrack = null;
 }
 
 async function urlFor(track: MusicTrack): Promise<string> {
@@ -248,6 +258,7 @@ async function load(item: Q.QueueItem | null, autoplay: boolean, startAt = 0) {
   const seq = ++loadSeq;
   const track = item ? get().byId.get(item.id) ?? null : null;
   const prev = activeSlot();
+  reportListened();
   listened = 0;
   counted = false;
   lastTick = startAt;
@@ -302,6 +313,7 @@ function onEnded() {
   const n = Q.next(queue, true);
   if (!n) {
     // End of the queue: back to the start of the last song, paused.
+    reportListened();
     const el = activeSlot().el;
     el.currentTime = 0;
     set({ playing: false, time: 0 });
@@ -310,6 +322,7 @@ function onEnded() {
   if (n.index === queue.index) {
     const el = activeSlot().el;
     el.currentTime = 0;
+    reportListened();
     listened = 0;
     counted = false;
     lastTick = 0;
@@ -618,6 +631,7 @@ export function clearQueue() {
 
 /** Stops and forgets the queue (e.g. switching profiles). */
 export function stopMusic() {
+  reportListened();
   if (slots) for (const s of slots) {
     s.el.pause();
     s.key = null;

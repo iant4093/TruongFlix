@@ -6,6 +6,7 @@
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
 import { handleGamesSql } from './mockGames';
+import { mockMusicPlayRows } from '../music/mock';
 import { gameTorrentFiles, handleGamesCommand } from './mockGamesCommands';
 import type {
   CollectionPart,
@@ -911,6 +912,8 @@ function handleExecute(query: string, values: unknown[]) {
 
 function handleSelect(query: string, values: unknown[]) {
   const qNorm = query.replace(/\s+/g, ' ').trim();
+  // Wrapped's music plays (the rest of Music answers from src/music/mock.ts).
+  if (qNorm.includes('FROM music_plays p')) return mockMusicPlayRows(Number(values[0]));
   const games = handleGamesSql(qNorm, values);
   if (games !== undefined) return games;
   const tor = handleTorrentSql(qNorm, values);
