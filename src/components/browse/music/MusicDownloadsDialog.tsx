@@ -1,4 +1,6 @@
-import { Download, FolderOpen, ListMusic, Loader2, Music2, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { Check, ChevronDown, Copy, Download, FolderOpen, ListMusic, Loader2, Music2, X } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { cancelAlbumJob, connectSoulseek, dismissAlbumJob, hasSoulseekAccount, isActive, jobLabel, useMusicDownloads, type AlbumJob } from '../../../services/musicDownloads';
@@ -92,7 +94,51 @@ export default function MusicDownloadsDialog({ onClose }: { onClose: () => void 
           ))}
         </ul>
       )}
+      <ActivityLog />
     </Dialog>
+  );
+}
+
+/** What Soulseek has been doing: searches and how many people answered, transfers, connection drops. */
+function ActivityLog() {
+  const [open, setOpen] = useState(false);
+  const [lines, setLines] = useState<string[]>([]);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    const read = () => void invoke<string[]>('slsk_activity').then((l) => alive && setLines(l ?? [])).catch(() => {});
+    read();
+    const timer = setInterval(read, 2000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [open]);
+  const copy = () => {
+    void navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <section className="mt-6 border-t border-white/10 pt-4">
+      <div className="flex items-center gap-3">
+        <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-widest text-white/50 hover:text-white/80" aria-expanded={open}>
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} /> Activity
+        </button>
+        {open && lines.length > 0 && (
+          <button type="button" className="nf-btn-ghost ml-auto h-7 px-2.5 text-xs" onClick={copy}>
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {copied ? 'Copied' : 'Copy'}
+          </button>
+        )}
+      </div>
+      {open && (
+        <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-white/60 [scrollbar-width:thin]">
+          {lines.length ? lines.join('\n') : 'Nothing yet. Searches, transfers and connection changes show here.'}
+        </pre>
+      )}
+    </section>
   );
 }
 

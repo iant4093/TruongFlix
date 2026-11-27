@@ -50,6 +50,13 @@ const SONG_QUEUE_PATIENCE: Duration = Duration::from_secs(30);
 const SONG_STALL_PATIENCE: Duration = Duration::from_secs(60);
 /// Searches are sent at least this far apart: Soulseek quietly drops searches that come too fast.
 const SEARCH_GAP: Duration = Duration::from_millis(2500);
+/// Each person who answers a search connects to us on their own, and a home router remembers
+/// every connection for minutes after it closes: past a few thousand it stops working for the
+/// whole network. So after a widely answered search, the next one waits until those connections
+/// average out to about this many a second.
+const NEW_PEERS_PER_SECOND: f64 = 10.0;
+/// The longest wait between searches.
+const SEARCH_GAP_MAX: Duration = Duration::from_secs(30);
 /// When a song's first searches have found nothing by now, its other artists and its title alone
 /// are searched too.
 const SONG_FALLBACK_AFTER: Duration = Duration::from_secs(5);
@@ -79,6 +86,43 @@ impl Status {
 }
 
 static SESSION: Mutex<Option<Arc<Client>>> = Mutex::new(None);
+
+/// What Soulseek has been doing (searches and how many answered, transfers, connection drops),
+/// newest last, for the Downloads panel's activity log.
+static ACTIVITY: Mutex<Option<std::collections::VecDeque<String>>> = Mutex::new(None);
+const ACTIVITY_LINES: usize = 600;
+
+/// The activity log on disk too (`<app log folder>/soulseek.log`), so it survives a restart and
+/// can be read while an import runs.
+static LOG_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+const LOG_FILE_MAX: u64 = 4 * 1024 * 1024;
+
+fn note(line: impl Into<String>) {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let stamp = format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+    let line = format!("{stamp} UTC  {}", line.into());
+    if let Some(path) = LOG_FILE.lock().unwrap().clone() {
+        use std::io::Write;
+        // Started afresh once it grows large.
+        let fresh = std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_FILE_MAX);
+        let file = std::fs::OpenOptions::new().create(true).append(!fresh).write(true).truncate(fresh).open(&path);
+        if let Ok(mut file) = file {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+    let mut log = ACTIVITY.lock().unwrap();
+    let log = log.get_or_insert_with(Default::default);
+    if log.len() >= ACTIVITY_LINES {
+        log.pop_front();
+    }
+    log.push_back(line);
+}
+
+/// The activity log, oldest first.
+#[tauri::command]
+pub fn slsk_activity() -> Vec<String> {
+    ACTIVITY.lock().unwrap().as_ref().map(|l| l.iter().cloned().collect()).unwrap_or_default()
+}
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
 
 fn set_status(app: &AppHandle, status: Status) {
@@ -123,11 +167,10 @@ struct Login {
 
 static LOGIN: Mutex<Option<Login>> = Mutex::new(None);
 
-/// Connections to other people kept open at once. Every search is answered over hundreds of
-/// short connections, and the library otherwise keeps up to 512 open (a thread each): enough to
-/// overwhelm a home router and take the whole network down with it. Idle ones are closed first;
-/// a connection that's sending us a file is never closed for this.
-const MAX_PEERS: usize = 40;
+/// Connections to other people kept open at once (the library allows 512, a thread each). When
+/// full, the oldest is closed for each new one, so this must stay well above how many people
+/// answer one search, or their answers are cut off before they arrive.
+const MAX_PEERS: usize = 256;
 
 /// Waits between automatic reconnects after the server drops the connection.
 const RECONNECT_WAITS: [u64; 6] = [3, 6, 12, 24, 45, 60];
@@ -181,6 +224,11 @@ pub async fn slsk_connect(app: AppHandle, username: String, password: String, po
         return Err("Enter your Soulseek password.".into());
     }
     let shared: Vec<String> = shared.into_iter().filter(|d| Path::new(d).is_dir()).collect();
+    if let Ok(dir) = tauri::Manager::path(&app).app_log_dir() {
+        if std::fs::create_dir_all(&dir).is_ok() {
+            *LOG_FILE.lock().unwrap() = Some(dir.join("soulseek.log"));
+        }
+    }
     let login = Login { username: username.clone(), password, port, shared };
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -188,10 +236,12 @@ pub async fn slsk_connect(app: AppHandle, username: String, password: String, po
         set_status(&handle, Status { state: "connecting", username: username.clone(), message: String::new() });
         match log_in(&login) {
             Ok(client) => {
+                note(format!("Logged in (listening on port {}, sharing {} folders)", login.port, login.shared.len()));
                 *LOGIN.lock().unwrap() = Some(login);
                 Ok(go_online(&handle, client))
             }
             Err(message) => {
+                note(format!("Login failed: {message}"));
                 set_status(&handle, Status { state: "error", username, message: message.clone() });
                 Err(message)
             }
@@ -212,6 +262,7 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
         }
         let Some(loss) = client.session_loss() else { continue };
         SESSION.lock().unwrap().take();
+        note(format!("Connection lost: {loss}"));
         let username = client.username().to_string();
         if matches!(loss, soulseek_rs::SessionLoss::Displaced) {
             set_status(&app, Status { state: "error", username, message: "Your Soulseek account logged in somewhere else.".into() });
@@ -226,9 +277,13 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
                 if SESSION.lock().unwrap().is_some() || LOGIN.lock().unwrap().as_ref().is_none_or(|l| l.username != username) {
                     return;
                 }
-                if let Ok(fresh) = log_in(&login) {
-                    go_online(&app, fresh);
-                    return;
+                match log_in(&login) {
+                    Ok(fresh) => {
+                        note("Reconnected");
+                        go_online(&app, fresh);
+                        return;
+                    }
+                    Err(e) => note(format!("Reconnect failed: {e}")),
                 }
             }
         }
@@ -550,14 +605,25 @@ static QUERIES: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
 struct Searching<'a> {
     client: &'a Client,
     queries: Vec<String>,
+    started: Instant,
 }
 
-/// Waits for this search's turn to be sent (see `SEARCH_GAP`).
+/// How many people answered recent searches (the most of the last few), for pacing. It starts
+/// cautious (a popular song is answered by about this many) until real answers come in.
+static ANSWERED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(150);
+
+/// The wait before the next search: longer after widely answered ones (see `NEW_PEERS_PER_SECOND`).
+fn search_gap() -> Duration {
+    let people = ANSWERED.load(Ordering::Relaxed) as f64;
+    Duration::from_secs_f64(people / NEW_PEERS_PER_SECOND).clamp(SEARCH_GAP, SEARCH_GAP_MAX)
+}
+
+/// Waits for this search's turn to be sent (see `search_gap`).
 fn search_turn() {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap();
     if let Some(at) = *last {
-        let next = at + SEARCH_GAP;
+        let next = at + search_gap();
         let now = Instant::now();
         if next > now {
             std::thread::sleep(next - now);
@@ -568,7 +634,7 @@ fn search_turn() {
 
 impl<'a> Searching<'a> {
     fn start(client: &'a Client, queries: Vec<String>) -> Result<Self, String> {
-        let mut searching = Searching { client, queries: Vec::new() };
+        let mut searching = Searching { client, queries: Vec::new(), started: Instant::now() };
         searching.add(queries)?;
         Ok(searching)
     }
@@ -589,7 +655,10 @@ impl<'a> Searching<'a> {
             if fresh {
                 search_turn();
                 // Sends the search and returns at once; results collect in the background.
-                self.client.search(&query, Duration::ZERO).map_err(|e| format!("Soulseek search failed: {e}"))?;
+                self.client.search(&query, Duration::ZERO).map_err(|e| {
+                    note(format!("Search “{query}” couldn’t be sent: {e}"));
+                    format!("Soulseek search failed: {e}")
+                })?;
             }
         }
         Ok(())
@@ -598,16 +667,36 @@ impl<'a> Searching<'a> {
     /// Every file found so far, each once.
     fn offers(&self) -> Vec<Offer> {
         let mut seen = std::collections::HashSet::new();
-        self.queries
+        let mut people = 0;
+        let offers = self
+            .queries
             .iter()
-            .flat_map(|q| offers_from(self.client.get_search_results(q)))
+            .flat_map(|q| {
+                let results = self.client.get_search_results(q);
+                people = people.max(results.len());
+                offers_from(results)
+            })
             .filter(|o| seen.insert((o.user.clone(), o.path.clone())))
-            .collect()
+            .collect();
+        // A widely answered search slows the next ones down straight away.
+        ANSWERED.fetch_max(people, Ordering::Relaxed);
+        offers
     }
 }
 
 impl Drop for Searching<'_> {
     fn drop(&mut self) {
+        let mut most = 0;
+        for query in &self.queries {
+            let results = self.client.get_search_results(query);
+            let files: usize = results.iter().map(|r| r.files.len()).sum();
+            let audio = results.iter().flat_map(|r| r.files.iter()).filter(|f| matching::AUDIO.contains(&extension(&f.name).as_str())).count();
+            most = most.max(results.len());
+            note(format!("Search “{query}”: {} people answered, {files} files ({audio} audio) in {:.0}s", results.len(), self.started.elapsed().as_secs_f64()));
+        }
+        // Recent searches set the pace of the next ones (it eases back as answers get fewer).
+        let before = ANSWERED.load(Ordering::Relaxed);
+        ANSWERED.store(most.max(before * 2 / 3), Ordering::Relaxed);
         let mut map = QUERIES.lock().unwrap();
         let map = map.get_or_insert_with(HashMap::new);
         for query in &self.queries {
@@ -1011,6 +1100,7 @@ fn find_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &Ato
             return Ok(found);
         }
         let (code, message) = song_not_found(req, &offers, &search.queries);
+        note(format!("“{}”: {message}", req.want.title));
         return Err(miss(code, message));
     }
 }
@@ -1176,6 +1266,8 @@ struct Transfer<'a> {
     tries: u32,
     done: bool,
     dead: Option<String>,
+    /// It has started sending (noted once).
+    started: bool,
 }
 
 /// Asks for one file (again, after a failure) into its own folder.
@@ -1215,7 +1307,10 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
     };
     for item in items {
         match request_file(client, item, dir) {
-            Ok((status, path)) => transfers.push(Transfer { item, status, last: DownloadStatus::Queued, path, tries: 1, done: false, dead: None }),
+            Ok((status, path)) => {
+                note(format!("Asked {user} for {}", basename(&item.offer.path)));
+                transfers.push(Transfer { item, status, last: DownloadStatus::Queued, path, tries: 1, done: false, dead: None, started: false })
+            }
             Err(e) => {
                 cancel_live(&transfers);
                 return Err(Stop::Failed(e));
@@ -1249,10 +1344,15 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
                 }
             }
             let name = basename(&t.item.offer.path);
+            if matches!(t.last, DownloadStatus::InProgress { .. }) && !t.started {
+                t.started = true;
+                note(format!("{user} started sending {name}"));
+            }
             let problem = match &t.last {
                 DownloadStatus::Completed => match library::verify(&t.path, &extension(&t.item.offer.path), t.item.offer.size, t.item.length_ms) {
                     Ok(()) => {
                         t.done = true;
+                        note(format!("Got {name} from {user}"));
                         got[t.item.index] = Some((t.path.clone(), t.item.offer.size));
                         continue;
                     }
@@ -1263,6 +1363,7 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
                 DownloadStatus::TimedOut => format!("{user} couldn’t send {name}: timed out"),
                 _ => continue,
             };
+            note(format!("{problem}{}", if t.tries < FILE_TRIES { " (asking again)" } else { "" }));
             // Uploads often fail once and then go through.
             if t.tries < FILE_TRIES {
                 match request_file(client, t.item, dir) {
@@ -1308,6 +1409,7 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
         if last_progress.elapsed() > patience {
             cancel_live(&transfers);
             let why = if waiting { "kept the files queued" } else { "stopped sending" };
+            note(format!("{user} {why} for {}s; trying another copy", patience.as_secs()));
             return Err(Stop::Failed(format!("{user} {why} for too long")));
         }
         if last_emit.elapsed() >= Duration::from_millis(400) {
