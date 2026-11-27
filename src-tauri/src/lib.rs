@@ -9,6 +9,7 @@ mod live;
 mod media;
 mod music;
 mod music_catalog;
+mod playlist_reader;
 mod playlists;
 mod nas;
 mod nowplaying;
@@ -35,6 +36,8 @@ mod window;
 #[doc(hidden)]
 pub use player::smoke_test as player_smoke_test;
 
+#[cfg(feature = "playlist-reader-smoke")]
+pub use playlist_reader::smoke as playlist_reader_smoke;
 #[cfg(feature = "source-browser-smoke")]
 #[doc(hidden)]
 pub use source_browser::smoke::run as source_browser_smoke;

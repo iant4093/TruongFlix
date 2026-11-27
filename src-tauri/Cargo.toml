@@ -11,6 +11,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 source-browser-smoke = []
+playlist-reader-smoke = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -107,6 +108,10 @@ strip = true
 # Proc-macros (e.g. sqlx-macros) are dlopen'ed at compile time; stripping them breaks loading on macOS.
 [profile.release.build-override]
 strip = false
+
+[[example]]
+name = "playlist_reader_smoke"
+required-features = ["playlist-reader-smoke"]
 
 [[example]]
 name = "source_browser_smoke"

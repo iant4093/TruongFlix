@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { AlertCircle, Check, ChevronLeft, FileUp, ListMusic, Loader2, Play, RotateCw, Search, Square, Trash2 } from 'lucide-react';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { openRoute, openTab } from '../../../music/nav';
@@ -48,47 +48,6 @@ export default function MusicPlaylistImport({ openId, onOpen }: { openId: string
   return <ImportStart onOpen={onOpen} />;
 }
 
-/** How to get each service's whole playlist into the box. */
-const HOW_TO: { name: string; gets: string; steps: ReactNode[] }[] = [
-  {
-    name: 'Spotify',
-    gets: 'Whole playlist',
-    steps: [
-      <>
-        In the Spotify app, open the playlist, click any song, press <Kbd>Ctrl</Kbd> <Kbd>A</Kbd> then <Kbd>Ctrl</Kbd> <Kbd>C</Kbd> (<Kbd>⌘</Kbd> <Kbd>A</Kbd>, <Kbd>⌘</Kbd> <Kbd>C</Kbd> on a Mac), and paste here.
-      </>,
-      <>A playlist link (Share → Copy link to playlist) works too, but Spotify only shows its first 100 songs.</>,
-    ],
-  },
-  {
-    name: 'Apple Music',
-    gets: 'Up to 300 songs',
-    steps: [
-      <>Share → Copy Link, then paste it here. Playlists you made work too, once you’ve shared them.</>,
-      <>Apple’s page only shows a playlist’s first 300 songs. For a longer one, export it to a CSV file with TuneMyMusic or Soundiiz and open it here; songs already imported are skipped.</>,
-    ],
-  },
-  {
-    name: 'YouTube and YouTube Music',
-    gets: 'Whole playlist',
-    steps: [<>Share → Copy link, then paste it here.</>, <>Public and unlisted playlists work; private ones and mixes made for you don’t.</>],
-  },
-  {
-    name: 'Tidal, Deezer, Amazon Music and others',
-    gets: 'Whole playlist',
-    steps: [
-      <>Export the playlist to a CSV file with a free tool such as TuneMyMusic or Soundiiz, then open the file here.</>,
-      <>
-        Or paste a list, one song per line: <span className="text-white/80">Artist - Title</span>.
-      </>,
-    ],
-  },
-];
-
-function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="rounded border border-white/20 bg-white/10 px-1 py-px font-sans text-[11px] text-white/80">{children}</kbd>;
-}
-
 function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
   const [text, setText] = useState('');
   const [reading, setReading] = useState(false);
@@ -129,7 +88,7 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
   return (
     <div className="mx-auto max-w-4xl">
       <h3 className="text-2xl font-bold tracking-tight">Import a playlist</h3>
-      <p className="mt-1 max-w-2xl text-sm text-white/55">Every song is matched to the store, found on Soulseek and downloaded into your music folder, and the playlist is added to Music. Songs you already have are skipped.</p>
+      <p className="mt-1 max-w-2xl text-sm text-white/55">Paste a link to a Spotify, Apple Music or YouTube playlist. Every song is found and downloaded into your music folder, and the playlist appears in Music.</p>
       <form
         className="mt-5 rounded-xl border border-white/10 bg-white/[0.03] p-4 transition-colors focus-within:border-white/25"
         onSubmit={(e) => {
@@ -154,7 +113,7 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
           }}
           rows={Math.min(10, Math.max(2, lines))}
           spellCheck={false}
-          placeholder={'Paste a playlist link, songs copied from Spotify, or one song per line (Artist - Title)'}
+          placeholder="https://open.spotify.com/playlist/…"
           className="block w-full resize-none bg-transparent text-sm leading-6 text-white outline-none placeholder:text-white/35 [scrollbar-color:rgba(255,255,255,0.2)_transparent] [scrollbar-width:thin]"
         />
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-white/[0.07] pt-3">
@@ -162,13 +121,14 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
             {reading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListMusic className="h-4 w-4" />}
             Read playlist
           </button>
-          <button type="button" className="nf-btn-ghost" disabled={reading} onClick={() => file.current?.click()}>
-            <FileUp className="h-4 w-4" /> Open a CSV file
+          <span className="text-xs text-white/45" role="status">
+            {progress ? `Reading the playlist… ${progress.done} songs` : reading ? 'Reading the playlist…' : ''}
+          </span>
+          <button type="button" className="ml-auto text-xs text-white/40 underline-offset-2 hover:text-white/70 hover:underline" disabled={reading} onClick={() => file.current?.click()} title="A playlist exported from another service, or a list of songs">
+            <FileUp className="mr-1 inline h-3.5 w-3.5" /> Open a CSV file
           </button>
           <input ref={file} type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={(e) => void openFile(e.target.files?.[0]).finally(() => (e.target.value = ''))} />
-          <span className="text-xs text-white/45" role="status">
-            {progress ? `Reading songs… ${progress.done} of ${progress.total}` : reading ? 'Reading the playlist…' : 'Spotify, Apple Music, YouTube, YouTube Music, or a CSV from any service'}
-          </span>
+
         </div>
       </form>
       {error && (
@@ -177,28 +137,6 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
           {error}
         </p>
       )}
-
-      <section className="mt-8" aria-label="How to import from each service">
-        <h4 className="mb-3 text-sm font-bold uppercase tracking-widest text-white/50">Getting your whole playlist</h4>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {HOW_TO.map((h) => (
-            <div key={h.name} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-              <p className="flex items-center gap-2 text-sm font-semibold">
-                <span className="flex-1">{h.name}</span>
-                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-300">{h.gets}</span>
-              </p>
-              <ul className="mt-2 space-y-1.5 text-[13px] leading-relaxed text-white/60">
-                {h.steps.map((step, i) => (
-                  <li key={i} className="flex gap-2">
-                    <span className="mt-[0.55em] h-1 w-1 shrink-0 rounded-full bg-white/30" aria-hidden />
-                    <span>{step}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      </section>
 
       {order.length > 0 && (
         <section className="mt-10">
@@ -259,8 +197,8 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
   };
   const progress = c.total ? (c.done + c.owned) / c.total : 0;
   const capped = playlist.partial
-    ? 'Apple’s page only shows the first 300 songs. For the rest, export the playlist to a CSV with TuneMyMusic or Soundiiz and open it in Import playlist; songs already here are skipped.'
-    : playlist.source === 'spotify' && c.total === 100 && !playlist.id.startsWith('spotify-songs') ? 'Spotify’s link shows only the first 100 songs: copy the songs out of the Spotify app for all of them.' : playlist.total != null && playlist.total > c.total ? `The page listed ${c.total} of its ${playlist.total} songs.` : '';
+    ? 'Only the first part of this playlist could be read. Import the link again to get the rest; songs already here are skipped.'
+    : playlist.total != null && playlist.total > c.total ? `The page listed ${c.total} of its ${playlist.total} songs.` : '';
 
   return (
     <div className="mx-auto max-w-5xl">

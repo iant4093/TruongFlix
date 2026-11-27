@@ -434,9 +434,9 @@ pub async fn music_spotify_songs(ids: Vec<String>) -> Result<Vec<Option<Playlist
     Ok(songs)
 }
 
-/// Reads the playlist a pasted Spotify, Apple Music or YouTube link points to.
-#[tauri::command]
-pub async fn music_playlist(link: String) -> Result<Playlist, String> {
+/// Reads the playlist a pasted Spotify, Apple Music or YouTube link points to, as far as its page
+/// shows it (Spotify's first 100 songs, Apple Music's first 300; YouTube's whole playlist).
+pub async fn read_playlist_page(link: String) -> Result<Playlist, String> {
     let source = recognise(&link).ok_or("Paste a link to a Spotify, Apple Music or YouTube playlist.")?;
     let client = page_client()?;
     let html = read_page(&client, &page_url(&source)).await?;
@@ -450,6 +450,32 @@ pub async fn music_playlist(link: String) -> Result<Playlist, String> {
     }
     if playlist.songs.is_empty() {
         return Err("That playlist has no songs, or isn’t public.".into());
+    }
+    Ok(playlist)
+}
+
+/// Reads the whole playlist a pasted Spotify, Apple Music or YouTube link points to: when its page
+/// shows only the first part, the rest is read by scrolling the public page (`playlist_reader`).
+#[tauri::command]
+pub async fn music_playlist(app: tauri::AppHandle, link: String) -> Result<Playlist, String> {
+    let mut playlist = read_playlist_page(link.clone()).await?;
+    let more = match recognise(&link) {
+        // The embed page stops at 100: a playlist that fills it may well be longer.
+        Some(Source::Spotify(id)) if playlist.songs.len() >= 100 => Some(crate::playlist_reader::Page::Spotify(id)),
+        Some(Source::Apple(cc, id)) if playlist.partial => Some(crate::playlist_reader::Page::Apple(cc, id)),
+        _ => None,
+    };
+    if let Some(page) = more {
+        // If the page can't be read whole, what its first part showed still imports.
+        if let Ok(songs) = crate::playlist_reader::read_all(&app, page).await {
+            if songs.len() > playlist.songs.len() {
+                playlist.songs = songs;
+                playlist.total = Some(playlist.songs.len() as u32);
+                playlist.partial = false;
+            }
+        } else if playlist.source == "spotify" {
+            playlist.partial = true;
+        }
     }
     Ok(playlist)
 }
@@ -557,7 +583,7 @@ mod tests {
             "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI",
             "https://music.apple.com/us/playlist/wet-fart/pl.u-zPyLl9YFZLRkvzg",
         ] {
-            let p = rt.block_on(music_playlist(link.into())).unwrap_or_else(|e| panic!("{link}: {e}"));
+            let p = rt.block_on(read_playlist_page(link.into())).unwrap_or_else(|e| panic!("{link}: {e}"));
             println!("{} · {} · {:?} · {} songs (of {:?})", p.source, p.name, p.owner, p.songs.len(), p.total);
             for s in p.songs.iter().take(3) {
                 println!("   {} — {} [{:?}] {:?}", s.title, s.artists.join(", "), s.album, s.length_ms);

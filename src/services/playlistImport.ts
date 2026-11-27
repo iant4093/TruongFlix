@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { createPlaylist, setPlaylistTracks } from '../music/actions';
@@ -233,7 +234,13 @@ export async function readPlaylist(input: string, onProgress?: (done: number, to
   }
   if (looksLikeLink(text) && !text.includes('\n')) {
     const link = /^https?:\/\//i.test(text) ? text : `https://${text}`;
-    return invoke<ReadPlaylist>('music_playlist', { link });
+    // A long playlist is read by scrolling its page, which reports how far it has got.
+    const stop = onProgress ? await listen<number>('playlist-read-progress', ({ payload }) => onProgress(payload, 0)) : null;
+    try {
+      return await invoke<ReadPlaylist>('music_playlist', { link });
+    } finally {
+      stop?.();
+    }
   }
   const songs = parseSongList(text);
   if (!songs.length) throw new Error('No songs found. Put one song per line as “Artist - Title”, or paste an exported CSV.');
