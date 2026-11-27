@@ -293,3 +293,13 @@ it('a song whose copies were all busy is tried again a minute later', async () =
     vi.useRealTimers();
   }
 });
+
+it('an exported CSV keeps its playlist name', async () => {
+  const { listName, readPlaylist } = await import('../src/services/playlistImport');
+  const csv = 'Track name,Artist name,Album,Playlist name,Type,ISRC\nNights,Frank Ocean,Blonde,explosive diarrhea,Playlist,USUM71607009';
+  expect(listName(csv)).toBe('explosive diarrhea');
+  expect((await readPlaylist(csv)).name).toBe('explosive diarrhea');
+  // Otherwise the file's name, else a plain one.
+  expect((await readPlaylist('Frank Ocean - Nights', undefined, 'Road Trip.csv')).name).toBe('Road Trip');
+  expect((await readPlaylist('Frank Ocean - Nights')).name).toBe('Pasted songs');
+});

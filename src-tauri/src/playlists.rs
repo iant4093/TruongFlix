@@ -54,6 +54,9 @@ pub struct Playlist {
     pub cover: Option<String>,
     /// How many songs the playlist has, when the page says (it may show fewer).
     pub total: Option<u32>,
+    /// The page holds only the first part of the playlist (Apple Music pages stop at 300 songs;
+    /// the rest come only from Apple's private web API, which isn't used).
+    pub partial: bool,
     pub songs: Vec<PlaylistSong>,
 }
 
@@ -144,6 +147,7 @@ pub fn spotify(id: &str, html: &str) -> Result<Playlist, String> {
         owner: text(&entity["subtitle"]),
         cover: entity["coverArt"]["sources"].as_array().and_then(|s| s.iter().filter_map(|i| text(&i["url"])).next()),
         total: None,
+        partial: false,
         songs,
     })
 }
@@ -188,6 +192,7 @@ pub fn apple(id: &str, html: &str) -> Result<Playlist, String> {
         owner: header["subtitleLinks"].as_array().and_then(|l| l.first()).and_then(|a| text(&a["title"])),
         cover: artwork(&header["artwork"], 600),
         total: header["trackCount"].as_u64().map(|n| n as u32),
+        partial: data.to_string().contains("PlaylistPaginationIntent"),
         songs,
     })
 }
@@ -289,6 +294,7 @@ pub fn youtube(id: &str, html: &str) -> Result<Playlist, String> {
         owner,
         cover: songs.first().and_then(|s| s.cover.clone()),
         total: None,
+        partial: false,
         songs,
     })
 }
@@ -497,6 +503,10 @@ mod tests {
         let html = r#"<script type="application/json" id="serialized-server-data">{"data":[{"data":{"sections":[{"itemKind":"containerDetailHeaderLockup","items":[{"title":"Today’s Hits","trackCount":50,"subtitleLinks":[{"title":"Apple Music Pop"}],"artwork":{"dictionary":{"url":"https://is1-ssl.mzstatic.com/a/{w}x{h}SC.{f}"}}}]},{"itemKind":"trackLockup","items":[{"title":"stupid song","duration":209680,"subtitleLinks":[{"title":"Olivia Rodrigo"}],"tertiaryLinks":[{"title":"you seem pretty sad"}],"contentDescriptor":{"identifiers":{"storeAdamID":"1889992115"}},"artwork":{"dictionary":{"url":"https://is1-ssl.mzstatic.com/b/{w}x{h}bb.{f}"}}}]}]}}]}</script>"#;
         let p = apple("pl.x", html).unwrap();
         assert_eq!((p.name.as_str(), p.total, p.owner.as_deref()), ("Today’s Hits", Some(50), Some("Apple Music Pop")));
+        assert!(!p.partial);
+        // A playlist longer than the page: it says where the rest would come from.
+        let longer = html.replace(r#"]}}]}</script>"#, r#"],"nextIntent":{"$kind":"PlaylistPaginationIntent","url":"/v1/catalog/us/playlists/pl.x/tracks?offset=300"}}}]}</script>"#);
+        assert!(apple("pl.x", &longer).unwrap().partial);
         assert_eq!(p.cover.as_deref(), Some("https://is1-ssl.mzstatic.com/a/600x600SC.jpg"));
         let s = &p.songs[0];
         assert_eq!((s.title.as_str(), s.artists.clone(), s.album.as_deref(), s.apple_id.as_deref(), s.length_ms), ("stupid song", vec!["Olivia Rodrigo".to_string()], Some("you seem pretty sad"), Some("1889992115"), Some(209680)));

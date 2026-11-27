@@ -62,8 +62,11 @@ const HOW_TO: { name: string; gets: string; steps: ReactNode[] }[] = [
   },
   {
     name: 'Apple Music',
-    gets: 'Whole playlist',
-    steps: [<>Share → Copy Link, then paste it here.</>, <>Playlists you made work too, once you’ve shared them.</>],
+    gets: 'Up to 300 songs',
+    steps: [
+      <>Share → Copy Link, then paste it here. Playlists you made work too, once you’ve shared them.</>,
+      <>Apple’s page only shows a playlist’s first 300 songs. For a longer one, export it to a CSV file with TuneMyMusic or Soundiiz and open it here; songs already imported are skipped.</>,
+    ],
   },
   {
     name: 'YouTube and YouTube Music',
@@ -95,12 +98,12 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
   const order = usePlaylistImports((s) => s.order);
   const imports = usePlaylistImports((s) => s.imports);
   const lines = text.split('\n').length;
-  const read = async (input = text) => {
+  const read = async (input = text, fileName?: string) => {
     setReading(true);
     setError('');
     setProgress(null);
     try {
-      const playlist = await readPlaylist(input, (done, total) => setProgress({ done, total }));
+      const playlist = await readPlaylist(input, (done, total) => setProgress({ done, total }), fileName);
       onOpen(addImport(playlist, useLibraryStore.getState().settings.soulseek_quality));
       setText('');
     } catch (e) {
@@ -116,9 +119,12 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
       setError('That file is too large to be a playlist.');
       return;
     }
-    const content = await f.text();
+    // iTunes and Apple Music export playlists as UTF-16 text; everything else is UTF-8.
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes.length > 3 && bytes[1] === 0 && bytes[3] === 0);
+    const content = new TextDecoder(utf16 ? 'utf-16le' : 'utf-8').decode(bytes).replace(/^\uFEFF/, '');
     setText(content);
-    void read(content);
+    void read(content, f.name);
   };
   return (
     <div className="mx-auto max-w-4xl">
@@ -252,7 +258,9 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
     openRoute({ page: 'playlist', id: playlist.playlistId });
   };
   const progress = c.total ? (c.done + c.owned) / c.total : 0;
-  const capped = playlist.source === 'spotify' && c.total === 100 && !playlist.id.startsWith('spotify-songs') ? 'Spotify’s link shows only the first 100 songs: copy the songs out of the Spotify app for all of them.' : playlist.total != null && playlist.total > c.total ? `The page listed ${c.total} of its ${playlist.total} songs.` : '';
+  const capped = playlist.partial
+    ? 'Apple’s page only shows the first 300 songs. For the rest, export the playlist to a CSV with TuneMyMusic or Soundiiz and open it in Import playlist; songs already here are skipped.'
+    : playlist.source === 'spotify' && c.total === 100 && !playlist.id.startsWith('spotify-songs') ? 'Spotify’s link shows only the first 100 songs: copy the songs out of the Spotify app for all of them.' : playlist.total != null && playlist.total > c.total ? `The page listed ${c.total} of its ${playlist.total} songs.` : '';
 
   return (
     <div className="mx-auto max-w-5xl">

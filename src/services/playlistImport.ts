@@ -39,6 +39,8 @@ export interface ReadPlaylist {
   cover: string | null;
   /** How many songs the playlist has, when its page says (it may show fewer). */
   total: number | null;
+  /** The page held only the first part of the playlist (Apple Music stops at 300 songs). */
+  partial?: boolean;
   songs: PlaylistSong[];
 }
 
@@ -87,6 +89,7 @@ export interface PlaylistImport {
   owner: string | null;
   cover: string | null;
   total: number | null;
+  partial?: boolean;
   songs: ImportSong[];
   quality: MusicQuality;
   running: boolean;
@@ -216,8 +219,9 @@ async function readSpotifySongs(ids: string[], onProgress?: (done: number, total
 
 const looksLikeLink = (text: string) => /^https?:\/\//i.test(text.trim()) || /(spotify\.com|music\.apple\.com|youtube\.com|youtu\.be)\//i.test(text);
 
-/** Reads a pasted playlist link, songs copied out of Spotify, or a pasted list of songs. */
-export async function readPlaylist(input: string, onProgress?: (done: number, total: number) => void): Promise<ReadPlaylist> {
+/** Reads a pasted playlist link, songs copied out of Spotify, or a pasted list of songs (`name`:
+ *  the file it came from, used as the playlist's name when the list doesn't name it). */
+export async function readPlaylist(input: string, onProgress?: (done: number, total: number) => void, name?: string): Promise<ReadPlaylist> {
   const text = input.trim();
   if (!text) throw new Error('Paste a playlist link or a list of songs.');
   const spotifyIds = spotifySongIds(text);
@@ -233,7 +237,7 @@ export async function readPlaylist(input: string, onProgress?: (done: number, to
   }
   const songs = parseSongList(text);
   if (!songs.length) throw new Error('No songs found. Put one song per line as “Artist - Title”, or paste an exported CSV.');
-  return { source: 'list', id: `list-${Date.now()}`, name: 'Pasted songs', owner: null, cover: null, total: null, songs };
+  return { source: 'list', id: `list-${Date.now()}`, name: listName(text) ?? name?.replace(/\.(csv|txt|tsv)$/i, '').trim() ?? 'Pasted songs', owner: null, cover: null, total: null, songs };
 }
 
 /** Splits a CSV line (quotes and doubled quotes understood). */
@@ -257,6 +261,16 @@ function csvCells(line: string, sep: string) {
   }
   out.push(cell.trim());
   return out;
+}
+
+/** The playlist's name in an exported CSV (TuneMyMusic and Soundiiz add a "Playlist name" column). */
+export function listName(text: string): string | null {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  const sep = [',', ';', '\t'].find((s) => lines[0]?.includes(s));
+  if (!sep || lines.length < 2) return null;
+  const header = csvCells(lines[0], sep).map((h) => h.toLowerCase());
+  const at = header.findIndex((h) => /^playlist( name)?$/.test(h));
+  return at >= 0 ? csvCells(lines[1], sep)[at]?.trim() || null : null;
 }
 
 const duration = (v: string | undefined, header: string): number | null => {
@@ -478,7 +492,7 @@ export function addImport(read: ReadPlaylist, quality: MusicQuality): string {
     };
   });
   usePlaylistImports.setState((st) => ({
-    imports: { ...st.imports, [id]: { id, source: read.source, name: read.name, owner: read.owner, cover: read.cover, total: read.total, songs, quality, running: false, playlistId: null, finishing: false } },
+    imports: { ...st.imports, [id]: { id, source: read.source, name: read.name, owner: read.owner, cover: read.cover, total: read.total, partial: read.partial, songs, quality, running: false, playlistId: null, finishing: false } },
     order: [id, ...st.order],
   }));
   return id;
@@ -717,8 +731,14 @@ async function finish(id: string) {
     const now = getImport(id)!;
     const ids = now.songs.flatMap((s) => (s.state === 'owned' && s.trackId != null ? [s.trackId] : s.state === 'done' && s.path && index.has(pathKey(s.path)) ? [index.get(pathKey(s.path))!] : []));
     if (!ids.length || !useMusicPlayer.getState().api) return;
-    if (now.playlistId != null && useMusicPlayer.getState().library?.playlists.some((x) => x.id === now.playlistId)) {
-      await setPlaylistTracks(now.playlistId, ids);
+    const playlists = useMusicPlayer.getState().library?.playlists ?? [];
+    // Importing the same playlist again (say its full CSV after the first 300 songs from Apple's
+    // page) updates the playlist an earlier import of it made, rather than adding a second.
+    const earlier = Object.values(usePlaylistImports.getState().imports).find((p) => p.id !== id && p.name === now.name && p.playlistId != null && playlists.some((x) => x.id === p.playlistId))?.playlistId;
+    const target = now.playlistId != null && playlists.some((x) => x.id === now.playlistId) ? now.playlistId : (earlier ?? null);
+    if (target != null) {
+      await setPlaylistTracks(target, ids);
+      patchImport(id, () => ({ playlistId: target }));
     } else {
       const made = await createPlaylist(now.name, ids);
       patchImport(id, () => ({ playlistId: made?.id ?? null }));
