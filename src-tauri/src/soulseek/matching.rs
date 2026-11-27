@@ -492,10 +492,11 @@ pub fn song_queries(want: &WantSong) -> Vec<String> {
 /// at a time, each only if the last found nothing). Soulseek's server silently ignores searches
 /// naming some big artists (The Weeknd, Frank Ocean, Lady Gaga, Rihanna), so these leave the
 /// main artist out: other credited artists with the title; the title with its album; the album
-/// alone (its folder holds the song) when it's two words or more; and the title alone when it's
-/// three words or more. A short name on its own ("lost", "blonde") is answered by thousands of
-/// strangers and crowds out the right files, so it's never searched. Every file is still checked
-/// for the song's artist, title and length.
+/// alone (its folder holds the song) when it's two words or more; and, last of all, the title
+/// alone. A short title on its own ("lost") is answered by thousands of strangers, so it's only
+/// searched once everything else has found nothing ("Novacane", whose artist is ignored and whose
+/// album isn't in the store, is found no other way). Every file is still checked for the song's
+/// artist, title and length.
 pub fn song_fallback_queries(want: &WantSong) -> Vec<String> {
     let keep = |w: Vec<String>| w.into_iter().filter(|w| w.chars().count() > 1).collect::<Vec<_>>();
     let (title, versions) = song_words(&want.title);
@@ -523,9 +524,7 @@ pub fn song_fallback_queries(want: &WantSong) -> Vec<String> {
             }
         }
     }
-    if title.len() >= 3 {
-        out.push(title.join(" "));
-    }
+    out.push(title.join(" "));
     out.retain(|q| !first.contains(q));
     out.dedup();
     out
@@ -676,14 +675,14 @@ mod tests {
     fn songs_not_found_are_searched_more_widely() {
         let want = WantSong { title: "Timeless".into(), artists: vec!["The Weeknd".into(), "Playboi Carti".into()], album: None, length_ms: None };
         assert_eq!(song_queries(&want), ["weeknd timeless"]);
-        assert_eq!(song_fallback_queries(&want), ["playboi carti timeless"]);
+        assert_eq!(song_fallback_queries(&want), ["playboi carti timeless", "timeless"]);
         let nights = WantSong { title: "Nights".into(), artists: vec!["Frank Ocean".into()], album: Some("Blonde".into()), length_ms: Some(307_000) };
         assert_eq!(song_queries(&nights), ["frank ocean nights"]);
-        assert_eq!(song_fallback_queries(&nights), ["nights blonde"]);
+        assert_eq!(song_fallback_queries(&nights), ["nights blonde", "nights"]);
         let gaga = WantSong { title: "Poker Face".into(), artists: vec!["Lady Gaga".into()], album: Some("The Fame Monster (Deluxe)".into()), length_ms: None };
-        assert_eq!(song_fallback_queries(&gaga), ["poker face the fame monster", "the fame monster"]);
+        assert_eq!(song_fallback_queries(&gaga), ["poker face the fame monster", "the fame monster", "poker face"]);
         let long = WantSong { title: "Only Girl (In The World)".into(), artists: vec!["Rihanna".into()], album: Some("Loud".into()), length_ms: None };
-        assert_eq!(song_fallback_queries(&long), ["only girl loud"]);
+        assert_eq!(song_fallback_queries(&long), ["only girl loud", "only girl"]);
         let single = WantSong { title: "We Found Love".into(), artists: vec!["Rihanna".into()], album: Some("We Found Love".into()), length_ms: None };
         assert_eq!(song_fallback_queries(&single), ["we found love"]);
     }
