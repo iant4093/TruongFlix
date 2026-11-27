@@ -337,8 +337,9 @@ pub struct Job {
     pub state: String,
     pub message: String,
     /// Why a song wasn't found: "no-answer" (Soulseek didn't answer the search), "not-shared",
-    /// "quality", "no-match", "blocked", or "connection" (the connection dropped meanwhile).
-    /// Worth another try later for "no-answer", "not-shared" and "connection".
+    /// "quality", "no-match", "blocked", "connection" (the connection dropped meanwhile) or
+    /// "download" (copies were found but none could be downloaded). Worth another try later for
+    /// "no-answer", "not-shared", "connection" and "download".
     pub code: Option<String>,
     pub bytes: u64,
     pub total: u64,
@@ -1069,8 +1070,9 @@ fn run_job(report: &Reporter, client: &Client, req: &AlbumRequest, cancel: &Atom
     file_album(req, format.as_deref().unwrap_or("flac"), &paths).map_err(Stop::Failed)
 }
 
-/// Copies of a song tried before giving up.
-const SONG_SOURCES: usize = 5;
+/// Copies of a song tried before giving up. Many fail at once ("the upload failed on the other
+/// side": that person can't connect back to us), so it's worth trying plenty.
+const SONG_SOURCES: usize = 12;
 
 /// Searches for a song until a few ready-to-send copies have answered, or the search has run its
 /// course. When the first searches find nothing, the song's other artists and its title alone are
@@ -1163,6 +1165,19 @@ impl Drop for Busy {
     }
 }
 
+/// People who've sent us a file this session, and people whose uploads failed because they can't
+/// connect back to us. The first are tried first for the next songs; the second, last.
+static SENT_US: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+static CANT_REACH_US: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+fn remember(set: &Mutex<Option<std::collections::HashSet<String>>>, user: &str) {
+    set.lock().unwrap().get_or_insert_with(Default::default).insert(user.to_string());
+}
+
+fn known(set: &Mutex<Option<std::collections::HashSet<String>>>, user: &str) -> bool {
+    set.lock().unwrap().as_ref().is_some_and(|s| s.contains(user))
+}
+
 fn load_of(user: &str) -> usize {
     LOAD.lock().unwrap().as_ref().and_then(|m| m.get(user).copied()).unwrap_or(0)
 }
@@ -1176,8 +1191,9 @@ fn run_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &Atom
         }
         None => {
             let mut found = find_song(report, client, req, cancel)?;
-            // People already sending us two or more songs come last.
-            found.sort_by_key(|o| load_of(&o.user) >= 2);
+            // People who've already sent us songs come first; people who can't connect back to us,
+            // and people already sending us two or more, come last.
+            found.sort_by_key(|o| (known(&CANT_REACH_US, &o.user), load_of(&o.user) >= 2, !known(&SENT_US, &o.user)));
             (found, req.want.length_ms)
         }
     };
@@ -1207,6 +1223,7 @@ fn run_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &Atom
             }
         }
     }
+    report.set(|j| j.code = Some("download".into()));
     Err(Stop::Failed(format!("No copy of this song could be downloaded. Last problem: {last_error}")))
 }
 
@@ -1365,6 +1382,7 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
                     Ok(()) => {
                         t.done = true;
                         note(format!("Got {name} from {user}"));
+                        remember(&SENT_US, user);
                         got[t.item.index] = Some((t.path.clone(), t.item.offer.size));
                         continue;
                     }
@@ -1375,9 +1393,16 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
                 DownloadStatus::TimedOut => format!("{user} couldn’t send {name}: timed out"),
                 _ => continue,
             };
-            note(format!("{problem}{}", if t.tries < FILE_TRIES { " (asking again)" } else { "" }));
-            // Uploads often fail once and then go through.
-            if t.tries < FILE_TRIES {
+            // "The upload failed on the other side" means that person can't connect back to us:
+            // asking them again fails the same way, so the next copy is tried instead. Other
+            // failures often go through the second time.
+            let hopeless = matches!(&t.last, DownloadStatus::Failed(Some(reason)) if reason.to_lowercase().contains("on the other side"));
+            if hopeless {
+                remember(&CANT_REACH_US, user);
+            }
+            let again = t.tries < FILE_TRIES && !hopeless;
+            note(format!("{problem}{}", if again { " (asking again)" } else { "" }));
+            if again {
                 match request_file(client, t.item, dir) {
                     Ok((status, path)) => {
                         t.status = status;

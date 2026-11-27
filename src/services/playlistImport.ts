@@ -148,6 +148,8 @@ const SEARCHING = 4;
 const ACTIVE = 12;
 /** A song Soulseek didn't answer for waits this long before it's searched again. */
 const RETRY_AFTER = 20_000;
+/** A song whose copies were all busy or failing waits this long before it's tried again. */
+const RETRY_BUSY_AFTER = 60_000;
 /** After the connection drops, songs wait this long (while the app reconnects) before starting again. */
 const RECONNECT_PAUSE = 5_000;
 
@@ -507,13 +509,15 @@ function follow() {
       const song = p?.songs.find((x) => x.jobId === job.id);
       if (!p || !song) continue;
       const dropped = job.state === 'failed' && job.code === 'connection' && p.running;
-      const retry = job.state === 'failed' && (job.code === 'no-answer' || job.code === 'not-shared') && (song.tries ?? 0) < 2 && p.running;
+      const retry = job.state === 'failed' && (job.code === 'no-answer' || job.code === 'not-shared' || job.code === 'download') && (song.tries ?? 0) < 2 && p.running;
       if (dropped) {
         // The connection dropped mid-song: it starts again once Soulseek is back, as if new.
         patchSong(p.id, song.key, { state: 'waiting', message: '', jobId: null, from: null, progress: 0, tries: Math.max(0, (song.tries ?? 1) - 1), retryAt: Date.now() + RECONNECT_PAUSE });
       } else {
-        // Soulseek drops searches when it's busy: such a song waits a little and is searched again.
-        patchSong(p.id, song.key, retry ? { state: 'waiting', message: job.message, jobId: null, from: null, retryAt: Date.now() + RETRY_AFTER } : songFromJob(job));
+        // Soulseek drops searches when it's busy, and people's queues clear: such a song waits a
+        // little (a minute when copies were found but all busy) and is tried again.
+        const wait = job.code === 'download' ? RETRY_BUSY_AFTER : RETRY_AFTER;
+        patchSong(p.id, song.key, retry ? { state: 'waiting', message: job.message, jobId: null, from: null, retryAt: Date.now() + wait } : songFromJob(job));
       }
       if (['done', 'failed', 'cancelled'].includes(job.state)) void pump(p.id);
     }

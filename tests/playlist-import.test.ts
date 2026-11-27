@@ -261,3 +261,35 @@ it('when the connection to Soulseek drops, songs wait for it and carry on, inste
     vi.useRealTimers();
   }
 });
+
+it('a song whose copies were all busy is tried again a minute later', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    useLibraryStore.setState((s) => ({ settings: { ...s.settings, music_directories: ['C:/Music'], soulseek_username: 'me', soulseek_password: 'pw' } }));
+    useMusicPlayer.setState({ api: {} as never, library: { tracks: [], albums: [], artists: [], playlists: [] } });
+    const requests: Record<string, unknown>[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      if (cmd === 'slsk_status' || cmd === 'slsk_connect') return { state: 'online', username: 'me', message: '' };
+      if (cmd === 'slsk_jobs') return [];
+      if (cmd === 'music_catalog') return { results: [] };
+      if (cmd === 'slsk_download_song') {
+        const request = a.request as Record<string, unknown>;
+        requests.push(request);
+        return { id: request.id, kind: 'song', group: request.group, releaseId: 'x', album: 'x', artist: 'x', cover: null, state: 'searching', message: '', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null };
+      }
+      return undefined;
+    });
+    const id = addImport({ source: 'list', id: 'l', name: 'L', owner: null, cover: null, total: null, songs: [{ title: 'Nights', artists: ['Frank Ocean'], album: 'Blonde', lengthMs: 307000, appleId: null, cover: null, explicit: false }] }, 'any');
+    await startImport(id);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    emit('slsk-job', { id: requests[0].id, kind: 'song', group: id, releaseId: 'x', album: 'x', artist: 'x', cover: null, state: 'failed', code: 'download', message: 'No copy of this song could be downloaded.', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null });
+    expect(usePlaylistImports.getState().imports[id].songs[0].state).toBe('waiting');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(requests).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+  } finally {
+    vi.useRealTimers();
+  }
+});
