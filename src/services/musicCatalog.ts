@@ -81,11 +81,14 @@ export interface ArtistPage {
 type Json = Record<string, unknown>;
 
 const inflight = new Map<string, Promise<unknown>>();
-/** One request per URL at a time: rows that need the same chart share it. */
-export function catalog<T = Json>(url: string): Promise<T> {
+/**
+ * One request per URL at a time: rows that need the same chart share it. `background` requests
+ * (an import matching its songs) wait in their own lane, so browsing never waits behind them.
+ */
+export function catalog<T = Json>(url: string, background = false): Promise<T> {
   let job = inflight.get(url) as Promise<T> | undefined;
   if (!job) {
-    job = invoke<T>('music_catalog', { url }).finally(() => inflight.delete(url));
+    job = invoke<T>('music_catalog', { url, background }).finally(() => inflight.delete(url));
     inflight.set(url, job);
   }
   return job;

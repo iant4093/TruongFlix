@@ -1556,6 +1556,11 @@ export function installMocks() {
           return null;
         case 'music_playlist':
           return previewPlaylist(String(a.link));
+        case 'music_spotify_songs':
+          return (a.ids as string[]).map((_, i) => {
+            const [title, artists, lengthMs] = PREVIEW_PLAYLIST[i % PREVIEW_PLAYLIST.length];
+            return { title, artists, lengthMs, explicit: false };
+          });
         case 'slsk_download_song':
           return previewSong(a.request as PreviewSongRequest);
         case 'slsk_download_folder': {

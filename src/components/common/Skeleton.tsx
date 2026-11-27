@@ -6,7 +6,9 @@ import type { CSSProperties, ReactNode } from 'react';
  */
 export function Bone({ className = '', style, tone = 'base' }: { className?: string; style?: CSSProperties; tone?: 'base' | 'soft' | 'strong' }) {
   const bg = tone === 'soft' ? 'bg-white/[0.07]' : tone === 'strong' ? 'bg-white/15' : 'bg-[#232323]';
-  return <div aria-hidden="true" className={`animate-pulse rounded-sm motion-reduce:animate-none ${bg} ${className}`} style={style} />;
+  // A rounding given by the caller (a round artist photo, a rounded cover) replaces the default.
+  const round = /(^|\s)rounded/.test(className) ? '' : 'rounded-sm';
+  return <div aria-hidden="true" className={`animate-pulse ${round} motion-reduce:animate-none ${bg} ${className}`} style={style} />;
 }
 
 /** Wraps placeholders with one polite "loading" announcement. */

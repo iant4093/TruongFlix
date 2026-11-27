@@ -67,14 +67,18 @@ fn client() -> Result<Client, String> {
 }
 
 /// Search and lookups start at most every 350 ms (Apple asks for moderation, not a fixed rate).
-async fn wait_turn(service: Service) {
+/// Background work (matching an imported playlist's songs) has its own, slower lane, so it never
+/// holds up what you're browsing.
+async fn wait_turn(service: Service, background: bool) {
     if service != Service::Store {
         return;
     }
     static LAST: Mutex<Option<Instant>> = Mutex::const_new(None);
-    let mut last = LAST.lock().await;
+    static LAST_BACKGROUND: Mutex<Option<Instant>> = Mutex::const_new(None);
+    let (lane, gap) = if background { (&LAST_BACKGROUND, Duration::from_millis(1200)) } else { (&LAST, Duration::from_millis(350)) };
+    let mut last = lane.lock().await;
     if let Some(at) = *last {
-        let next = at + Duration::from_millis(350);
+        let next = at + gap;
         if next > Instant::now() {
             tokio::time::sleep_until(next).await;
         }
@@ -124,11 +128,11 @@ async fn read_body(mut response: reqwest::Response, limit: usize) -> Result<Vec<
     Ok(body)
 }
 
-async fn fetch(url: &Url, service: Service) -> Result<Value, String> {
+async fn fetch(url: &Url, service: Service, background: bool) -> Result<Value, String> {
     let client = client()?;
     let mut attempt = 0;
     loop {
-        wait_turn(service).await;
+        wait_turn(service, background).await;
         // Chart feeds come from a CDN that now and then stalls: give up on them quickly (the
         // page shows what the other feeds had) rather than waiting.
         let timeout = if service == Service::Charts { Duration::from_secs(4) } else { Duration::from_secs(12) };
@@ -164,7 +168,7 @@ async fn fetch(url: &Url, service: Service) -> Result<Value, String> {
 /// GETs a chart, search or lookup URL and returns its JSON. A fresh cached answer is used as is;
 /// an expired one is used when the store can't be reached.
 #[tauri::command]
-pub async fn music_catalog(app: AppHandle, url: String) -> Result<Value, String> {
+pub async fn music_catalog(app: AppHandle, url: String, background: Option<bool>) -> Result<Value, String> {
     let parsed = Url::parse(&url).map_err(|_| "Not a music catalogue address".to_string())?;
     let (service, ttl) = classify(&parsed)?;
     let path = cache_path(&app, parsed.as_str());
@@ -174,7 +178,7 @@ pub async fn music_catalog(app: AppHandle, url: String) -> Result<Value, String>
             return Ok(body.clone());
         }
     }
-    match fetch(&parsed, service).await {
+    match fetch(&parsed, service, background.unwrap_or(false)).await {
         Ok(body) => {
             if let Some(path) = &path {
                 write_cache(path, &body);

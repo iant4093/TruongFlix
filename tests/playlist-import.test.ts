@@ -153,18 +153,72 @@ it('an import skips songs you have, downloads the rest one by one, and makes the
   const songs = () => usePlaylistImports.getState().imports[id].songs;
   expect(songs()[1].state).toBe('owned');
   // Tagged and searched with the store's details.
-  expect(requests[0]).toMatchObject({ group: id, title: 'Housewife', artists: ['Tate McRae'], album: 'Housewife', lengthMs: 208810, track: 1, date: '2025-10-01', quality: 'lossless', destination: 'C:/Music', coverPath: 'C:/cache/cover.img' });
-  expect(requests[1]).toMatchObject({ title: 'Nowhere To Be Found', album: null, track: null });
+  // Songs start side by side, so they're told apart by title.
+  const housewife = requests.findIndex((r) => r.title === 'Housewife');
+  const nowhere = 1 - housewife;
+  expect(requests[housewife]).toMatchObject({ group: id, title: 'Housewife', artists: ['Tate McRae'], album: 'Housewife', lengthMs: 208810, track: 1, date: '2025-10-01', quality: 'lossless', destination: 'C:/Music', coverPath: 'C:/cache/cover.img' });
+  expect(requests[nowhere]).toMatchObject({ title: 'Nowhere To Be Found', album: null, track: null });
 
   const job = (n: number, patch: Record<string, unknown>) => ({ id: requests[n].id, kind: 'song', group: id, releaseId: 'x', album: 'x', artist: 'x', cover: null, message: '', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null, ...patch });
-  emit('slsk-job', job(1, { state: 'failed', message: 'Nobody on Soulseek is sharing this song right now.' }));
+  emit('slsk-job', job(nowhere, { state: 'failed', code: 'no-match', message: 'Nobody on Soulseek is sharing this song right now.' }));
   expect(songs()[2]).toMatchObject({ state: 'failed', message: 'Nobody on Soulseek is sharing this song right now.' });
   scan.files = new Map([['C:\\Music\\Tate McRae\\Housewife (2025)\\01 - Housewife.flac', { id: 9, mtime: 0, size: 1 }]]);
-  emit('slsk-job', job(0, { state: 'done', path: 'C:/Music/Tate McRae/Housewife (2025)/01 - Housewife.flac' }));
+  emit('slsk-job', job(housewife, { state: 'done', path: 'C:/Music/Tate McRae/Housewife (2025)/01 - Housewife.flac' }));
   expect(songs()[0].state).toBe('done');
   // Downloaded and already-owned songs, in the playlist's order.
   await vi.waitFor(() => expect(createPlaylist).toHaveBeenCalledWith('Mix', [9, 5]));
   await vi.waitFor(() => expect(usePlaylistImports.getState().imports[id].playlistId).toBe(77));
   // Each song isn't announced on its own.
   expect(useLibraryStore.getState().toasts.map((t) => t.message)).toEqual(['Mix is in your music library (1 song not found)']);
+});
+
+it('songs copied out of the Spotify app are read one by one, in order', async () => {
+  const { readPlaylist, spotifySongIds } = await import('../src/services/playlistImport');
+  const pasted = 'https://open.spotify.com/track/4HCOHRCSQelz2GPX8iTamO\nhttps://open.spotify.com/track/0VjIjW4GlUZAMYd2vXMi3b?si=x\nspotify:track:0VjIjW4GlUZAMYd2vXMi3c';
+  expect(spotifySongIds(pasted)).toEqual(['4HCOHRCSQelz2GPX8iTamO', '0VjIjW4GlUZAMYd2vXMi3b', '0VjIjW4GlUZAMYd2vXMi3c']);
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+    if (cmd !== 'music_spotify_songs') return undefined;
+    const ids = (args as { ids: string[] }).ids;
+    // One song's page couldn't be read.
+    return ids.map((id, i) => (i === 2 ? null : { title: `Song ${id.slice(-1)}`, artists: ['Artist'], lengthMs: 200000, explicit: false }));
+  });
+  const progress: number[] = [];
+  const read = await readPlaylist(pasted, (done) => progress.push(done));
+  expect(read.songs.map((s) => s.title)).toEqual(['Song O', 'Song b']);
+  expect(read).toMatchObject({ source: 'spotify', total: 3, owner: '1 couldn’t be read' });
+  expect(progress).toEqual([3]);
+});
+
+it('a song Soulseek didn’t answer for is searched again a little later, once', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    useLibraryStore.setState((s) => ({ settings: { ...s.settings, music_directories: ['C:/Music'], soulseek_username: 'me', soulseek_password: 'pw' } }));
+    useMusicPlayer.setState({ api: {} as never, library: { tracks: [], albums: [], artists: [], playlists: [] } });
+    const requests: Record<string, unknown>[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      if (cmd === 'slsk_status' || cmd === 'slsk_connect') return { state: 'online', username: 'me', message: '' };
+      if (cmd === 'slsk_jobs') return [];
+      if (cmd === 'music_catalog') return { results: [] };
+      if (cmd === 'slsk_download_song') {
+        const request = a.request as Record<string, unknown>;
+        requests.push(request);
+        return { id: request.id, kind: 'song', group: request.group, releaseId: 'x', album: 'x', artist: 'x', cover: null, state: 'searching', message: '', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null };
+      }
+      return undefined;
+    });
+    const id = addImport({ source: 'list', id: 'l', name: 'L', owner: null, cover: null, total: null, songs: [{ title: 'Timeless', artists: ['The Weeknd'], album: null, lengthMs: null, appleId: null, cover: null, explicit: false }] }, 'any');
+    await startImport(id);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const fail = (n: number) => emit('slsk-job', { id: requests[n].id, kind: 'song', group: id, releaseId: 'x', album: 'x', artist: 'x', cover: null, state: 'failed', code: 'no-answer', message: 'Nobody answered on Soulseek', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null });
+    fail(0);
+    expect(usePlaylistImports.getState().imports[id].songs[0].state).toBe('waiting');
+    await vi.advanceTimersByTimeAsync(21_000);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    // The second time, it stays not found.
+    fail(1);
+    expect(usePlaylistImports.getState().imports[id].songs[0]).toMatchObject({ state: 'failed', message: 'Nobody answered on Soulseek' });
+  } finally {
+    vi.useRealTimers();
+  }
 });

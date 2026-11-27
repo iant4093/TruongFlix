@@ -218,6 +218,7 @@ pub fn run() {
             music_catalog::music_catalog,
             music_catalog::music_artist_photo,
             playlists::music_playlist,
+            playlists::music_spotify_songs,
             soulseek::slsk_status,
             soulseek::slsk_connect,
             soulseek::slsk_disconnect,

@@ -485,6 +485,31 @@ pub fn song_queries(want: &WantSong) -> Vec<String> {
     out
 }
 
+/// More to search for when a song's first searches find nothing: its other artists with its
+/// title, and its title alone (even a short one; the artist is still checked on every file).
+pub fn song_fallback_queries(want: &WantSong) -> Vec<String> {
+    let keep = |w: Vec<String>| w.into_iter().filter(|w| w.chars().count() > 1).collect::<Vec<_>>();
+    let (title, versions) = song_words(&want.title);
+    let title: Vec<String> = keep(title).into_iter().chain(versions).collect();
+    if title.is_empty() {
+        return Vec::new();
+    }
+    let first = song_queries(want);
+    let mut out: Vec<String> = want
+        .artists
+        .iter()
+        .skip(1)
+        .take(2)
+        .map(|a| keep(artist_words(a)))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.iter().chain(title.iter()).cloned().collect::<Vec<_>>().join(" "))
+        .collect();
+    out.push(title.join(" "));
+    out.retain(|q| !first.contains(q));
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,6 +649,13 @@ mod tests {
         assert_eq!(song_queries(&song("Hello", "Adele", None)), ["adele hello"]);
         assert_eq!(song_queries(&song("Blinding Lights", "The Weeknd", None)), ["weeknd blinding lights", "blinding lights"]);
         assert_eq!(song_queries(&song("Shout (Live)", "Tears for Fears", None)), ["tears for fears shout live"]);
+    }
+
+    #[test]
+    fn songs_not_found_are_searched_more_widely() {
+        let want = WantSong { title: "Timeless".into(), artists: vec!["The Weeknd".into(), "Playboi Carti".into()], album: None, length_ms: None };
+        assert_eq!(song_queries(&want), ["weeknd timeless"]);
+        assert_eq!(song_fallback_queries(&want), ["playboi carti timeless", "timeless"]);
     }
 
     #[test]

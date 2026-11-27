@@ -72,6 +72,12 @@ export interface ImportSong extends PlaylistSong {
   path: string | null;
   /** The library song it is (when it was already there). */
   trackId: number | null;
+  /** Who's sending it (while waiting or downloading). */
+  from?: string | null;
+  /** Searches so far: a song Soulseek didn't answer for is tried again later, once. */
+  tries?: number;
+  /** Not before this time (ms) when it's waiting to be tried again. */
+  retryAt?: number;
 }
 
 export interface PlaylistImport {
@@ -135,10 +141,12 @@ usePlaylistImports.subscribe((state) => {
 });
 
 const API = 'https://itunes.apple.com';
-/** Songs matched and searched for at once (Soulseek searches are rationed). */
-const SEARCHING = 2;
+/** Songs matched and searched for at once (the app also spaces Soulseek searches out). */
+const SEARCHING = 4;
 /** Songs in flight at once, downloads included. */
-const ACTIVE = 6;
+const ACTIVE = 16;
+/** A song Soulseek didn't answer for waits this long before it's searched again. */
+const RETRY_AFTER = 20_000;
 
 export const SOURCE_NAMES: Record<ImportSource, string> = { spotify: 'Spotify', apple: 'Apple Music', youtube: 'YouTube', list: 'Pasted list' };
 
@@ -183,12 +191,35 @@ export function songArtists(song: Pick<ImportSong, 'artists' | 'store'>): string
   });
 }
 
+/** Spotify song ids in pasted text (links copied out of the Spotify app: one per line). */
+export function spotifySongIds(text: string): string[] {
+  return [...text.matchAll(/(?:open\.spotify\.com\/(?:intl-[a-z-]+\/)?track\/|spotify:track:)([A-Za-z0-9]{22})/g)].map((m) => m[1]);
+}
+
+/** Reads songs from Spotify song links, 50 at a time; `onProgress` gets how many are read. */
+async function readSpotifySongs(ids: string[], onProgress?: (done: number, total: number) => void): Promise<PlaylistSong[]> {
+  const songs: PlaylistSong[] = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = await invoke<(Omit<PlaylistSong, 'album' | 'appleId' | 'cover'> & Partial<PlaylistSong> | null)[]>('music_spotify_songs', { ids: ids.slice(i, i + 50) });
+    for (const s of batch) if (s) songs.push({ album: null, appleId: null, cover: null, ...s });
+    onProgress?.(Math.min(ids.length, i + 50), ids.length);
+  }
+  return songs;
+}
+
 const looksLikeLink = (text: string) => /^https?:\/\//i.test(text.trim()) || /(spotify\.com|music\.apple\.com|youtube\.com|youtu\.be)\//i.test(text);
 
-/** Reads a pasted playlist link, or a pasted list of songs. */
-export async function readPlaylist(input: string): Promise<ReadPlaylist> {
+/** Reads a pasted playlist link, songs copied out of Spotify, or a pasted list of songs. */
+export async function readPlaylist(input: string, onProgress?: (done: number, total: number) => void): Promise<ReadPlaylist> {
   const text = input.trim();
   if (!text) throw new Error('Paste a playlist link or a list of songs.');
+  const spotifyIds = spotifySongIds(text);
+  if (spotifyIds.length && (spotifyIds.length > 1 || /\/track\/|spotify:track:/.test(text))) {
+    const songs = await readSpotifySongs(spotifyIds, onProgress);
+    if (!songs.length) throw new Error('Couldn’t read those Spotify songs. Check your connection and try again.');
+    const missed = spotifyIds.length - songs.length;
+    return { source: 'spotify', id: `spotify-songs-${Date.now()}`, name: 'Spotify songs', owner: missed ? `${missed} couldn’t be read` : null, cover: songs[0]?.cover ?? null, total: spotifyIds.length, songs };
+  }
   if (looksLikeLink(text) && !text.includes('\n')) {
     const link = /^https?:\/\//i.test(text) ? text : `https://${text}`;
     return invoke<ReadPlaylist>('music_playlist', { link });
@@ -357,11 +388,15 @@ export function pickStoreSong(song: Pick<ImportSong, 'title' | 'artists' | 'leng
       score += gap <= 2 ? 6 : gap <= 5 ? 3 : 0;
     } else if (!artistHit) continue;
     if (/karaoke|tribute|made famous|in the style of/i.test(`${found.artist} ${found.album ?? ''}`)) score -= 20;
+    // A video album's copy of a song is filed better under the album itself.
+    if (isVideoAlbum(found.album)) score -= 3;
     if (song.explicit === (r.trackExplicitness === 'explicit')) score += 1;
     if (!best || score > best.score) best = { score, found };
   }
   return best && best.score > 0 ? best.found : null;
 }
+
+export const isVideoAlbum = (album: string | null) => !!album && /\bvideo album\b|\(video\)$/i.test(album);
 
 /** The store's songs for Apple Music store ids, 50 at a time. */
 async function lookupApple(ids: string[]): Promise<Map<string, StoreSong>> {
@@ -369,7 +404,7 @@ async function lookupApple(ids: string[]): Promise<Map<string, StoreSong>> {
   for (let i = 0; i < ids.length; i += 50) {
     const batch = ids.slice(i, i + 50);
     try {
-      const data = await catalog<Json>(`${API}/lookup?id=${batch.join(',')}&country=${chartCountry()}`);
+      const data = await catalog<Json>(`${API}/lookup?id=${batch.join(',')}&country=${chartCountry()}`, true);
       for (const r of (Array.isArray(data?.results) ? data.results : []) as Json[]) {
         const found = storeSongFrom(r);
         const id = num(r.trackId);
@@ -385,7 +420,7 @@ async function lookupApple(ids: string[]): Promise<Map<string, StoreSong>> {
 async function searchStore(song: ImportSong): Promise<StoreSong | null> {
   const term = encodeURIComponent(`${song.artists[0] ?? ''} ${song.title.replace(/[([].*?[)\]]/g, ' ')}`.replace(/\s+/g, ' ').trim());
   try {
-    const data = await catalog<Json>(`${API}/search?term=${term}&media=music&entity=song&limit=15&country=${chartCountry()}`);
+    const data = await catalog<Json>(`${API}/search?term=${term}&media=music&entity=song&limit=15&country=${chartCountry()}`, true);
     return pickStoreSong(song, (Array.isArray(data?.results) ? data.results : []) as Json[]);
   } catch {
     return null;
@@ -466,7 +501,9 @@ function follow() {
       const p = getImport(job.group);
       const song = p?.songs.find((x) => x.jobId === job.id);
       if (!p || !song) continue;
-      patchSong(p.id, song.key, songFromJob(job));
+      const retry = job.state === 'failed' && (job.code === 'no-answer' || job.code === 'not-shared') && (song.tries ?? 0) < 2 && p.running;
+      // Soulseek drops searches when it's busy: such a song waits a little and is searched again.
+      patchSong(p.id, song.key, retry ? { state: 'waiting', message: job.message, jobId: null, from: null, retryAt: Date.now() + RETRY_AFTER } : songFromJob(job));
       if (['done', 'failed', 'cancelled'].includes(job.state)) void pump(p.id);
     }
   });
@@ -479,6 +516,7 @@ function songFromJob(job: AlbumJob): Partial<ImportSong> {
     message: job.message,
     progress: job.total > 0 ? Math.min(1, job.bytes / job.total) : 0,
     path: job.path,
+    from: job.source?.user ?? null,
   };
 }
 
@@ -491,7 +529,7 @@ export async function startImport(id: string) {
   const p = getImport(id);
   if (!p) return;
   // Failed and cancelled songs are tried again.
-  patchImport(id, (x) => ({ running: true, songs: x.songs.map((s) => (s.state === 'failed' || s.state === 'cancelled' ? { ...s, state: 'waiting', message: '' } : s)) }));
+  patchImport(id, (x) => ({ running: true, songs: x.songs.map((s) => (s.state === 'failed' || s.state === 'cancelled' ? { ...s, state: 'waiting', message: '', tries: 0, retryAt: undefined } : s)) }));
   // Apple Music songs are looked up together, by their store ids.
   const ids = p.songs.filter((s) => s.appleId && !s.store).map((s) => s.appleId!);
   if (ids.length) {
@@ -505,12 +543,16 @@ export async function startImport(id: string) {
 export function stopImport(id: string) {
   const p = getImport(id);
   if (!p) return;
+  clearTimeout(wakeups.get(id));
+  wakeups.delete(id);
   patchImport(id, () => ({ running: false }));
   for (const s of p.songs) {
     if (s.jobId && isBusy(s.state)) void invoke('slsk_cancel', { id: s.jobId }).catch(() => {});
     if (s.state === 'matching') patchSong(id, s.key, { state: 'waiting' });
   }
 }
+
+const wakeups = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** Starts the next songs while there's room; finishes the import when every song is settled. */
 async function pump(id: string) {
@@ -523,9 +565,23 @@ async function pump(id: string) {
   const busy = p.songs.filter((s) => isBusy(s.state)).length;
   const searching = p.songs.filter((s) => s.state === 'matching' || s.state === 'searching').length;
   const room = Math.min(ACTIVE - busy, SEARCHING - searching);
-  const next = p.songs.filter((s) => s.state === 'waiting').slice(0, Math.max(0, room));
+  const now = Date.now();
+  const waiting = p.songs.filter((s) => s.state === 'waiting');
+  const next = waiting.filter((s) => !s.retryAt || s.retryAt <= now).slice(0, Math.max(0, room));
+  const later = waiting.filter((s) => s.retryAt && s.retryAt > now);
+  if (later.length && !wakeups.has(id)) {
+    // Songs waiting to be searched again start once their wait is over.
+    const at = Math.min(...later.map((s) => s.retryAt!));
+    wakeups.set(
+      id,
+      setTimeout(() => {
+        wakeups.delete(id);
+        void pump(id);
+      }, at - now + 50),
+    );
+  }
   if (!next.length) {
-    if (!busy) {
+    if (!busy && !later.length) {
       patchImport(id, () => ({ running: false }));
       void finish(id);
     }
@@ -535,11 +591,12 @@ async function pump(id: string) {
 }
 
 async function startSong(id: string, key: string, copy?: { user: string } & SharedFile) {
-  patchSong(id, key, { state: 'matching', message: '' });
+  const before = getImport(id)!.songs.find((s) => s.key === key)!;
+  patchSong(id, key, { state: 'matching', message: '', retryAt: undefined, tries: copy ? before.tries : (before.tries ?? 0) + 1 });
   try {
     let song = getImport(id)!.songs.find((s) => s.key === key)!;
-    if (!song.store && !copy) {
-      const store = await searchStore(song);
+    if ((!song.store || isVideoAlbum(song.store.album)) && !copy) {
+      const store = (await searchStore(song)) ?? song.store;
       if (store) patchSong(id, key, { store });
       song = { ...song, store };
     }
@@ -592,7 +649,7 @@ async function downloadSong(group: string, source: ImportSource, song: ImportSon
 
 /** Tries a song again (searching for it anew). */
 export function retrySong(id: string, key: string) {
-  patchSong(id, key, { state: 'waiting', message: '', jobId: null });
+  patchSong(id, key, { state: 'waiting', message: '', jobId: null, tries: 0, retryAt: undefined });
   const p = getImport(id);
   if (p && !p.running) void startImport(id).catch((e) => patchSong(id, key, { state: 'failed', message: String(e) }));
   else void pump(id);

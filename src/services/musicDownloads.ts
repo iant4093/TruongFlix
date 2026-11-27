@@ -32,6 +32,8 @@ export interface AlbumJob {
   cover: string | null;
   state: 'searching' | 'queued' | 'downloading' | 'checking' | 'done' | 'failed' | 'cancelled';
   message: string;
+  /** Why a song wasn't found ("no-answer", "not-shared", "quality", "no-match", "blocked"). */
+  code?: string | null;
   bytes: number;
   total: number;
   filesDone: number;

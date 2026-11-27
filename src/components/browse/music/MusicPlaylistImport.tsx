@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { AlertCircle, Check, ChevronLeft, ListMusic, Loader2, Play, RotateCw, Search, Square, Trash2 } from 'lucide-react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { AlertCircle, Check, ChevronLeft, FileUp, ListMusic, Loader2, Play, RotateCw, Search, Square, Trash2 } from 'lucide-react';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { openRoute, openTab } from '../../../music/nav';
 import type { MusicQuality } from '../../../types/media';
@@ -48,34 +48,96 @@ export default function MusicPlaylistImport({ openId, onOpen }: { openId: string
   return <ImportStart onOpen={onOpen} />;
 }
 
+/** How to get each service's whole playlist into the box. */
+const HOW_TO: { name: string; dot: string; gets: string; steps: ReactNode[] }[] = [
+  {
+    name: 'Spotify',
+    dot: 'bg-[#1ed760]',
+    gets: 'Whole playlist',
+    steps: [
+      <>
+        In the Spotify app, open the playlist, click any song, press <Kbd>Ctrl</Kbd> <Kbd>A</Kbd> then <Kbd>Ctrl</Kbd> <Kbd>C</Kbd> (<Kbd>⌘</Kbd> <Kbd>A</Kbd>, <Kbd>⌘</Kbd> <Kbd>C</Kbd> on a Mac), and paste here.
+      </>,
+      <>A playlist link (Share → Copy link to playlist) works too, but Spotify only shows its first 100 songs.</>,
+    ],
+  },
+  {
+    name: 'Apple Music',
+    dot: 'bg-[#fa2d48]',
+    gets: 'Whole playlist',
+    steps: [<>Share → Copy Link, then paste it here.</>, <>Playlists you made work too, once you’ve shared them.</>],
+  },
+  {
+    name: 'YouTube and YouTube Music',
+    dot: 'bg-[#ff0033]',
+    gets: 'Whole playlist',
+    steps: [<>Share → Copy link, then paste it here.</>, <>Public and unlisted playlists work; private ones and mixes made for you don’t.</>],
+  },
+  {
+    name: 'Tidal, Deezer, Amazon Music and others',
+    dot: 'bg-white/50',
+    gets: 'Whole playlist',
+    steps: [
+      <>Export the playlist to a CSV file with a free tool such as TuneMyMusic or Soundiiz, then open the file here.</>,
+      <>
+        Or paste a list, one song per line: <span className="text-white/80">Artist - Title</span>.
+      </>,
+    ],
+  },
+];
+
+function Kbd({ children }: { children: ReactNode }) {
+  return <kbd className="rounded border border-white/20 bg-white/10 px-1 py-px font-sans text-[11px] text-white/80">{children}</kbd>;
+}
+
 function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
   const [text, setText] = useState('');
   const [reading, setReading] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState('');
+  const file = useRef<HTMLInputElement>(null);
   const order = usePlaylistImports((s) => s.order);
   const imports = usePlaylistImports((s) => s.imports);
-  const read = async () => {
+  const lines = text.split('\n').length;
+  const read = async (input = text) => {
     setReading(true);
     setError('');
+    setProgress(null);
     try {
-      const playlist = await readPlaylist(text);
+      const playlist = await readPlaylist(input, (done, total) => setProgress({ done, total }));
       onOpen(addImport(playlist, useLibraryStore.getState().settings.soulseek_quality));
       setText('');
     } catch (e) {
       setError(errorMessage(e));
     } finally {
       setReading(false);
+      setProgress(null);
     }
   };
+  const openFile = async (f: File | undefined) => {
+    if (!f) return;
+    if (f.size > 5 * 1024 * 1024) {
+      setError('That file is too large to be a playlist.');
+      return;
+    }
+    const content = await f.text();
+    setText(content);
+    void read(content);
+  };
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-4xl">
       <h3 className="text-2xl font-bold tracking-tight">Import a playlist</h3>
-      <p className="mt-1 text-sm text-white/55">Paste a playlist from a streaming service. Every song is matched to the store, then found and downloaded from Soulseek into your music folder, and the playlist is added to Music.</p>
+      <p className="mt-1 max-w-2xl text-sm text-white/55">Every song is matched to the store, found on Soulseek and downloaded into your music folder, and the playlist is added to Music. Songs you already have are skipped.</p>
       <form
-        className="mt-5"
+        className="mt-5 rounded-xl border border-white/10 bg-white/[0.03] p-4 transition-colors focus-within:border-white/25"
         onSubmit={(e) => {
           e.preventDefault();
           void read();
+        }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          void openFile(e.dataTransfer.files[0]);
         }}
       >
         <textarea
@@ -88,16 +150,23 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
               void read();
             }
           }}
-          rows={text.includes('\n') ? 8 : 2}
-          placeholder={'https://open.spotify.com/playlist/…\n…or one song per line: Artist - Title'}
-          className="w-full resize-y rounded border border-white/25 bg-black/40 px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-white/35 focus:border-white/60"
+          rows={Math.min(10, Math.max(2, lines))}
+          spellCheck={false}
+          placeholder={'Paste a playlist link, songs copied from Spotify, or one song per line (Artist - Title)'}
+          className="block w-full resize-none bg-transparent text-sm leading-6 text-white outline-none placeholder:text-white/35 [scrollbar-color:rgba(255,255,255,0.2)_transparent] [scrollbar-width:thin]"
         />
-        <div className="mt-3 flex flex-wrap items-center gap-3">
+        <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-white/[0.07] pt-3">
           <button type="submit" className="nf-btn-red px-6" disabled={!text.trim() || reading}>
             {reading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListMusic className="h-4 w-4" />}
             Read playlist
           </button>
-          <span className="text-xs text-white/45">Spotify (first 100 songs) · Apple Music · YouTube and YouTube Music (first 100) · Tidal, Deezer and others: paste an exported CSV</span>
+          <button type="button" className="nf-btn-ghost" disabled={reading} onClick={() => file.current?.click()}>
+            <FileUp className="h-4 w-4" /> Open a CSV file
+          </button>
+          <input ref={file} type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" onChange={(e) => void openFile(e.target.files?.[0]).finally(() => (e.target.value = ''))} />
+          <span className="text-xs text-white/45" role="status">
+            {progress ? `Reading songs… ${progress.done} of ${progress.total}` : reading ? 'Reading the playlist…' : 'Spotify, Apple Music, YouTube, YouTube Music, or a CSV from any service'}
+          </span>
         </div>
       </form>
       {error && (
@@ -106,9 +175,33 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
           {error}
         </p>
       )}
+
+      <section className="mt-8" aria-label="How to import from each service">
+        <h4 className="mb-3 text-sm font-bold uppercase tracking-widest text-white/50">Getting your whole playlist</h4>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {HOW_TO.map((h) => (
+            <div key={h.name} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+              <p className="flex items-center gap-2 text-sm font-semibold">
+                <span className={`h-2 w-2 shrink-0 rounded-full ${h.dot}`} aria-hidden />
+                <span className="flex-1">{h.name}</span>
+                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-300">{h.gets}</span>
+              </p>
+              <ul className="mt-2 space-y-1.5 text-[13px] leading-relaxed text-white/60">
+                {h.steps.map((step, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className="mt-[0.55em] h-1 w-1 shrink-0 rounded-full bg-white/30" aria-hidden />
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {order.length > 0 && (
         <section className="mt-10">
-          <h4 className="mb-3 text-sm font-bold uppercase tracking-widest text-white/50">Imports</h4>
+          <h4 className="mb-3 text-sm font-bold uppercase tracking-widest text-white/50">Your imports</h4>
           <ul className="space-y-2">
             {order.map((id) => imports[id] && <ImportRow key={id} playlist={imports[id]} onOpen={() => onOpen(id)} />)}
           </ul>
@@ -164,7 +257,7 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
     openRoute({ page: 'playlist', id: playlist.playlistId });
   };
   const progress = c.total ? (c.done + c.owned) / c.total : 0;
-  const capped = playlist.source === 'spotify' && c.total >= 100 ? 'Spotify shares the first 100 songs of a playlist.' : playlist.total != null && playlist.total > c.total ? `The page listed ${c.total} of its ${playlist.total} songs.` : '';
+  const capped = playlist.source === 'spotify' && c.total === 100 && !playlist.id.startsWith('spotify-songs') ? 'Spotify’s link shows only the first 100 songs: copy the songs out of the Spotify app for all of them.' : playlist.total != null && playlist.total > c.total ? `The page listed ${c.total} of its ${playlist.total} songs.` : '';
 
   return (
     <div>
@@ -306,7 +399,7 @@ function SongRow({ song, number, onFind, onRetry }: { song: ImportSong; number: 
 function SongStatus({ song }: { song: ImportSong }) {
   switch (song.state) {
     case 'waiting':
-      return <span className="text-white/35">Waiting</span>;
+      return song.retryAt ? <span className="text-white/50">Trying again soon</span> : <span className="text-white/35">Waiting</span>;
     case 'matching':
     case 'searching':
       return (
@@ -315,7 +408,7 @@ function SongStatus({ song }: { song: ImportSong }) {
         </span>
       );
     case 'queued':
-      return <span className="text-white/60">In line</span>;
+      return <span className="truncate text-white/60" title={song.from ? `Waiting for ${song.from} to send it` : undefined}>{song.from ? `Waiting for ${song.from}` : 'In line'}</span>;
     case 'downloading':
       return (
         <span className="flex items-center gap-2 text-white/70">

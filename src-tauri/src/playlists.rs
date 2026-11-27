@@ -1,9 +1,10 @@
 //! Reads a playlist from a streaming service's public page, for Browse → Music → Import playlist.
 //!
-//! Only three kinds of public page are read, each from the address the app builds itself:
-//! Spotify's embeddable playlist page (its first 100 songs), Apple Music's playlist page, and
-//! YouTube's playlist page (its first 100 videos; YouTube Music links share the same ids). Each
-//! page carries its playlist as JSON; only the songs come back from here (titles, artists,
+//! Only these public pages are read, each from an address the app builds itself: Spotify's
+//! embeddable playlist page (its first 100 songs) and song pages (for a whole playlist copied out
+//! of the Spotify app), Apple Music's playlist page, and YouTube's playlist page plus the "load
+//! more" requests that page itself makes as you scroll (YouTube Music links share the same ids).
+//! Each page carries its songs as JSON; only the songs come back from here (titles, artists,
 //! lengths, albums when the page names them, Apple's song ids), never anything else the page
 //! holds. Nothing here signs in to anything.
 
@@ -14,6 +15,10 @@ use std::time::Duration;
 
 /// Largest page read (a 100-video YouTube playlist page is ~2.5 MB).
 const MAX_PAGE: usize = 10 * 1024 * 1024;
+/// "Load more" pages read from a YouTube playlist (100 videos each).
+const YOUTUBE_PAGES: usize = 50;
+/// Spotify song pages read at once.
+const SPOTIFY_AT_ONCE: usize = 8;
 const BROWSER: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -209,10 +214,10 @@ fn channel_artist(channel: &str) -> String {
     name.trim().to_string()
 }
 
-pub fn youtube(id: &str, html: &str) -> Result<Playlist, String> {
-    let data = json_after(html, "var ytInitialData = ").ok_or("YouTube’s page didn’t include the playlist")?;
+/// The videos in a piece of YouTube's playlist JSON (a page or a "load more" answer).
+fn youtube_songs(data: &Value) -> Vec<PlaylistSong> {
     let mut lockups = Vec::new();
-    collect(&data, "lockupViewModel", &mut lockups);
+    collect(data, "lockupViewModel", &mut lockups);
     let mut songs = Vec::new();
     for item in lockups {
         if item["contentType"] != "LOCKUP_CONTENT_TYPE_VIDEO" {
@@ -232,6 +237,38 @@ pub fn youtube(id: &str, html: &str) -> Result<Playlist, String> {
             ..Default::default()
         });
     }
+    songs
+}
+
+/// The token for the playlist's next videos: the "load more" entry at the end of its video list.
+fn youtube_next(data: &Value) -> Option<String> {
+    match data {
+        Value::Array(items) => {
+            let is_list = items.iter().any(|i| i.get("lockupViewModel").is_some());
+            if is_list {
+                if let Some(token) = items.last().and_then(|last| token_in(&last["continuationItemViewModel"])) {
+                    return Some(token);
+                }
+            }
+            items.iter().find_map(youtube_next)
+        }
+        Value::Object(map) => map.values().find_map(youtube_next),
+        _ => None,
+    }
+}
+
+/// The first `token` under a "load more" entry (its command is nested a few levels deep).
+fn token_in(v: &Value) -> Option<String> {
+    match v {
+        Value::Object(map) => map.get("token").and_then(text).or_else(|| map.values().find_map(token_in)),
+        Value::Array(items) => items.iter().find_map(token_in),
+        _ => None,
+    }
+}
+
+pub fn youtube(id: &str, html: &str) -> Result<Playlist, String> {
+    let data = json_after(html, "var ytInitialData = ").ok_or("YouTube’s page didn’t include the playlist")?;
+    let songs = youtube_songs(&data);
     if songs.is_empty() {
         return Err("YouTube’s page didn’t include any videos (is the playlist private?)".into());
     }
@@ -256,11 +293,67 @@ pub fn youtube(id: &str, html: &str) -> Result<Playlist, String> {
     })
 }
 
-/// Reads the playlist a pasted Spotify, Apple Music or YouTube link points to.
-#[tauri::command]
-pub async fn music_playlist(link: String) -> Result<Playlist, String> {
-    let source = recognise(&link).ok_or("Paste a link to a Spotify, Apple Music or YouTube playlist.")?;
-    let client = reqwest::Client::builder()
+/// The rest of a YouTube playlist, through the same "load more" requests its page makes.
+async fn youtube_rest(client: &reqwest::Client, html: &str, playlist: &mut Playlist) {
+    let Some(data) = json_after(html, "var ytInitialData = ") else { return };
+    let mut token = youtube_next(&data);
+    let version = html
+        .split("\"INNERTUBE_CLIENT_VERSION\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .filter(|v| v.len() < 40 && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        .unwrap_or("2.20250101.00.00")
+        .to_string();
+    for _ in 0..YOUTUBE_PAGES {
+        let Some(next) = token.take() else { break };
+        let body = serde_json::json!({
+            "context": { "client": { "clientName": "WEB", "clientVersion": version, "hl": "en", "gl": "US" } },
+            "continuation": next,
+        });
+        let sent = client
+            .post("https://www.youtube.com/youtubei/v1/browse?prettyPrint=false")
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://www.youtube.com")
+            .header("X-YouTube-Client-Name", "1")
+            .header("X-YouTube-Client-Version", &version)
+            .json(&body)
+            .send()
+            .await;
+        let Ok(response) = sent else { break };
+        if !response.status().is_success() {
+            break;
+        }
+        let Ok(page) = response.json::<Value>().await else { break };
+        let actions = &page["onResponseReceivedActions"];
+        let more = youtube_songs(actions);
+        if more.is_empty() {
+            break;
+        }
+        playlist.songs.extend(more);
+        token = youtube_next(actions);
+    }
+}
+
+/// A song from its Spotify embed page.
+pub fn spotify_song(html: &str) -> Option<PlaylistSong> {
+    let data = json_after(html, r#"<script id="__NEXT_DATA__" type="application/json">"#)?;
+    let entity = &data["props"]["pageProps"]["state"]["data"]["entity"];
+    let mut artists: Vec<String> = entity["artists"].as_array().map(|a| a.iter().filter_map(|x| text(&x["name"])).collect()).unwrap_or_default();
+    if artists.is_empty() {
+        artists = entity["subtitle"].as_str().unwrap_or("").split(',').map(|a| a.replace('\u{a0}', " ").trim().to_string()).filter(|a| !a.is_empty()).collect();
+    }
+    Some(PlaylistSong {
+        title: text(&entity["name"]).or_else(|| text(&entity["title"]))?,
+        artists,
+        length_ms: entity["duration"].as_u64().map(|d| d as u32),
+        explicit: entity["isExplicit"].as_bool().unwrap_or(false),
+        cover: entity["visualIdentity"]["image"].as_array().and_then(|i| i.iter().filter_map(|x| text(&x["url"])).last()),
+        ..Default::default()
+    })
+}
+
+fn page_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .user_agent(BROWSER)
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(8))
@@ -274,9 +367,12 @@ pub async fn music_playlist(link: String) -> Result<Playlist, String> {
             }
         }))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+async fn read_page(client: &reqwest::Client, url: &str) -> Result<String, String> {
     let response = client
-        .get(page_url(&source))
+        .get(url)
         .header("Accept", "text/html")
         .header("Accept-Language", "en-US,en;q=0.8")
         .send()
@@ -297,12 +393,55 @@ pub async fn music_playlist(link: String) -> Result<Playlist, String> {
         }
         body.extend_from_slice(&chunk);
     }
-    let html = String::from_utf8_lossy(&body);
-    let playlist = match &source {
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Reads Spotify songs by their ids (from links copied out of the Spotify app), in order; a song
+/// whose page can't be read comes back empty.
+#[tauri::command]
+pub async fn music_spotify_songs(ids: Vec<String>) -> Result<Vec<Option<PlaylistSong>>, String> {
+    if ids.len() > 100 || ids.iter().any(|id| !id_ok(id, 22, 22, &[])) {
+        return Err("Not Spotify song links".into());
+    }
+    let client = page_client()?;
+    let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(SPOTIFY_AT_ONCE));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (i, id) in ids.into_iter().enumerate() {
+        let (client, slots) = (client.clone(), slots.clone());
+        tasks.spawn(async move {
+            let _slot = slots.acquire().await.ok()?;
+            let html = read_page(&client, &format!("https://open.spotify.com/embed/track/{id}")).await.ok()?;
+            Some((i, spotify_song(&html)?))
+        });
+    }
+    let mut out = Vec::new();
+    while let Some(done) = tasks.join_next().await {
+        if let Ok(Some(found)) = done {
+            out.push(found);
+        }
+    }
+    let count = out.iter().map(|(i, _)| i + 1).max().unwrap_or(0);
+    let mut songs: Vec<Option<PlaylistSong>> = vec![None; count];
+    for (i, song) in out {
+        songs[i] = Some(song);
+    }
+    Ok(songs)
+}
+
+/// Reads the playlist a pasted Spotify, Apple Music or YouTube link points to.
+#[tauri::command]
+pub async fn music_playlist(link: String) -> Result<Playlist, String> {
+    let source = recognise(&link).ok_or("Paste a link to a Spotify, Apple Music or YouTube playlist.")?;
+    let client = page_client()?;
+    let html = read_page(&client, &page_url(&source)).await?;
+    let mut playlist = match &source {
         Source::Spotify(id) => spotify(id, &html),
         Source::Apple(_, id) => apple(id, &html),
         Source::YouTube(id) => youtube(id, &html),
     }?;
+    if matches!(source, Source::YouTube(_)) {
+        youtube_rest(&client, &html, &mut playlist).await;
+    }
     if playlist.songs.is_empty() {
         return Err("That playlist has no songs, or isn’t public.".into());
     }
@@ -377,6 +516,23 @@ mod tests {
         assert_eq!(channel_artist("Taylor Swift - Topic"), "Taylor Swift");
     }
 
+    #[test]
+    fn youtube_lists_say_where_the_next_videos_are() {
+        let page = serde_json::json!({ "contents": [
+            { "lockupViewModel": { "contentType": "LOCKUP_CONTENT_TYPE_VIDEO" } },
+            { "continuationItemViewModel": { "continuationCommand": { "innertubeCommand": { "continuationCommand": { "token": "NEXT", "request": "CONTINUATION_REQUEST_TYPE_BROWSE" } } } } }
+        ], "other": [{ "continuationItemViewModel": { "continuationCommand": { "innertubeCommand": { "continuationCommand": { "token": "NOT-THE-LIST" } } } } }] });
+        assert_eq!(youtube_next(&page).as_deref(), Some("NEXT"));
+        assert_eq!(youtube_next(&serde_json::json!({ "contents": [{ "lockupViewModel": {} }] })), None);
+    }
+
+    #[test]
+    fn spotify_song_pages_give_the_song() {
+        let html = r#"<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"state":{"data":{"entity":{"name":"Timeless","artists":[{"name":"The Weeknd"},{"name":"Playboi Carti"}],"duration":256000,"isExplicit":true}}}}}}</script>"#;
+        let song = spotify_song(html).unwrap();
+        assert_eq!((song.title.as_str(), song.artists.clone(), song.length_ms, song.explicit), ("Timeless", vec!["The Weeknd".to_string(), "Playboi Carti".to_string()], Some(256000), true));
+    }
+
     /// Reads real playlists from each service.
     /// `cargo test --lib -- --ignored real_playlists --nocapture`
     #[test]
@@ -389,6 +545,7 @@ mod tests {
             "https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb",
             "https://music.apple.com/us/playlist/top-100-global/pl.d25f5d1181894928af76c85c967f8f31",
             "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI",
+            "https://music.apple.com/us/playlist/wet-fart/pl.u-zPyLl9YFZLRkvzg",
         ] {
             let p = rt.block_on(music_playlist(link.into())).unwrap_or_else(|e| panic!("{link}: {e}"));
             println!("{} · {} · {:?} · {} songs (of {:?})", p.source, p.name, p.owner, p.songs.len(), p.total);
@@ -400,6 +557,13 @@ mod tests {
             // Now and then a video has no channel link or length badge.
             let complete = p.songs.iter().filter(|s| !s.artists.is_empty() && s.length_ms.is_some()).count();
             assert!(complete * 10 >= p.songs.len() * 9, "{link}: {complete} of {} complete", p.songs.len());
+            // YouTube playlists come whole, past the page's first 100 videos.
+            if p.source == "youtube" {
+                assert!(p.songs.len() > 100, "{link}: only {} videos", p.songs.len());
+            }
         }
+        let songs = rt.block_on(music_spotify_songs(vec!["4HCOHRCSQelz2GPX8iTamO".into(), "0VjIjW4GlUZAMYd2vXMi3b".into()])).unwrap();
+        println!("spotify songs: {songs:?}");
+        assert!(songs.iter().all(|s| s.as_ref().is_some_and(|s| !s.title.is_empty() && !s.artists.is_empty() && s.length_ms.is_some())));
     }
 }
