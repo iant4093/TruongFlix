@@ -533,6 +533,7 @@ export async function getSettings(): Promise<Settings> {
     soulseek_port: map.soulseek_port != null ? Math.min(65535, Math.max(0, Math.trunc(Number(map.soulseek_port)) || 0)) : 2234,
     soulseek_quality: map.soulseek_quality === 'mp3' || map.soulseek_quality === 'any' ? map.soulseek_quality : 'lossless',
     soulseek_share: map.soulseek_share === 'true',
+    soulseek_made_up: map.soulseek_made_up === 'true',
     music_download_dir: map.music_download_dir ?? '',
   };
 }

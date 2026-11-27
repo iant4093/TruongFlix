@@ -251,6 +251,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     soulseek_port: 2234,
     soulseek_quality: 'lossless',
     soulseek_share: false,
+    soulseek_made_up: false,
     music_download_dir: '',
   },
   movies: [],

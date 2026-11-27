@@ -82,14 +82,28 @@ export function initMusicDownloads(): Promise<void> {
   return started;
 }
 
-/** Made-up account names look like this ("tf" and ten letters and digits). */
-const MADE_UP = /^tf[a-z0-9]{10}$/;
+/** `n` characters from `alphabet`, uniformly at random. */
+function randomText(alphabet: string, n: number): string {
+  let out = '';
+  // Bytes past the last whole multiple of the alphabet's length are skipped, so no letter is likelier.
+  const limit = 256 - (256 % alphabet.length);
+  while (out.length < n)
+    for (const b of crypto.getRandomValues(new Uint8Array(n))) if (b < limit && out.length < n) out += alphabet[b % alphabet.length];
+  return out;
+}
 
-/** A new Soulseek name and password (Soulseek makes the account the first time it's used). */
-export function newSoulseekAccount(): { soulseek_username: string; soulseek_password: string } {
-  const pick = (alphabet: string, n: number) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => alphabet[b % alphabet.length]).join('');
-  const lower = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  return { soulseek_username: `tf${pick(lower, 10)}`, soulseek_password: pick(`${lower}ABCDEFGHIJKLMNOPQRSTUVWXYZ`, 24) };
+/**
+ * A new Soulseek name and password (Soulseek makes the account the first time it's used). The
+ * name is purely random, with nothing in it that points to TruongFlix: other Soulseek users see it.
+ */
+export function newSoulseekAccount(): { soulseek_username: string; soulseek_password: string; soulseek_made_up: true } {
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  const lower = `${letters}0123456789`;
+  return {
+    soulseek_username: randomText(letters, 1) + randomText(lower, 11),
+    soulseek_password: randomText(`${lower}ABCDEFGHIJKLMNOPQRSTUVWXYZ`, 24),
+    soulseek_made_up: true,
+  };
 }
 
 export const hasSoulseekAccount = () => {
@@ -130,7 +144,9 @@ export async function connectSoulseek(force = false): Promise<SoulseekStatus> {
   if (connecting) return connecting;
   connecting = (async () => {
     const { updateSettings } = useLibraryStore.getState();
-    if (!hasSoulseekAccount()) await updateSettings(newSoulseekAccount());
+    // 2.0.116 made up names starting "tf" (for TruongFlix); those are swapped for purely random ones.
+    const old = useLibraryStore.getState().settings;
+    if (!hasSoulseekAccount() || (!old.soulseek_made_up && /^tf[a-z0-9]{10}$/.test(old.soulseek_username.trim()))) await updateSettings(newSoulseekAccount());
     for (let attempt = 0; ; attempt++) {
       const { settings: now } = useLibraryStore.getState();
       try {
@@ -146,7 +162,7 @@ export async function connectSoulseek(force = false): Promise<SoulseekStatus> {
         // A made-up name someone else has (or that Soulseek gave away after a month unused):
         // another one is made up. An account the user typed in is theirs to fix.
         const message = e instanceof Error ? e.message : String(e);
-        if (attempt < 2 && MADE_UP.test(now.soulseek_username.trim()) && /didn.t accept that username/i.test(message)) {
+        if (attempt < 2 && now.soulseek_made_up && /didn.t accept that username/i.test(message)) {
           await updateSettings(newSoulseekAccount());
           continue;
         }

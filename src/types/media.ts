@@ -439,6 +439,8 @@ export interface Settings {
   soulseek_quality: MusicQuality;
   /** Offer the music folders to other Soulseek users. */
   soulseek_share: boolean;
+  /** The Soulseek account was made up by the app (not typed in), so it may swap a refused one. */
+  soulseek_made_up: boolean;
   /** Where downloaded albums are filed ('' = the first music folder). */
   music_download_dir: string;
 }

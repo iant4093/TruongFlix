@@ -26,15 +26,33 @@ it('makes up an account when there is none, and keeps it', async () => {
   });
   const status = await connectSoulseek();
   const { soulseek_username, soulseek_password } = useLibraryStore.getState().settings;
-  expect(soulseek_username).toMatch(/^tf[a-z0-9]{10}$/);
+  // Purely random: nothing in the name says TruongFlix.
+  expect(soulseek_username).toMatch(/^[a-z][a-z0-9]{11}$/);
+  const names = Array.from({ length: 40 }, () => newSoulseekAccount().soulseek_username);
+  expect(new Set(names.map((n) => n.slice(0, 2))).size).toBeGreaterThan(20);
+  expect(useLibraryStore.getState().settings.soulseek_made_up).toBe(true);
   expect(soulseek_password).toHaveLength(24);
   expect(status.username).toBe(soulseek_username);
   expect(logins()).toEqual([expect.objectContaining({ username: soulseek_username, password: soulseek_password })]);
   // Saved like any other setting (into the keychain).
   expect(saveSetting).toHaveBeenCalledWith('soulseek_username', soulseek_username);
   expect(saveSetting).toHaveBeenCalledWith('soulseek_password', soulseek_password);
+  expect(saveSetting).toHaveBeenCalledWith('soulseek_made_up', true);
   // Every account is different.
   expect(newSoulseekAccount().soulseek_username).not.toBe(newSoulseekAccount().soulseek_username);
+});
+
+it('an account made by 2.0.116 (named "tf…") is swapped for a purely random one', async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+    if (cmd === 'slsk_status') return { state: 'offline', username: '', message: '' };
+    if (cmd === 'slsk_jobs') return [];
+    if (cmd === 'slsk_connect') return { state: 'online', username: (args as { username: string }).username, message: '' };
+    return undefined;
+  });
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_username: 'tfa1b2c3d4e5', soulseek_password: 'x'.repeat(24) } }));
+  await connectSoulseek();
+  expect(logins()).toEqual([expect.objectContaining({ username: expect.not.stringMatching(/^tf/) })]);
+  expect(useLibraryStore.getState().settings).toMatchObject({ soulseek_made_up: true });
 });
 
 it('a made-up name someone already has is swapped for another; a typed-in account is left to the user', async () => {
@@ -57,7 +75,7 @@ it('a made-up name someone already has is swapped for another; a typed-in accoun
   vi.mocked(invoke).mockClear();
   refusals = 5;
   useMusicDownloads.setState({ status: { state: 'offline', username: '', message: '' } });
-  useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_username: 'ian', soulseek_password: 'wrong' } }));
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_username: 'ian', soulseek_password: 'wrong', soulseek_made_up: false } }));
   await expect(connectSoulseek()).rejects.toBe('Soulseek didn’t accept that username and password.');
   expect(logins()).toHaveLength(1);
   expect(useLibraryStore.getState().settings.soulseek_username).toBe('ian');

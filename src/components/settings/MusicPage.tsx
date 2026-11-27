@@ -114,7 +114,8 @@ function SoulseekSettings() {
     setBusy(true);
     setError('');
     try {
-      await updateSettings({ soulseek_username: username.trim(), soulseek_password: password });
+      // An account typed in here is the user's own: it's never swapped for a made-up one.
+      await updateSettings({ soulseek_username: username.trim(), soulseek_password: password, soulseek_made_up: false });
       if (username.trim() && password) await connectSoulseek(true);
       else await disconnectSoulseek();
     } catch (e) {
