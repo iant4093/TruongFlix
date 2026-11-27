@@ -54,9 +54,10 @@ const SEARCH_GAP: Duration = Duration::from_millis(2500);
 /// every connection for minutes after it closes: past a few thousand it stops working for the
 /// whole network. So after a widely answered search, the next one waits until those connections
 /// average out to about this many a second.
-const NEW_PEERS_PER_SECOND: f64 = 10.0;
-/// The longest wait between searches.
-const SEARCH_GAP_MAX: Duration = Duration::from_secs(30);
+const NEW_PEERS_PER_SECOND: f64 = 20.0;
+/// The longest wait between searches. (The patched library also rations the connections answers
+/// arrive on, so this only spreads searches out; see `vendor/soulseek-rs-lib/PATCHES.md`.)
+const SEARCH_GAP_MAX: Duration = Duration::from_secs(10);
 /// When a song's first searches have found nothing by now, its other artists and its title alone
 /// are searched too.
 const SONG_FALLBACK_AFTER: Duration = Duration::from_secs(5);
@@ -254,8 +255,18 @@ pub async fn slsk_connect(app: AppHandle, username: String, password: String, po
 /// Watches the session. When the server drops the connection, the app logs in again by itself
 /// (a few times, waiting longer each time); when the account logs in somewhere else, it stops.
 fn watch_session(app: AppHandle, client: Arc<Client>) {
+    let mut told = false;
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(3));
+        // The server sends the phrases it blocks shortly after login; searches containing one
+        // are never answered.
+        if !told {
+            let phrases = client.excluded_search_phrases();
+            if !phrases.is_empty() {
+                told = true;
+                note(format!("Soulseek blocks searches containing any of {} phrases: {}", phrases.len(), phrases.join(", ")));
+            }
+        }
         let current = SESSION.lock().unwrap().as_ref().is_some_and(|c| Arc::ptr_eq(c, &client));
         if !current {
             return;
@@ -610,7 +621,7 @@ struct Searching<'a> {
 
 /// How many people answered recent searches (the most of the last few), for pacing. It starts
 /// cautious (a popular song is answered by about this many) until real answers come in.
-static ANSWERED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(150);
+static ANSWERED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(80);
 
 /// The wait before the next search: longer after widely answered ones (see `NEW_PEERS_PER_SECOND`).
 fn search_gap() -> Duration {

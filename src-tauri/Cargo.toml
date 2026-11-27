@@ -112,7 +112,8 @@ strip = false
 name = "source_browser_smoke"
 required-features = ["source-browser-smoke"]
 
-# Patched copies of two crates; each folder's PATCHES.md lists the changes.
+# Patched copies of three crates; each folder's PATCHES.md lists the changes.
 [patch.crates-io]
 librqbit = { path = "vendor/librqbit" }
 inno = { path = "vendor/inno" }
+soulseek-rs-lib = { path = "vendor/soulseek-rs-lib" }
