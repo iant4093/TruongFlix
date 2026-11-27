@@ -177,7 +177,7 @@ function SoulseekSettings() {
         checked={settings.soulseek_share}
         onChange={(soulseek_share) => void reconnectAfter({ soulseek_share })}
       />
-      <Row label="Listening port" description="Other users connect to you here. 0 turns listening off.">
+      <Row label="Listening port" description="Other users connect to you here; TruongFlix opens it on your router by itself while you’re signed in. 0 turns listening off.">
         <NumberField value={settings.soulseek_port} min={0} max={65535} empty={2234} label="Soulseek listening port" className={`${INPUT} w-24 text-right tabular-nums`} onCommit={(soulseek_port) => void reconnectAfter({ soulseek_port })} />
       </Row>
     </Group>

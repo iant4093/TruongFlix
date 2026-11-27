@@ -297,6 +297,7 @@ pub fn run() {
             }
             if let tauri::RunEvent::Exit = &event {
                 vlc::close_on_exit(app);
+                soulseek::close_on_exit();
             }
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = event {

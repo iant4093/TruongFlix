@@ -13,6 +13,7 @@
 
 pub mod library;
 pub mod matching;
+mod router;
 
 use library::{AlbumRequest, PickedCopy, SongRequest};
 use matching::{basename, extension, Candidate, Offer, WantSong, WantTrack};
@@ -186,8 +187,8 @@ const RECONNECT_WAITS: [u64; 6] = [3, 6, 12, 24, 45, 60];
 pub const PAUSED: &str = "Soulseek is pausing this account for a while (it does that after a lot of searching). TruongFlix carries on by itself once it’s let back in.";
 
 /// Connects and logs in; a listening port that's already in use (another Soulseek app) doesn't
-/// stop the login.
-fn log_in(login: &Login) -> Result<Client, String> {
+/// stop the login. Says whether we're listening.
+fn log_in(login: &Login) -> Result<(Client, bool), String> {
     let attempt = |listen: bool| -> Result<Client, String> {
         let mut client = Client::with_settings(ClientSettings {
             username: login.username.clone(),
@@ -211,7 +212,25 @@ fn log_in(login: &Login) -> Result<Client, String> {
             Err(e) => Err(format!("Soulseek login failed: {e}")),
         }
     };
-    attempt(true).or_else(|e| if login.port != 0 && e.starts_with("Couldn’t reach") { attempt(false) } else { Err(e) })
+    match attempt(true) {
+        Ok(client) => Ok((client, login.port != 0)),
+        Err(e) if login.port != 0 && e.starts_with("Couldn’t reach") => attempt(false).map(|client| (client, false)),
+        Err(e) => Err(e),
+    }
+}
+
+/// Opens (or closes) our listening port on the home router to match a new session.
+fn open_port(login: &Login, listening: bool) {
+    if listening {
+        router::keep_open(login.port);
+    } else {
+        router::close();
+    }
+}
+
+/// Closes the port opened on the router (when the app quits).
+pub fn close_on_exit() {
+    router::close();
 }
 
 /// Makes `client` the session and starts watching it.
@@ -248,8 +267,9 @@ pub async fn slsk_connect(app: AppHandle, username: String, password: String, po
         SESSION.lock().unwrap().take();
         set_status(&handle, Status { state: "connecting", username: username.clone(), message: String::new() });
         match log_in(&login) {
-            Ok(client) => {
+            Ok((client, listening)) => {
                 note(format!("Logged in (listening on port {}, sharing {} folders)", login.port, login.shared.len()));
+                open_port(&login, listening);
                 *LOGIN.lock().unwrap() = Some(login);
                 Ok(go_online(&handle, client))
             }
@@ -304,12 +324,13 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
                     return;
                 }
                 match log_in(&login) {
-                    Ok(fresh) => {
+                    Ok((fresh, listening)) => {
                         // Logging in takes a few seconds: check again before taking over.
                         if superseded() {
                             return;
                         }
                         note("Reconnected");
+                        open_port(&login, listening);
                         go_online(&app, fresh);
                         return;
                     }
@@ -340,6 +361,7 @@ pub fn slsk_disconnect(app: AppHandle) {
     GENERATION.fetch_add(1, Ordering::SeqCst);
     LOGIN.lock().unwrap().take();
     SESSION.lock().unwrap().take();
+    std::thread::spawn(router::close);
     // Signing out stops what's running too (each job holds its own handle to the session).
     if let Some(jobs) = JOBS.lock().unwrap().as_ref() {
         for running in jobs.values() {
@@ -1296,41 +1318,75 @@ fn run_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &Atom
         None => {
             let mut found = find_song(report, client, req, cancel)?;
             // People who've already sent us songs come first; people who can't connect back to us,
-            // and people already sending us two or more, come last.
-            found.sort_by_key(|o| (known(&CANT_REACH_US, &o.user), load_of(&o.user) >= 2, !known(&SENT_US, &o.user)));
+            // people already sending us two or more, and people who just kept us queued, come last.
+            found.sort_by_key(|o| (known(&CANT_REACH_US, &o.user), load_of(&o.user) >= 2, kept_us_queued(&o.user), !known(&SENT_US, &o.user)));
             (found, req.want.length_ms)
         }
     };
-    let mut last_error = String::new();
     let candidates: Vec<Offer> = candidates.into_iter().take(SONG_SOURCES).collect();
-    for (round, batch) in candidates.chunks(SONG_RACE).enumerate() {
-        if round > 0 {
-            report.set(|j| j.message = format!("Trying other copies ({last_error})"));
+    match race_song(report, client, &candidates, length, &staging.join("race"), cancel) {
+        Ok((path, offer)) => {
+            report.set(|j| j.state = "checking".into());
+            file_song(req, &path, &extension(&offer.path)).map_err(Stop::Failed)
         }
-        match race_song(report, client, batch, length, &staging.join(round.to_string()), cancel) {
-            Ok((path, offer)) => {
-                report.set(|j| j.state = "checking".into());
-                return file_song(req, &path, &extension(&offer.path)).map_err(Stop::Failed);
-            }
-            Err(Stop::Cancelled) => return Err(Stop::Cancelled),
-            Err(Stop::Failed(e)) => {
-                if client.session_loss().is_some() {
-                    return Err(Stop::Failed(e));
-                }
-                last_error = e;
-            }
+        Err(Stop::Failed(e)) if client.session_loss().is_none() => {
+            report.set(|j| j.code = Some("download".into()));
+            Err(Stop::Failed(format!("No copy of this song could be downloaded. Last problem: {e}")))
         }
+        Err(e) => Err(e),
     }
-    report.set(|j| j.code = Some("download".into()));
-    Err(Stop::Failed(format!("No copy of this song could be downloaded. Last problem: {last_error}")))
 }
 
-/// Copies of a song asked for at once. Most people queue requests, so asking one at a time
-/// meant waiting through queue after queue; now whoever starts sending first is kept and the
-/// others are cancelled.
+/// Copies of a song asked for at a time. Most people queue requests, so asking one at a time
+/// meant waiting through queue after queue; whoever starts sending first is kept and the others
+/// are cancelled.
 const SONG_RACE: usize = 3;
-/// How long a round of asked copies may all stay queued before the next ones are asked.
+/// How long the copies asked so far may all stay queued before more are asked too. The ones
+/// asked already keep their place in their queues: whoever starts first still wins.
 const SONG_RACE_PATIENCE: Duration = Duration::from_secs(25);
+/// Once every copy has been asked, how long they may all stay queued before the song fails.
+const SONG_QUEUE_PATIENCE: Duration = Duration::from_secs(90);
+/// How long someone who kept us queued is tried after others (their queue moves on).
+const QUEUED_US_FOR: Duration = Duration::from_secs(600);
+
+/// People who kept a song of ours queued past the race's patience, and when.
+static QUEUED_US: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+fn kept_us_queued(user: &str) -> bool {
+    QUEUED_US.lock().unwrap().as_ref().and_then(|m| m.get(user)).is_some_and(|at| at.elapsed() < QUEUED_US_FOR)
+}
+
+fn remember_queued(user: &str) {
+    let mut queued = QUEUED_US.lock().unwrap();
+    let map = queued.get_or_insert_with(HashMap::new);
+    map.retain(|_, at| at.elapsed() < QUEUED_US_FOR);
+    map.insert(user.to_string(), Instant::now());
+}
+
+/// What a song's race does next, while nobody is sending yet.
+#[derive(Debug, PartialEq)]
+enum RaceStep {
+    Wait,
+    /// Ask the next copies too (keeping the ones still queued).
+    AskMore,
+    GiveUp,
+}
+
+/// `waiting`: copies asked and still queued; `asked` of `total` copies; `since_ask`: since copies
+/// were last asked.
+fn race_step(waiting: usize, asked: usize, total: usize, since_ask: Duration) -> RaceStep {
+    if asked < total {
+        if waiting == 0 || since_ask >= SONG_RACE_PATIENCE {
+            RaceStep::AskMore
+        } else {
+            RaceStep::Wait
+        }
+    } else if waiting == 0 || since_ask >= SONG_QUEUE_PATIENCE {
+        RaceStep::GiveUp
+    } else {
+        RaceStep::Wait
+    }
+}
 
 struct Racer {
     item: Item,
@@ -1342,21 +1398,28 @@ struct Racer {
     busy: Option<Busy>,
 }
 
-/// Asks everyone in `offers` for the song at once and keeps whoever starts sending first (the
-/// others are cancelled); returns the checked file and whose copy it is.
+/// Asks for the song from `offers`, a few at a time, and keeps whoever starts sending first (the
+/// others are cancelled); returns the checked file and whose copy it is. Copies that are queued
+/// keep their place while more are asked.
 fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Option<u32>, dir: &Path, cancel: &AtomicBool) -> Result<(PathBuf, Offer), Stop> {
     let mut racers: Vec<Racer> = Vec::new();
     let mut problems: Vec<String> = Vec::new();
-    for (index, offer) in offers.iter().enumerate() {
-        let item = Item { index, offer: offer.clone(), length_ms: length };
-        match request_file(client, &item, dir, false) {
-            Ok((status, path)) => {
-                note(format!("Asked {} for {}", offer.user, basename(&offer.path)));
-                racers.push(Racer { busy: Some(Busy::new(&offer.user)), item, status, last: DownloadStatus::Queued, path, out: false });
+    let mut asked = 0usize;
+    let ask = |asked: &mut usize, racers: &mut Vec<Racer>, problems: &mut Vec<String>| {
+        let upto = (*asked + SONG_RACE).min(offers.len());
+        for (index, offer) in offers.iter().enumerate().take(upto).skip(*asked) {
+            let item = Item { index, offer: offer.clone(), length_ms: length };
+            match request_file(client, &item, dir, false) {
+                Ok((status, path)) => {
+                    note(format!("Asked {} for {}", offer.user, basename(&offer.path)));
+                    racers.push(Racer { busy: Some(Busy::new(&offer.user)), item, status, last: DownloadStatus::Queued, path, out: false });
+                }
+                Err(e) => problems.push(e),
             }
-            Err(e) => problems.push(e),
         }
-    }
+        *asked = upto;
+    };
+    ask(&mut asked, &mut racers, &mut problems);
     let cancel_rest = |racers: &mut [Racer], keep: Option<usize>| {
         for (i, r) in racers.iter_mut().enumerate() {
             if Some(i) != keep && !r.out {
@@ -1367,7 +1430,8 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
         }
     };
     let forget = |racers: &[Racer]| forget_downloads(client, racers.iter().map(|r| &r.item.offer));
-    let started = Instant::now();
+    let queued = |racers: &[Racer]| -> Vec<String> { racers.iter().filter(|r| !r.out).map(|r| r.item.offer.user.clone()).collect() };
+    let mut last_ask = Instant::now();
     let mut winner: Option<usize> = None;
     let mut last_bytes = 0u64;
     let mut last_progress = Instant::now();
@@ -1438,14 +1502,11 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
             problems.push(problem);
             if winner == Some(i) {
                 winner = None;
+                last_bytes = 0;
             }
         }
-        if racers.iter().all(|r| r.out) {
-            forget(&racers);
-            return Err(Stop::Failed(problems.pop().unwrap_or_else(|| "Nobody could send it".into())));
-        }
-        let sending = winner.map(|i| &racers[i]);
-        let bytes = sending
+        let bytes = winner
+            .map(|i| &racers[i])
             .map(|r| match &r.last {
                 DownloadStatus::InProgress { bytes_downloaded, .. } | DownloadStatus::Paused { bytes_downloaded, .. } => *bytes_downloaded,
                 _ => 0,
@@ -1455,29 +1516,52 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
             last_bytes = bytes;
             last_progress = Instant::now();
         }
-        match sending {
-            Some(r) if last_progress.elapsed() > SONG_STALL_PATIENCE => {
-                let user = r.item.offer.user.clone();
+        match winner {
+            Some(i) if last_progress.elapsed() > SONG_STALL_PATIENCE => {
+                // They stopped: let them go, and go on with copies not asked yet.
+                let user = racers[i].item.offer.user.clone();
                 cancel_rest(&mut racers, None);
-                forget(&racers);
                 note(format!("{user} stopped sending; trying other copies"));
-                return Err(Stop::Failed(format!("{user} stopped sending")));
+                problems.push(format!("{user} stopped sending"));
+                winner = None;
+                last_bytes = 0;
             }
-            None if started.elapsed() > SONG_RACE_PATIENCE => {
-                let users: Vec<String> = racers.iter().filter(|r| !r.out).map(|r| r.item.offer.user.clone()).collect();
-                cancel_rest(&mut racers, None);
-                forget(&racers);
-                note(format!("{} kept it queued for {}s; trying other copies", users.join(", "), SONG_RACE_PATIENCE.as_secs()));
-                return Err(Stop::Failed(format!("{} kept it queued", users.join(", "))));
+            Some(_) => {}
+            None => {
+                let waiting = queued(&racers);
+                match race_step(waiting.len(), asked, offers.len(), last_ask.elapsed()) {
+                    RaceStep::Wait => {}
+                    RaceStep::AskMore => {
+                        if !waiting.is_empty() {
+                            for user in &waiting {
+                                remember_queued(user);
+                            }
+                            note(format!("{} kept it queued for {}s; asking other copies too", waiting.join(", "), last_ask.elapsed().as_secs()));
+                        }
+                        ask(&mut asked, &mut racers, &mut problems);
+                        last_ask = Instant::now();
+                    }
+                    RaceStep::GiveUp => {
+                        if !waiting.is_empty() {
+                            for user in &waiting {
+                                remember_queued(user);
+                            }
+                            note(format!("{} kept it queued; giving up on this song for now", waiting.join(", ")));
+                            problems.push(format!("{} kept it queued", waiting.join(", ")));
+                        }
+                        cancel_rest(&mut racers, None);
+                        forget(&racers);
+                        return Err(Stop::Failed(problems.pop().unwrap_or_else(|| "Nobody could send it".into())));
+                    }
+                }
             }
-            _ => {}
         }
         if last_emit.elapsed() >= Duration::from_millis(400) {
             last_emit = Instant::now();
-            let shown = sending.or_else(|| racers.iter().find(|r| !r.out));
+            let shown = winner.map(|i| &racers[i]).or_else(|| racers.iter().find(|r| !r.out));
             if let Some(r) = shown {
                 let (user, format, size) = (r.item.offer.user.clone(), extension(&r.item.offer.path), r.item.offer.size);
-                let waiting = sending.is_none();
+                let waiting = winner.is_none();
                 report.set(|j| {
                     j.state = if waiting { "queued" } else { "downloading" }.into();
                     j.bytes = bytes;
@@ -1834,6 +1918,20 @@ mod tests {
             WantTrack { title: "One".into(), position: 1, disc: 1, length_ms: Some(200_000) },
             WantTrack { title: "Two".into(), position: 2, disc: 1, length_ms: Some(180_000) },
         ]
+    }
+
+    #[test]
+    fn queued_copies_keep_their_place_while_more_are_asked() {
+        let s = Duration::from_secs;
+        // Three asked, all queued: wait, then ask three more (the first stay queued).
+        assert_eq!(race_step(3, 3, 12, s(10)), RaceStep::Wait);
+        assert_eq!(race_step(3, 3, 12, s(25)), RaceStep::AskMore);
+        // Everyone asked so far refused: the next are asked at once.
+        assert_eq!(race_step(0, 3, 12, s(1)), RaceStep::AskMore);
+        // Every copy asked: wait longer for any of the queues before giving up.
+        assert_eq!(race_step(5, 12, 12, s(60)), RaceStep::Wait);
+        assert_eq!(race_step(5, 12, 12, s(90)), RaceStep::GiveUp);
+        assert_eq!(race_step(0, 12, 12, s(1)), RaceStep::GiveUp);
     }
 
     #[test]

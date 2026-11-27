@@ -6984,6 +6984,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "socket2 0.6.5",
  "soulseek-rs-lib",
  "souvlaki",
  "sqlx",
