@@ -45,11 +45,11 @@ const QUEUE_PATIENCE: Duration = Duration::from_secs(150);
 const STALL_PATIENCE: Duration = Duration::from_secs(90);
 /// How long a song may stay queued with one person before the next copy is tried (another person
 /// usually sends it at once).
-const SONG_QUEUE_PATIENCE: Duration = Duration::from_secs(30);
+const SONG_QUEUE_PATIENCE: Duration = Duration::from_secs(15);
 /// How long a song's transfer may stall.
 const SONG_STALL_PATIENCE: Duration = Duration::from_secs(60);
 /// Searches are sent at least this far apart: Soulseek quietly drops searches that come too fast.
-const SEARCH_GAP: Duration = Duration::from_millis(2500);
+const SEARCH_GAP: Duration = Duration::from_millis(1500);
 /// Each person who answers a search connects to us on their own, and a home router remembers
 /// every connection for minutes after it closes: past a few thousand it stops working for the
 /// whole network. So after a widely answered search, the next one waits until those connections
@@ -62,9 +62,9 @@ const SEARCH_GAP_MAX: Duration = Duration::from_secs(10);
 /// are searched too.
 const SONG_FALLBACK_AFTER: Duration = Duration::from_secs(5);
 /// A song search stops early once a few ready-to-send copies have answered…
-const SONG_SEARCH_MIN: Duration = Duration::from_secs(4);
+const SONG_SEARCH_MIN: Duration = Duration::from_secs(2);
 /// …or any copy at all…
-const SONG_SEARCH_TIME: Duration = Duration::from_secs(8);
+const SONG_SEARCH_TIME: Duration = Duration::from_secs(6);
 /// …and gives up after this.
 const SONG_SEARCH_MAX: Duration = Duration::from_secs(18);
 /// How long the last files may sit in the queue after the person's others have arrived (the
@@ -1103,7 +1103,8 @@ fn find_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &Ato
             search.add(matching::song_fallback_queries(&req.want)).map_err(Stop::Failed)?;
         }
         let free = found.iter().filter(|o| o.free_slot).count();
-        let enough = (t >= SONG_SEARCH_MIN && free >= 3) || (t >= SONG_SEARCH_TIME && !found.is_empty()) || t >= SONG_SEARCH_MAX;
+        // Two ready-to-send copies are plenty to start: the next ones are tried if the first stalls.
+        let enough = (t >= SONG_SEARCH_MIN && free >= 2) || (t >= SONG_SEARCH_TIME && !found.is_empty()) || t >= SONG_SEARCH_MAX;
         if !enough {
             continue;
         }

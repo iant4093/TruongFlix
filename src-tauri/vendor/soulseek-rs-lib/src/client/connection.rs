@@ -326,8 +326,8 @@ impl Client {
     /// `BROKERED_PER_SECOND` a second (with a short burst), so a widely answered search can't open
     /// hundreds of connections at once.
     pub(crate) fn brokered_peer_allowed(client_context: &Arc<RwLock<ClientContext>>, username: &str) -> bool {
-        const BROKERED_PER_SECOND: f64 = 8.0;
-        const BROKERED_BURST: f64 = 16.0;
+        const BROKERED_PER_SECOND: f64 = 12.0;
+        const BROKERED_BURST: f64 = 24.0;
         static BUDGET: std::sync::Mutex<Option<(Instant, f64)>> = std::sync::Mutex::new(None);
         if client_context.read_safe().is_ok_and(|ctx| ctx.protected_peers().contains(username)) {
             return true;

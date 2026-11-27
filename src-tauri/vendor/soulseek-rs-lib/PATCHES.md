@@ -12,7 +12,8 @@ Its examples and integration tests are omitted.
   upstream starts a connection attempt for each at once; most people answering are behind routers
   too, so the attempts hang. Measured on a home connection: about 1,000 attempts open within
   seconds of one search, the router's connection table filled, and the whole network went down.
-  Now about 8 a second go through (with a burst of 16); the rest are answered with
+  Now about 12 a second go through (with a burst of 24; at 8 a second a long import peaked at
+  ~370 open connections with ~35 still connecting, and the network stayed fine); the rest are answered with
   `CantConnectToPeer`, as if we were offline. People we're downloading from or uploading to (the
   library's protected peers) and file connections are never turned away.
 
