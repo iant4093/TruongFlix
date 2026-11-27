@@ -12,14 +12,32 @@ interface Prompt {
   action: string;
   /** A yes/no question instead of a name: this text is shown and there's no field. */
   message?: string;
+  /** A few lines of text (a description) instead of a name; it may be left empty. */
+  text?: { placeholder: string; max: number };
   resolve: (v: string | null) => void;
 }
 
 const usePrompt = create<{ prompt: Prompt | null }>(() => ({ prompt: null }));
 
+/** Each prompt gets its own dialog: one opened while the last is still fading out starts with its own text. */
+const promptKeys = new WeakMap<Prompt, number>();
+let nextPromptKey = 0;
+const promptKey = (p: Prompt) => {
+  if (!promptKeys.has(p)) promptKeys.set(p, ++nextPromptKey);
+  return promptKeys.get(p)!;
+};
+
 /** Asks for a name (new playlist, rename). Resolves null when cancelled. */
 export function askName(title: string, value = '', action = 'Save'): Promise<string | null> {
   return new Promise((resolve) => usePrompt.setState({ prompt: { title, value, action, resolve } }));
+}
+
+/**
+ * Asks for a short text that may be left empty (a playlist's description). Resolves '' when
+ * emptied, null when cancelled.
+ */
+export function askText(title: string, value: string, placeholder: string, max: number, action = 'Save'): Promise<string | null> {
+  return new Promise((resolve) => usePrompt.setState({ prompt: { title, value, action, text: { placeholder, max }, resolve } }));
 }
 
 /** Asks before something destructive, in the app's own style (a native confirm box can't be
@@ -31,7 +49,8 @@ export async function askConfirm(title: string, message: string, action: string)
 
 function NamePrompt({ prompt, closing }: { prompt: Prompt; closing: boolean }) {
   const [value, setValue] = useState(prompt.value);
-  const input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
+  const text = prompt.text;
   useEffect(() => {
     input.current?.focus();
     input.current?.select();
@@ -45,7 +64,7 @@ function NamePrompt({ prompt, closing }: { prompt: Prompt; closing: boolean }) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (value.trim()) done(value.trim());
+          if (value.trim() || text) done(value.trim());
         }}
         className="nf-pop-in w-full max-w-sm rounded-2xl border border-white/10 bg-[#2c2c2e] p-5 shadow-2xl"
         onKeyDown={(e) => {
@@ -58,6 +77,28 @@ function NamePrompt({ prompt, closing }: { prompt: Prompt; closing: boolean }) {
         <h2 className="text-lg font-semibold">{prompt.title}</h2>
         {prompt.message ? (
           <p className="mt-2 text-sm text-white/70">{prompt.message}</p>
+        ) : text ? (
+          <>
+            <textarea
+              ref={input}
+              value={value}
+              maxLength={text.max}
+              rows={4}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter saves: a description is one paragraph.
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  done(value.trim());
+                }
+              }}
+              placeholder={text.placeholder}
+              className="mt-4 w-full resize-none rounded-lg border border-white/15 bg-black/30 px-3 py-2 text-base outline-none focus:border-white/50"
+            />
+            <div className="mt-1 text-right text-xs text-white/40">
+              {value.length}/{text.max}
+            </div>
+          </>
         ) : (
           <input
             ref={input}
@@ -72,7 +113,7 @@ function NamePrompt({ prompt, closing }: { prompt: Prompt; closing: boolean }) {
           <button type="button" autoFocus={!!prompt.message} onClick={() => done(null)} className="h-10 rounded-lg px-4 text-sm font-semibold text-white/80 hover:bg-white/10">
             Cancel
           </button>
-          <button type="submit" disabled={!value.trim()} className="h-10 rounded-lg bg-[#fa2d48] px-4 text-sm font-semibold text-white disabled:opacity-40">
+          <button type="submit" disabled={!value.trim() && !text} className="h-10 rounded-lg bg-[#fa2d48] px-4 text-sm font-semibold text-white disabled:opacity-40">
             {prompt.action}
           </button>
         </div>
@@ -87,7 +128,7 @@ export default function MusicOverlays() {
   const toast = useMusicNav((s) => s.toast);
   return createPortal(
     <>
-      {prompt.shown && <NamePrompt prompt={prompt.shown} closing={prompt.closing} />}
+      {prompt.shown && <NamePrompt key={promptKey(prompt.shown)} prompt={prompt.shown} closing={prompt.closing} />}
       <TrackPointMenu />
       <AnimatePresence>
         {toast && (

@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import SlidingPill from '../../components/common/SlidingPill';
-import { ArrowDown, ArrowUp, ChevronLeft, Heart, ListMusic, Music2, Pencil, Pin, Play, Plus, Search, Shuffle, Trash2, X } from 'lucide-react';
-import { createPlaylist, deletePlaylist, loadMusicLibrary, moveInList, renamePlaylist, setPinned, setPlaylistTracks, useMusicLoad } from '../actions';
-import { byName, formatTotal, isPinned, listenNow, playlistArt, searchMusic } from '../library';
+import { AlignLeft, ArrowDown, ArrowUp, ChevronLeft, Heart, ImagePlus, ListMusic, Music2, Pencil, Pin, Play, Plus, RotateCcw, Search, Shuffle, Trash2, X } from 'lucide-react';
+import { createPlaylist, deletePlaylist, loadMusicLibrary, moveInList, renamePlaylist, setPinned, setPlaylistCover, setPlaylistDescription, setPlaylistTracks, useMusicLoad } from '../actions';
+import { coverBytes } from '../coverImage';
+import { byName, formatTotal, isPinned, listenNow, PLAYLIST_DESCRIPTION_MAX, playlistArt, searchMusic } from '../library';
 import { currentRoute, goBack, MUSIC_TABS, musicToast, openRoute, openTab, setMusicQuery, takeScroll, useMusicNav, type MusicRoute } from '../nav';
 import { playTracks, useMusicPlayer } from '../player';
 import type { MusicAlbum, MusicArtist, MusicLibrary as Library, MusicPinKind, MusicPlaylist, MusicTrack } from '../types';
-import { askConfirm, askName } from './Overlays';
+import { askConfirm, askName, askText } from './Overlays';
 import TrackList from './TrackList';
 import TrackMenu, { openTrackMenuAt } from './TrackMenu';
 import { Cover, Mosaic } from './ui';
@@ -520,13 +521,20 @@ function SearchResults({ library, query }: { library: Library; query: string }) 
   );
 }
 
-function DetailHeader({ art, mosaic, title, subtitle, meta, ids, actions, phone, round = false, onSubtitle }: { art?: string | null; mosaic?: string[]; title: string; subtitle?: string; meta?: string; ids: number[]; actions?: ReactNode; phone: boolean; round?: boolean; onSubtitle?: () => void }) {
+function DetailHeader({ art, mosaic, title, subtitle, description, meta, ids, actions, phone, round = false, onSubtitle, onCover }: { art?: string | null; mosaic?: string[]; title: string; subtitle?: string; description?: string; meta?: string; ids: number[]; actions?: ReactNode; phone: boolean; round?: boolean; onSubtitle?: () => void; onCover?: () => void }) {
+  const size = `${phone ? 'w-60' : 'w-56'} shrink-0 shadow-2xl`;
+  const cover = mosaic ? <Mosaic arts={mosaic} className={onCover ? 'w-full' : size} /> : <Cover art={art ?? null} className={onCover ? 'w-full' : size} rounded={round ? 'rounded-full' : 'rounded-xl'} />;
   return (
     <div className={`mb-6 flex gap-6 ${phone ? 'flex-col items-center text-center' : 'items-end'}`}>
-      {mosaic ? (
-        <Mosaic arts={mosaic} className={`${phone ? 'w-60' : 'w-56'} shrink-0 shadow-2xl`} />
+      {onCover ? (
+        <button type="button" onClick={onCover} aria-label="Change cover" className={`group/cover relative block rounded-md ${size}`}>
+          {cover}
+          <span className="absolute inset-0 flex items-center justify-center gap-2 rounded-md bg-black/50 text-sm font-semibold opacity-0 transition group-hover/cover:opacity-100 group-focus-visible/cover:opacity-100">
+            <ImagePlus className="h-5 w-5" /> Change Cover
+          </span>
+        </button>
       ) : (
-        <Cover art={art ?? null} className={`${phone ? 'w-60' : 'w-56'} shrink-0 shadow-2xl`} rounded={round ? 'rounded-full' : 'rounded-xl'} />
+        cover
       )}
       <div className="min-w-0">
         <h2 className={`font-bold leading-tight ${phone ? 'text-2xl' : 'text-4xl'}`}>{title}</h2>
@@ -538,6 +546,7 @@ function DetailHeader({ art, mosaic, title, subtitle, meta, ids, actions, phone,
           ) : (
             <div className="mt-1 text-xl text-[#fa2d48]">{subtitle}</div>
           ))}
+        {description && <p className="mt-2 max-w-2xl break-words text-[15px] text-white/70">{description}</p>}
         {meta && <div className="mt-1 text-sm uppercase tracking-wide text-white/50">{meta}</div>}
         <div className={`mt-5 flex flex-wrap items-center gap-3 ${phone ? 'justify-center' : ''}`}>
           <PlayButtons ids={ids} />
@@ -615,6 +624,8 @@ function ArtistPage({ library, id }: { library: Library; id: number }) {
 function PlaylistPage({ library, id, phone }: { library: Library; id: number; phone: boolean }) {
   const byId = useMusicPlayer((s) => s.byId);
   const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
   const playlist: MusicPlaylist | undefined = library.playlists.find((p) => p.id === id);
   if (!playlist) return <p className="py-16 text-center text-white/50">This playlist was deleted.</p>;
   const tracks = playlist.trackIds.map((t) => byId.get(t)).filter((t): t is MusicTrack => !!t);
@@ -624,6 +635,20 @@ function PlaylistPage({ library, id, phone }: { library: Library; id: number; ph
   const rename = async () => {
     const name = await askName('Rename Playlist', playlist.name);
     if (name && name !== playlist.name) await renamePlaylist(playlist.id, name).catch((e) => musicToast(errorMessage(e)));
+  };
+  const describe = async () => {
+    const text = await askText(playlist.description ? 'Edit Description' : 'Add Description', playlist.description ?? '', 'Description (optional)', PLAYLIST_DESCRIPTION_MAX);
+    if (text != null && text !== (playlist.description ?? '')) await setPlaylistDescription(playlist.id, text).catch((e) => musicToast(errorMessage(e)));
+  };
+  const changeCover = async (image: Blob | null) => {
+    setBusy(true);
+    try {
+      await setPlaylistCover(playlist.id, image ? await coverBytes(image) : null);
+    } catch (e) {
+      musicToast(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
   };
   const remove = async () => {
     if (!(await askConfirm(`Delete “${playlist.name}”?`, 'The songs stay in your library.', 'Delete'))) return;
@@ -636,6 +661,8 @@ function PlaylistPage({ library, id, phone }: { library: Library; id: number; ph
       <DetailHeader
         mosaic={playlistArt(byId, playlist)}
         title={playlist.name}
+        description={playlist.description}
+        onCover={editing && !busy ? () => picker.current?.click() : undefined}
         meta={`${tracks.length} song${tracks.length === 1 ? '' : 's'}${duration ? ` · ${formatTotal(duration)}` : ''}`}
         ids={playlist.trackIds.filter((t) => byId.has(t))}
         phone={phone}
@@ -654,6 +681,33 @@ function PlaylistPage({ library, id, phone }: { library: Library; id: number; ph
           </>
         }
       />
+      <input
+        ref={picker}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        className="hidden"
+        data-testid="playlist-cover-file"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void changeCover(file);
+        }}
+      />
+      {editing && (
+        <div className={`mb-5 flex flex-wrap gap-3 ${phone ? 'justify-center' : ''}`}>
+          <button type="button" disabled={busy} onClick={() => picker.current?.click()} className={`${btn} disabled:opacity-40`}>
+            <ImagePlus className="h-4 w-4" /> Choose Cover
+          </button>
+          {playlist.customCover && (
+            <button type="button" disabled={busy} onClick={() => void changeCover(null)} className={`${btn} disabled:opacity-40`}>
+              <RotateCcw className="h-4 w-4" /> Default Cover
+            </button>
+          )}
+          <button type="button" onClick={() => void describe()} className={btn}>
+            <AlignLeft className="h-4 w-4" /> {playlist.description ? 'Edit Description' : 'Add Description'}
+          </button>
+        </div>
+      )}
       {!tracks.length && <p className="py-10 text-center text-white/50">Add songs from any song’s “…” menu.</p>}
       {editing ? (
         <div className="divide-y divide-white/[0.07]">

@@ -142,7 +142,8 @@ const profileId = () => {
   return p.id;
 };
 
-function localApi(artDir: string): MusicApi {
+/** The desktop app's `MusicApi` (exported for tests). */
+export function localApi(artDir: string): MusicApi {
   const sep = artDir.includes('\\') ? '\\' : '/';
   return {
     library: () => mdb.loadMusic(profileId()),
@@ -166,12 +167,23 @@ function localApi(artDir: string): MusicApi {
     addToPlaylist: async (id, ids) => {
       await mdb.addToPlaylist(profileId(), id, ids);
     },
+    setPlaylistDescription: (id, text) => mdb.setPlaylistDescription(profileId(), id, text),
+    setPlaylistCover: async (id, image) => mdb.setPlaylistCover(profileId(), id, image ? await storeCover(image) : null),
+    importPlaylistCover: async (id, url) => {
+      const who = profileId();
+      if ((await mdb.playlistImportCoverUrl(who, id)) === url) return null;
+      const art = await invoke<string>('music_cover_download', { url });
+      return mdb.setPlaylistImportCover(who, id, art, url);
+    },
     setPinned: async (kind, id, value) => {
       if (!(await mdb.setPinned(profileId(), kind, id, value))) throw new Error(kind === 'album' ? 'This album is no longer in your library' : 'This playlist was deleted');
     },
     artUrl: (art) => (art ? convertFileSrc(`${artDir}${sep}${art}`) : null),
   };
 }
+
+/** Keeps a picture in the music-art folder (so it shows offline too); returns its cached name. */
+export const storeCover = (image: Uint8Array) => invoke<string>('music_cover_store', { data: Array.from(image) });
 
 let started = false;
 

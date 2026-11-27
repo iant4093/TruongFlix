@@ -65,6 +65,15 @@ export interface MusicPlaylist {
   name: string;
   trackIds: number[];
   updatedAt: number;
+  /** Shown under the name ('' when none). Missing from libraries made before descriptions existed. */
+  description?: string;
+  /**
+   * Cached cover name: the picture the user picked, else the imported playlist's artwork. None: a
+   * mosaic of its songs' covers.
+   */
+  cover?: string | null;
+  /** `cover` is the user's own picture (taking it off goes back to the imported artwork or the mosaic). */
+  customCover?: boolean;
 }
 
 export type MusicPinKind = 'album' | 'playlist';

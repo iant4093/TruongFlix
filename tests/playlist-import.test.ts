@@ -19,9 +19,10 @@ vi.mock('../src/services/musicdb', () => ({ musicFileIndex: async () => scan.fil
 vi.mock('../src/music/actions', () => ({
   createPlaylist: vi.fn(async (name: string, trackIds: number[]) => ({ id: 77, name, trackIds, updatedAt: 0 })),
   setPlaylistTracks: vi.fn(async () => {}),
+  importPlaylistCover: vi.fn(async () => {}),
 }));
 
-import { createPlaylist, setPlaylistTracks } from '../src/music/actions';
+import { createPlaylist, importPlaylistCover, setPlaylistTracks } from '../src/music/actions';
 import { useMusicPlayer } from '../src/music/player';
 import type { MusicTrack } from '../src/music/types';
 import { useMusicDownloads } from '../src/services/musicDownloads';
@@ -47,6 +48,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockReset();
   vi.mocked(createPlaylist).mockClear();
   vi.mocked(setPlaylistTracks).mockClear();
+  vi.mocked(importPlaylistCover).mockReset();
   useLibraryStore.setState(useLibraryStore.getInitialState(), true);
   useMusicDownloads.setState({ status: { state: 'offline', username: '', message: '' }, jobs: {} });
   usePlaylistImports.setState({ imports: {}, order: [] });
@@ -427,6 +429,46 @@ it('another playlist that only shares a name isn’t overwritten', async () => {
   emit('slsk-job', songJob(requests[0], { state: 'done', path: 'C:/Music/Kali Uchis/Singles/Moonlight.flac' }));
   await vi.waitFor(() => expect(createPlaylist).toHaveBeenCalledWith('Pasted songs', [12]));
   expect(setPlaylistTracks).not.toHaveBeenCalled();
+  // A pasted list has no artwork: the playlist keeps its mosaic.
+  expect(importPlaylistCover).not.toHaveBeenCalled();
+});
+
+it('the source playlist’s artwork becomes the cover of the playlist an import makes, and of the one importing it again updates', async () => {
+  const requests = songBackend((request) => songJob(request, {}));
+  const cover = 'https://i.scdn.co/image/ab67706c0000da84';
+  const id = addImport({ source: 'spotify', id: 'sp1', name: 'Road Trip', owner: null, cover, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+  await startImport(id);
+  await vi.waitFor(() => expect(requests).toHaveLength(1));
+  scan.files = new Map([['C:\\Music\\Kali Uchis\\Singles\\Moonlight.flac', { id: 12, mtime: 0, size: 1 }]]);
+  emit('slsk-job', songJob(requests[0], { state: 'done', path: 'C:/Music/Kali Uchis/Singles/Moonlight.flac' }));
+  await vi.waitFor(() => expect(importPlaylistCover).toHaveBeenCalledWith(77, cover));
+  expect(createPlaylist).toHaveBeenCalledWith('Road Trip', [12]);
+  // Saved once the playlist exists.
+  expect(vi.mocked(createPlaylist).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(importPlaylistCover).mock.invocationCallOrder[0]);
+
+  // The same playlist imported again (new artwork since): its playlist is updated, cover included.
+  useMusicPlayer.setState((s) => ({ library: { ...s.library!, playlists: [{ id: 77, name: 'Road Trip', trackIds: [12], updatedAt: 0 }] } }));
+  vi.mocked(importPlaylistCover).mockClear();
+  const again = addImport({ source: 'spotify', id: 'sp1', name: 'Road Trip', owner: null, cover: `${cover}-new`, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+  useMusicPlayer.setState((s) => ({ library: { ...s.library!, tracks: [{ id: 12, title: 'Moonlight', artist: 'Kali Uchis', albumArtist: 'Kali Uchis' } as MusicTrack] } }));
+  await startImport(again);
+  await vi.waitFor(() => expect(setPlaylistTracks).toHaveBeenCalledWith(77, [12]));
+  await vi.waitFor(() => expect(importPlaylistCover).toHaveBeenCalledWith(77, `${cover}-new`));
+  expect(createPlaylist).toHaveBeenCalledTimes(1);
+});
+
+it('artwork that can’t be saved doesn’t stop the playlist being made', async () => {
+  const requests = songBackend((request) => songJob(request, {}));
+  vi.mocked(importPlaylistCover).mockRejectedValue(new Error('Artwork unavailable'));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const id = addImport({ source: 'apple', id: 'pl.1', name: 'Chill', owner: null, cover: 'https://is1-ssl.mzstatic.com/a/600x600SC.jpg', total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+  await startImport(id);
+  await vi.waitFor(() => expect(requests).toHaveLength(1));
+  scan.files = new Map([['C:\\Music\\Kali Uchis\\Singles\\Moonlight.flac', { id: 12, mtime: 0, size: 1 }]]);
+  emit('slsk-job', songJob(requests[0], { state: 'done', path: 'C:/Music/Kali Uchis/Singles/Moonlight.flac' }));
+  await vi.waitFor(() => expect(useLibraryStore.getState().toasts.map((t) => t.message)).toEqual(['Chill is in your music library']));
+  expect(usePlaylistImports.getState().imports[id].playlistId).toBe(77);
+  warn.mockRestore();
 });
 
 it('while Soulseek pauses the account, sign-ins wait longer each time, and the import says why', async () => {

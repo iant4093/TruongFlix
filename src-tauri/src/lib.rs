@@ -190,6 +190,8 @@ pub fn run() {
             music::music_scan,
             music::music_art_dir,
             music::music_lyrics_fetch,
+            music::music_cover_download,
+            music::music_cover_store,
             vlc::detect_vlc,
             vlc::install_vlc,
             vlc::launch_vlc,

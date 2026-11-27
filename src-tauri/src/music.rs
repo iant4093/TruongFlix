@@ -415,6 +415,88 @@ pub fn music_art_dir(app: AppHandle) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Playlist covers
+// ---------------------------------------------------------------------------
+
+/// Largest playlist cover kept (imported artwork, or a picture the user picked).
+const MAX_PLAYLIST_COVER_BYTES: usize = 8 * 1024 * 1024;
+
+/// Keeps an image in the music-art folder (next to the songs' covers, so it shows offline and the
+/// media server serves it to the browser app). Returns its file name.
+fn store_playlist_cover(dir: PathBuf, data: &[u8]) -> Result<String, String> {
+    if data.len() > MAX_PLAYLIST_COVER_BYTES {
+        return Err("This picture is too big".into());
+    }
+    if image_ext(data, None).is_none() {
+        return Err("Pick a JPEG, PNG, WebP or GIF picture".into());
+    }
+    ArtCache::new(dir).store(data, None).ok_or_else(|| "Couldn’t save the picture".to_string())
+}
+
+/// Artwork a playlist reader returned: a public https address (never this computer or the local
+/// network).
+fn cover_url_ok(url: &reqwest::Url) -> bool {
+    use std::net::IpAddr;
+    if url.scheme() != "https" || url.port().is_some() || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    let Some(host) = url.host_str() else { return false };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    // IPv6 addresses (written in brackets) aren't used by any of the readers' image hosts.
+    if host.starts_with('[') {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return match ip {
+            IpAddr::V4(v) => !(v.is_loopback() || v.is_unspecified() || v.is_private() || v.is_link_local() || v.is_broadcast() || (v.octets()[0] == 100 && (64..128).contains(&v.octets()[1]))),
+            IpAddr::V6(_) => false,
+        };
+    }
+    host.contains('.') && !["localhost", "local", "internal", "lan", "home", "ts.net"].iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+}
+
+/// Downloads a playlist's artwork (from its Spotify, Apple Music or YouTube page) into the
+/// music-art folder. Returns the cached file name.
+#[tauri::command]
+pub async fn music_cover_download(app: AppHandle, url: String) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "Bad artwork address".to_string())?;
+    if !cover_url_ok(&parsed) {
+        return Err("Bad artwork address".into());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() < 5 && cover_url_ok(attempt.url()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut response = client.get(parsed).send().await.map_err(|_| "Artwork unavailable".to_string())?;
+    if !response.status().is_success() {
+        return Err("Artwork unavailable".into());
+    }
+    let mut data = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "Artwork unavailable".to_string())? {
+        data.extend_from_slice(&chunk);
+        if data.len() > MAX_PLAYLIST_COVER_BYTES {
+            return Err("Artwork too big".into());
+        }
+    }
+    let dir = art_dir(&app);
+    tauri::async_runtime::spawn_blocking(move || store_playlist_cover(dir, &data)).await.map_err(|e| e.to_string())?
+}
+
+/// Keeps a picture the user picked as a playlist's cover. Returns the cached file name.
+#[tauri::command]
+pub async fn music_cover_store(app: AppHandle, data: Vec<u8>) -> Result<String, String> {
+    let dir = art_dir(&app);
+    tauri::async_runtime::spawn_blocking(move || store_playlist_cover(dir, &data)).await.map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
 // Online lyrics: Kugou, NetEase Cloud Music and LRCLIB
 // ---------------------------------------------------------------------------
 
@@ -1101,6 +1183,44 @@ mod tests {
         .unwrap();
         assert_eq!(kugou_pick(&list, "Taylor Swift", "Anti-Hero", 200.6).unwrap()["id"], "3");
         assert!(kugou_pick(&list, "Taylor Swift", "Anti-Hero", 230.0).is_none());
+    }
+
+    #[test]
+    fn playlist_covers_are_kept_as_images_only() {
+        let dir = std::env::temp_dir().join(format!("tf-playlist-cover-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+        let name = store_playlist_cover(dir.clone(), &jpeg).unwrap();
+        assert!(valid_art_name(&name) && name.ends_with(".jpg"));
+        assert_eq!(fs::read(dir.join(&name)).unwrap(), jpeg);
+        // The same picture again is the same file.
+        assert_eq!(store_playlist_cover(dir.clone(), &jpeg).unwrap(), name);
+        assert!(store_playlist_cover(dir.clone(), b"<html>not a picture</html>").is_err());
+        assert!(store_playlist_cover(dir.clone(), &vec![0xFF; MAX_PLAYLIST_COVER_BYTES + 1]).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn playlist_artwork_comes_only_from_public_https_addresses() {
+        let ok = |u: &str| cover_url_ok(&reqwest::Url::parse(u).unwrap());
+        assert!(ok("https://i.scdn.co/image/ab67706c0000da84"));
+        assert!(ok("https://is1-ssl.mzstatic.com/image/thumb/a/600x600SC.jpg"));
+        assert!(ok("https://i.ytimg.com/vi/abc/hqdefault.jpg"));
+        for bad in [
+            "http://i.scdn.co/image/a",
+            "https://localhost/a.jpg",
+            "https://127.0.0.1/a.jpg",
+            "https://192.168.1.4/a.jpg",
+            "https://10.0.0.1/a.jpg",
+            "https://100.101.1.1/a.jpg",
+            "https://[::1]/a.jpg",
+            "https://nas.local/a.jpg",
+            "https://i.scdn.co:8443/a.jpg",
+            "https://user:pw@i.scdn.co/a.jpg",
+            "file:///C:/a.jpg",
+        ] {
+            assert!(!ok(bad), "{bad}");
+        }
     }
 }
 

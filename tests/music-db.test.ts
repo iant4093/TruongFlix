@@ -273,3 +273,42 @@ describe('plays for Wrapped', () => {
     expect(cols).toEqual(['profile_id', 'track_id', 'played_at', 'seconds']);
   });
 });
+
+describe('playlist descriptions and covers', () => {
+  it('adds the columns to a playlists table made before they existed; its playlists still load', async () => {
+    conn.raw.exec(`CREATE TABLE music_playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+      INSERT INTO music_playlists (profile_id, name, created_at, updated_at) VALUES (1, 'Old Mix', 1, 5);`);
+    const t = await seed();
+    await mdb.setPlaylistTracks(1, 1, [t.Song.id, t.Intro.id]);
+    const cols = (conn.raw.prepare('PRAGMA table_info(music_playlists)').all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toEqual(['id', 'profile_id', 'name', 'created_at', 'updated_at', 'description', 'cover', 'import_cover', 'import_cover_url']);
+    expect((await mdb.loadMusic(1)).playlists).toEqual([expect.objectContaining({ id: 1, name: 'Old Mix', trackIds: [t.Song.id, t.Intro.id], description: '', cover: null, customCover: false })]);
+  });
+
+  it('keeps a short one-paragraph description, or none', async () => {
+    const p = await mdb.createPlaylist(1, 'Mix', [], 10);
+    expect(await mdb.setPlaylistDescription(1, p.id, '  Late night\n\n drives  ', 20)).toBe('Late night drives');
+    expect(await mdb.setPlaylistDescription(1, p.id, 'x'.repeat(500), 30)).toHaveLength(mdb.PLAYLIST_DESCRIPTION_MAX);
+    expect(await mdb.setPlaylistDescription(1, p.id, '   ', 40)).toBe('');
+    expect((await mdb.listPlaylists(1))[0]).toMatchObject({ description: '', updatedAt: 40 });
+    await expect(mdb.setPlaylistDescription(2, p.id, 'Not mine')).rejects.toBeInstanceOf(mdb.PlaylistNotFound);
+  });
+
+  it('shows the user’s own cover over the imported artwork, and the artwork again once theirs is taken off', async () => {
+    const p = await mdb.createPlaylist(1, 'Mix', [], 10);
+    const imported = `${'a'.repeat(32)}.jpg`;
+    const mine = `${'b'.repeat(32)}.png`;
+    expect(await mdb.playlistImportCoverUrl(1, p.id)).toBeNull();
+    expect(await mdb.setPlaylistImportCover(1, p.id, imported, 'https://i.scdn.co/image/a')).toEqual({ cover: imported, customCover: false });
+    expect(await mdb.playlistImportCoverUrl(1, p.id)).toBe('https://i.scdn.co/image/a');
+    // Saving artwork from an import doesn't move the playlist to the top.
+    expect((await mdb.listPlaylists(1))[0].updatedAt).toBe(10);
+    expect(await mdb.setPlaylistCover(1, p.id, mine)).toEqual({ cover: mine, customCover: true });
+    expect(await mdb.setPlaylistImportCover(1, p.id, `${'c'.repeat(32)}.jpg`, 'https://i.scdn.co/image/c')).toEqual({ cover: mine, customCover: true });
+    expect(await mdb.setPlaylistCover(1, p.id, null)).toEqual({ cover: `${'c'.repeat(32)}.jpg`, customCover: false });
+    await expect(mdb.setPlaylistCover(1, p.id, '../../secrets.txt')).rejects.toThrow('Bad cover');
+    await expect(mdb.setPlaylistCover(2, p.id, mine)).rejects.toBeInstanceOf(mdb.PlaylistNotFound);
+    const plain = await mdb.createPlaylist(1, 'Plain');
+    expect(await mdb.setPlaylistCover(1, plain.id, null)).toEqual({ cover: null, customCover: false });
+  });
+});

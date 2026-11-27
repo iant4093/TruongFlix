@@ -1,6 +1,6 @@
 import type Database from '@tauri-apps/plugin-sql';
 import { getDb } from './db';
-import { assembleLibrary } from '../music/library';
+import { assembleLibrary, PLAYLIST_DESCRIPTION_MAX } from '../music/library';
 import { albumFolder, albumKey, guessFromPath, nameKey, primaryArtist, resolveTags, settleAlbumArtist } from '../music/match';
 import type { MusicLibrary, MusicPin, MusicPinKind, MusicPlaylist, MusicTrack } from '../music/types';
 
@@ -100,6 +100,15 @@ const MUSIC_ADDED_COLUMNS: Record<string, [string, string][]> = {
   // How long the play was actually listened to (set when the song is left). Older plays and plays
   // cut short by quitting have none; Wrapped counts those as the song's length.
   music_plays: [['seconds', 'REAL']],
+  // A short description, the cover the user picked, and the artwork of the playlist it was imported
+  // from (with the address it came from, so importing again doesn't fetch the same picture again).
+  // Covers are cached cover names (music-art folder). Older playlists have none: a mosaic, as before.
+  music_playlists: [
+    ['description', 'TEXT'],
+    ['cover', 'TEXT'],
+    ['import_cover', 'TEXT'],
+    ['import_cover_url', 'TEXT'],
+  ],
 };
 
 let ready: Promise<Database> | null = null;
@@ -575,12 +584,21 @@ export class PlaylistNotFound extends Error {
 }
 
 export const PLAYLIST_NAME_MAX = 120;
+export { PLAYLIST_DESCRIPTION_MAX };
 export const PLAYLIST_TRACKS_MAX = 5000;
 
 export function cleanPlaylistName(name: unknown): string {
   const s = String(name ?? '').replace(/\s+/g, ' ').trim().slice(0, PLAYLIST_NAME_MAX);
   return s || 'New Playlist';
 }
+
+/** One short paragraph (line breaks become spaces), capped; '' for none. */
+export function cleanPlaylistDescription(text: unknown): string {
+  return [...String(text ?? '').replace(/\s+/g, ' ').trim()].slice(0, PLAYLIST_DESCRIPTION_MAX).join('').trim();
+}
+
+/** A cached cover name as the Rust side makes them (32 hex digits and an image extension). */
+export const isArtName = (name: unknown): name is string => typeof name === 'string' && /^[0-9a-f]{32}\.(jpg|png|webp|gif)$/.test(name);
 
 /** Whole-number ids only, capped. */
 export function cleanTrackIds(ids: unknown): number[] {
@@ -590,7 +608,7 @@ export function cleanTrackIds(ids: unknown): number[] {
 
 export async function listPlaylists(profileId: number): Promise<MusicPlaylist[]> {
   const db = await musicDb();
-  const lists = await db.select<{ id: number; name: string; updated_at: number }[]>('SELECT id, name, updated_at FROM music_playlists WHERE profile_id = $1 ORDER BY updated_at DESC', [profileId]);
+  const lists = await db.select<PlaylistRow[]>('SELECT id, name, updated_at, description, cover, import_cover FROM music_playlists WHERE profile_id = $1 ORDER BY updated_at DESC', [profileId]);
   if (!lists.length) return [];
   const entries = await db.select<{ playlist_id: number; track_id: number }[]>(
     `SELECT pt.playlist_id, pt.track_id FROM music_playlist_tracks pt JOIN music_playlists p ON p.id = pt.playlist_id
@@ -599,13 +617,37 @@ export async function listPlaylists(profileId: number): Promise<MusicPlaylist[]>
   );
   const byList = new Map<number, number[]>();
   for (const e of entries) byList.set(e.playlist_id, [...(byList.get(e.playlist_id) ?? []), e.track_id]);
-  return lists.map((l) => ({ id: l.id, name: l.name, updatedAt: l.updated_at, trackIds: byList.get(l.id) ?? [] }));
+  return lists.map((l) => ({ id: l.id, name: l.name, updatedAt: l.updated_at, trackIds: byList.get(l.id) ?? [], ...playlistLook(l) }));
 }
+
+interface PlaylistRow {
+  id: number;
+  name: string;
+  updated_at: number;
+  description: string | null;
+  cover: string | null;
+  import_cover: string | null;
+}
+
+/** The description and the cover shown: the user's own picture, else the imported artwork. */
+const playlistLook = (r: Pick<PlaylistRow, 'description' | 'cover' | 'import_cover'>) => ({
+  description: r.description ?? '',
+  cover: r.cover ?? r.import_cover ?? null,
+  customCover: !!r.cover,
+});
 
 async function ownPlaylist(db: Database, profileId: number, id: number) {
   if (!Number.isInteger(id)) throw new PlaylistNotFound();
   const rows = await db.select<{ id: number }[]>('SELECT id FROM music_playlists WHERE id = $1 AND profile_id = $2', [id, profileId]);
   if (!rows.length) throw new PlaylistNotFound();
+}
+
+export async function hasPlaylist(profileId: number, id: number): Promise<boolean> {
+  const db = await musicDb();
+  return ownPlaylist(db, profileId, id).then(
+    () => true,
+    () => false,
+  );
 }
 
 /** Keeps only ids of songs that exist, in order. */
@@ -633,13 +675,60 @@ export async function createPlaylist(profileId: number, name: unknown, trackIds:
   const id = Number(result.lastInsertId);
   const ids = await existingIds(db, cleanTrackIds(trackIds));
   await writeEntries(db, id, ids, 0);
-  return { id, name: clean, trackIds: ids, updatedAt: now };
+  return { id, name: clean, trackIds: ids, updatedAt: now, description: '', cover: null, customCover: false };
 }
 
 export async function renamePlaylist(profileId: number, id: number, name: unknown, now = Date.now()) {
   const db = await musicDb();
   await ownPlaylist(db, profileId, id);
   await db.execute('UPDATE music_playlists SET name = $2, updated_at = $3 WHERE id = $1', [id, cleanPlaylistName(name), now]);
+}
+
+/** Sets the description ('' takes it off). Returns what was kept. */
+export async function setPlaylistDescription(profileId: number, id: number, text: unknown, now = Date.now()) {
+  const db = await musicDb();
+  await ownPlaylist(db, profileId, id);
+  const description = cleanPlaylistDescription(text);
+  await db.execute('UPDATE music_playlists SET description = $2, updated_at = $3 WHERE id = $1', [id, description || null, now]);
+  return description;
+}
+
+async function lookOf(db: Database, id: number) {
+  const [row] = await db.select<Pick<PlaylistRow, 'description' | 'cover' | 'import_cover'>[]>('SELECT description, cover, import_cover FROM music_playlists WHERE id = $1', [id]);
+  const { cover, customCover } = playlistLook(row);
+  return { cover, customCover };
+}
+
+/**
+ * Sets the user's own cover (a cached cover name), or takes it off (null): the playlist then shows
+ * its imported artwork again, or the mosaic. Returns the cover now shown.
+ */
+export async function setPlaylistCover(profileId: number, id: number, art: string | null, now = Date.now()) {
+  if (art != null && !isArtName(art)) throw new Error('Bad cover');
+  const db = await musicDb();
+  await ownPlaylist(db, profileId, id);
+  await db.execute('UPDATE music_playlists SET cover = $2, updated_at = $3 WHERE id = $1', [id, art, now]);
+  return lookOf(db, id);
+}
+
+/** The address of the artwork a playlist was imported with (null when none). */
+export async function playlistImportCoverUrl(profileId: number, id: number): Promise<string | null> {
+  const db = await musicDb();
+  await ownPlaylist(db, profileId, id);
+  const [row] = await db.select<{ import_cover_url: string | null; import_cover: string | null }[]>('SELECT import_cover_url, import_cover FROM music_playlists WHERE id = $1', [id]);
+  return row.import_cover ? row.import_cover_url : null;
+}
+
+/**
+ * Keeps the artwork of the playlist this one was imported from. A cover the user picked stays
+ * shown (the artwork is there again if they take theirs off). Returns the cover now shown.
+ */
+export async function setPlaylistImportCover(profileId: number, id: number, art: string, url: string) {
+  if (!isArtName(art)) throw new Error('Bad cover');
+  const db = await musicDb();
+  await ownPlaylist(db, profileId, id);
+  await db.execute('UPDATE music_playlists SET import_cover = $2, import_cover_url = $3 WHERE id = $1', [id, art, url]);
+  return lookOf(db, id);
 }
 
 export async function deletePlaylist(profileId: number, id: number) {

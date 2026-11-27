@@ -51,6 +51,39 @@ export async function renamePlaylist(id: number, name: string) {
   await api().renamePlaylist(id, name);
 }
 
+/** Sets the description shown under the name ('' takes it off); put back if saving fails. */
+export async function setPlaylistDescription(id: number, description: string) {
+  const before = useMusicPlayer.getState().library?.playlists.find((p) => p.id === id);
+  setPlaylists((list) => list.map((p) => (p.id === id ? touch(p, { description: description.replace(/\s+/g, ' ').trim() }) : p)));
+  try {
+    const kept = await api().setPlaylistDescription(id, description);
+    setPlaylists((list) => list.map((p) => (p.id === id ? { ...p, description: kept } : p)));
+  } catch (e) {
+    if (before) setPlaylists((list) => list.map((p) => (p.id === id ? { ...p, description: before.description ?? '' } : p)));
+    throw e;
+  }
+}
+
+/**
+ * Sets the cover to a picture the user picked (its bytes), or `null` to take theirs off: the
+ * playlist then shows the artwork it was imported with, or the mosaic of its songs' covers.
+ */
+export async function setPlaylistCover(id: number, image: Uint8Array | null) {
+  const look = await api().setPlaylistCover(id, image);
+  setPlaylists((list) => list.map((p) => (p.id === id ? touch(p, look) : p)));
+}
+
+/**
+ * Keeps the artwork of the playlist an import came from (desktop only: imports run there). A
+ * cover the user picked stays shown.
+ */
+export async function importPlaylistCover(id: number, url: string | null | undefined) {
+  const a = useMusicPlayer.getState().api;
+  if (!url || !a?.importPlaylistCover) return;
+  const look = await a.importPlaylistCover(id, url);
+  if (look) setPlaylists((list) => list.map((p) => (p.id === id ? { ...p, ...look } : p)));
+}
+
 export async function deletePlaylist(id: number) {
   setPlaylists((list) => list.filter((p) => p.id !== id));
   setPins((pins) => pins.filter((p) => !(p.kind === 'playlist' && p.id === id)));

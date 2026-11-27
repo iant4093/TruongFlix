@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
 import { useLibraryStore } from '../store/useLibraryStore';
-import { createPlaylist, setPlaylistTracks } from '../music/actions';
+import { createPlaylist, importPlaylistCover, setPlaylistTracks } from '../music/actions';
 import { useMusicPlayer } from '../music/player';
 import type { MusicTrack } from '../music/types';
 import type { MusicQuality } from '../types/media';
@@ -920,13 +920,16 @@ async function finish(id: string) {
       (o.source === now.source && !!o.sourceId && o.sourceId === now.sourceId && now.source !== 'list') || (!!o.partial && now.source === 'list' && o.name === now.name);
     const earlier = Object.values(usePlaylistImports.getState().imports).find((o) => o.id !== id && o.playlistId != null && playlists.some((x) => x.id === o.playlistId) && samePlaylist(o))?.playlistId;
     const target = now.playlistId != null && playlists.some((x) => x.id === now.playlistId) ? now.playlistId : (earlier ?? null);
+    let playlistId: number | null = target;
     if (target != null) {
       await setPlaylistTracks(target, ids);
-      patchImport(id, () => ({ playlistId: target }));
     } else {
-      const made = await createPlaylist(now.name, ids);
-      patchImport(id, () => ({ playlistId: made?.id ?? null }));
+      playlistId = (await createPlaylist(now.name, ids))?.id ?? null;
     }
+    patchImport(id, () => ({ playlistId }));
+    // The source playlist's artwork becomes its cover (kept on this computer, so it shows offline
+    // and after the address stops working). A cover the user picked stays; no artwork isn't fatal.
+    if (playlistId != null && now.cover) await importPlaylistCover(playlistId, now.cover).catch((e) => console.warn('[playlist import] artwork not saved', e));
     finishedWith.set(id, settled);
     const missing = now.songs.filter((s) => s.state === 'failed' || s.state === 'cancelled').length;
     useLibraryStore.getState().toast(`${now.name} is in your music library${missing ? ` (${missing} song${missing === 1 ? '' : 's'} not found)` : ''}`, 'success');

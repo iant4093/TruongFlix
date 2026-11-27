@@ -121,8 +121,12 @@ export function searchMusic(lib: MusicLibrary, query: string, limit = 50): Music
   };
 }
 
-/** Up to four distinct covers for a playlist's mosaic. */
+/** The longest playlist description kept. */
+export const PLAYLIST_DESCRIPTION_MAX = 300;
+
+/** The playlist's own cover (picked, or imported with it), else up to four distinct song covers for its mosaic. */
 export function playlistArt(byId: Map<number, MusicTrack>, playlist: MusicPlaylist): string[] {
+  if (playlist.cover) return [playlist.cover];
   const out: string[] = [];
   for (const id of playlist.trackIds) {
     const art = byId.get(id)?.art;

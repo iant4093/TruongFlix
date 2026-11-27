@@ -1,7 +1,8 @@
 import type { Profile } from '../types/media';
 import { ApiError, rateLimit, type Caller } from './remotecontrol';
 import * as mdb from './musicdb';
-import { lyricsFor, registerMusicStream, StreamRing } from './music';
+import { lyricsFor, registerMusicStream, storeCover, StreamRing } from './music';
+import { fromBase64 } from '../music/api';
 import { streamUrl } from './streaming';
 
 /**
@@ -77,6 +78,28 @@ export async function musicRoute(caller: Caller, profile: Profile, method: strin
       return { trackIds: await mdb.setPlaylistTracks(profile.id, id(body.id), body.trackIds).catch(notFound) };
     case '/music/playlists/add':
       return { trackIds: await mdb.addToPlaylist(profile.id, id(body.id), body.trackIds).catch(notFound) };
+    case '/music/playlists/description':
+      return { description: await mdb.setPlaylistDescription(profile.id, id(body.id), body.description).catch(notFound) };
+    case '/music/playlists/cover': {
+      rateLimit(caller, 'music-cover', 20, 60_000);
+      const playlist = id(body.id);
+      if (body.image != null && typeof body.image !== 'string') throw new ApiError(400, 'Bad request');
+      let art: string | null = null;
+      if (typeof body.image === 'string') {
+        let bytes: Uint8Array;
+        try {
+          bytes = fromBase64(body.image);
+        } catch {
+          throw new ApiError(400, 'Bad request');
+        }
+        // Checked before the picture is kept, so another profile's playlist gets no file saved.
+        if (!(await mdb.hasPlaylist(profile.id, playlist))) throw new ApiError(404, 'Playlist not found');
+        art = await storeCover(bytes).catch((e) => {
+          throw new ApiError(400, e instanceof Error ? e.message : String(e));
+        });
+      }
+      return await mdb.setPlaylistCover(profile.id, playlist, art).catch(notFound);
+    }
     case '/music/pin':
       rateLimit(caller, 'music-pin', 60, 60_000);
       if (!mdb.isPinKind(body.kind)) throw new ApiError(400, 'Bad request');

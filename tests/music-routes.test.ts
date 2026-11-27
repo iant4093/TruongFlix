@@ -124,6 +124,37 @@ describe('/api/music', () => {
     expect(((await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary).playlists).toEqual([]);
   });
 
+  it('sets a playlist’s description and cover, for this profile only', async () => {
+    const p = (await post('/music/playlists/create', { profile: 1, name: 'Mix' })) as import('../src/music/types').MusicPlaylist;
+    expect(p).toMatchObject({ description: '', cover: null, customCover: false });
+    expect(await post('/music/playlists/description', { profile: 1, id: p.id, description: '  Songs for\nthe   drive  ' })).toEqual({ description: 'Songs for the drive' });
+    await expect(post('/music/playlists/description', { profile: 2, id: p.id, description: 'Mine' }, B)).rejects.toMatchObject({ status: 404 });
+
+    const art = `${'c'.repeat(32)}.png`;
+    vi.mocked(core.invoke).mockImplementation(async (cmd: string) => (cmd === 'music_cover_store' ? art : null));
+    // The browser sends the picture's bytes as base64.
+    const png = [0x89, 0x50, 0x4e, 0x47, 1, 2];
+    expect(await post('/music/playlists/cover', { profile: 1, id: p.id, image: btoa(String.fromCharCode(...png)) })).toEqual({ cover: art, customCover: true });
+    expect(vi.mocked(core.invoke)).toHaveBeenCalledWith('music_cover_store', { data: png });
+    // Another profile's playlist: refused before anything is saved.
+    vi.mocked(core.invoke).mockClear();
+    await expect(post('/music/playlists/cover', { profile: 2, id: p.id, image: btoa('x') }, B)).rejects.toMatchObject({ status: 404 });
+    expect(vi.mocked(core.invoke)).not.toHaveBeenCalledWith('music_cover_store', expect.anything());
+    await expect(post('/music/playlists/cover', { profile: 1, id: p.id, image: 42 })).rejects.toMatchObject({ status: 400 });
+    vi.mocked(core.invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'music_cover_store') throw 'Pick a JPEG, PNG, WebP or GIF picture';
+      return null;
+    });
+    await expect(post('/music/playlists/cover', { profile: 1, id: p.id, image: btoa('<html>') })).rejects.toMatchObject({ status: 400 });
+
+    let lib = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;
+    expect(lib.playlists[0]).toMatchObject({ description: 'Songs for the drive', cover: art, customCover: true });
+    expect(await post('/music/playlists/cover', { profile: 1, id: p.id, image: null })).toEqual({ cover: null, customCover: false });
+    expect(await post('/music/playlists/description', { profile: 1, id: p.id, description: '' })).toEqual({ description: '' });
+    lib = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;
+    expect(lib.playlists[0]).toMatchObject({ description: '', cover: null, customCover: false });
+  });
+
   it('pins and unpins albums and playlists for this profile only', async () => {
     const lib0 = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;
     expect(lib0.pins).toEqual([]);
@@ -162,5 +193,48 @@ describe('/api/music', () => {
 
   it('rejects unknown music endpoints', async () => {
     await expect(post('/music/nope', { profile: 1 })).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('desktop playlist covers', () => {
+  const desktop = async () => {
+    const { useLibraryStore } = await import('../src/store/useLibraryStore');
+    useLibraryStore.setState({ activeProfile: adult as never });
+    return (await import('../src/services/music')).localApi('C:/cache/music-art');
+  };
+
+  it('keeps an imported playlist’s artwork on this computer, fetched once per address', async () => {
+    const api = await desktop();
+    const p = await api.createPlaylist('Road Trip', [ids['Plain MP3']]);
+    const art = `${'a'.repeat(32)}.jpg`;
+    vi.mocked(core.invoke).mockImplementation(async (cmd: string) => (cmd === 'music_cover_download' ? art : null));
+    const url = 'https://i.scdn.co/image/ab67706c';
+    expect(await api.importPlaylistCover!(p.id, url)).toEqual({ cover: art, customCover: false });
+    expect(vi.mocked(core.invoke)).toHaveBeenCalledWith('music_cover_download', { url });
+    // Importing it again with the same artwork fetches nothing.
+    vi.mocked(core.invoke).mockClear();
+    expect(await api.importPlaylistCover!(p.id, url)).toBeNull();
+    expect(vi.mocked(core.invoke)).not.toHaveBeenCalled();
+    expect((await api.library()).playlists[0]).toMatchObject({ cover: art, customCover: false });
+    expect(api.artUrl(art)).toBe('asset://C:/cache/music-art/' + art);
+  });
+
+  it('a cover the user picked stays when the playlist is imported again, and taking it off shows the artwork again', async () => {
+    const api = await desktop();
+    const p = await api.createPlaylist('Road Trip');
+    const imported = `${'a'.repeat(32)}.jpg`;
+    const newer = `${'b'.repeat(32)}.jpg`;
+    const mine = `${'d'.repeat(32)}.webp`;
+    vi.mocked(core.invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'music_cover_download') return (args as { url: string }).url.endsWith('new') ? newer : imported;
+      if (cmd === 'music_cover_store') return mine;
+      return null;
+    });
+    await api.importPlaylistCover!(p.id, 'https://i.scdn.co/image/old');
+    expect(await api.setPlaylistCover(p.id, new Uint8Array([0x52, 0x49, 0x46, 0x46]))).toEqual({ cover: mine, customCover: true });
+    expect(vi.mocked(core.invoke)).toHaveBeenCalledWith('music_cover_store', { data: [0x52, 0x49, 0x46, 0x46] });
+    // New artwork at the source: kept, but the user's own cover stays shown.
+    expect(await api.importPlaylistCover!(p.id, 'https://i.scdn.co/image/new')).toEqual({ cover: mine, customCover: true });
+    expect(await api.setPlaylistCover(p.id, null)).toEqual({ cover: newer, customCover: false });
   });
 });

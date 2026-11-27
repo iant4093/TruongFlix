@@ -1,5 +1,8 @@
 import type { MusicLibrary, MusicLyrics, MusicPinKind, MusicPlaylist, MusicStream, MusicTrack } from './types';
 
+/** The cover a playlist shows after a change (see `MusicPlaylist.cover`). */
+export type PlaylistCover = Pick<MusicPlaylist, 'cover' | 'customCover'>;
+
 /**
  * What the music screens and player need. The desktop app answers from its own database; the
  * browser app asks the PC over `/api/music/…` (see `httpMusicApi`), which runs the same code.
@@ -22,6 +25,15 @@ export interface MusicApi {
   /** Replaces the playlist's songs (add, remove and reorder all go through this). */
   setPlaylistTracks(id: number, trackIds: number[]): Promise<void>;
   addToPlaylist(id: number, trackIds: number[]): Promise<void>;
+  /** Sets the short description shown under the name ('' takes it off). Returns what was kept. */
+  setPlaylistDescription(id: number, description: string): Promise<string>;
+  /** Sets the cover to a picture (its bytes), or null to go back to the imported artwork or the mosaic. */
+  setPlaylistCover(id: number, image: Uint8Array | null): Promise<PlaylistCover>;
+  /**
+   * Desktop only (imports run there): keeps the artwork of the playlist this one was imported
+   * from. Null when it already has that artwork.
+   */
+  importPlaylistCover?(id: number, url: string): Promise<PlaylistCover | null>;
   /** Pins an album or playlist to the top of Listen Now (added at the end), or unpins it. */
   setPinned(kind: MusicPinKind, id: number, value: boolean): Promise<void>;
   /** Image URL for a cached cover name. */
@@ -52,6 +64,19 @@ export function playableCodecs(audio: Pick<HTMLAudioElement, 'canPlayType'> = ty
     .map(([codec]) => codec);
 }
 
+export function toBase64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+export function fromBase64(text: string): Uint8Array {
+  const s = atob(text);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
 export type Fetcher = <T>(path: string, init?: { method?: string; body?: unknown }) => Promise<T>;
 
 /** The browser app's client for `/api/music/…`. `who` adds the profile (and unlock key). */
@@ -72,6 +97,8 @@ export function httpMusicApi(fetcher: Fetcher, who: { id: number; key?: string }
     deletePlaylist: (id) => post<unknown>('/music/playlists/delete', { id }).then(() => undefined),
     setPlaylistTracks: (id, trackIds) => post<unknown>('/music/playlists/tracks', { id, trackIds }).then(() => undefined),
     addToPlaylist: (id, trackIds) => post<unknown>('/music/playlists/add', { id, trackIds }).then(() => undefined),
+    setPlaylistDescription: (id, description) => post<{ description: string }>('/music/playlists/description', { id, description }).then((r) => r.description),
+    setPlaylistCover: (id, image) => post<PlaylistCover>('/music/playlists/cover', { id, image: image ? toBase64(image) : null }),
     setPinned: (kind, id, value) => post<unknown>('/music/pin', { kind, id, value }).then(() => undefined),
     artUrl: (art) => (art ? `${artBase}${art}` : null),
   };

@@ -3,7 +3,7 @@
  * browser): made-up albums with generated covers, generated audio and a few lyrics (word-timed,
  * line-timed and plain). Answers the same `/music/…` routes as `services/musicroute.ts`.
  */
-import { assembleLibrary } from './library';
+import { assembleLibrary, PLAYLIST_DESCRIPTION_MAX } from './library';
 import type { MusicLyrics, MusicPin, MusicPlaylist, MusicTrack } from './types';
 
 interface AlbumSeed {
@@ -347,6 +347,17 @@ export function mockMusicRoute(method: string, path: string, query: URLSearchPar
   }
   else if (pl && path === '/music/playlists/tracks') Object.assign(pl, { trackIds: body.trackIds as number[], updatedAt: Date.now() });
   else if (pl && path === '/music/playlists/add') Object.assign(pl, { trackIds: [...pl.trackIds, ...(body.trackIds as number[])], updatedAt: Date.now() });
-  else return [404, { error: 'Not available in the preview' }];
+  else if (pl && path === '/music/playlists/description') {
+    Object.assign(pl, { description: String(body.description ?? '').replace(/\s+/g, ' ').trim().slice(0, PLAYLIST_DESCRIPTION_MAX), updatedAt: Date.now() });
+    return [200, { description: pl.description }];
+  } else if (pl && path === '/music/playlists/cover') {
+    let cover: string | null = null;
+    if (typeof body.image === 'string') {
+      cover = `mock-cover-${pl.id}-${Date.now()}`;
+      s.covers.set(cover, `data:image/jpeg;base64,${body.image}`);
+    }
+    Object.assign(pl, { cover, customCover: !!cover, updatedAt: Date.now() });
+    return [200, { cover, customCover: !!cover }];
+  } else return [404, { error: 'Not available in the preview' }];
   return [200, { ok: true }];
 }
