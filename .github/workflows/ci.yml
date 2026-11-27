@@ -116,20 +116,25 @@ jobs:
               }
               throw "Source browser did not reach the $mode visual check"
             }
-            Start-Sleep -Milliseconds 400
             $panel = Get-Content $panelReady -Raw | ConvertFrom-Json
             $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $capture = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-            $graphics = [System.Drawing.Graphics]::FromImage($capture)
-            $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-            $capture.Save("smoke/source-browser-$mode.png")
-            $panelMatches = 0
-            foreach ($fraction in 0.15, 0.5, 0.85) {
-              $pixel = $capture.GetPixel([int]($panel.left + $panel.width * $fraction), [int]($panel.top + $panel.height - 25))
-              if ([Math]::Abs([int]$pixel.R - 9) -le 12 -and [Math]::Abs([int]$pixel.G - 34) -le 12 -and [Math]::Abs([int]$pixel.B - 56) -le 12) { $panelMatches++ }
-            }
-            $main = $capture.GetPixel([int]($panel.mainLeft + 12 * $panel.scale), [int]($panel.mainTop + 24 * $panel.scale))
-            $graphics.Dispose(); $capture.Dispose()
+            # A fresh runner's WebView2 can take a few seconds to paint a new view: look again for up
+            # to 10 s before calling it missing (a view that never paints still fails).
+            $paintDeadline = [DateTime]::UtcNow.AddSeconds(10)
+            do {
+              Start-Sleep -Milliseconds 400
+              $capture = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+              $graphics = [System.Drawing.Graphics]::FromImage($capture)
+              $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+              $capture.Save("smoke/source-browser-$mode.png")
+              $panelMatches = 0
+              foreach ($fraction in 0.15, 0.5, 0.85) {
+                $pixel = $capture.GetPixel([int]($panel.left + $panel.width * $fraction), [int]($panel.top + $panel.height - 25))
+                if ([Math]::Abs([int]$pixel.R - 9) -le 12 -and [Math]::Abs([int]$pixel.G - 34) -le 12 -and [Math]::Abs([int]$pixel.B - 56) -le 12) { $panelMatches++ }
+              }
+              $main = $capture.GetPixel([int]($panel.mainLeft + 12 * $panel.scale), [int]($panel.mainTop + 24 * $panel.scale))
+              $graphics.Dispose(); $capture.Dispose()
+            } while ($panelMatches -lt 2 -and [DateTime]::UtcNow -lt $paintDeadline)
             if ($panelMatches -lt 2) { throw "The $mode source view did not render in the main window" }
             if ([Math]::Abs([int]$main.R - 51) -gt 8 -or [Math]::Abs([int]$main.G - 38) -gt 8 -or [Math]::Abs([int]$main.B - 65) -gt 8) {
               throw "The main window content disappeared while the $mode source view was visible"
