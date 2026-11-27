@@ -143,9 +143,9 @@ usePlaylistImports.subscribe((state) => {
 const API = 'https://itunes.apple.com';
 /** Songs matched and searched for at once (the app also spaces Soulseek searches out: the
  *  server drops a connection that searches too fast). */
-const SEARCHING = 3;
-/** Songs in flight at once, downloads included. */
-const ACTIVE = 16;
+const SEARCHING = 2;
+/** Songs in flight at once, downloads included (more only adds connections and splits the line). */
+const ACTIVE = 8;
 /** A song Soulseek didn't answer for waits this long before it's searched again. */
 const RETRY_AFTER = 20_000;
 /** After the connection drops, songs wait this long (while the app reconnects) before starting again. */

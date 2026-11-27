@@ -309,9 +309,9 @@ pub fn queries(artist: &str, album: &str) -> Vec<String> {
     if !artist_words.is_empty() && !album_words.is_empty() {
         out.push(artist_words.iter().chain(album_words.iter()).map(String::as_str).collect::<Vec<_>>().join(" "));
     }
-    // Short or common album names need the artist; distinctive ones can stand alone.
-    let letters: usize = album_words.iter().map(|w| w.chars().count()).sum();
-    if album_words.len() >= 2 || letters >= 6 || artist_words.is_empty() {
+    // The album alone is searched only when it's distinctive (or there's no artist to add): a
+    // short name on its own draws answers from thousands of people.
+    if album_words.len() >= 3 || artist_words.is_empty() {
         if !album_words.is_empty() {
             out.push(album_words.join(" "));
         }
@@ -477,8 +477,8 @@ pub fn song_queries(want: &WantSong) -> Vec<String> {
     if !artist.is_empty() {
         out.push(artist.iter().chain(title.iter()).cloned().collect::<Vec<_>>().join(" "));
     }
-    let letters: usize = title.iter().map(|w| w.chars().count()).sum();
-    if title.len() >= 3 || letters >= 10 || artist.is_empty() {
+    // The title alone only when there's no artist: "timeless" on its own is answered by thousands.
+    if artist.is_empty() {
         out.push(title.join(" "));
     }
     out.dedup();
@@ -486,7 +486,8 @@ pub fn song_queries(want: &WantSong) -> Vec<String> {
 }
 
 /// More to search for when a song's first searches find nothing: its other artists with its
-/// title, and its title alone (even a short one; the artist is still checked on every file).
+/// title, and its title alone when it's distinctive (three words or more; the artist is still
+/// checked on every file).
 pub fn song_fallback_queries(want: &WantSong) -> Vec<String> {
     let keep = |w: Vec<String>| w.into_iter().filter(|w| w.chars().count() > 1).collect::<Vec<_>>();
     let (title, versions) = song_words(&want.title);
@@ -504,7 +505,9 @@ pub fn song_fallback_queries(want: &WantSong) -> Vec<String> {
         .filter(|w| !w.is_empty())
         .map(|w| w.iter().chain(title.iter()).cloned().collect::<Vec<_>>().join(" "))
         .collect();
-    out.push(title.join(" "));
+    if title.len() >= 3 {
+        out.push(title.join(" "));
+    }
     out.retain(|q| !first.contains(q));
     out.dedup();
     out
@@ -645,9 +648,9 @@ mod tests {
 
     #[test]
     fn songs_are_searched_by_artist_and_title() {
-        assert_eq!(song_queries(&song("Don't Stop Me Now - Remastered 2011", "Queen", None)), ["queen don stop me now", "don stop me now"]);
+        assert_eq!(song_queries(&song("Don't Stop Me Now - Remastered 2011", "Queen", None)), ["queen don stop me now"]);
         assert_eq!(song_queries(&song("Hello", "Adele", None)), ["adele hello"]);
-        assert_eq!(song_queries(&song("Blinding Lights", "The Weeknd", None)), ["weeknd blinding lights", "blinding lights"]);
+        assert_eq!(song_queries(&song("Blinding Lights", "The Weeknd", None)), ["weeknd blinding lights"]);
         assert_eq!(song_queries(&song("Shout (Live)", "Tears for Fears", None)), ["tears for fears shout live"]);
     }
 
@@ -655,7 +658,9 @@ mod tests {
     fn songs_not_found_are_searched_more_widely() {
         let want = WantSong { title: "Timeless".into(), artists: vec!["The Weeknd".into(), "Playboi Carti".into()], album: None, length_ms: None };
         assert_eq!(song_queries(&want), ["weeknd timeless"]);
-        assert_eq!(song_fallback_queries(&want), ["playboi carti timeless", "timeless"]);
+        assert_eq!(song_fallback_queries(&want), ["playboi carti timeless"]);
+        let long = WantSong { title: "Nothing's Gonna Hurt You Baby".into(), artists: vec!["Cigarettes After Sex".into()], album: None, length_ms: None };
+        assert_eq!(song_fallback_queries(&long), ["nothing gonna hurt you baby"]);
     }
 
     #[test]
@@ -695,9 +700,11 @@ mod tests {
 
     #[test]
     fn search_words() {
-        assert_eq!(queries("Beyoncé", "Lemonade"), ["beyonce lemonade", "lemonade"]);
-        assert_eq!(queries("Radiohead", "OK Computer (Collector's Edition)"), ["radiohead ok computer", "ok computer"]);
-        assert_eq!(queries("The Weeknd", "Starboy"), ["weeknd starboy", "starboy"]);
+        assert_eq!(queries("Beyoncé", "Lemonade"), ["beyonce lemonade"]);
+        assert_eq!(queries("Radiohead", "OK Computer (Collector's Edition)"), ["radiohead ok computer"]);
+        assert_eq!(queries("The Weeknd", "Starboy"), ["weeknd starboy"]);
+        assert_eq!(queries("Frank Ocean", "Nostalgia, Ultra"), ["frank ocean nostalgia ultra"]);
+        assert_eq!(queries("Billie Eilish", "HIT ME HARD AND SOFT"), ["billie eilish hit me hard and soft", "hit me hard and soft"]);
         assert_eq!(queries("Taylor Swift", "1989"), ["taylor swift 1989"]);
         assert_eq!(queries("Various Artists", "Grand Theft Auto VI: The Album"), ["grand theft auto vi the album"]);
         assert_eq!(queries("SZA", "SOS - EP"), ["sza sos"]);

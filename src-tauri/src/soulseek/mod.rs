@@ -45,11 +45,11 @@ const QUEUE_PATIENCE: Duration = Duration::from_secs(150);
 const STALL_PATIENCE: Duration = Duration::from_secs(90);
 /// How long a song may stay queued with one person before the next copy is tried (another person
 /// usually sends it at once).
-const SONG_QUEUE_PATIENCE: Duration = Duration::from_secs(45);
+const SONG_QUEUE_PATIENCE: Duration = Duration::from_secs(30);
 /// How long a song's transfer may stall.
 const SONG_STALL_PATIENCE: Duration = Duration::from_secs(60);
 /// Searches are sent at least this far apart: Soulseek quietly drops searches that come too fast.
-const SEARCH_GAP: Duration = Duration::from_secs(2);
+const SEARCH_GAP: Duration = Duration::from_millis(2500);
 /// When a song's first searches have found nothing by now, its other artists and its title alone
 /// are searched too.
 const SONG_FALLBACK_AFTER: Duration = Duration::from_secs(5);
@@ -123,6 +123,12 @@ struct Login {
 
 static LOGIN: Mutex<Option<Login>> = Mutex::new(None);
 
+/// Connections to other people kept open at once. Every search is answered over hundreds of
+/// short connections, and the library otherwise keeps up to 512 open (a thread each): enough to
+/// overwhelm a home router and take the whole network down with it. Idle ones are closed first;
+/// a connection that's sending us a file is never closed for this.
+const MAX_PEERS: usize = 40;
+
 /// Waits between automatic reconnects after the server drops the connection.
 const RECONNECT_WAITS: [u64; 6] = [3, 6, 12, 24, 45, 60];
 
@@ -142,7 +148,10 @@ fn log_in(login: &Login) -> Result<Client, String> {
         });
         client.connect().map_err(|e| format!("Couldn’t reach Soulseek: {e}"))?;
         match client.login() {
-            Ok(true) => Ok(client),
+            Ok(true) => {
+                client.set_max_peers(MAX_PEERS);
+                Ok(client)
+            }
             Ok(false) => Err("Soulseek didn’t accept that username and password.".into()),
             Err(e) => Err(format!("Soulseek login failed: {e}")),
         }
