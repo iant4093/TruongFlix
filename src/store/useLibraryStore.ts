@@ -220,6 +220,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     audio_passthrough: false,
     audio_delays: {},
     pause_on_lock: true,
+    keep_running_in_background: false,
     omdb_api_key: '',
     network_shares: {},
     subtitles_auto: false,

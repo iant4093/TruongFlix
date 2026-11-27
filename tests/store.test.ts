@@ -28,3 +28,7 @@ it('keeps an existing title open during background reloads', async () => {
   await useLibraryStore.getState().reload();
   expect(useLibraryStore.getState().detailKey).toBe('movie-1');
 });
+
+it('starts with keeping TruongFlix running in the background turned off', () => {
+  expect(useLibraryStore.getInitialState().settings.keep_running_in_background).toBe(false);
+});

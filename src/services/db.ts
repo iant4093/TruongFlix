@@ -502,6 +502,7 @@ export async function getSettings(): Promise<Settings> {
     audio_passthrough: map.audio_passthrough === 'true',
     audio_delays: parseObject<Record<string, number>>(map.audio_delays),
     pause_on_lock: map.pause_on_lock !== 'false',
+    keep_running_in_background: map.keep_running_in_background === 'true',
     omdb_api_key: map.omdb_api_key ?? '',
     network_shares: parseObject<Record<string, ShareInfo>>(map.network_shares),
     subtitles_auto: map.subtitles_auto === 'true',

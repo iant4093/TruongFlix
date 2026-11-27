@@ -21,6 +21,15 @@ vi.mock('@tauri-apps/plugin-sql', () => ({
 
 beforeEach(() => { data.settings.clear(); data.torrents = []; });
 
+it('quits when the window closes unless keeping it running in the background is turned on', async () => {
+  expect((await db.getSettings()).keep_running_in_background).toBe(false);
+  await db.saveSetting('keep_running_in_background', true);
+  expect(data.settings.get('keep_running_in_background')).toBe('true');
+  expect((await db.getSettings()).keep_running_in_background).toBe(true);
+  await db.saveSetting('keep_running_in_background', false);
+  expect((await db.getSettings()).keep_running_in_background).toBe(false);
+});
+
 it('defaults history retention to Never and reloads the saved choice', async () => {
   expect((await db.getSettings()).torrent_history_days).toBe(0);
   await db.saveSetting('torrent_history_days', 30);

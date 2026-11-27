@@ -386,6 +386,11 @@ fn video_filter(mode: Convert, w: u32, h: u32) -> String {
 }
 static PROBE_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, StreamProbe)>>> = OnceLock::new();
 
+/// Whether browser access (the media server for phones, tablets and other computers) is on.
+pub fn browser_access_on() -> bool {
+    SHARED.get().is_some_and(|s| s.inner.lock().unwrap().web_enabled)
+}
+
 fn shared() -> Result<&'static Shared, String> {
     SHARED.get().ok_or_else(|| "The media server isn't initialised".into())
 }
