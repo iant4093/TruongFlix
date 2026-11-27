@@ -4,7 +4,7 @@
  * line-timed and plain). Answers the same `/music/…` routes as `services/musicroute.ts`.
  */
 import { assembleLibrary } from './library';
-import type { MusicLyrics, MusicPlaylist, MusicTrack } from './types';
+import type { MusicLyrics, MusicPin, MusicPlaylist, MusicTrack } from './types';
 
 interface AlbumSeed {
   title: string;
@@ -141,6 +141,7 @@ interface MockState {
   tracks: MusicTrack[];
   lyrics: Map<number, MusicLyrics>;
   playlists: MusicPlaylist[];
+  pins: MusicPin[];
   covers: Map<string, string>;
   plays: MockPlay[];
 }
@@ -199,7 +200,7 @@ function build(): MockState {
     { id: 1, name: 'Late Night Drive', trackIds: [2, 8, 20, 22, 5, 23], updatedAt: now - 3600_000 },
     { id: 2, name: 'Sunday Morning', trackIds: [12, 13, 17, 18, 15], updatedAt: now - 86400_000 },
   ];
-  return { tracks, lyrics, playlists, covers, plays: seedPlays(tracks) };
+  return { tracks, lyrics, playlists, pins: [], covers, plays: seedPlays(tracks) };
 }
 
 /** This year's listening for profile 1 ("Ian"), so Wrapped has a Music section. */
@@ -300,7 +301,7 @@ export const mockArtUrl = (art: string | null | undefined) => (art ? mock().cove
 export function mockMusicRoute(method: string, path: string, query: URLSearchParams, body: Record<string, unknown>): [number, unknown] {
   const s = mock();
   const id = Number(body.id ?? query.get('id'));
-  if (method === 'GET' && path === '/music/library') return [200, assembleLibrary(s.tracks, s.playlists)];
+  if (method === 'GET' && path === '/music/library') return [200, assembleLibrary(s.tracks, s.playlists, s.pins)];
   if (method === 'GET' && path === '/music/lyrics') return [200, s.lyrics.get(id) ?? null];
   if (method === 'POST' && path === '/music/stream') {
     const t = s.tracks.find((x) => x.id === id);
@@ -323,6 +324,15 @@ export function mockMusicRoute(method: string, path: string, query: URLSearchPar
     if (t) t.favourite = !!body.value;
     return [200, { ok: true }];
   }
+  if (method === 'POST' && path === '/music/pin') {
+    const kind = body.kind === 'album' || body.kind === 'playlist' ? body.kind : null;
+    if (!kind) return [400, { error: 'Bad request' }];
+    const others = s.pins.filter((p) => !(p.kind === kind && p.id === id));
+    if (!body.value) s.pins = others;
+    else if (!(kind === 'album' ? s.tracks.some((t) => t.albumId === id) : s.playlists.some((p) => p.id === id))) return [404, { error: 'Not found' }];
+    else if (others.length === s.pins.length) s.pins = [...s.pins, { kind, id }];
+    return [200, { ok: true }];
+  }
   if (method === 'POST' && path === '/music/playlists/create') {
     const p: MusicPlaylist = { id: Math.max(0, ...s.playlists.map((x) => x.id)) + 1, name: String(body.name ?? 'New Playlist'), trackIds: (body.trackIds as number[]) ?? [], updatedAt: Date.now() };
     s.playlists.unshift(p);
@@ -331,7 +341,10 @@ export function mockMusicRoute(method: string, path: string, query: URLSearchPar
   const pl = s.playlists.find((p) => p.id === id);
   if (path.startsWith('/music/playlists/') && !pl) return [404, { error: 'Not found' }];
   if (pl && path === '/music/playlists/rename') Object.assign(pl, { name: String(body.name), updatedAt: Date.now() });
-  else if (pl && path === '/music/playlists/delete') s.playlists = s.playlists.filter((p) => p !== pl);
+  else if (pl && path === '/music/playlists/delete') {
+    s.playlists = s.playlists.filter((p) => p !== pl);
+    s.pins = s.pins.filter((p) => !(p.kind === 'playlist' && p.id === pl.id));
+  }
   else if (pl && path === '/music/playlists/tracks') Object.assign(pl, { trackIds: body.trackIds as number[], updatedAt: Date.now() });
   else if (pl && path === '/music/playlists/add') Object.assign(pl, { trackIds: [...pl.trackIds, ...(body.trackIds as number[])], updatedAt: Date.now() });
   else return [404, { error: 'Not available in the preview' }];

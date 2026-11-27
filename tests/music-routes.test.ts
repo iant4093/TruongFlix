@@ -124,6 +124,24 @@ describe('/api/music', () => {
     expect(((await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary).playlists).toEqual([]);
   });
 
+  it('pins and unpins albums and playlists for this profile only', async () => {
+    const lib0 = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;
+    expect(lib0.pins).toEqual([]);
+    const albumId = lib0.albums[0].id;
+    const p = (await post('/music/playlists/create', { profile: 1, name: 'Mix' })) as import('../src/music/types').MusicPlaylist;
+    expect(await post('/music/pin', { profile: 1, kind: 'album', id: albumId, value: true })).toEqual({ ok: true });
+    await post('/music/pin', { profile: 1, kind: 'playlist', id: p.id, value: true });
+    const mine = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;
+    expect(mine.pins).toEqual([{ kind: 'album', id: albumId }, { kind: 'playlist', id: p.id }]);
+    const theirs = (await get('/music/library', { profile: '2' }, B)) as import('../src/music/types').MusicLibrary;
+    expect(theirs.pins).toEqual([]);
+    await expect(post('/music/pin', { profile: 2, kind: 'playlist', id: p.id, value: true }, B)).rejects.toMatchObject({ status: 404 });
+    await expect(post('/music/pin', { profile: 1, kind: 'artist', id: albumId, value: true })).rejects.toMatchObject({ status: 400 });
+    await expect(post('/music/pin', { profile: 1, kind: 'album', id: 'x', value: true })).rejects.toMatchObject({ status: 400 });
+    await post('/music/pin', { profile: 1, kind: 'album', id: albumId, value: false });
+    expect(((await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary).pins).toEqual([{ kind: 'playlist', id: p.id }]);
+  });
+
   it('records plays for Listen Now', async () => {
     await post('/music/played', { profile: 1, id: ids.Lossless });
     const lib = (await get('/music/library', { profile: '1' })) as import('../src/music/types').MusicLibrary;

@@ -1,4 +1,4 @@
-import type { MusicAlbum, MusicArtist, MusicLibrary, MusicPlaylist, MusicTrack } from './types';
+import type { MusicAlbum, MusicArtist, MusicLibrary, MusicPin, MusicPinKind, MusicPlaylist, MusicTrack } from './types';
 
 const byDiscTrack = (a: MusicTrack, b: MusicTrack) =>
   (a.discNo ?? 1) - (b.discNo ?? 1) || (a.trackNo ?? 9999) - (b.trackNo ?? 9999) || a.title.localeCompare(b.title);
@@ -8,7 +8,7 @@ export const sortKey = (s: string) => s.replace(/^the\s+/i, '').toLocaleLowerCas
 export const byName = (a: string, b: string) => sortKey(a).localeCompare(sortKey(b));
 
 /** Albums and artists from the songs (album/artist ids come from the database). */
-export function assembleLibrary(tracks: MusicTrack[], playlists: MusicPlaylist[]): MusicLibrary {
+export function assembleLibrary(tracks: MusicTrack[], playlists: MusicPlaylist[], pins: MusicPin[] = []): MusicLibrary {
   const albums = new Map<number, MusicAlbum>();
   const artists = new Map<number, MusicArtist & { albums: Set<number> }>();
   const sorted = [...tracks].sort(byDiscTrack);
@@ -58,10 +58,17 @@ export function assembleLibrary(tracks: MusicTrack[], playlists: MusicPlaylist[]
     albums: albumList,
     artists: artistList,
     playlists: [...playlists].sort((a, b) => b.updatedAt - a.updatedAt),
+    pins: [...pins],
   };
 }
 
+export type PinnedItem = { kind: 'album'; album: MusicAlbum } | { kind: 'playlist'; playlist: MusicPlaylist };
+
 export interface ListenNow {
+  /** Pinned albums and playlists, in the order they were pinned (gone ones left out). */
+  pinned: PinnedItem[];
+  /** Most recently changed first. */
+  playlists: MusicPlaylist[];
   recent: MusicAlbum[];
   top: MusicAlbum[];
   added: MusicAlbum[];
@@ -70,13 +77,26 @@ export interface ListenNow {
 
 export function listenNow(lib: MusicLibrary): ListenNow {
   const albums = lib.albums;
+  const albumById = new Map(albums.map((a) => [a.id, a]));
+  const playlistById = new Map(lib.playlists.map((p) => [p.id, p]));
+  const pinned: PinnedItem[] = [];
+  for (const pin of lib.pins ?? []) {
+    const album = pin.kind === 'album' ? albumById.get(pin.id) : undefined;
+    const playlist = pin.kind === 'playlist' ? playlistById.get(pin.id) : undefined;
+    if (album) pinned.push({ kind: 'album', album });
+    else if (playlist) pinned.push({ kind: 'playlist', playlist });
+  }
   return {
+    pinned,
+    playlists: [...lib.playlists].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 12),
     recent: albums.filter((a) => a.lastPlayed).sort((a, b) => (b.lastPlayed ?? 0) - (a.lastPlayed ?? 0)).slice(0, 12),
     top: albums.filter((a) => a.plays > 0).sort((a, b) => b.plays - a.plays || byName(a.title, b.title)).slice(0, 12),
     added: [...albums].sort((a, b) => b.addedAt - a.addedAt).slice(0, 12),
     topSongs: lib.tracks.filter((t) => t.plays > 0).sort((a, b) => b.plays - a.plays).slice(0, 10),
   };
 }
+
+export const isPinned = (lib: Pick<MusicLibrary, 'pins'> | null | undefined, kind: MusicPinKind, id: number) => !!lib?.pins?.some((p) => p.kind === kind && p.id === id);
 
 export interface MusicSearch {
   tracks: MusicTrack[];

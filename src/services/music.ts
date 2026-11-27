@@ -166,6 +166,9 @@ function localApi(artDir: string): MusicApi {
     addToPlaylist: async (id, ids) => {
       await mdb.addToPlaylist(profileId(), id, ids);
     },
+    setPinned: async (kind, id, value) => {
+      if (!(await mdb.setPinned(profileId(), kind, id, value))) throw new Error(kind === 'album' ? 'This album is no longer in your library' : 'This playlist was deleted');
+    },
     artUrl: (art) => (art ? convertFileSrc(`${artDir}${sep}${art}`) : null),
   };
 }

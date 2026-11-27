@@ -1,4 +1,4 @@
-import type { MusicLibrary, MusicLyrics, MusicPlaylist, MusicStream, MusicTrack } from './types';
+import type { MusicLibrary, MusicLyrics, MusicPinKind, MusicPlaylist, MusicStream, MusicTrack } from './types';
 
 /**
  * What the music screens and player need. The desktop app answers from its own database; the
@@ -22,6 +22,8 @@ export interface MusicApi {
   /** Replaces the playlist's songs (add, remove and reorder all go through this). */
   setPlaylistTracks(id: number, trackIds: number[]): Promise<void>;
   addToPlaylist(id: number, trackIds: number[]): Promise<void>;
+  /** Pins an album or playlist to the top of Listen Now (added at the end), or unpins it. */
+  setPinned(kind: MusicPinKind, id: number, value: boolean): Promise<void>;
   /** Image URL for a cached cover name. */
   artUrl(art: string | null | undefined): string | null;
 }
@@ -70,6 +72,7 @@ export function httpMusicApi(fetcher: Fetcher, who: { id: number; key?: string }
     deletePlaylist: (id) => post<unknown>('/music/playlists/delete', { id }).then(() => undefined),
     setPlaylistTracks: (id, trackIds) => post<unknown>('/music/playlists/tracks', { id, trackIds }).then(() => undefined),
     addToPlaylist: (id, trackIds) => post<unknown>('/music/playlists/add', { id, trackIds }).then(() => undefined),
+    setPinned: (kind, id, value) => post<unknown>('/music/pin', { kind, id, value }).then(() => undefined),
     artUrl: (art) => (art ? `${artBase}${art}` : null),
   };
 }

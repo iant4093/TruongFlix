@@ -67,11 +67,21 @@ export interface MusicPlaylist {
   updatedAt: number;
 }
 
+export type MusicPinKind = 'album' | 'playlist';
+
+/** An album or playlist pinned to the top of Listen Now (per profile). */
+export interface MusicPin {
+  kind: MusicPinKind;
+  id: number;
+}
+
 export interface MusicLibrary {
   tracks: MusicTrack[];
   albums: MusicAlbum[];
   artists: MusicArtist[];
   playlists: MusicPlaylist[];
+  /** In the order they were pinned (oldest first). Missing from libraries made before pins existed. */
+  pins?: MusicPin[];
 }
 
 export interface MusicLyrics {

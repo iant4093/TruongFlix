@@ -1,14 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import SlidingPill from '../../components/common/SlidingPill';
-import { ArrowDown, ArrowUp, ChevronLeft, Heart, ListMusic, Music2, Pencil, Play, Plus, Search, Shuffle, Trash2, X } from 'lucide-react';
-import { createPlaylist, deletePlaylist, loadMusicLibrary, moveInList, renamePlaylist, setPlaylistTracks, useMusicLoad } from '../actions';
-import { byName, formatTotal, listenNow, playlistArt, searchMusic } from '../library';
+import { ArrowDown, ArrowUp, ChevronLeft, Heart, ListMusic, Music2, Pencil, Pin, Play, Plus, Search, Shuffle, Trash2, X } from 'lucide-react';
+import { createPlaylist, deletePlaylist, loadMusicLibrary, moveInList, renamePlaylist, setPinned, setPlaylistTracks, useMusicLoad } from '../actions';
+import { byName, formatTotal, isPinned, listenNow, playlistArt, searchMusic } from '../library';
 import { currentRoute, goBack, MUSIC_TABS, musicToast, openRoute, openTab, setMusicQuery, takeScroll, useMusicNav, type MusicRoute } from '../nav';
 import { playTracks, useMusicPlayer } from '../player';
-import type { MusicAlbum, MusicArtist, MusicLibrary as Library, MusicPlaylist, MusicTrack } from '../types';
+import type { MusicAlbum, MusicArtist, MusicLibrary as Library, MusicPinKind, MusicPlaylist, MusicTrack } from '../types';
 import { askConfirm, askName } from './Overlays';
 import TrackList from './TrackList';
-import TrackMenu from './TrackMenu';
+import TrackMenu, { openTrackMenuAt } from './TrackMenu';
 import { Cover, Mosaic } from './ui';
 import { errorMessage } from '../../lib/errors';
 
@@ -202,9 +202,57 @@ function Shelf({ title, children, onMore }: { title: string; children: ReactNode
   );
 }
 
+const tracksOf = (ids: number[]) => {
+  const byId = useMusicPlayer.getState().byId;
+  return ids.map((id) => byId.get(id)).filter((t): t is MusicTrack => !!t);
+};
+
+const usePinned = (kind: MusicPinKind, id: number) => useMusicPlayer((s) => isPinned(s.library, kind, id));
+
+function togglePin(kind: MusicPinKind, id: number, pinned: boolean) {
+  setPinned(kind, id, !pinned).then(
+    () => musicToast(pinned ? 'Unpinned' : 'Pinned to Listen Now'),
+    (e) => musicToast(errorMessage(e)),
+  );
+}
+
+/** Pin toggle shown over a cover on hover (always shown while focused). */
+function PinBadge({ kind, id, name }: { kind: MusicPinKind; id: number; name: string }) {
+  const pinned = usePinned(kind, id);
+  return (
+    <button
+      type="button"
+      aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
+      title={pinned ? 'Unpin' : 'Pin to Listen Now'}
+      aria-pressed={pinned}
+      onClick={() => togglePin(kind, id, pinned)}
+      className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white opacity-0 shadow-lg backdrop-blur transition hover:scale-105 hover:bg-black/75 focus-visible:opacity-100 group-hover:opacity-100"
+    >
+      <Pin className={`h-4 w-4 ${pinned ? 'fill-[#fa2d48] text-[#fa2d48]' : ''}`} />
+    </button>
+  );
+}
+
+/** "Pin" / "Pinned" button on an album or playlist page. */
+function PinButton({ kind, id, phone }: { kind: MusicPinKind; id: number; phone: boolean }) {
+  const pinned = usePinned(kind, id);
+  return (
+    <button
+      type="button"
+      aria-pressed={pinned}
+      aria-label={pinned ? 'Unpin from Listen Now' : 'Pin to Listen Now'}
+      title={pinned ? 'Unpin from Listen Now' : 'Pin to Listen Now'}
+      onClick={() => togglePin(kind, id, pinned)}
+      className={`flex h-11 items-center gap-2 rounded-lg bg-white/10 px-4 text-sm font-semibold hover:bg-white/15 ${pinned ? 'text-[#fa2d48]' : ''}`}
+    >
+      <Pin className={`h-4 w-4 ${pinned ? 'fill-current' : ''}`} /> {phone ? '' : pinned ? 'Pinned' : 'Pin'}
+    </button>
+  );
+}
+
 export function AlbumCard({ album, className = 'w-40 sm:w-44 shrink-0' }: { album: MusicAlbum; className?: string }) {
   return (
-    <div className={`group text-left ${className}`}>
+    <div className={`group text-left ${className}`} onContextMenu={(e) => openTrackMenuAt(e, tracksOf(album.trackIds), { pin: { kind: 'album', id: album.id } })}>
       <div className="relative">
         <button type="button" onClick={() => openRoute({ page: 'album', id: album.id })} className="tfm-press block w-full" aria-label={`${album.title} by ${album.artist}`}>
           <Cover art={album.art} alt="" className="w-full shadow-lg transition group-hover:brightness-90" rounded="rounded-lg" />
@@ -217,10 +265,43 @@ export function AlbumCard({ album, className = 'w-40 sm:w-44 shrink-0' }: { albu
         >
           <Play className="ml-0.5 h-5 w-5 fill-current" strokeWidth={0} />
         </button>
+        <PinBadge kind="album" id={album.id} name={album.title} />
       </div>
       <button type="button" onClick={() => openRoute({ page: 'album', id: album.id })} className="mt-2 block w-full text-left">
         <div className="truncate text-sm font-medium">{album.title}</div>
         <div className="truncate text-sm text-white/55">{album.artist}</div>
+      </button>
+    </div>
+  );
+}
+
+export function PlaylistCard({ playlist, className = 'w-40 sm:w-44 shrink-0' }: { playlist: MusicPlaylist; className?: string }) {
+  const byId = useMusicPlayer((s) => s.byId);
+  const ids = playlist.trackIds.filter((t) => byId.has(t));
+  const open = () => openRoute({ page: 'playlist', id: playlist.id });
+  return (
+    <div className={`group text-left ${className}`} onContextMenu={(e) => openTrackMenuAt(e, tracksOf(playlist.trackIds), { pin: { kind: 'playlist', id: playlist.id } })}>
+      <div className="relative">
+        <button type="button" onClick={open} className="tfm-press block w-full" aria-label={playlist.name}>
+          <Mosaic arts={playlistArt(byId, playlist)} className="w-full shadow-lg transition group-hover:brightness-90" />
+        </button>
+        {ids.length > 0 && (
+          <button
+            type="button"
+            aria-label={`Play ${playlist.name}`}
+            onClick={() => playTracks(ids, 0)}
+            className="absolute bottom-2 left-2 flex h-10 w-10 items-center justify-center rounded-full bg-black/55 text-white opacity-0 shadow-lg backdrop-blur transition hover:scale-105 hover:bg-[#fa2d48] focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            <Play className="ml-0.5 h-5 w-5 fill-current" strokeWidth={0} />
+          </button>
+        )}
+        <PinBadge kind="playlist" id={playlist.id} name={playlist.name} />
+      </div>
+      <button type="button" onClick={open} className="mt-2 block w-full text-left">
+        <div className="truncate text-sm font-medium">{playlist.name}</div>
+        <div className="truncate text-sm text-white/55">
+          {playlist.trackIds.length} song{playlist.trackIds.length === 1 ? '' : 's'}
+        </div>
       </button>
     </div>
   );
@@ -265,9 +346,19 @@ function ListenNow({ library }: { library: Library }) {
   const ln = useMemo(() => listenNow(library), [library]);
   return (
     <>
+      {ln.pinned.length > 0 && (
+        <Shelf title="Pinned">
+          {ln.pinned.map((p) => (p.kind === 'album' ? <AlbumCard key={`album-${p.album.id}`} album={p.album} /> : <PlaylistCard key={`playlist-${p.playlist.id}`} playlist={p.playlist} />))}
+        </Shelf>
+      )}
       {ln.recent.length > 0 && (
         <Shelf title="Recently Played">
           {ln.recent.map((a) => <AlbumCard key={a.id} album={a} />)}
+        </Shelf>
+      )}
+      {ln.playlists.length > 0 && (
+        <Shelf title="Playlists" onMore={() => openTab('playlists')}>
+          {ln.playlists.map((p) => <PlaylistCard key={p.id} playlist={p} />)}
         </Shelf>
       )}
       {ln.top.length > 0 && (
@@ -378,7 +469,6 @@ function Favourites({ tracks }: { tracks: MusicTrack[] }) {
 }
 
 function Playlists({ library }: { library: Library }) {
-  const byId = useMusicPlayer((s) => s.byId);
   const create = async () => {
     const name = await askName('New Playlist', '', 'Create');
     if (!name) return;
@@ -398,13 +488,7 @@ function Playlists({ library }: { library: Library }) {
         <div className="mt-2 text-sm font-medium">New Playlist</div>
       </button>
       {library.playlists.map((p) => (
-        <button key={p.id} type="button" onClick={() => openRoute({ page: 'playlist', id: p.id })} className="tfm-press min-w-0 text-left">
-          <Mosaic arts={playlistArt(byId, p)} className="w-full shadow-lg" />
-          <div className="mt-2 truncate text-sm font-medium">{p.name}</div>
-          <div className="text-sm text-white/50">
-            {p.trackIds.length} song{p.trackIds.length === 1 ? '' : 's'}
-          </div>
-        </button>
+        <PlaylistCard key={p.id} playlist={p} className="min-w-0" />
       ))}
     </div>
   );
@@ -480,7 +564,12 @@ function AlbumPage({ library, id, phone }: { library: Library; id: number; phone
         meta={[album.genre, album.year].filter(Boolean).join(' · ')}
         ids={album.trackIds}
         phone={phone}
-        actions={<TrackMenu tracks={tracks} className="!h-11 !w-11 bg-white/10" label="More album options" />}
+        actions={
+          <>
+            <PinButton kind="album" id={album.id} phone={phone} />
+            <TrackMenu tracks={tracks} context={{ pin: { kind: 'album', id: album.id } }} className="!h-11 !w-11 bg-white/10" label="More album options" />
+          </>
+        }
       />
       <TrackList tracks={tracks} lead="number" showAlbum={false} showArtist={variousArtists} />
       <p className="mt-4 text-sm text-white/45">
@@ -552,6 +641,7 @@ function PlaylistPage({ library, id, phone }: { library: Library; id: number; ph
         phone={phone}
         actions={
           <>
+            <PinButton kind="playlist" id={playlist.id} phone={phone} />
             <button type="button" onClick={() => setEditing((e) => !e)} aria-pressed={editing} className={`${btn} ${editing ? '!bg-white !text-black' : ''}`}>
               <ListMusic className="h-4 w-4" /> {editing ? 'Done' : 'Edit'}
             </button>

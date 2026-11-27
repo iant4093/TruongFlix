@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { setMusicLibrary, useMusicPlayer } from './player';
-import type { MusicPlaylist } from './types';
+import type { MusicPin, MusicPinKind, MusicPlaylist } from './types';
 
 /** Library loading and playlist edits (applied locally right away, then saved). */
 
@@ -53,6 +53,7 @@ export async function renamePlaylist(id: number, name: string) {
 
 export async function deletePlaylist(id: number) {
   setPlaylists((list) => list.filter((p) => p.id !== id));
+  setPins((pins) => pins.filter((p) => !(p.kind === 'playlist' && p.id === id)));
   await api().deletePlaylist(id);
 }
 
@@ -64,6 +65,26 @@ export async function setPlaylistTracks(id: number, trackIds: number[]) {
 export async function addToPlaylist(id: number, trackIds: number[]) {
   setPlaylists((list) => list.map((p) => (p.id === id ? touch(p, { trackIds: [...p.trackIds, ...trackIds] }) : p)).sort((a, b) => b.updatedAt - a.updatedAt));
   await api().addToPlaylist(id, trackIds);
+}
+
+function setPins(update: (pins: MusicPin[]) => MusicPin[]) {
+  const lib = useMusicPlayer.getState().library;
+  if (!lib) return;
+  useMusicPlayer.setState({ library: { ...lib, pins: update(lib.pins ?? []) } });
+}
+
+/** Pins (added at the end of the Pinned row) or unpins an album or playlist; undone if saving fails. */
+export async function setPinned(kind: MusicPinKind, id: number, value: boolean) {
+  const before = useMusicPlayer.getState().library?.pins ?? [];
+  const others = (pins: MusicPin[]) => pins.filter((p) => !(p.kind === kind && p.id === id));
+  setPins((pins) => (value ? (pins.some((p) => p.kind === kind && p.id === id) ? pins : [...pins, { kind, id }]) : others(pins)));
+  try {
+    await api().setPinned(kind, id, value);
+  } catch (e) {
+    const had = before.some((p) => p.kind === kind && p.id === id);
+    setPins((pins) => (had ? (pins.some((p) => p.kind === kind && p.id === id) ? pins : before) : others(pins)));
+    throw e;
+  }
 }
 
 export function moveInList<T>(list: T[], from: number, to: number): T[] {

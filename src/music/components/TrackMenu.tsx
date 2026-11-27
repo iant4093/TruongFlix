@@ -2,11 +2,12 @@ import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from '
 import { createPortal } from 'react-dom';
 import { leavingClass, useLeaving } from '../../lib/leaving';
 import { create } from 'zustand';
-import { ChevronLeft, Disc3, Heart, ListEnd, ListMusic, ListPlus, ListStart, MicVocal, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
-import { addToPlaylist, createPlaylist, setPlaylistTracks } from '../actions';
+import { ChevronLeft, Disc3, Heart, ListEnd, ListMusic, ListPlus, ListStart, MicVocal, MoreHorizontal, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
+import { addToPlaylist, createPlaylist, setPinned, setPlaylistTracks } from '../actions';
+import { isPinned } from '../library';
 import { musicToast, openRoute } from '../nav';
 import { addToQueue, playNext, setFull, toggleFavourite, useMusicPlayer } from '../player';
-import type { MusicTrack } from '../types';
+import type { MusicPin, MusicTrack } from '../types';
 import { askName } from './Overlays';
 import { useDismiss } from './ui';
 import { errorMessage } from '../../lib/errors';
@@ -15,6 +16,8 @@ export interface MenuContext {
   /** Shown inside this playlist: offers "Remove from Playlist" for this position. */
   playlistId?: number;
   position?: number;
+  /** The menu is for this album or playlist: offers "Pin" / "Unpin" (Listen Now). */
+  pin?: MusicPin;
 }
 
 /** The same menu opened by right-clicking a song (at the pointer). */
@@ -67,6 +70,8 @@ export default function TrackMenu({ tracks, context, className = '', label = 'Mo
 function Menu({ anchor, point, tracks, context, close, closing = false }: { anchor: HTMLElement | null; point?: { x: number; y: number }; tracks: MusicTrack[]; context?: MenuContext; close: () => void; closing?: boolean }) {
   const playlists = useMusicPlayer((s) => s.library?.playlists ?? []);
   const byId = useMusicPlayer((s) => s.byId);
+  const pin = context?.pin;
+  const pinned = useMusicPlayer((s) => !!pin && isPinned(s.library, pin.kind, pin.id));
   const [page, setPage] = useState<'main' | 'playlists'>('main');
   const stableClose = useCallback(close, [close]);
   const ref = useDismiss(true, stableClose, anchor);
@@ -121,6 +126,18 @@ function Menu({ anchor, point, tracks, context, close, closing = false }: { anch
         <button role="menuitem" className={ITEM} onClick={(e) => { e.stopPropagation(); setPage('playlists'); }}>
           <ListPlus className="h-4 w-4" /> Add to Playlist…
         </button>
+        {pin && (
+          <button
+            role="menuitem"
+            className={ITEM}
+            onClick={run(async () => {
+              await setPinned(pin.kind, pin.id, !pinned);
+              musicToast(pinned ? 'Unpinned' : 'Pinned to Listen Now');
+            })}
+          >
+            {pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />} {pinned ? `Unpin ${pin.kind === 'album' ? 'Album' : 'Playlist'}` : `Pin ${pin.kind === 'album' ? 'Album' : 'Playlist'}`}
+          </button>
+        )}
         {context?.playlistId != null && context.position != null && (
           <button
             role="menuitem"

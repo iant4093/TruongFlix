@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assembleLibrary, formatTime, listenNow, searchMusic } from '../src/music/library';
+import { assembleLibrary, formatTime, isPinned, listenNow, searchMusic } from '../src/music/library';
 import type { MusicTrack } from '../src/music/types';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), convertFileSrc: (p: string) => p }));
@@ -56,6 +56,36 @@ describe('music library', () => {
     expect(ln.top.map((a) => a.title)).toEqual(['Neon', 'Night Bus']);
     expect(ln.added[0].title).toBe('Echo');
     expect(ln.topSongs.map((t) => t.id)).toEqual([1, 4]);
+  });
+
+  it('shows pinned albums and playlists in the order they were pinned, leaving out gone ones', () => {
+    const playlists = [
+      { id: 7, name: 'Old Mix', trackIds: [1], updatedAt: 100 },
+      { id: 8, name: 'New Mix', trackIds: [3, 4], updatedAt: 900 },
+    ];
+    const lib = assembleLibrary(tracks, playlists, [
+      { kind: 'playlist', id: 7 },
+      { kind: 'album', id: 3 },
+      { kind: 'album', id: 99 }, // album no longer in the library
+      { kind: 'playlist', id: 42 }, // deleted playlist
+      { kind: 'album', id: 1 },
+    ]);
+    const ln = listenNow(lib);
+    expect(ln.pinned.map((p) => (p.kind === 'album' ? `album:${p.album.title}` : `playlist:${p.playlist.name}`))).toEqual(['playlist:Old Mix', 'album:Night Bus', 'album:Neon']);
+    // The Playlists row: most recently changed first.
+    expect(ln.playlists.map((p) => p.name)).toEqual(['New Mix', 'Old Mix']);
+    expect(isPinned(lib, 'album', 3)).toBe(true);
+    expect(isPinned(lib, 'playlist', 8)).toBe(false);
+  });
+
+  it('has no Pinned or Playlists rows when nothing is pinned and there are no playlists', () => {
+    const ln = listenNow(assembleLibrary(tracks, []));
+    expect(ln.pinned).toEqual([]);
+    expect(ln.playlists).toEqual([]);
+    // Libraries from before pins existed have none.
+    const { pins: _, ...old } = assembleLibrary(tracks, []);
+    expect(listenNow(old).pinned).toEqual([]);
+    expect(isPinned(old, 'album', 1)).toBe(false);
   });
 
   it('searches titles, artists and albums, ignoring accents and case', () => {

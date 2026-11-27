@@ -6,7 +6,7 @@ import { streamUrl } from './streaming';
 
 /**
  * `/api/music/…` for the browser app. The profile has already been checked (and unlocked when it
- * has a PIN) by `remoteapi.route`; plays, favourites and playlists are that profile's own.
+ * has a PIN) by `remoteapi.route`; plays, favourites, playlists and pins are that profile's own.
  */
 
 /** Each signed-in browser keeps its current and preloaded song streams; older ones are released. */
@@ -77,6 +77,11 @@ export async function musicRoute(caller: Caller, profile: Profile, method: strin
       return { trackIds: await mdb.setPlaylistTracks(profile.id, id(body.id), body.trackIds).catch(notFound) };
     case '/music/playlists/add':
       return { trackIds: await mdb.addToPlaylist(profile.id, id(body.id), body.trackIds).catch(notFound) };
+    case '/music/pin':
+      rateLimit(caller, 'music-pin', 60, 60_000);
+      if (!mdb.isPinKind(body.kind)) throw new ApiError(400, 'Bad request');
+      if (!(await mdb.setPinned(profile.id, body.kind, id(body.id), !!body.value))) throw new ApiError(404, 'Not found');
+      return { ok: true };
   }
   throw new ApiError(404, 'Unknown endpoint');
 }

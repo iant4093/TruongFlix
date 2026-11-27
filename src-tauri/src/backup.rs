@@ -39,7 +39,7 @@ const PORTABLE_TABLES: &[&str] = &[
     "season_cache",
     "live_data",
     "live_viewing",
-    // Music (shared song index, then each profile's playlists, plays and favourites).
+    // Music (shared song index, then each profile's playlists, plays, favourites and pins).
     "music_artists",
     "music_albums",
     "music_tracks",
@@ -47,6 +47,7 @@ const PORTABLE_TABLES: &[&str] = &[
     "music_playlist_tracks",
     "music_plays",
     "music_favourites",
+    "music_pins",
     "music_lyrics_cache",
 ];
 
@@ -60,6 +61,7 @@ const OPTIONAL_TABLES: &[&str] = &[
     "music_playlist_tracks",
     "music_plays",
     "music_favourites",
+    "music_pins",
     "music_lyrics_cache",
 ];
 

@@ -2,11 +2,11 @@ import type Database from '@tauri-apps/plugin-sql';
 import { getDb } from './db';
 import { assembleLibrary } from '../music/library';
 import { albumFolder, albumKey, guessFromPath, nameKey, primaryArtist, resolveTags, settleAlbumArtist } from '../music/match';
-import type { MusicLibrary, MusicPlaylist, MusicTrack } from '../music/types';
+import type { MusicLibrary, MusicPin, MusicPinKind, MusicPlaylist, MusicTrack } from '../music/types';
 
 /**
- * Music library tables. Songs, albums and artists are shared by every profile; plays, favourites
- * and playlists belong to one profile. Created on first use, in the same style as `db.ts`.
+ * Music library tables. Songs, albums and artists are shared by every profile; plays, favourites,
+ * playlists and pins belong to one profile. Created on first use, in the same style as `db.ts`.
  */
 export const MUSIC_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS music_artists (
@@ -75,6 +75,14 @@ export const MUSIC_SCHEMA = [
     track_id INTEGER NOT NULL,
     added_at INTEGER NOT NULL,
     PRIMARY KEY (profile_id, track_id)
+  )`,
+  // Albums and playlists pinned to the top of Listen Now, shown in the order they were pinned.
+  `CREATE TABLE IF NOT EXISTS music_pins (
+    profile_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,                    -- 'album' | 'playlist'
+    item_id INTEGER NOT NULL,
+    pinned_at INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, kind, item_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_music_tracks_album ON music_tracks(album_id)`,
   `CREATE INDEX IF NOT EXISTS idx_music_plays ON music_plays(profile_id, track_id)`,
@@ -334,6 +342,7 @@ export async function pruneMusic() {
   const db = await musicDb();
   await db.execute('DELETE FROM music_albums WHERE id NOT IN (SELECT DISTINCT album_id FROM music_tracks)');
   await db.execute('DELETE FROM music_artists WHERE id NOT IN (SELECT DISTINCT artist_id FROM music_tracks) AND id NOT IN (SELECT DISTINCT artist_id FROM music_albums)');
+  await db.execute("DELETE FROM music_pins WHERE kind = 'album' AND item_id NOT IN (SELECT id FROM music_albums)");
 }
 
 // ---------------------------------------------------------------------------
@@ -406,7 +415,7 @@ export async function loadMusic(profileId: number): Promise<MusicLibrary> {
      LEFT JOIN (SELECT track_id, COUNT(*) AS plays, MAX(played_at) AS last_played FROM music_plays WHERE profile_id = $1 GROUP BY track_id) p ON p.track_id = t.id`,
     [profileId],
   );
-  return assembleLibrary(rows.map(toTrack), await listPlaylists(profileId));
+  return assembleLibrary(rows.map(toTrack), await listPlaylists(profileId), await listPins(profileId));
 }
 
 export interface MusicTrackFile {
@@ -637,6 +646,7 @@ export async function deletePlaylist(profileId: number, id: number) {
   const db = await musicDb();
   await ownPlaylist(db, profileId, id);
   await db.execute('DELETE FROM music_playlist_tracks WHERE playlist_id = $1', [id]);
+  await db.execute("DELETE FROM music_pins WHERE kind = 'playlist' AND item_id = $1", [id]);
   await db.execute('DELETE FROM music_playlists WHERE id = $1', [id]);
 }
 
@@ -685,4 +695,42 @@ async function appendToPlaylist(profileId: number, id: number, trackIds: unknown
   await writeEntries(db, id, ids, (last ?? -1) + 1);
   await db.execute('UPDATE music_playlists SET updated_at = $2 WHERE id = $1', [id, now]);
   return ids;
+}
+
+// ---------------------------------------------------------------------------
+// Pins (Listen Now)
+// ---------------------------------------------------------------------------
+
+export const isPinKind = (kind: unknown): kind is MusicPinKind => kind === 'album' || kind === 'playlist';
+
+/** This profile's pins in the order they were pinned, leaving out albums and playlists that are gone. */
+export async function listPins(profileId: number): Promise<MusicPin[]> {
+  const db = await musicDb();
+  const rows = await db.select<{ kind: MusicPinKind; item_id: number }[]>(
+    `SELECT kind, item_id FROM music_pins
+     WHERE profile_id = $1 AND ((kind = 'album' AND item_id IN (SELECT album_id FROM music_tracks))
+       OR (kind = 'playlist' AND item_id IN (SELECT id FROM music_playlists WHERE profile_id = $1)))
+     ORDER BY pinned_at, rowid`,
+    [profileId],
+  );
+  return rows.map((r) => ({ kind: r.kind, id: r.item_id }));
+}
+
+/**
+ * Pins an album or one of this profile's playlists (at the end of the row; pinning again keeps its
+ * place), or unpins it. False when there's no such album or playlist to pin.
+ */
+export async function setPinned(profileId: number, kind: MusicPinKind, id: number, value: boolean, now = Date.now()): Promise<boolean> {
+  const db = await musicDb();
+  if (!value) {
+    await db.execute('DELETE FROM music_pins WHERE profile_id = $1 AND kind = $2 AND item_id = $3', [profileId, kind, id]);
+    return true;
+  }
+  const exists =
+    kind === 'album'
+      ? await db.select<unknown[]>('SELECT 1 FROM music_tracks WHERE album_id = $1 LIMIT 1', [id])
+      : await db.select<unknown[]>('SELECT 1 FROM music_playlists WHERE id = $1 AND profile_id = $2', [id, profileId]);
+  if (!exists.length) return false;
+  await db.execute('INSERT OR IGNORE INTO music_pins (profile_id, kind, item_id, pinned_at) VALUES ($1, $2, $3, $4)', [profileId, kind, id, now]);
+  return true;
 }

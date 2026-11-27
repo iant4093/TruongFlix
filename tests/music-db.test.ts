@@ -184,6 +184,52 @@ describe('playlists', () => {
   });
 });
 
+describe('pins', () => {
+  it('saves pinned albums and playlists per profile, in the order they were pinned', async () => {
+    const t = await seed();
+    const mix = await mdb.createPlaylist(1, 'Mix', [t.Intro.id]);
+    expect(await mdb.setPinned(1, 'playlist', mix.id, true, 1000)).toBe(true);
+    expect(await mdb.setPinned(1, 'album', t.Other.albumId, true, 2000)).toBe(true);
+    expect(await mdb.setPinned(1, 'album', t.Intro.albumId, true, 3000)).toBe(true);
+    // Pinning again keeps its place.
+    expect(await mdb.setPinned(1, 'playlist', mix.id, true, 4000)).toBe(true);
+    expect(await mdb.listPins(1)).toEqual([
+      { kind: 'playlist', id: mix.id },
+      { kind: 'album', id: t.Other.albumId },
+      { kind: 'album', id: t.Intro.albumId },
+    ]);
+    expect((await mdb.loadMusic(1)).pins).toHaveLength(3);
+    // Another profile has its own pins, and can't pin someone else's playlist.
+    expect(await mdb.listPins(2)).toEqual([]);
+    expect((await mdb.loadMusic(2)).pins).toEqual([]);
+    expect(await mdb.setPinned(2, 'playlist', mix.id, true)).toBe(false);
+    expect(await mdb.setPinned(2, 'album', 9999, true)).toBe(false);
+    expect(await mdb.listPins(2)).toEqual([]);
+    // Unpinning.
+    await mdb.setPinned(1, 'album', t.Other.albumId, false);
+    expect((await mdb.listPins(1)).map((p) => p.kind)).toEqual(['playlist', 'album']);
+  });
+
+  it('survive a restart (stored in the database)', async () => {
+    const t = await seed();
+    await mdb.setPinned(1, 'album', t.Intro.albumId, true);
+    vi.resetModules();
+    mdb = await import('../src/services/musicdb');
+    expect((await mdb.loadMusic(1)).pins).toEqual([{ kind: 'album', id: t.Intro.albumId }]);
+  });
+
+  it('go with a deleted playlist or an album that left the library', async () => {
+    const t = await seed();
+    const mix = await mdb.createPlaylist(1, 'Mix');
+    await mdb.setPinned(1, 'playlist', mix.id, true);
+    await mdb.setPinned(1, 'album', t.Other.albumId, true);
+    await mdb.deletePlaylist(1, mix.id);
+    await mdb.removeMusicPaths(['/m/B/x.flac']);
+    expect(await mdb.listPins(1)).toEqual([]);
+    expect(await conn.select<unknown[]>('SELECT * FROM music_pins')).toEqual([]);
+  });
+});
+
 describe('plays for Wrapped', () => {
   it('lists a profile’s plays with their songs, oldest first', async () => {
     const t = await seed();
