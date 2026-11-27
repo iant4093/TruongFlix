@@ -43,9 +43,6 @@ const FILE_TRIES: u32 = 2;
 const QUEUE_PATIENCE: Duration = Duration::from_secs(150);
 /// How long a transfer may stall once it has started.
 const STALL_PATIENCE: Duration = Duration::from_secs(90);
-/// How long a song may stay queued with one person before the next copy is tried (another person
-/// usually sends it at once).
-const SONG_QUEUE_PATIENCE: Duration = Duration::from_secs(15);
 /// How long a song's transfer may stall.
 const SONG_STALL_PATIENCE: Duration = Duration::from_secs(60);
 /// Searches are sent at least this far apart: Soulseek quietly drops searches that come too fast.
@@ -58,15 +55,16 @@ const NEW_PEERS_PER_SECOND: f64 = 20.0;
 /// The longest wait between searches. (The patched library also rations the connections answers
 /// arrive on, so this only spreads searches out; see `vendor/soulseek-rs-lib/PATCHES.md`.)
 const SEARCH_GAP_MAX: Duration = Duration::from_secs(10);
-/// When a song's first searches have found nothing by now, its other artists and its title alone
-/// are searched too.
+/// While a song's searches have found nothing, the next backup search goes out this long after the
+/// last one (see `matching::song_fallback_queries`).
 const SONG_FALLBACK_AFTER: Duration = Duration::from_secs(5);
 /// A song search stops early once a few ready-to-send copies have answered…
 const SONG_SEARCH_MIN: Duration = Duration::from_secs(2);
-/// …or any copy at all…
+/// …or once any copy has, this long after its last search went out (also how long the last
+/// backup is given before the song counts as not found).
 const SONG_SEARCH_TIME: Duration = Duration::from_secs(6);
-/// …and gives up after this.
-const SONG_SEARCH_MAX: Duration = Duration::from_secs(25);
+/// The most a song's search (backups included) may take.
+const SONG_SEARCH_LIMIT: Duration = Duration::from_secs(60);
 /// How long the last files may sit in the queue after the person's others have arrived (the
 /// next one normally starts within seconds).
 const TAIL_PATIENCE: Duration = Duration::from_secs(45);
@@ -168,6 +166,10 @@ struct Login {
 
 static LOGIN: Mutex<Option<Login>> = Mutex::new(None);
 
+/// Bumped by every login and disconnect the user makes, so an automatic reconnect that finishes
+/// after one of those doesn't override it.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Connections to other people kept open at once (the library allows 512, a thread each). When
 /// full, the oldest is closed for each new one, so this must stay well above how many people
 /// answer one search, or their answers are cut off before they arrive.
@@ -232,6 +234,7 @@ pub async fn slsk_connect(app: AppHandle, username: String, password: String, po
     }
     let login = Login { username: username.clone(), password, port, shared };
     let handle = app.clone();
+    GENERATION.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         SESSION.lock().unwrap().take();
         set_status(&handle, Status { state: "connecting", username: username.clone(), message: String::new() });
@@ -280,16 +283,22 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
             return;
         }
         let login = LOGIN.lock().unwrap().clone().filter(|l| l.username == username);
+        let generation = GENERATION.load(Ordering::SeqCst);
+        // Someone signed in again (or out) since: theirs wins.
+        let superseded = || GENERATION.load(Ordering::SeqCst) != generation || SESSION.lock().unwrap().is_some();
         if let Some(login) = login {
             for wait in RECONNECT_WAITS {
                 set_status(&app, Status { state: "connecting", username: username.clone(), message: "The connection to Soulseek dropped. Reconnecting…".into() });
                 std::thread::sleep(Duration::from_secs(wait));
-                // Someone signed in again (or out) meanwhile: theirs wins.
-                if SESSION.lock().unwrap().is_some() || LOGIN.lock().unwrap().as_ref().is_none_or(|l| l.username != username) {
+                if superseded() {
                     return;
                 }
                 match log_in(&login) {
                     Ok(fresh) => {
+                        // Logging in takes a few seconds: check again before taking over.
+                        if superseded() {
+                            return;
+                        }
                         note("Reconnected");
                         go_online(&app, fresh);
                         return;
@@ -298,6 +307,9 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
                 }
             }
         }
+        if superseded() {
+            return;
+        }
         set_status(&app, Status { state: "error", username, message: format!("Lost the connection to Soulseek: {loss}") });
         return;
     });
@@ -305,8 +317,15 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
 
 #[tauri::command]
 pub fn slsk_disconnect(app: AppHandle) {
+    GENERATION.fetch_add(1, Ordering::SeqCst);
     LOGIN.lock().unwrap().take();
     SESSION.lock().unwrap().take();
+    // Signing out stops what's running too (each job holds its own handle to the session).
+    if let Some(jobs) = JOBS.lock().unwrap().as_ref() {
+        for running in jobs.values() {
+            running.cancel.store(true, Ordering::SeqCst);
+        }
+    }
     set_status(&app, Status::offline());
 }
 
@@ -428,7 +447,10 @@ fn spawn_job(
         .spawn(move || {
             let staging = Path::new(&destination).join(STAGING).join(&id);
             let report = Reporter { app: Some(&app), id: &id };
-            let outcome = work(&report, &client, &cancel, &staging);
+            // A malformed file can make the tag reader panic: that fails this job, never leaves it
+            // stuck (and its album or song blocked as "already downloading").
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&report, &client, &cancel, &staging)))
+                .unwrap_or_else(|_| Err(Stop::Failed("Something went wrong reading a downloaded file".into())));
             let _ = std::fs::remove_dir_all(&staging);
             // Leave no empty staging folder behind.
             let _ = std::fs::remove_dir(Path::new(&destination).join(STAGING));
@@ -558,12 +580,19 @@ enum Stop {
     Failed(String),
 }
 
+/// A shared file's name is safe to save as is: no drive ("C:x.flac" would escape the download
+/// folder on Windows) and no control characters.
+fn safe_file_name(path: &str) -> bool {
+    let name = basename(path);
+    !name.is_empty() && !name.contains(':') && !name.chars().any(char::is_control) && name != "." && name != ".."
+}
+
 fn offers_from(results: Vec<soulseek_rs::SearchResult>) -> Vec<Offer> {
     results
         .into_iter()
         .flat_map(|r| {
             let (free_slot, speed) = (r.slots > 0, r.speed);
-            r.files.into_iter().map(move |f| Offer {
+            r.files.into_iter().filter(|f| safe_file_name(&f.name)).map(move |f| Offer {
                 user: f.username,
                 path: f.name,
                 size: f.size,
@@ -587,7 +616,7 @@ fn picked_offers(copy: &PickedCopy) -> Result<Vec<Offer>, Stop> {
     let mut offers = Vec::new();
     for f in &copy.files {
         let inside = prefix.is_empty() || (f.path.len() > prefix.len() + 1 && f.path.starts_with(prefix) && matches!(f.path.as_bytes()[prefix.len()], b'\\' | b'/'));
-        if !inside || !matching::AUDIO.contains(&extension(&f.path).as_str()) || f.size == 0 {
+        if !inside || !safe_file_name(&f.path) || !matching::AUDIO.contains(&extension(&f.path).as_str()) || f.size == 0 {
             return Err(Stop::Failed(format!("{} isn’t an audio file in that folder.", basename(&f.path))));
         }
         if seen.insert(f.path.clone()) {
@@ -618,6 +647,13 @@ struct Searching<'a> {
     client: &'a Client,
     queries: Vec<String>,
     started: Instant,
+    cancel: Option<&'a AtomicBool>,
+}
+
+/// A query's key in `QUERIES`: per session, so a search on a new session after a reconnect is
+/// always sent rather than reading an old session's results.
+fn query_key(client: &Client, query: &str) -> String {
+    format!("{:p}\u{1}{query}", client as *const Client)
 }
 
 /// How many people answered recent searches (the most of the last few), for pacing. It starts
@@ -630,25 +666,36 @@ fn search_gap() -> Duration {
     Duration::from_secs_f64(people / NEW_PEERS_PER_SECOND).clamp(SEARCH_GAP, SEARCH_GAP_MAX)
 }
 
-/// Waits for this search's turn to be sent (see `search_gap`).
-fn search_turn() {
+/// Waits for this search's turn to be sent (see `search_gap`): it books the next free slot, then
+/// waits outside the lock (so a cancelled job stops waiting). False when cancelled meanwhile.
+fn search_turn(cancel: Option<&AtomicBool>) -> bool {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
-    let mut last = LAST.lock().unwrap();
-    if let Some(at) = *last {
-        let next = at + search_gap();
+    let slot = {
+        let mut last = LAST.lock().unwrap();
         let now = Instant::now();
-        if next > now {
-            std::thread::sleep(next - now);
+        let slot = last.map(|at| (at + search_gap()).max(now)).unwrap_or(now);
+        *last = Some(slot);
+        slot
+    };
+    while Instant::now() < slot {
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return false;
         }
+        std::thread::sleep(Duration::from_millis(100).min(slot - Instant::now()));
     }
-    *last = Some(Instant::now());
+    true
 }
 
 impl<'a> Searching<'a> {
-    fn start(client: &'a Client, queries: Vec<String>) -> Result<Self, String> {
-        let mut searching = Searching { client, queries: Vec::new(), started: Instant::now() };
+    fn start(client: &'a Client, queries: Vec<String>, cancel: Option<&'a AtomicBool>) -> Result<Self, String> {
+        let mut searching = Searching { client, queries: Vec::new(), started: Instant::now(), cancel };
         searching.add(queries)?;
         Ok(searching)
+    }
+
+    /// How many answers have come in so far (cheap: nothing is copied).
+    fn answers(&self) -> usize {
+        self.queries.iter().map(|q| self.client.get_search_results_count(q)).sum()
     }
 
     /// Searches for more words, alongside the ones already searched.
@@ -659,13 +706,15 @@ impl<'a> Searching<'a> {
             }
             let fresh = {
                 let mut map = QUERIES.lock().unwrap();
-                let n = map.get_or_insert_with(HashMap::new).entry(query.clone()).or_insert(0);
+                let n = map.get_or_insert_with(HashMap::new).entry(query_key(self.client, &query)).or_insert(0);
                 *n += 1;
                 *n == 1
             };
             self.queries.push(query.clone());
             if fresh {
-                search_turn();
+                if !search_turn(self.cancel) {
+                    return Err(CANCELLED.into());
+                }
                 // Sends the search and returns at once; results collect in the background.
                 self.client.search(&query, Duration::ZERO).map_err(|e| {
                     note(format!("Search “{query}” couldn’t be sent: {e}"));
@@ -712,10 +761,11 @@ impl Drop for Searching<'_> {
         let mut map = QUERIES.lock().unwrap();
         let map = map.get_or_insert_with(HashMap::new);
         for query in &self.queries {
-            if let Some(n) = map.get_mut(query) {
+            let key = query_key(self.client, query);
+            if let Some(n) = map.get_mut(&key) {
                 *n -= 1;
                 if *n == 0 {
-                    map.remove(query);
+                    map.remove(&key);
                     let _ = self.client.forget_search(query);
                 }
             }
@@ -731,6 +781,13 @@ fn blocked_phrase(client: &Client, text: &str) -> Option<String> {
         let p = p.trim().to_lowercase();
         !p.is_empty() && text.contains(&p)
     })
+}
+
+/// What `Searching::add` fails with when its job was cancelled while waiting for its turn.
+const CANCELLED: &str = "cancelled";
+
+fn search_error(e: String) -> Stop {
+    if e == CANCELLED { Stop::Cancelled } else { Stop::Failed(e) }
 }
 
 /// Sleeps `total`, waking early when cancelled.
@@ -752,12 +809,21 @@ fn find_copies(client: &Client, req: &AlbumRequest, wants: &[WantTrack], cancel:
         return Err(Stop::Failed(format!("Soulseek blocks searches for “{phrase}”, so this album can’t be found there.")));
     }
     let queries = matching::queries(&req.album_artist, &req.album);
-    let search = Searching::start(client, queries.clone()).map_err(Stop::Failed)?;
+    let search = Searching::start(client, queries.clone(), Some(cancel)).map_err(search_error)?;
     let started = Instant::now();
+    let (mut seen, mut offers, mut candidates) = (usize::MAX, Vec::new(), Vec::new());
     loop {
         wait(Duration::from_secs(1), cancel)?;
-        let offers = search.offers();
-        let candidates = matching::rank(wants, &req.album, &offers, req.quality);
+        if client.session_loss().is_some() {
+            return Err(Stop::Failed("The connection to Soulseek dropped".into()));
+        }
+        // Results are only copied and ranked again when new answers have come in.
+        let answers = search.answers();
+        if answers != seen {
+            seen = answers;
+            offers = search.offers();
+            candidates = matching::rank(wants, &req.album, &offers, req.quality);
+        }
         let t = started.elapsed();
         let free = candidates.iter().filter(|c| c.files.first().is_some_and(|f| f.free_slot)).count();
         // Answers keep arriving for a while, and the late ones are often the better copies; but
@@ -767,7 +833,7 @@ fn find_copies(client: &Client, req: &AlbumRequest, wants: &[WantTrack], cancel:
             continue;
         }
         if !candidates.is_empty() {
-            return Ok(candidates);
+            return Ok(std::mem::take(&mut candidates));
         }
         return Err(Stop::Failed(not_found(req, wants, &offers, &queries)));
     }
@@ -846,11 +912,12 @@ pub struct FileHit {
 
 /// The audio files found for a song: the ones that are it first, then by quality and readiness.
 fn file_hits(offers: &[Offer], song: &WantSong) -> Vec<FileHit> {
+    let matcher = matching::SongMatcher::new(song);
     let mut hits: Vec<FileHit> = offers
         .iter()
         .filter(|o| matching::AUDIO.contains(&extension(&o.path).as_str()) && o.size > 0)
         .map(|o| FileHit {
-            matches: matching::song_matches(song, o),
+            matches: matcher.matches(o),
             user: o.user.clone(),
             path: o.path.clone(),
             size: o.size,
@@ -968,14 +1035,19 @@ pub fn slsk_search(app: AppHandle, id: String, query: String, tracks: Option<Vec
             };
             if let Some(phrase) = blocked_phrase(&client, &query) {
                 send(&[], 0, true, Some(phrase));
-            } else if let Ok(search) = Searching::start(&client, vec![query]) {
+            } else if let Ok(search) = Searching::start(&client, vec![query], Some(&stop)) {
                 let started = Instant::now();
+                let mut seen = usize::MAX;
                 loop {
-                    let stopped = wait(Duration::from_millis(1200), &stop).is_err();
-                    let offers = search.offers();
-                    let people = offers.iter().map(|o| o.user.as_str()).collect::<std::collections::HashSet<_>>().len();
+                    let stopped = wait(Duration::from_millis(1200), &stop).is_err() || client.session_loss().is_some();
                     let done = stopped || started.elapsed() >= MANUAL_TIME;
-                    send(&offers, people, done, None);
+                    let answers = search.answers();
+                    if answers != seen || done {
+                        seen = answers;
+                        let offers = search.offers();
+                        let people = offers.iter().map(|o| o.user.as_str()).collect::<std::collections::HashSet<_>>().len();
+                        send(&offers, people, done, None);
+                    }
                     if done {
                         break;
                     }
@@ -1089,32 +1161,41 @@ fn find_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &Ato
     if queries.is_empty() {
         return Err(miss("no-match", "This song’s title has nothing to search for.".into()));
     }
-    let mut search = Searching::start(client, queries).map_err(Stop::Failed)?;
+    let mut search = Searching::start(client, queries, Some(cancel)).map_err(search_error)?;
     let started = Instant::now();
-    let mut backups = matching::song_fallback_queries(&req.want).into_iter();
-    let mut next_backup = SONG_FALLBACK_AFTER;
+    let mut backups = matching::song_fallback_queries(&req.want).into_iter().peekable();
+    // Each search gets its own time to be answered: the clock restarts when a backup goes out.
+    let mut last_sent = Instant::now();
+    let (mut seen, mut offers, mut found) = (usize::MAX, Vec::new(), Vec::new());
     loop {
         wait(Duration::from_secs(1), cancel)?;
         if client.session_loss().is_some() {
             return Err(miss("connection", "The connection to Soulseek dropped".into()));
         }
-        let offers = search.offers();
-        let found = matching::rank_song(&req.want, &offers, req.quality);
+        let answers = search.answers();
+        if answers != seen {
+            seen = answers;
+            offers = search.offers();
+            found = matching::rank_song(&req.want, &offers, req.quality);
+        }
         let t = started.elapsed();
-        if found.is_empty() && t >= next_backup {
+        let quiet = last_sent.elapsed();
+        if found.is_empty() && quiet >= SONG_FALLBACK_AFTER {
             if let Some(query) = backups.next() {
-                search.add(vec![query]).map_err(Stop::Failed)?;
-                next_backup = t + SONG_FALLBACK_AFTER;
+                search.add(vec![query]).map_err(search_error)?;
+                last_sent = Instant::now();
+                continue;
             }
         }
         let free = found.iter().filter(|o| o.free_slot).count();
+        let exhausted = backups.peek().is_none() && quiet >= SONG_SEARCH_TIME;
         // Two ready-to-send copies are plenty to start: the next ones are tried if the first stalls.
-        let enough = (t >= SONG_SEARCH_MIN && free >= 2) || (t >= SONG_SEARCH_TIME && !found.is_empty()) || t >= SONG_SEARCH_MAX;
+        let enough = (t >= SONG_SEARCH_MIN && free >= 2) || (quiet >= SONG_SEARCH_TIME && !found.is_empty()) || exhausted || t >= SONG_SEARCH_LIMIT;
         if !enough {
             continue;
         }
         if !found.is_empty() {
-            return Ok(found);
+            return Ok(std::mem::take(&mut found));
         }
         let (code, message) = song_not_found(req, &offers, &search.queries);
         note(format!("“{}”: {message}", req.want.title));
@@ -1237,7 +1318,8 @@ struct Racer {
     last: DownloadStatus,
     path: PathBuf,
     out: bool,
-    _busy: Busy,
+    /// Counts toward this person's load while they're still in the race.
+    busy: Option<Busy>,
 }
 
 /// Asks everyone in `offers` for the song at once and keeps whoever starts sending first (the
@@ -1247,10 +1329,10 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
     let mut problems: Vec<String> = Vec::new();
     for (index, offer) in offers.iter().enumerate() {
         let item = Item { index, offer: offer.clone(), length_ms: length };
-        match request_file(client, &item, dir) {
+        match request_file(client, &item, dir, false) {
             Ok((status, path)) => {
                 note(format!("Asked {} for {}", offer.user, basename(&offer.path)));
-                racers.push(Racer { _busy: Busy::new(&offer.user), item, status, last: DownloadStatus::Queued, path, out: false });
+                racers.push(Racer { busy: Some(Busy::new(&offer.user)), item, status, last: DownloadStatus::Queued, path, out: false });
             }
             Err(e) => problems.push(e),
         }
@@ -1259,10 +1341,12 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
         for (i, r) in racers.iter_mut().enumerate() {
             if Some(i) != keep && !r.out {
                 r.out = true;
+                r.busy = None;
                 let _ = client.cancel_download(&r.item.offer.user, &r.item.offer.path);
             }
         }
     };
+    let forget = |racers: &[Racer]| forget_downloads(client, racers.iter().map(|r| &r.item.offer));
     let started = Instant::now();
     let mut winner: Option<usize> = None;
     let mut last_bytes = 0u64;
@@ -1271,6 +1355,7 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
     loop {
         if cancel.load(Ordering::SeqCst) {
             cancel_rest(&mut racers, None);
+            forget(&racers);
             return Err(Stop::Cancelled);
         }
         if client.session_loss().is_some() {
@@ -1302,6 +1387,7 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
                         remember(&SENT_US, &user);
                         let found = (r.path.clone(), r.item.offer.clone());
                         cancel_rest(&mut racers, Some(i));
+                        forget(&racers);
                         return Ok(found);
                     }
                     Err(e) => e,
@@ -1328,12 +1414,14 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
             };
             note(problem.clone());
             racers[i].out = true;
+            racers[i].busy = None;
             problems.push(problem);
             if winner == Some(i) {
                 winner = None;
             }
         }
         if racers.iter().all(|r| r.out) {
+            forget(&racers);
             return Err(Stop::Failed(problems.pop().unwrap_or_else(|| "Nobody could send it".into())));
         }
         let sending = winner.map(|i| &racers[i]);
@@ -1351,12 +1439,14 @@ fn race_song(report: &Reporter, client: &Client, offers: &[Offer], length: Optio
             Some(r) if last_progress.elapsed() > SONG_STALL_PATIENCE => {
                 let user = r.item.offer.user.clone();
                 cancel_rest(&mut racers, None);
+                forget(&racers);
                 note(format!("{user} stopped sending; trying other copies"));
                 return Err(Stop::Failed(format!("{user} stopped sending")));
             }
             None if started.elapsed() > SONG_RACE_PATIENCE => {
                 let users: Vec<String> = racers.iter().filter(|r| !r.out).map(|r| r.item.offer.user.clone()).collect();
                 cancel_rest(&mut racers, None);
+                forget(&racers);
                 note(format!("{} kept it queued for {}s; trying other copies", users.join(", "), SONG_RACE_PATIENCE.as_secs()));
                 return Err(Stop::Failed(format!("{} kept it queued", users.join(", "))));
             }
@@ -1450,15 +1540,21 @@ struct Transfer<'a> {
     dead: Option<String>,
     /// It has started sending (noted once).
     started: bool,
+    /// Bytes received so far (for telling whether this transfer is still moving).
+    bytes: u64,
 }
 
-/// Asks for one file (again, after a failure) into its own folder.
-fn request_file(client: &Client, item: &Item, dir: &Path) -> Result<(Receiver<DownloadStatus>, PathBuf), String> {
+/// Asks for one file (`again`: after it failed) into its own folder.
+fn request_file(client: &Client, item: &Item, dir: &Path, again: bool) -> Result<(Receiver<DownloadStatus>, PathBuf), String> {
     let target = dir.join(item.index.to_string());
     std::fs::create_dir_all(&target).map_err(|_| "Couldn’t create the download folder".to_string())?;
     let path = target.join(basename(&item.offer.path));
     let _ = std::fs::remove_file(&path);
-    let _ = client.remove_download(&item.offer.user, &item.offer.path);
+    // Only our own failed request is cleared before asking again (another job may be fetching the
+    // same file from the same person right now).
+    if again {
+        let _ = client.remove_download(&item.offer.user, &item.offer.path);
+    }
     client
         .download(item.offer.path.clone(), item.offer.user.clone(), item.offer.size, target.to_string_lossy().into_owned())
         .map(|(_, status)| (status, path))
@@ -1476,7 +1572,14 @@ struct Patience {
 }
 
 const ALBUM_PATIENCE: Patience = Patience { queue: QUEUE_PATIENCE, stall: STALL_PATIENCE };
-const SONG_PATIENCE: Patience = Patience { queue: SONG_QUEUE_PATIENCE, stall: SONG_STALL_PATIENCE };
+
+/// Drops finished requests from the library's download list (it otherwise keeps every one it has
+/// ever made, and scans them all).
+fn forget_downloads<'a>(client: &Client, files: impl Iterator<Item = &'a Offer>) {
+    for offer in files {
+        let _ = client.remove_download(&offer.user, &offer.path);
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &Path, cancel: &AtomicBool, got: &mut [Option<(PathBuf, u64)>], base: u64, patience: Patience) -> Result<(), Stop> {
@@ -1488,10 +1591,10 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
         }
     };
     for item in items {
-        match request_file(client, item, dir) {
+        match request_file(client, item, dir, false) {
             Ok((status, path)) => {
                 note(format!("Asked {user} for {}", basename(&item.offer.path)));
-                transfers.push(Transfer { item, status, last: DownloadStatus::Queued, path, tries: 1, done: false, dead: None, started: false })
+                transfers.push(Transfer { item, status, last: DownloadStatus::Queued, path, tries: 1, done: false, dead: None, started: false, bytes: 0 })
             }
             Err(e) => {
                 cancel_live(&transfers);
@@ -1499,17 +1602,16 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
             }
         }
     }
-    let mut last_bytes = 0u64;
     let mut last_progress = Instant::now();
     let mut last_emit = Instant::now() - Duration::from_secs(1);
-    loop {
+    let outcome = loop {
         if cancel.load(Ordering::SeqCst) {
             cancel_live(&transfers);
-            return Err(Stop::Cancelled);
+            break Err(Stop::Cancelled);
         }
         if client.session_loss().is_some() {
             report.set(|j| j.code = Some("connection".into()));
-            return Err(Stop::Failed("The connection to Soulseek dropped".into()));
+            break Err(Stop::Failed("The connection to Soulseek dropped".into()));
         }
         for t in transfers.iter_mut().filter(|t| !t.done && t.dead.is_none()) {
             loop {
@@ -1556,14 +1658,13 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
             let again = t.tries < FILE_TRIES && !hopeless;
             note(format!("{problem}{}", if again { " (asking again)" } else { "" }));
             if again {
-                match request_file(client, t.item, dir) {
+                match request_file(client, t.item, dir, true) {
                     Ok((status, path)) => {
                         t.status = status;
                         t.path = path;
                         t.last = DownloadStatus::Queued;
                         t.tries += 1;
-                        last_progress = Instant::now();
-                        last_bytes = 0;
+                        t.bytes = 0;
                     }
                     Err(e) => t.dead = Some(e),
                 }
@@ -1571,20 +1672,21 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
                 t.dead = Some(problem);
             }
         }
-        let live = || transfers.iter().filter(|t| t.dead.is_none());
-        let sent: u64 = live()
-            .map(|t| match &t.last {
+        // Progress is any one transfer moving on (a file that died doesn't count against the rest).
+        for t in transfers.iter_mut().filter(|t| t.dead.is_none()) {
+            let now = match &t.last {
                 _ if t.done => t.item.offer.size,
                 DownloadStatus::InProgress { bytes_downloaded, .. } | DownloadStatus::Paused { bytes_downloaded, .. } => *bytes_downloaded,
                 _ => 0,
-            })
-            .sum();
-        if sent > last_bytes {
-            last_bytes = sent;
-            last_progress = Instant::now();
+            };
+            if now > t.bytes {
+                t.bytes = now;
+                last_progress = Instant::now();
+            }
         }
+        let sent: u64 = transfers.iter().filter(|t| t.dead.is_none()).map(|t| t.bytes).sum();
         if transfers.iter().all(|t| t.done || t.dead.is_some()) {
-            break;
+            break Ok(());
         }
         let waiting = sent == 0;
         let tail = transfers.iter().any(|t| t.done)
@@ -1600,7 +1702,7 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
             cancel_live(&transfers);
             let why = if waiting { "kept the files queued" } else { "stopped sending" };
             note(format!("{user} {why} for {}s; trying another copy", patience.as_secs()));
-            return Err(Stop::Failed(format!("{user} {why} for too long")));
+            break Err(Stop::Failed(format!("{user} {why} for too long")));
         }
         if last_emit.elapsed() >= Duration::from_millis(400) {
             last_emit = Instant::now();
@@ -1612,7 +1714,9 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
             });
         }
         std::thread::sleep(Duration::from_millis(250));
-    }
+    };
+    forget_downloads(client, transfers.iter().map(|t| &t.item.offer));
+    outcome?;
     if let Some(problem) = transfers.iter().find_map(|t| t.dead.clone()) {
         return Err(Stop::Failed(problem));
     }
@@ -1883,7 +1987,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
 
         // A folder picked by hand, downloaded as it is: only its audio, with its own names.
-        let search = Searching::start(&ours, vec!["test album".into()]).unwrap();
+        let search = Searching::start(&ours, vec!["test album".into()], None).unwrap();
         std::thread::sleep(Duration::from_secs(3));
         let hits = folder_hits(&search.offers(), Some(&req.tracks.iter().map(|t| t.want.clone()).collect::<Vec<_>>()));
         drop(search);
@@ -1947,7 +2051,7 @@ mod tests {
             _ => panic!("a song of the wrong length must not be downloaded"),
         }
         // Manual search for a song lists single files, the ones that are it first.
-        let search = Searching::start(&ours, vec!["beta song".into()]).unwrap();
+        let search = Searching::start(&ours, vec!["beta song".into()], None).unwrap();
         std::thread::sleep(Duration::from_secs(3));
         let hits = file_hits(&search.offers(), &req.want);
         drop(search);

@@ -21,7 +21,7 @@ vi.mock('../src/music/actions', () => ({
   setPlaylistTracks: vi.fn(async () => {}),
 }));
 
-import { createPlaylist } from '../src/music/actions';
+import { createPlaylist, setPlaylistTracks } from '../src/music/actions';
 import { useMusicPlayer } from '../src/music/player';
 import type { MusicTrack } from '../src/music/types';
 import { useMusicDownloads } from '../src/services/musicDownloads';
@@ -35,6 +35,7 @@ import {
   songFromVideo,
   splitArtists,
   startImport,
+  stopImport,
   usePlaylistImports,
   type ImportSong,
 } from '../src/services/playlistImport';
@@ -44,6 +45,8 @@ const emit = (name: string, payload: unknown) => events.get(name)?.forEach((cb) 
 
 beforeEach(() => {
   vi.mocked(invoke).mockReset();
+  vi.mocked(createPlaylist).mockClear();
+  vi.mocked(setPlaylistTracks).mockClear();
   useLibraryStore.setState(useLibraryStore.getInitialState(), true);
   useMusicDownloads.setState({ status: { state: 'offline', username: '', message: '' }, jobs: {} });
   usePlaylistImports.setState({ imports: {}, order: [] });
@@ -302,4 +305,126 @@ it('an exported CSV keeps its playlist name', async () => {
   // Otherwise the file's name, else a plain one.
   expect((await readPlaylist('Frank Ocean - Nights', undefined, 'Road Trip.csv')).name).toBe('Road Trip');
   expect((await readPlaylist('Frank Ocean - Nights')).name).toBe('Pasted songs');
+});
+
+it('CSV files with old Mac line endings or line breaks inside quotes still read', () => {
+  const mac = 'Title,Artist\rNights,Frank Ocean\rIvy,Frank Ocean';
+  expect(parseSongList(mac).map((s) => s.title)).toEqual(['Nights', 'Ivy']);
+  const quoted = 'Title,Artist\n"Line\nbreak",X\nNext,Y';
+  expect(parseSongList(quoted).map((s) => [s.title, s.artists])).toEqual([
+    ['Line break', ['X']],
+    ['Next', ['Y']],
+  ]);
+});
+
+it('a music video credit before the dash stays with the artist', () => {
+  expect(songFromVideo('Drake ft. Rihanna - Too Good (Official Video)', 'DrakeVEVO')).toEqual({ title: 'Too Good', artists: ['Drake', 'Rihanna'] });
+  expect(songFromVideo('Too Good (feat. Rihanna)', 'Drake - Topic')).toEqual({ title: 'Too Good', artists: ['Drake - Topic', 'Rihanna'] });
+});
+
+/** A backend whose song jobs are answered by `answer` (the request in, what to send back). */
+function songBackend(answer: (request: Record<string, unknown>) => Promise<unknown> | unknown, catalogRows: () => Promise<unknown> = async () => ({ results: [] })) {
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, music_directories: ['C:/Music'], soulseek_username: 'me', soulseek_password: 'pw' } }));
+  useMusicPlayer.setState({ api: {} as never, library: { tracks: [], albums: [], artists: [], playlists: [] } });
+  const requests: Record<string, unknown>[] = [];
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (cmd === 'slsk_status' || cmd === 'slsk_connect') return { state: 'online', username: 'me', message: '' };
+    if (cmd === 'slsk_jobs') return [];
+    if (cmd === 'music_catalog') return catalogRows();
+    if (cmd === 'slsk_download_song') {
+      const request = a.request as Record<string, unknown>;
+      requests.push(request);
+      return answer(request);
+    }
+    return undefined;
+  });
+  return requests;
+}
+
+const songJob = (request: Record<string, unknown>, patch: Record<string, unknown>) => ({
+  id: request.id,
+  kind: 'song',
+  group: request.group,
+  releaseId: 'x',
+  album: 'x',
+  artist: 'x',
+  cover: null,
+  state: 'searching',
+  message: '',
+  bytes: 0,
+  total: 0,
+  filesDone: 0,
+  filesTotal: 1,
+  source: null,
+  path: null,
+  ...patch,
+});
+
+const plainSong = (title: string, artist: string) => ({ title, artists: [artist], album: null, lengthMs: null, appleId: null, cover: null, explicit: false });
+
+it('a song whose job fails before its start has even answered isn’t left searching', async () => {
+  songBackend((request) => {
+    // The job fails at once: its update arrives before the command returns.
+    emit('slsk-job', songJob(request, { state: 'failed', code: 'no-match', message: 'Nobody on Soulseek is sharing this song right now.' }));
+    return songJob(request, { state: 'searching' });
+  });
+  const id = addImport({ source: 'list', id: 'l', name: 'L', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+  await startImport(id);
+  const song = () => usePlaylistImports.getState().imports[id].songs[0];
+  await vi.waitFor(() => expect(song()).toMatchObject({ state: 'failed', message: 'Nobody on Soulseek is sharing this song right now.' }));
+  expect(usePlaylistImports.getState().imports[id].running).toBe(false);
+});
+
+it('Stop stops a song that’s still being matched: it isn’t downloaded after all', async () => {
+  let answerCatalog: (rows: unknown) => void = () => {};
+  const requests = songBackend(
+    (request) => songJob(request, {}),
+    () => new Promise((resolve) => (answerCatalog = resolve)),
+  );
+  const id = addImport({ source: 'list', id: 'l', name: 'L', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+  await startImport(id);
+  const song = () => usePlaylistImports.getState().imports[id].songs[0];
+  await vi.waitFor(() => expect(song().state).toBe('matching'));
+  stopImport(id);
+  answerCatalog({ results: [] });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(requests).toHaveLength(0);
+  expect(song().state).toBe('waiting');
+});
+
+it('a song listed twice is downloaded once', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const requests = songBackend((request) => songJob(request, {}));
+    const id = addImport({ source: 'list', id: 'l', name: 'L', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis'), plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+    await startImport(id);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const songs = () => usePlaylistImports.getState().imports[id].songs;
+    // Both start together; the second waits for the first rather than failing as "already downloading".
+    await vi.waitFor(() => expect(songs().map((s) => s.state).sort()).toEqual(['searching', 'waiting']));
+    const first = songs().findIndex((s) => s.state === 'searching');
+    emit('slsk-job', songJob(requests[0], { state: 'done', path: 'C:/Music/Kali Uchis/Singles/Moonlight.flac' }));
+    await vi.advanceTimersByTimeAsync(21_000);
+    await vi.waitFor(() => expect(songs()[1 - first]).toMatchObject({ state: 'done', path: 'C:/Music/Kali Uchis/Singles/Moonlight.flac' }));
+    expect(requests).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('another playlist that only shares a name isn’t overwritten', async () => {
+  const requests = songBackend((request) => songJob(request, {}));
+  useMusicPlayer.setState({ api: {} as never, library: { tracks: [], albums: [], artists: [], playlists: [{ id: 41, name: 'Pasted songs', trackIds: [1], updatedAt: 0 }] } });
+  usePlaylistImports.setState((s) => ({
+    imports: { ...s.imports, old: { id: 'old', source: 'list', sourceId: 'list-1', name: 'Pasted songs', owner: null, cover: null, total: null, songs: [], quality: 'any', running: false, playlistId: 41, finishing: false } },
+    order: ['old', ...s.order],
+  }));
+  const id = addImport({ source: 'list', id: 'list-2', name: 'Pasted songs', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+  await startImport(id);
+  await vi.waitFor(() => expect(requests).toHaveLength(1));
+  scan.files = new Map([['C:\\Music\\Kali Uchis\\Singles\\Moonlight.flac', { id: 12, mtime: 0, size: 1 }]]);
+  emit('slsk-job', songJob(requests[0], { state: 'done', path: 'C:/Music/Kali Uchis/Singles/Moonlight.flac' }));
+  await vi.waitFor(() => expect(createPlaylist).toHaveBeenCalledWith('Pasted songs', [12]));
+  expect(setPlaylistTracks).not.toHaveBeenCalled();
 });

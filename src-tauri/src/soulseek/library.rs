@@ -148,17 +148,36 @@ impl SongRequest {
             None => base.join("Singles"),
         };
         let name = match (self.track, self.disc) {
-            (Some(n), Some(d)) if d > 1 => format!("{d}-{n:02} - {}.{ext}", self.want.title),
-            (Some(n), _) => format!("{n:02} - {}.{ext}", self.want.title),
-            _ => format!("{}.{ext}", self.want.title),
+            (Some(n), Some(d)) if d > 1 => format!("{d}-{n:02} - {}", self.want.title),
+            (Some(n), _) => format!("{n:02} - {}", self.want.title),
+            _ => self.want.title.clone(),
         };
-        dir.join(safe_name(&name))
+        dir.join(file_name(&name, ext))
     }
+}
+
+/// Reads an audio file by what's in it, not its name (an .ogg file can hold Opus or Vorbis).
+fn open_audio(path: &Path) -> Result<lofty::file::TaggedFile, lofty::error::FileParseError> {
+    lofty::probe::Probe::open(path)?.guess_file_type()?.read()
+}
+
+/// Writes `tag` as the file's only tag: every other kind it had (an old ID3v1 or APE tag on an
+/// MP3, say) is taken off the file too, so players can't disagree about the song.
+fn replace_tags(path: &Path, mut file: lofty::file::TaggedFile, tag: Tag) -> Result<(), String> {
+    let kind = tag.tag_type();
+    let others: Vec<lofty::tag::TagType> = file.tags().iter().map(|t| t.tag_type()).filter(|t| *t != kind).collect();
+    file.clear();
+    file.insert_tag(tag);
+    file.save_to_path(path, WriteOptions::default()).map_err(|e| format!("Couldn’t write the tags: {e}"))?;
+    for other in others {
+        let _ = other.remove_from_path(path, WriteOptions::default());
+    }
+    Ok(())
 }
 
 /// Replaces a song's tags with the playlist's (and the store's) details and its cover.
 pub fn tag_song(path: &Path, req: &SongRequest, cover: Option<&[u8]>) -> Result<(), String> {
-    let mut file = lofty::read_from_path(path).map_err(|e| format!("Couldn’t open the file to tag it: {e}"))?;
+    let file = open_audio(path).map_err(|e| format!("Couldn’t open the file to tag it: {e}"))?;
     let mut tag = Tag::new(file.primary_tag_type());
     tag.set_title(req.want.title.clone());
     tag.set_artist(req.artist.clone());
@@ -185,9 +204,7 @@ pub fn tag_song(path: &Path, req: &SongRequest, cover: Option<&[u8]>) -> Result<
             tag.push_picture(picture);
         }
     }
-    file.clear();
-    file.insert_tag(tag);
-    file.save_to_path(path, WriteOptions::default()).map_err(|e| format!("Couldn’t write the tags: {e}"))
+    replace_tags(path, file, tag)
 }
 
 impl AlbumRequest {
@@ -217,7 +234,7 @@ pub fn verify(path: &Path, ext: &str, size: u64, length_ms: Option<u32>) -> Resu
         return Err(format!("{name} arrived incomplete ({actual} of {size} bytes)"));
     }
     let kinds = expected_type(ext).ok_or_else(|| format!("{name} isn't an audio format TruongFlix downloads"))?;
-    let file = lofty::read_from_path(path).map_err(|_| format!("{name} isn't a readable audio file"))?;
+    let file = open_audio(path).map_err(|_| format!("{name} isn't a readable audio file"))?;
     if !kinds.contains(&file.file_type()) {
         return Err(format!("{name} isn't really a .{ext} file"));
     }
@@ -237,7 +254,7 @@ pub fn verify(path: &Path, ext: &str, size: u64, length_ms: Option<u32>) -> Resu
 /// Replaces the file's tags with the release's own details and its cover.
 pub fn tag(path: &Path, req: &AlbumRequest, index: usize, cover: Option<&[u8]>) -> Result<(), String> {
     let track = &req.tracks[index];
-    let mut file = lofty::read_from_path(path).map_err(|e| format!("Couldn’t open the file to tag it: {e}"))?;
+    let file = open_audio(path).map_err(|e| format!("Couldn’t open the file to tag it: {e}"))?;
     let mut tag = Tag::new(file.primary_tag_type());
     tag.set_title(track.want.title.clone());
     tag.set_artist(track.artist.clone());
@@ -276,10 +293,7 @@ pub fn tag(path: &Path, req: &AlbumRequest, index: usize, cover: Option<&[u8]>) 
             tag.push_picture(picture);
         }
     }
-    // Every other tag (and its stale details) goes, so players can't disagree about the album.
-    file.clear();
-    file.insert_tag(tag);
-    file.save_to_path(path, WriteOptions::default()).map_err(|e| format!("Couldn’t write the tags: {e}"))
+    replace_tags(path, file, tag)
 }
 
 /// A file or folder name that's valid on Windows and macOS.
@@ -296,8 +310,14 @@ pub fn safe_name(text: &str) -> String {
     if name.chars().count() > 120 {
         name = name.chars().take(120).collect::<String>().trim_end_matches(['.', ' ']).to_string();
     }
-    let reserved = ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "lpt1", "lpt2", "lpt3"];
-    if name.is_empty() || name.chars().all(|c| c == '.') || reserved.contains(&name.to_ascii_lowercase().as_str()) {
+    // Windows refuses these names, with or without an extension ("CON", "nul.txt", "COM1").
+    let first = name.split('.').next().unwrap_or("").trim_end().to_ascii_lowercase();
+    let port = |prefix: &str| {
+        let mut rest = first.strip_prefix(prefix).unwrap_or("x!").chars();
+        matches!((rest.next(), rest.next()), (Some(d), None) if d.is_ascii_digit() || "¹²³".contains(d))
+    };
+    let reserved = matches!(first.as_str(), "con" | "prn" | "aux" | "nul" | "conin$" | "conout$") || port("com") || port("lpt");
+    if name.is_empty() || name.chars().all(|c| c == '.') || reserved {
         name = format!("_{name}");
     }
     name
@@ -327,7 +347,12 @@ pub fn track_file_name(req: &AlbumRequest, index: usize, ext: &str) -> String {
     let track = &req.tracks[index].want;
     let multi = req.tracks.iter().any(|t| t.want.disc > 1);
     let number = if multi { format!("{}-{:02}", track.disc, track.position) } else { format!("{:02}", track.position) };
-    safe_name(&format!("{number} - {}.{ext}", track.title))
+    file_name(&format!("{number} - {}", track.title), ext)
+}
+
+/// A safe file name with its extension (a long title is shortened, never its ".flac").
+pub fn file_name(stem: &str, ext: &str) -> String {
+    format!("{}.{ext}", safe_name(stem))
 }
 
 /// Moves (or copies, across drives) a finished file into place.
@@ -335,7 +360,15 @@ pub fn move_into(from: &Path, to: &Path) -> Result<(), String> {
     if std::fs::rename(from, to).is_ok() {
         return Ok(());
     }
-    std::fs::copy(from, to).map_err(|e| format!("Couldn’t file {}: {e}", to.display()))?;
+    // Across drives: copied beside the target first, so a copy cut short never looks like a song.
+    let mut part = to.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let copied = std::fs::copy(from, &part).and_then(|_| std::fs::rename(&part, to));
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!("Couldn’t file {}: {e}", to.display()));
+    }
     let _ = std::fs::remove_file(from);
     Ok(())
 }
@@ -377,6 +410,11 @@ mod tests {
     fn names_are_safe_everywhere() {
         assert_eq!(safe_name("AC/DC: Live?"), "AC_DC_ Live_");
         assert_eq!(safe_name("CON"), "_CON");
+        assert_eq!(safe_name("nul.txt"), "_nul.txt");
+        assert_eq!(safe_name("COM9"), "_COM9");
+        assert_eq!(safe_name("Console"), "Console");
+        let long = file_name(&"x".repeat(300), "flac");
+        assert!(long.ends_with(".flac") && long.len() <= 125);
         assert_eq!(safe_name(".."), "_");
         assert_eq!(safe_name("  Trailing. "), "Trailing");
         assert!(safe_name(&"x".repeat(300)).len() <= 120);

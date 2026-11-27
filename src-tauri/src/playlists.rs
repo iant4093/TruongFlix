@@ -147,7 +147,8 @@ pub fn spotify(id: &str, html: &str) -> Result<Playlist, String> {
         owner: text(&entity["subtitle"]),
         cover: entity["coverArt"]["sources"].as_array().and_then(|s| s.iter().filter_map(|i| text(&i["url"])).next()),
         total: None,
-        partial: false,
+        // The embed page stops at 100 entries (songs and episodes): a list that fills it may be longer.
+        partial: list.len() >= 100,
         songs,
     })
 }
@@ -192,7 +193,7 @@ pub fn apple(id: &str, html: &str) -> Result<Playlist, String> {
         owner: header["subtitleLinks"].as_array().and_then(|l| l.first()).and_then(|a| text(&a["title"])),
         cover: artwork(&header["artwork"], 600),
         total: header["trackCount"].as_u64().map(|n| n as u32),
-        partial: data.to_string().contains("PlaylistPaginationIntent"),
+        partial: html.contains("PlaylistPaginationIntent"),
         songs,
     })
 }
@@ -329,7 +330,8 @@ async fn youtube_rest(client: &reqwest::Client, html: &str, playlist: &mut Playl
         if !response.status().is_success() {
             break;
         }
-        let Ok(page) = response.json::<Value>().await else { break };
+        let Ok(body) = read_body(response).await else { break };
+        let Ok(page) = serde_json::from_slice::<Value>(&body) else { break };
         let actions = &page["onResponseReceivedActions"];
         let more = youtube_songs(actions);
         if more.is_empty() {
@@ -391,7 +393,15 @@ async fn read_page(client: &reqwest::Client, url: &str) -> Result<String, String
     if !(200..300).contains(&status) {
         return Err(format!("The streaming service answered {status}"));
     }
-    let mut response = response;
+    let body = read_body(response).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// A response's body, up to MAX_PAGE.
+async fn read_body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    if response.content_length().is_some_and(|n| n > MAX_PAGE as u64) {
+        return Err("The playlist page was too large".into());
+    }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| "Couldn’t read the playlist page".to_string())? {
         if body.len() + chunk.len() > MAX_PAGE {
@@ -399,7 +409,7 @@ async fn read_page(client: &reqwest::Client, url: &str) -> Result<String, String
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    Ok(body)
 }
 
 /// Reads Spotify songs by their ids (from links copied out of the Spotify app), in order; a song
@@ -410,6 +420,7 @@ pub async fn music_spotify_songs(ids: Vec<String>) -> Result<Vec<Option<Playlist
         return Err("Not Spotify song links".into());
     }
     let client = page_client()?;
+    let count = ids.len();
     let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(SPOTIFY_AT_ONCE));
     let mut tasks = tokio::task::JoinSet::new();
     for (i, id) in ids.into_iter().enumerate() {
@@ -426,7 +437,7 @@ pub async fn music_spotify_songs(ids: Vec<String>) -> Result<Vec<Option<Playlist
             out.push(found);
         }
     }
-    let count = out.iter().map(|(i, _)| i + 1).max().unwrap_or(0);
+    // One place per link asked for, so songs keep their places even when the last ones fail.
     let mut songs: Vec<Option<PlaylistSong>> = vec![None; count];
     for (i, song) in out {
         songs[i] = Some(song);
@@ -460,21 +471,19 @@ pub async fn read_playlist_page(link: String) -> Result<Playlist, String> {
 pub async fn music_playlist(app: tauri::AppHandle, link: String) -> Result<Playlist, String> {
     let mut playlist = read_playlist_page(link.clone()).await?;
     let more = match recognise(&link) {
-        // The embed page stops at 100: a playlist that fills it may well be longer.
-        Some(Source::Spotify(id)) if playlist.songs.len() >= 100 => Some(crate::playlist_reader::Page::Spotify(id)),
+        Some(Source::Spotify(id)) if playlist.partial => Some(crate::playlist_reader::Page::Spotify(id)),
         Some(Source::Apple(cc, id)) if playlist.partial => Some(crate::playlist_reader::Page::Apple(cc, id)),
         _ => None,
     };
     if let Some(page) = more {
-        // If the page can't be read whole, what its first part showed still imports.
-        if let Ok(songs) = crate::playlist_reader::read_all(&app, page).await {
-            if songs.len() > playlist.songs.len() {
+        // If the page can't be read whole, what its first part showed still imports (and the
+        // playlist stays marked as only partly read).
+        if let Ok((songs, complete)) = crate::playlist_reader::read_all(&app, page).await {
+            if songs.len() >= playlist.songs.len() {
                 playlist.songs = songs;
                 playlist.total = Some(playlist.songs.len() as u32);
-                playlist.partial = false;
+                playlist.partial = !complete;
             }
-        } else if playlist.source == "spotify" {
-            playlist.partial = true;
         }
     }
     Ok(playlist)

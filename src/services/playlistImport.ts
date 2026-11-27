@@ -7,7 +7,7 @@ import { useMusicPlayer } from '../music/player';
 import type { MusicTrack } from '../music/types';
 import type { MusicQuality } from '../types/media';
 import { catalog, chartCountry, sizedCover } from './musicCatalog';
-import { connectSoulseek, downloadFolder, initMusicDownloads, useMusicDownloads, type AlbumJob, type SharedFile } from './musicDownloads';
+import { connectSoulseek, disconnectedByUser, downloadFolder, initMusicDownloads, loginRefused, useMusicDownloads, type AlbumJob, type SharedFile } from './musicDownloads';
 import { runMusicScan, useMusicScan } from './music';
 import * as mdb from './musicdb';
 
@@ -86,6 +86,8 @@ export interface ImportSong extends PlaylistSong {
 export interface PlaylistImport {
   id: string;
   source: ImportSource;
+  /** The streaming service's id for the playlist (made up for pasted lists). */
+  sourceId?: string;
   name: string;
   owner: string | null;
   cover: string | null;
@@ -113,36 +115,69 @@ const SAVED = 'truongflix:playlist-imports';
 
 /** Imports are kept between sessions (what was found, and what's left to find by hand). */
 function loadSaved(): ImportsState {
+  let saved: Partial<ImportsState> | null = null;
   try {
-    const saved = JSON.parse(localStorage.getItem(SAVED) ?? 'null') as ImportsState | null;
-    if (!saved?.order || !saved.imports) return { imports: {}, order: [] };
-    // Nothing is in flight after a restart: those songs wait to be started again.
-    for (const p of Object.values(saved.imports)) {
-      p.running = false;
-      p.finishing = false;
-      p.songs = p.songs.map((s) => (isBusy(s.state) ? { ...s, state: 'waiting', jobId: null, progress: 0 } : s));
-    }
-    return { imports: saved.imports, order: saved.order.filter((id) => saved.imports[id]) };
+    saved = JSON.parse(localStorage.getItem(SAVED) ?? 'null') as Partial<ImportsState> | null;
   } catch {
     return { imports: {}, order: [] };
   }
+  const imports: Record<string, PlaylistImport> = {};
+  const order: string[] = [];
+  for (const id of Array.isArray(saved?.order) ? saved.order : []) {
+    const p = saved?.imports?.[id];
+    // A damaged import is left out; the others still load.
+    if (!p || typeof p !== 'object' || typeof p.name !== 'string' || !Array.isArray(p.songs) || imports[id]) continue;
+    const songs = p.songs.filter((s) => s && typeof s === 'object' && typeof s.key === 'string' && typeof s.title === 'string' && Array.isArray(s.artists));
+    // Nothing is in flight after a restart: those songs wait to be started again.
+    imports[id] = { ...p, running: false, finishing: false, songs: songs.map((s) => (isBusy(s.state) ? { ...s, state: 'waiting', jobId: null, progress: 0 } : s)) };
+    order.push(id);
+  }
+  return { imports, order };
 }
 
 export const usePlaylistImports = create<ImportsState>(() => (typeof localStorage === 'undefined' ? { imports: {}, order: [] } : loadSaved()));
 
+/** Saved at most this often while an import runs (its songs change many times a second). */
+const SAVE_EVERY = 3000;
+/** Most characters of saved imports (the newest always fits): the same storage holds the app's other settings. */
+const SAVE_BUDGET = 1_500_000;
 let saving: ReturnType<typeof setTimeout> | null = null;
-usePlaylistImports.subscribe((state) => {
-  if (typeof localStorage === 'undefined') return;
-  if (saving) clearTimeout(saving);
-  saving = setTimeout(() => {
-    const order = state.order.slice(0, 20);
-    try {
-      localStorage.setItem(SAVED, JSON.stringify({ order, imports: Object.fromEntries(order.map((id) => [id, state.imports[id]])) }));
-    } catch {
-      // Storage full: the imports still work for this session.
-    }
-  }, 800);
-});
+
+function saveImports() {
+  saving = null;
+  const state = usePlaylistImports.getState();
+  const order: string[] = [];
+  const parts: string[] = [];
+  let size = 0;
+  for (const id of state.order.slice(0, 20)) {
+    const p = state.imports[id];
+    if (!p) continue;
+    const json = JSON.stringify(p);
+    if (order.length && size + json.length > SAVE_BUDGET) break;
+    order.push(id);
+    parts.push(`${JSON.stringify(id)}:${json}`);
+    size += json.length;
+  }
+  try {
+    localStorage.setItem(SAVED, `{"order":${JSON.stringify(order)},"imports":{${parts.join(',')}}}`);
+  } catch {
+    // Storage full: the imports still work for this session.
+  }
+}
+
+/** Saves now anything not yet saved (when the app closes). */
+export function flushImports() {
+  if (!saving) return;
+  clearTimeout(saving);
+  saveImports();
+}
+
+if (typeof localStorage !== 'undefined') {
+  usePlaylistImports.subscribe(() => {
+    saving ??= setTimeout(saveImports, SAVE_EVERY);
+  });
+  if (typeof window !== 'undefined') window.addEventListener('beforeunload', flushImports);
+}
 
 const API = 'https://itunes.apple.com';
 /** Songs matched and searched for at once (the app also spaces Soulseek searches out: the
@@ -247,37 +282,55 @@ export async function readPlaylist(input: string, onProgress?: (done: number, to
   return { source: 'list', id: `list-${Date.now()}`, name: listName(text) ?? name?.replace(/\.(csv|txt|tsv)$/i, '').trim() ?? 'Pasted songs', owner: null, cover: null, total: null, songs };
 }
 
-/** Splits a CSV line (quotes and doubled quotes understood). */
-function csvCells(line: string, sep: string) {
-  const out: string[] = [];
+/** Line breaks of any kind (old Mac exports end lines with a bare carriage return). */
+const LINE_BREAK = /\r\n|\r|\n/;
+
+/** The separator of a CSV text, from its first line (none when it isn't one). */
+const csvSeparator = (text: string) => {
+  const first = text.trim().split(LINE_BREAK)[0] ?? '';
+  return [',', ';', '\t'].find((s) => first.includes(s));
+};
+
+/** A CSV text's rows (quoted cells may hold the separator, doubled quotes and line breaks). */
+function csvRows(text: string, sep: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
   let cell = '';
   let quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
+  const endCell = () => {
+    row.push(cell.replace(/\s+/g, ' ').trim());
+    cell = '';
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
     if (quoted) {
-      if (c === '"' && line[i + 1] === '"') {
+      if (c === '"' && text[i + 1] === '"') {
         cell += '"';
         i++;
       } else if (c === '"') quoted = false;
       else cell += c;
     } else if (c === '"') quoted = true;
-    else if (c === sep) {
-      out.push(cell.trim());
-      cell = '';
+    else if (c === sep) endCell();
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      endCell();
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
     } else cell += c;
   }
-  out.push(cell.trim());
-  return out;
+  endCell();
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
 }
 
 /** The playlist's name in an exported CSV (TuneMyMusic and Soundiiz add a "Playlist name" column). */
 export function listName(text: string): string | null {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  const sep = [',', ';', '\t'].find((s) => lines[0]?.includes(s));
-  if (!sep || lines.length < 2) return null;
-  const header = csvCells(lines[0], sep).map((h) => h.toLowerCase());
-  const at = header.findIndex((h) => /^playlist( name)?$/.test(h));
-  return at >= 0 ? csvCells(lines[1], sep)[at]?.trim() || null : null;
+  const sep = csvSeparator(text);
+  if (!sep) return null;
+  const rows = csvRows(text, sep);
+  if (rows.length < 2) return null;
+  const at = rows[0].findIndex((h) => /^playlist( name)?$/.test(h.toLowerCase()));
+  return at >= 0 ? rows[1][at]?.trim() || null : null;
 }
 
 const duration = (v: string | undefined, header: string): number | null => {
@@ -293,19 +346,19 @@ const duration = (v: string | undefined, header: string): number | null => {
  * a header row naming the title and artist columns), or one song per line as "Artist - Title".
  */
 export function parseSongList(text: string): PlaylistSong[] {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  const lines = text.split(LINE_BREAK).filter((l) => l.trim());
   if (!lines.length) return [];
-  const sep = [',', ';', '\t'].find((s) => lines[0].includes(s));
-  if (sep) {
-    const header = csvCells(lines[0], sep).map((h) => h.toLowerCase());
+  const sep = csvSeparator(text);
+  const rows = sep ? csvRows(text, sep) : [];
+  if (sep && rows.length) {
+    const header = rows[0].map((h) => h.toLowerCase());
     const col = (...names: RegExp[]) => header.findIndex((h) => names.some((n) => n.test(h)));
     const title = col(/^track name$/, /^track$/, /^title$/, /^song( name)?$/, /^name$/);
     const artist = col(/^artist name\(s\)$/, /^artist names?$/, /^artists?$/);
     if (title >= 0 && artist >= 0) {
       const album = col(/^album name$/, /^album$/);
       const length = col(/duration/, /^length$/, /^time$/);
-      return lines.slice(1).flatMap((line) => {
-        const cells = csvCells(line, sep);
+      return rows.slice(1).flatMap((cells) => {
         const name = cells[title]?.trim();
         if (!name) return [];
         return [
@@ -341,7 +394,8 @@ const VIDEO_JUNK =
 export function songFromVideo(title: string, channel: string | null): { title: string; artists: string[] } {
   let text = title.replace(VIDEO_JUNK, '').replace(/\s+\|.*$/, '').trim();
   const featured: string[] = [];
-  text = text.replace(/\s*[([]?\s*\b(?:ft|feat|featuring)\.?\s+([^)\]]+)[)\]]?/i, (_, who: string) => {
+  // "ft. X" runs to its closing bracket, the " - " before the title, or the end.
+  text = text.replace(/\s*[([]?\s*\b(?:ft|feat|featuring)\.?\s+([^)\]]+?)(?=[)\]]|\s+[-–—]\s+|$)[)\]]?/i, (_, who: string) => {
     featured.push(...who.split(/\s*(?:,|&| x )\s*/).filter(Boolean));
     return '';
   });
@@ -455,12 +509,37 @@ async function searchStore(song: ImportSong): Promise<StoreSong | null> {
   }
 }
 
+/** The library's songs by title, worked out once per library (not once per imported song). */
+const byTitle = new WeakMap<MusicTrack[], Map<string, MusicTrack[]>>();
+function tracksTitled(tracks: MusicTrack[]) {
+  let index = byTitle.get(tracks);
+  if (!index) {
+    index = new Map();
+    for (const t of tracks) {
+      const key = coreTitle(t.title);
+      const list = index.get(key);
+      if (list) list.push(t);
+      else index.set(key, [t]);
+    }
+    byTitle.set(tracks, index);
+  }
+  return index;
+}
+
 /** The library song this is, when it's already there. */
 export function inLibrary(song: Pick<ImportSong, 'title' | 'artists'>, store: StoreSong | null, tracks: MusicTrack[]): MusicTrack | null {
   const titles = new Set([coreTitle(song.title), store ? coreTitle(store.title) : ''].filter(Boolean));
   const artists = [...song.artists, ...(store ? [store.artist] : [])];
-  return tracks.find((t) => titles.has(coreTitle(t.title)) && (!artists.length || artists.some((a) => sameArtist(a, t.artist) || sameArtist(a, t.albumArtist)))) ?? null;
+  const index = tracksTitled(tracks);
+  for (const title of titles) {
+    const found = index.get(title)?.find((t) => !artists.length || artists.some((a) => sameArtist(a, t.artist) || sameArtist(a, t.albumArtist)));
+    if (found) return found;
+  }
+  return null;
 }
+
+/** The same song twice in one playlist (by its store details when it has them). */
+const songIdentity = (s: Pick<ImportSong, 'title' | 'artists' | 'store'>) => `${coreTitle(s.store?.title ?? s.title)}\n${norm(s.store?.artist ?? s.artists[0] ?? '')}`;
 
 // ---------------------------------------------------------------------------
 // Running an import
@@ -499,7 +578,7 @@ export function addImport(read: ReadPlaylist, quality: MusicQuality): string {
     };
   });
   usePlaylistImports.setState((st) => ({
-    imports: { ...st.imports, [id]: { id, source: read.source, name: read.name, owner: read.owner, cover: read.cover, total: read.total, partial: read.partial, songs, quality, running: false, playlistId: null, finishing: false } },
+    imports: { ...st.imports, [id]: { id, source: read.source, sourceId: read.id, name: read.name, owner: read.owner, cover: read.cover, total: read.total, partial: read.partial, songs, quality, running: false, playlistId: null, finishing: false } },
     order: [id, ...st.order],
   }));
   return id;
@@ -534,11 +613,17 @@ function follow() {
       if (dropped) {
         // The connection dropped mid-song: it starts again once Soulseek is back, as if new.
         patchSong(p.id, song.key, { state: 'waiting', message: '', jobId: null, from: null, progress: 0, tries: Math.max(0, (song.tries ?? 1) - 1), retryAt: Date.now() + RECONNECT_PAUSE });
-      } else {
+      } else if (retry) {
         // Soulseek drops searches when it's busy, and people's queues clear: such a song waits a
         // little (a minute when copies were found but all busy) and is tried again.
         const wait = job.code === 'download' ? RETRY_BUSY_AFTER : RETRY_AFTER;
-        patchSong(p.id, song.key, retry ? { state: 'waiting', message: job.message, jobId: null, from: null, retryAt: Date.now() + wait } : songFromJob(job));
+        patchSong(p.id, song.key, { state: 'waiting', message: job.message, jobId: null, from: null, retryAt: Date.now() + wait });
+      } else {
+        const change = songFromJob(job);
+        // Progress comes several times a second: an update that changes nothing shown is skipped.
+        const same =
+          change.state === song.state && change.message === song.message && change.from === (song.from ?? null) && change.path === song.path && Math.round(change.progress! * 100) === Math.round(song.progress * 100);
+        if (!same) patchSong(p.id, song.key, change);
       }
       if (['done', 'failed', 'cancelled'].includes(job.state)) void pump(p.id);
     }
@@ -556,12 +641,17 @@ function songFromJob(job: AlbumJob): Partial<ImportSong> {
   };
 }
 
-/** Starts (or resumes) downloading an import's songs. */
-export async function startImport(id: string) {
+/** Logs in and follows downloads, ready to start songs. */
+async function ready() {
   if (!downloadFolder()) throw new Error('Add a music folder in Settings → Music first.');
   await initMusicDownloads();
   await connectSoulseek();
   follow();
+}
+
+/** Starts (or resumes) downloading an import's songs. */
+export async function startImport(id: string) {
+  await ready();
   const p = getImport(id);
   if (!p) return;
   // Failed and cancelled songs are tried again.
@@ -581,14 +671,34 @@ export function stopImport(id: string) {
   if (!p) return;
   clearTimeout(wakeups.get(id));
   wakeups.delete(id);
+  wakeAt.delete(id);
   patchImport(id, () => ({ running: false }));
   for (const s of p.songs) {
     if (s.jobId && isBusy(s.state)) void invoke('slsk_cancel', { id: s.jobId }).catch(() => {});
-    if (s.state === 'matching') patchSong(id, s.key, { state: 'waiting' });
+    // A song still being matched is let go of: its start sees that and doesn't download it.
+    if (s.state === 'matching') patchSong(id, s.key, { state: 'waiting', jobId: null });
   }
 }
 
+/** Each import's next wake-up, and when it's for. */
 const wakeups = new Map<string, ReturnType<typeof setTimeout>>();
+const wakeAt = new Map<string, number>();
+
+/** Runs `pump` for the import at `at` (or sooner, if it's already due to run sooner). */
+function wakeUp(id: string, at: number, then: () => void = () => void pump(id)) {
+  const planned = wakeAt.get(id);
+  if (wakeups.has(id) && planned != null && planned <= at) return;
+  clearTimeout(wakeups.get(id));
+  wakeAt.set(id, at);
+  wakeups.set(
+    id,
+    setTimeout(() => {
+      wakeups.delete(id);
+      wakeAt.delete(id);
+      then();
+    }, Math.max(0, at - Date.now())),
+  );
+}
 
 /** Starts the next songs while there's room; finishes the import when every song is settled. */
 async function pump(id: string) {
@@ -599,17 +709,19 @@ async function pump(id: string) {
     return;
   }
   // While Soulseek reconnects, nothing new starts; the import picks up once it's back.
-  const status = useMusicDownloads.getState().status.state;
+  const { state: status, message } = useMusicDownloads.getState().status;
   if (status !== 'online') {
-    if (!wakeups.has(id)) {
-      wakeups.set(
-        id,
-        setTimeout(() => {
-          wakeups.delete(id);
-          void (status === 'connecting' ? Promise.resolve() : connectSoulseek().catch(() => {})).then(() => pump(id));
-        }, 3000),
-      );
+    // Unless the user disconnected, or Soulseek turned the account down: then the import stops.
+    if (disconnectedByUser() || (status === 'error' && loginRefused(message))) {
+      stopImport(id);
+      useLibraryStore.getState().toast(disconnectedByUser() ? `${p.name} stopped: Soulseek was disconnected.` : `${p.name} stopped: ${message}`, 'error');
+      return;
     }
+    if (!wakeups.has(id))
+      wakeUp(id, Date.now() + 3000, () => {
+        if (useMusicDownloads.getState().status.state === 'connecting' || disconnectedByUser()) void pump(id);
+        else void connectSoulseek().catch(() => {}).then(() => pump(id));
+      });
     return;
   }
   const busy = p.songs.filter((s) => isBusy(s.state)).length;
@@ -619,17 +731,8 @@ async function pump(id: string) {
   const waiting = p.songs.filter((s) => s.state === 'waiting');
   const next = waiting.filter((s) => !s.retryAt || s.retryAt <= now).slice(0, Math.max(0, room));
   const later = waiting.filter((s) => s.retryAt && s.retryAt > now);
-  if (later.length && !wakeups.has(id)) {
-    // Songs waiting to be searched again start once their wait is over.
-    const at = Math.min(...later.map((s) => s.retryAt!));
-    wakeups.set(
-      id,
-      setTimeout(() => {
-        wakeups.delete(id);
-        void pump(id);
-      }, at - now + 50),
-    );
-  }
+  // Songs waiting to be searched again start once their wait is over.
+  if (later.length) wakeUp(id, Math.min(...later.map((s) => s.retryAt!)) + 50);
   if (!next.length) {
     if (!busy && !later.length) {
       patchImport(id, () => ({ running: false }));
@@ -641,12 +744,18 @@ async function pump(id: string) {
 }
 
 async function startSong(id: string, key: string, copy?: { user: string } & SharedFile) {
-  const before = getImport(id)!.songs.find((s) => s.key === key)!;
-  patchSong(id, key, { state: 'matching', message: '', retryAt: undefined, tries: copy ? before.tries : (before.tries ?? 0) + 1 });
+  const current = () => getImport(id)?.songs.find((s) => s.key === key);
+  const before = current();
+  if (!before) return;
+  patchSong(id, key, { state: 'matching', message: '', jobId: null, retryAt: undefined, tries: copy ? before.tries : (before.tries ?? 0) + 1 });
+  // Stopped meanwhile (it's no longer 'matching'): this start lets the song be.
+  const stopped = () => current()?.state !== 'matching';
+  let jobId: string | null = null;
   try {
-    let song = getImport(id)!.songs.find((s) => s.key === key)!;
+    let song = current()!;
     if ((!song.store || isVideoAlbum(song.store.album)) && !copy) {
       const store = (await searchStore(song)) ?? song.store;
+      if (stopped()) return;
       if (store) patchSong(id, key, { store });
       song = { ...song, store };
     }
@@ -655,24 +764,57 @@ async function startSong(id: string, key: string, copy?: { user: string } & Shar
       patchSong(id, key, { state: 'owned', trackId: owned.id, message: '' });
       return;
     }
+    // The same song listed twice: it's downloaded once (a song being matched counts once it has
+    // claimed its job).
+    const twin = copy
+      ? null
+      : getImport(id)!.songs.find(
+          (o) => o.key !== key && (o.state === 'matching' ? !!o.jobId : isBusy(o.state) || o.state === 'done' || o.state === 'owned') && songIdentity(o) === songIdentity(song),
+        );
+    if (twin && (twin.state === 'done' || twin.state === 'owned')) {
+      patchSong(id, key, { state: twin.state, path: twin.path, trackId: twin.trackId, message: '' });
+      return;
+    }
+    if (twin) {
+      patchSong(id, key, { state: 'waiting', message: '', tries: before.tries, retryAt: Date.now() + RETRY_AFTER });
+      return;
+    }
+    // The job's id is the song's before the job starts, so its first updates (even a quick
+    // failure) are followed.
+    jobId = crypto.randomUUID();
+    patchSong(id, key, { jobId });
     const p = getImport(id)!;
-    const job = await downloadSong(id, p.source, song, p.quality, copy);
-    patchSong(id, key, { jobId: job.id, ...songFromJob(job) });
+    const request = await songRequest(jobId, id, p.source, song, p.quality, copy);
+    if (stopped() || current()?.jobId !== jobId) return;
+    const job = await invoke<AlbumJob>('slsk_download_song', { request });
+    if (current()?.jobId !== job.id) {
+      // Stopped (or handed on) while it was starting.
+      void invoke('slsk_cancel', { id: job.id }).catch(() => {});
+      return;
+    }
+    // Its updates may have come in first: the newest is kept.
+    patchSong(id, key, songFromJob(useMusicDownloads.getState().jobs[job.id] ?? job));
   } catch (e) {
+    const now = current();
+    if (!now || now.state !== 'matching' || (now.jobId ?? null) !== jobId) return;
     const message = e instanceof Error ? e.message : String(e);
+    const later = (wait: number) => patchSong(id, key, { state: 'waiting', message: '', jobId: null, tries: before.tries, retryAt: Date.now() + wait });
     if (notConnected(message) && !copy && getImport(id)?.running) {
       // Not this song's fault: it waits for Soulseek to be back.
-      patchSong(id, key, { state: 'waiting', message: '', tries: before.tries, retryAt: Date.now() + RECONNECT_PAUSE });
+      later(RECONNECT_PAUSE);
+    } else if (/already downloading/i.test(message) && !copy && getImport(id)?.running) {
+      // Another import is getting it: once that's done it's in the library.
+      later(RETRY_AFTER);
     } else {
-      patchSong(id, key, { state: 'failed', message });
+      patchSong(id, key, { state: 'failed', message, jobId: null });
     }
   } finally {
     void pump(id);
   }
 }
 
-/** Downloads one song (from `copy` when the user picked a file). */
-async function downloadSong(group: string, source: ImportSource, song: ImportSong, quality: MusicQuality, copy?: { user: string } & SharedFile): Promise<AlbumJob> {
+/** What to ask the app to download for one song (from `copy` when the user picked a file). */
+async function songRequest(jobId: string, group: string, source: ImportSource, song: ImportSong, quality: MusicQuality, copy?: { user: string } & SharedFile) {
   const destination = downloadFolder();
   if (!destination) throw new Error('Add a music folder in Settings → Music first.');
   const store = song.store;
@@ -680,51 +822,61 @@ async function downloadSong(group: string, source: ImportSource, song: ImportSon
   const cover = store?.cover ?? (source === 'youtube' ? null : song.cover);
   const coverPath = cover ? await invoke<string>('live_artwork', { url: cover }).catch(() => null) : null;
   const artists = songArtists(song);
-  return invoke<AlbumJob>('slsk_download_song', {
-    request: {
-      id: crypto.randomUUID(),
-      group,
-      title: store?.title ?? song.title,
-      artists: artists.length ? artists : [],
-      album: store?.album ?? song.album,
-      lengthMs: store?.lengthMs ?? (song.lengthTrusted ? song.lengthMs : null),
-      artist: store?.artist ?? song.artists.join(', '),
-      albumArtist: store?.albumArtist ?? null,
-      track: store?.album ? store.track : null,
-      disc: store?.album ? store.disc : null,
-      date: store?.date ?? null,
-      genre: store?.genre ?? null,
-      quality: copy ? 'any' : quality,
-      destination,
-      coverPath,
-      coverUrl: cover,
-      copy: copy ?? null,
-    },
-  });
+  return {
+    id: jobId,
+    group,
+    title: store?.title ?? song.title,
+    artists: artists.length ? artists : [],
+    album: store?.album ?? song.album,
+    lengthMs: store?.lengthMs ?? (song.lengthTrusted ? song.lengthMs : null),
+    artist: store?.artist ?? song.artists.join(', '),
+    albumArtist: store?.albumArtist ?? null,
+    track: store?.album ? store.track : null,
+    disc: store?.album ? store.disc : null,
+    date: store?.date ?? null,
+    genre: store?.genre ?? null,
+    quality: copy ? 'any' : quality,
+    destination,
+    coverPath,
+    coverUrl: cover,
+    copy: copy ?? null,
+  };
 }
 
-/** Tries a song again (searching for it anew). */
+/** Tries a song again (searching for it anew): just that song when the import isn't running. */
 export function retrySong(id: string, key: string) {
   patchSong(id, key, { state: 'waiting', message: '', jobId: null, tries: 0, retryAt: undefined });
   const p = getImport(id);
-  if (p && !p.running) void startImport(id).catch((e) => patchSong(id, key, { state: 'failed', message: String(e) }));
-  else void pump(id);
+  if (p?.running) void pump(id);
+  else
+    void ready()
+      .then(() => startSong(id, key))
+      .catch((e) => patchSong(id, key, { state: 'failed', message: e instanceof Error ? e.message : String(e) }));
 }
 
 /** Downloads a file the user picked for a song. */
 export async function pickSongFile(id: string, key: string, file: { user: string } & SharedFile) {
-  await initMusicDownloads();
-  await connectSoulseek();
-  follow();
+  await ready();
   await startSong(id, key, file);
 }
 
 const pathKey = (p: string) => p.replace(/\\/g, '/').toLowerCase();
 
+/** Imports whose playlist must be made again once the current making is done (a song came in meanwhile). */
+const finishAgain = new Set<string>();
+/** The songs each import's playlist was last made with: the same again changes nothing. */
+const finishedWith = new Map<string, string>();
+
 /** Scans the new songs in and makes (or updates) the playlist in the music library. */
 async function finish(id: string) {
   const p = getImport(id);
-  if (!p || p.finishing || !p.songs.some((s) => s.state === 'done' || s.state === 'owned')) return;
+  if (!p || !p.songs.some((s) => s.state === 'done' || s.state === 'owned')) return;
+  if (p.finishing) {
+    finishAgain.add(id);
+    return;
+  }
+  const settled = p.songs.map((s) => `${s.state}:${s.path ?? s.trackId ?? ''}`).join('|');
+  if (finishedWith.get(id) === settled && p.playlistId != null) return;
   patchImport(id, () => ({ finishing: true }));
   try {
     const wanted = () => getImport(id)!.songs.filter((s) => s.state === 'done' && s.path).map((s) => pathKey(s.path!));
@@ -739,9 +891,12 @@ async function finish(id: string) {
     const ids = now.songs.flatMap((s) => (s.state === 'owned' && s.trackId != null ? [s.trackId] : s.state === 'done' && s.path && index.has(pathKey(s.path)) ? [index.get(pathKey(s.path))!] : []));
     if (!ids.length || !useMusicPlayer.getState().api) return;
     const playlists = useMusicPlayer.getState().library?.playlists ?? [];
-    // Importing the same playlist again (say its full CSV after the first 300 songs from Apple's
-    // page) updates the playlist an earlier import of it made, rather than adding a second.
-    const earlier = Object.values(usePlaylistImports.getState().imports).find((p) => p.id !== id && p.name === now.name && p.playlistId != null && playlists.some((x) => x.id === p.playlistId))?.playlistId;
+    // Importing the same playlist again (its link again, or its full CSV after the first part
+    // from a page that showed only that) updates the playlist an earlier import of it made,
+    // rather than adding a second. Another playlist that only shares its name is left alone.
+    const samePlaylist = (o: PlaylistImport) =>
+      (o.source === now.source && !!o.sourceId && o.sourceId === now.sourceId && now.source !== 'list') || (!!o.partial && now.source === 'list' && o.name === now.name);
+    const earlier = Object.values(usePlaylistImports.getState().imports).find((o) => o.id !== id && o.playlistId != null && playlists.some((x) => x.id === o.playlistId) && samePlaylist(o))?.playlistId;
     const target = now.playlistId != null && playlists.some((x) => x.id === now.playlistId) ? now.playlistId : (earlier ?? null);
     if (target != null) {
       await setPlaylistTracks(target, ids);
@@ -750,12 +905,14 @@ async function finish(id: string) {
       const made = await createPlaylist(now.name, ids);
       patchImport(id, () => ({ playlistId: made?.id ?? null }));
     }
+    finishedWith.set(id, settled);
     const missing = now.songs.filter((s) => s.state === 'failed' || s.state === 'cancelled').length;
     useLibraryStore.getState().toast(`${now.name} is in your music library${missing ? ` (${missing} song${missing === 1 ? '' : 's'} not found)` : ''}`, 'success');
   } catch (e) {
     useLibraryStore.getState().toast(`Couldn’t make the playlist: ${e instanceof Error ? e.message : String(e)}`, 'error');
   } finally {
     patchImport(id, () => ({ finishing: false }));
+    if (finishAgain.delete(id)) void finish(id);
   }
 }
 

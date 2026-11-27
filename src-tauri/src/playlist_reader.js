@@ -35,7 +35,8 @@
     [...document.querySelectorAll('[data-testid="track-list-item"]')].map((row) => {
       const link = row.querySelector('a[href*="/song/"]')?.getAttribute('href') ?? '';
       return {
-        at: Number(row.getAttribute('data-row')),
+        // A row without its number can't be placed (Number(null) would make it row 0).
+        at: row.hasAttribute('data-row') ? Number(row.getAttribute('data-row')) : NaN,
         id: /\/song\/[^/]*\/(\d+)/.exec(link)?.[1] ?? /[?&]i=(\d+)/.exec(link)?.[1] ?? null,
         title: text(row.querySelector('[data-testid="track-title"]')),
         artists: [...row.querySelectorAll('[data-testid="track-title-by-line"] a[href*="/artist/"]')].map(text).filter(Boolean),
@@ -47,7 +48,8 @@
 
   const rows = CONFIG.service === 'spotify' ? spotifyRows : appleRows;
 
-  // Messages to the app, one at a time: each waits until the app says it has it.
+  // Messages to the app, one at a time: each waits until the app says it has it. Each carries the
+  // key the app gave this page, so nothing else can pose as the reader.
   let acked = -1;
   let next = 0;
   window.__truongflixAck = (n) => {
@@ -55,7 +57,7 @@
   };
   const send = async (kind, payload) => {
     const n = next++;
-    const address = `https://truongflix-reader.invalid/${kind}?n=${n}#${encodeURIComponent(JSON.stringify(payload))}`;
+    const address = `https://truongflix-reader.invalid/${kind}?n=${n}&k=${CONFIG.key}#${encodeURIComponent(JSON.stringify(payload))}`;
     for (let attempt = 0; attempt < 6 && acked < n; attempt++) {
       try {
         location.href = address;
@@ -64,6 +66,7 @@
       }
       for (let i = 0; i < 20 && acked < n; i++) await sleep(50);
     }
+    return acked >= n;
   };
 
   // The element that scrolls the track list (the window itself on Apple Music).
@@ -86,6 +89,7 @@
     const found = new Map();
     let unsent = [];
     let still = 0;
+    let complete = false;
     const started = Date.now();
     while (Date.now() - started < CONFIG.limitMs) {
       const before = found.size;
@@ -94,21 +98,23 @@
         found.set(song.at, song);
         unsent.push(song);
       }
-      if (unsent.length >= 100) {
-        await send('songs', unsent);
-        unsent = [];
-      }
+      // A batch the app didn't take is kept and sent again with the next.
+      if (unsent.length >= 100 && (await send('songs', unsent))) unsent = [];
       still = found.size === before ? still + 1 : 0;
       // Nothing new for a while, at the bottom of the list: that's the whole playlist.
-      if (still >= 24) break;
+      if (still >= 24) {
+        complete = true;
+        break;
+      }
       const list = scroller();
       const all = document.querySelectorAll('[data-testid="tracklist-row"], [data-testid="track-list-item"]');
       all[all.length - 1]?.scrollIntoView({ block: 'end' });
       list.scrollTop = list.scrollTop + Math.max(400, list.clientHeight * 0.8);
       await sleep(350);
     }
-    if (unsent.length) await send('songs', unsent);
-    await send('done', { count: found.size });
+    if (unsent.length && !(await send('songs', unsent))) complete = false;
+    // The app compares the count with what reached it.
+    await send('done', { count: found.size, complete });
   };
 
   const start = () => void run().catch((e) => send('error', { message: String(e?.message ?? e) }));

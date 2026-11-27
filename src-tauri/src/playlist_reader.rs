@@ -44,7 +44,15 @@ struct Row {
 #[derive(Default)]
 struct Reading {
     songs: BTreeMap<i64, Row>,
-    finished: Option<Result<(), String>>,
+    /// Whether the page read to the end of the list, and every song it read reached the app.
+    finished: Option<Result<bool, String>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Done {
+    count: usize,
+    complete: bool,
 }
 
 /// Which page to read.
@@ -63,9 +71,10 @@ impl Page {
     }
 }
 
-/// What a message from the page says, when it's one of ours: its kind, number and content.
-fn parse_reply(url: &Url) -> Option<(String, u64, String)> {
-    if url.host_str() != Some(REPLY_HOST) {
+/// What a message from the page says, when it's one of ours (sent with this reading's key): its
+/// kind, number and content.
+fn parse_reply(url: &Url, key: &str) -> Option<(String, u64, String)> {
+    if url.host_str() != Some(REPLY_HOST) || url.query_pairs().find(|(k, _)| k == "k").is_none_or(|(_, v)| v != key) {
         return None;
     }
     let kind = url.path().trim_start_matches('/').to_string();
@@ -95,7 +104,7 @@ fn percent_decode(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// Takes in one message from the page; true when it was ours (and so must not be navigated to).
+/// Takes in one message from the page.
 fn take_reply(reading: &Mutex<Reading>, kind: &str, body: &str) {
     let mut reading = reading.lock().unwrap();
     match kind {
@@ -111,7 +120,11 @@ fn take_reply(reading: &Mutex<Reading>, kind: &str, body: &str) {
                 }
             }
         }
-        "done" => reading.finished = Some(Ok(())),
+        "done" => {
+            let done: Done = serde_json::from_str(body).unwrap_or_default();
+            let all_here = reading.songs.len() >= done.count.min(MAX_SONGS);
+            reading.finished = Some(Ok(done.complete && all_here));
+        }
         "error" => {
             let message = serde_json::from_str::<serde_json::Value>(body)
                 .ok()
@@ -135,9 +148,28 @@ fn song_from(row: Row, apple: bool) -> PlaylistSong {
     }
 }
 
-/// Reads every song of the playlist on `page`, in order. Progress goes to the app as
-/// `playlist-read-progress` events (songs read so far).
-pub async fn read_all(app: &AppHandle, page: Page) -> Result<Vec<PlaylistSong>, String> {
+/// A fresh secret for one reading.
+fn new_key() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::getrandom(&mut bytes).is_err() {
+        // Never expected; still unguessable enough for a page that can't see the app.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        bytes.copy_from_slice(&now.to_le_bytes());
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Closes the reader's window, if a playlist is being read (when the app's own window closes).
+pub fn close(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let _ = window.destroy();
+    }
+}
+
+/// Reads every song of the playlist on `page`, in order, and whether that's all of it (false when
+/// the page stopped partway). Progress goes to the app as `playlist-read-progress` events (songs
+/// read so far).
+pub async fn read_all(app: &AppHandle, page: Page) -> Result<(Vec<PlaylistSong>, bool), String> {
     // One playlist page at a time.
     static ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _turn = ONE.lock().await;
@@ -147,7 +179,8 @@ pub async fn read_all(app: &AppHandle, page: Page) -> Result<Vec<PlaylistSong>, 
     let (address, host, service) = page.address();
     let apple = matches!(page, Page::Apple(..));
     let reading = Arc::new(Mutex::new(Reading::default()));
-    let config = serde_json::json!({ "service": service, "host": host, "limitMs": (LIMIT.as_millis() as u64).saturating_sub(20_000) });
+    let key = new_key();
+    let config = serde_json::json!({ "service": service, "host": host, "key": key, "limitMs": (LIMIT.as_millis() as u64).saturating_sub(20_000) });
     let script = include_str!("playlist_reader.js").replace("__READER_CONFIG__", &config.to_string());
     let target: Url = address.parse().map_err(|_| "Not a playlist page".to_string())?;
 
@@ -166,7 +199,8 @@ pub async fn read_all(app: &AppHandle, page: Page) -> Result<Vec<PlaylistSong>, 
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
         .initialization_script(script)
         .on_navigation(move |url| {
-            if let Some((kind, n, body)) = parse_reply(url) {
+            if url.host_str() == Some(REPLY_HOST) {
+                let Some((kind, n, body)) = parse_reply(url, &key) else { return false };
                 take_reply(&nav_reading, &kind, &body);
                 let count = nav_reading.lock().unwrap().songs.len();
                 let app = nav_app.clone();
@@ -208,13 +242,12 @@ pub async fn read_all(app: &AppHandle, page: Page) -> Result<Vec<PlaylistSong>, 
     };
     let _ = window.destroy();
     let songs = std::mem::take(&mut reading.lock().unwrap().songs);
-    match outcome {
-        Ok(()) if !songs.is_empty() => Ok(songs.into_values().map(|row| song_from(row, apple)).collect()),
-        Ok(()) => Err("The playlist page didn’t show any songs".into()),
-        Err(e) if songs.is_empty() => Err(e),
-        // Ran out of time partway: what was read still counts.
-        Err(_) => Ok(songs.into_values().map(|row| song_from(row, apple)).collect()),
+    if songs.is_empty() {
+        return Err(outcome.err().unwrap_or_else(|| "The playlist page didn’t show any songs".into()));
     }
+    let songs = songs.into_values().map(|row| song_from(row, apple)).collect();
+    // Ran out of time partway: what was read still counts, as part of the playlist.
+    Ok((songs, outcome.unwrap_or(false)))
 }
 
 /// Manual check against real playlists: opens a real app, reads each link given (the whole
@@ -258,11 +291,20 @@ mod tests {
 
     #[test]
     fn only_our_made_up_address_is_a_reply() {
-        let url: Url = "https://truongflix-reader.invalid/songs?n=3#%5B%7B%22at%22%3A1%7D%5D".parse().unwrap();
-        assert_eq!(parse_reply(&url), Some(("songs".into(), 3, r#"[{"at":1}]"#.into())));
-        for other in ["https://open.spotify.com/songs?n=3#x", "https://truongflix-reader.invalid.evil/songs?n=1#x", "https://truongflix-reader.invalid/songs#x"] {
-            assert_eq!(parse_reply(&other.parse().unwrap()), None, "{other}");
+        let url: Url = "https://truongflix-reader.invalid/songs?n=3&k=abc#%5B%7B%22at%22%3A1%7D%5D".parse().unwrap();
+        assert_eq!(parse_reply(&url, "abc"), Some(("songs".into(), 3, r#"[{"at":1}]"#.into())));
+        // Without this reading's key, it's not from our script.
+        assert_eq!(parse_reply(&url, "other"), None);
+        for other in [
+            "https://open.spotify.com/songs?n=3&k=abc#x",
+            "https://truongflix-reader.invalid.evil/songs?n=1&k=abc#x",
+            "https://truongflix-reader.invalid/songs?k=abc#x",
+            "https://truongflix-reader.invalid/songs?n=1#x",
+        ] {
+            assert_eq!(parse_reply(&other.parse().unwrap(), "abc"), None, "{other}");
         }
+        assert_eq!(new_key().len(), 32);
+        assert_ne!(new_key(), new_key());
     }
 
     #[test]
@@ -270,9 +312,9 @@ mod tests {
         let reading = Mutex::new(Reading::default());
         take_reply(&reading, "songs", r#"[{"at":5,"id":"1","title":"Later","artists":["B"],"album":null,"lengthMs":1000,"explicit":false},{"at":2,"id":"2","title":"Earlier","artists":["A"],"album":"X","lengthMs":2000,"explicit":true},{"at":3,"title":""}]"#);
         take_reply(&reading, "songs", "not json");
-        take_reply(&reading, "done", "{}");
+        take_reply(&reading, "done", r#"{"count":2,"complete":true}"#);
         let mut reading = reading.into_inner().unwrap();
-        assert!(matches!(reading.finished, Some(Ok(()))));
+        assert!(matches!(reading.finished, Some(Ok(true))));
         let songs: Vec<PlaylistSong> = std::mem::take(&mut reading.songs).into_values().map(|r| song_from(r, true)).collect();
         assert_eq!(songs.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), ["Earlier", "Later"]);
         assert_eq!(songs[0].apple_id.as_deref(), Some("2"));
@@ -283,5 +325,14 @@ mod tests {
         let failed = Mutex::new(Reading::default());
         take_reply(&failed, "error", r#"{"message":"Private"}"#);
         assert!(matches!(failed.into_inner().unwrap().finished, Some(Err(m)) if m == "Private"));
+        // A batch that never reached the app (or a list read only partway) isn't the whole playlist.
+        let lost = Mutex::new(Reading::default());
+        take_reply(&lost, "songs", r#"[{"at":1,"title":"One"}]"#);
+        take_reply(&lost, "done", r#"{"count":250,"complete":true}"#);
+        assert!(matches!(lost.into_inner().unwrap().finished, Some(Ok(false))));
+        let stopped = Mutex::new(Reading::default());
+        take_reply(&stopped, "songs", r#"[{"at":1,"title":"One"}]"#);
+        take_reply(&stopped, "done", r#"{"count":1,"complete":false}"#);
+        assert!(matches!(stopped.into_inner().unwrap().finished, Some(Ok(false))));
     }
 }

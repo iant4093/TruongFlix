@@ -760,6 +760,26 @@ impl ClientContext {
         expired
     }
 
+    /// TruongFlix patch: whether `username` is one of `protected_peers()`, checked without
+    /// building the whole set (this runs for every connection request a search brings).
+    pub(crate) fn is_protected_peer(&self, username: &str) -> bool {
+        let now = Instant::now();
+        self.downloads.list().iter().any(|d| {
+            d.username == username
+                && matches!(
+                    d.status,
+                    DownloadStatus::Queued
+                        | DownloadStatus::InProgress { .. }
+                        | DownloadStatus::Paused { .. }
+                )
+        }) || self.active_uploads.values().any(|u| u.username == username)
+            || self.uploads.values().any(|j| j.downloader == username)
+            || self.upload_queue.iter().any(|q| q.downloader == username)
+            || self.pending_serves.contains_key(username)
+            || self.pending_peer_messages.contains_key(username)
+            || self.pending_browses.get(username).is_some_and(|deadline| *deadline > now)
+    }
+
     pub(crate) fn protected_peers(&self) -> HashSet<String> {
         let mut protected: HashSet<String> = self
             .downloads

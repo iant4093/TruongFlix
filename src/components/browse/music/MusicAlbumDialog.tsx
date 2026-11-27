@@ -129,7 +129,8 @@ function AlbumActions({ release, onClose, onPick }: { release: CatalogRelease; o
   // The latest download of this album (an object from the store, so it's stable between reads).
   const job = useMusicDownloads((s) => {
     let found;
-    for (const j of Object.values(s.jobs)) if (j.releaseId === release.id || (j.album === release.title && j.artist === release.artist)) found = j;
+    // A playlist song's download isn't this album's (a single's song shares its name).
+    for (const j of Object.values(s.jobs)) if (j.kind !== 'song' && (j.releaseId === release.id || (j.album === release.title && j.artist === release.artist))) found = j;
     return found;
   });
   const [quality, setQuality] = useState<MusicQuality>(settings.soulseek_quality);

@@ -91,11 +91,14 @@ export default function SoulseekSearchDialog({ release, song = null, onClose, on
   const [open, setOpen] = useState<string | null>(null);
   const [starting, setStarting] = useState<string | null>(null);
   const stop = useRef<(() => void) | null>(null);
+  /** The latest search: an older one still starting is stopped as soon as it has, and its answers are ignored. */
+  const runs = useRef(0);
   const input = useRef<HTMLInputElement>(null);
   const total = release?.tracks.length ?? 0;
 
   const artists = song ? song.artists : release ? [release.artist] : [];
   const run = async (text: string, retry = true) => {
+    const token = ++runs.current;
     stop.current?.();
     stop.current = null;
     if (!text.trim()) return;
@@ -105,10 +108,11 @@ export default function SoulseekSearchDialog({ release, song = null, onClose, on
     setSearching(true);
     if (retry) setRetried(null);
     try {
-      stop.current = await searchSoulseek(
+      const stopper = await searchSoulseek(
         text.trim(),
         release,
         (update) => {
+          if (token !== runs.current) return;
           // Nobody answered a search naming the artist: it's searched again without the name.
           const fallback = retry && update.done && !update.blocked && update.people === 0 ? withoutArtist(text, artists) : null;
           if (fallback) {
@@ -122,7 +126,11 @@ export default function SoulseekSearchDialog({ release, song = null, onClose, on
         },
         song && { title: song.title, artists: song.artists, album: song.album, lengthMs: song.lengthMs },
       );
+      // A newer search started (or the dialog closed) while this one was starting.
+      if (token !== runs.current) stopper();
+      else stop.current = stopper;
     } catch (e) {
+      if (token !== runs.current) return;
       setSearching(false);
       setError(errorMessage(e));
     }
@@ -132,7 +140,10 @@ export default function SoulseekSearchDialog({ release, song = null, onClose, on
     // An album's or a song's search starts by itself; otherwise there's nothing to search for yet.
     if (release || song) void run(query);
     else input.current?.focus();
-    return () => stop.current?.();
+    return () => {
+      runs.current++;
+      stop.current?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Check, ChevronLeft, FileUp, ListMusic, Loader2, Play, RotateCw, Search, Square, Trash2 } from 'lucide-react';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { openRoute, openTab } from '../../../music/nav';
@@ -175,7 +175,8 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
   const [error, setError] = useState('');
   const [finding, setFinding] = useState<ImportSong | null>(null);
   const settings = useLibraryStore((s) => s.settings);
-  const c = importCounts(playlist);
+  const c = useMemo(() => importCounts(playlist), [playlist]);
+  const retry = useCallback((key: string) => retrySong(playlist.id, key), [playlist.id]);
   const left = c.total - c.done - c.owned;
   const ready = !!settings.music_directories.length && hasSoulseekAccount();
   const songs = useMemo(
@@ -287,7 +288,7 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
       </div>
       <ol className="divide-y divide-white/[0.06]" aria-label="Songs">
         {songs.map((s) => (
-          <SongRow key={s.key} song={s} number={Number(s.key) + 1} onFind={() => setFinding(s)} onRetry={() => retrySong(playlist.id, s.key)} />
+          <SongRow key={s.key} song={s} onFind={setFinding} onRetry={retry} />
         ))}
       </ol>
       {songs.length === 0 && <p className="py-10 text-center text-sm text-white/45">{filter === 'missing' ? 'Every song was found.' : 'No songs here yet.'}</p>}
@@ -302,7 +303,9 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
   );
 }
 
-function SongRow({ song, number, onFind, onRetry }: { song: ImportSong; number: number; onFind: () => void; onRetry: () => void }) {
+/** One song (redrawn only when that song changes: a long import updates many times a second). */
+const SongRow = memo(function SongRow({ song, onFind, onRetry }: { song: ImportSong; onFind: (song: ImportSong) => void; onRetry: (key: string) => void }) {
+  const number = Number(song.key) + 1;
   const title = song.store?.title ?? song.title;
   const artist = song.store?.artist ?? song.artists.join(', ');
   const album = song.store?.album ?? song.album;
@@ -324,10 +327,10 @@ function SongRow({ song, number, onFind, onRetry }: { song: ImportSong; number: 
         <SongStatus song={song} />
         {missing && (
           <>
-            <button className="nf-btn-ghost h-8 px-3 text-xs" onClick={onFind} title="Search Soulseek for this song yourself">
+            <button className="nf-btn-ghost h-8 px-3 text-xs" onClick={() => onFind(song)} title="Search Soulseek for this song yourself">
               <Search className="h-3.5 w-3.5" /> Find it
             </button>
-            <button className="nf-btn-ghost h-8 px-2 text-xs" onClick={onRetry} aria-label={`Try ${coreTitle(title)} again`} title="Try again">
+            <button className="nf-btn-ghost h-8 px-2 text-xs" onClick={() => onRetry(song.key)} aria-label={`Try ${coreTitle(title)} again`} title="Try again">
               <RotateCw className="h-3.5 w-3.5" />
             </button>
           </>
@@ -335,7 +338,7 @@ function SongRow({ song, number, onFind, onRetry }: { song: ImportSong; number: 
       </span>
     </li>
   );
-}
+});
 
 function SongStatus({ song }: { song: ImportSong }) {
   switch (song.state) {

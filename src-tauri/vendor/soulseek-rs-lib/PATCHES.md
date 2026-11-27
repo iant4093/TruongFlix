@@ -16,5 +16,7 @@ Its examples and integration tests are omitted.
   ~370 open connections with ~35 still connecting, and the network stayed fine); the rest are answered with
   `CantConnectToPeer`, as if we were offline. People we're downloading from or uploading to (the
   library's protected peers) and file connections are never turned away.
+- `ClientContext::is_protected_peer`: the same answer as `protected_peers().contains(..)`, without
+  building the whole set for each of the hundreds of connection requests a search brings.
 
 Every change is marked with a `TruongFlix patch` comment.

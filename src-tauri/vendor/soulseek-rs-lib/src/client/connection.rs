@@ -329,7 +329,7 @@ impl Client {
         const BROKERED_PER_SECOND: f64 = 12.0;
         const BROKERED_BURST: f64 = 24.0;
         static BUDGET: std::sync::Mutex<Option<(Instant, f64)>> = std::sync::Mutex::new(None);
-        if client_context.read_safe().is_ok_and(|ctx| ctx.protected_peers().contains(username)) {
+        if client_context.read_safe().is_ok_and(|ctx| ctx.is_protected_peer(username)) {
             return true;
         }
         let Ok(mut budget) = BUDGET.lock() else { return true };

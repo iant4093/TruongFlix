@@ -143,9 +143,14 @@ fn protected_peers_covers_downloads_uploads_and_pending_serves() {
     assert!(protected.contains("waiting"));
     assert!(protected.contains("browsed"));
     assert!(!protected.contains("done"));
+    // The quick check agrees with the whole set.
+    for name in ["downloader", "waiting", "browsed", "done", "stranger"] {
+        assert_eq!(context.is_protected_peer(name), protected.contains(name), "{name}");
+    }
 
     context.store_browse_result("browsed".to_string(), Vec::new());
     assert!(!context.protected_peers().contains("browsed"));
+    assert!(!context.is_protected_peer("browsed"));
 }
 
 #[test]

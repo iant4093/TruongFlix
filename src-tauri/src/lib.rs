@@ -289,7 +289,11 @@ pub fn run() {
         .expect("error while building TruongFlix")
         .run(|app, event| {
             if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { .. }, .. } = &event {
-                if label == "main" { source_browser::close_with_library(app); }
+                if label == "main" {
+                    source_browser::close_with_library(app);
+                    // A playlist being read in its off-screen window would keep the app running.
+                    playlist_reader::close(app);
+                }
             }
             if let tauri::RunEvent::Exit = &event {
                 vlc::close_on_exit(app);

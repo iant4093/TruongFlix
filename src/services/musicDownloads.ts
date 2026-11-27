@@ -109,6 +109,7 @@ function settled(ms: number): Promise<SoulseekStatus> {
  * the same time share one login; while the app is reconnecting by itself, this waits for that.
  */
 export async function connectSoulseek(force = false): Promise<SoulseekStatus> {
+  userDisconnected = false;
   await initMusicDownloads();
   const { settings } = useLibraryStore.getState();
   let current = useMusicDownloads.getState().status;
@@ -132,7 +133,15 @@ export async function connectSoulseek(force = false): Promise<SoulseekStatus> {
   return connecting;
 }
 
+/** The user chose Disconnect (and hasn't connected since): imports don't log back in by themselves. */
+let userDisconnected = false;
+export const disconnectedByUser = () => userDisconnected;
+
+/** Soulseek turned down the account itself (not a network problem): trying again won't help. */
+export const loginRefused = (message: string) => /didn.t accept that username|enter your soulseek password/i.test(message);
+
 export async function disconnectSoulseek() {
+  userDisconnected = true;
   await invoke('slsk_disconnect');
   useMusicDownloads.setState({ status: { state: 'offline', username: '', message: '' } });
 }
