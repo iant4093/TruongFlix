@@ -105,7 +105,8 @@ function CatalogHoverCard({ item, selection, owned, resume, saved, rect, onClose
           <HoverTitleOverlay title={item.title}>
             {detail?.logo && !logoFailed
               ? <FadeImage src={detail.logo} alt="" eager fit="contain" onError={() => setLogoFailed(true)} className="max-h-[55%] max-w-[60%] object-left-bottom drop-shadow-[0_1px_4px_rgba(0,0,0,0.7)]" />
-              : undefined}
+              // Until the details say whether there's a logo, nothing shows (not the plain title first).
+              : settled ? undefined : <span aria-hidden />}
           </HoverTitleOverlay>
         )}
       </>}

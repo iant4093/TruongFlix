@@ -64,6 +64,7 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
   const [retry, setRetry] = useState(0);
   const [verification, setVerification] = useState<string | null>(null);
   const [logoFailed, setLogoFailed] = useState(false);
+  const [logoShown, setLogoShown] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [releaseSearch, setReleaseSearch] = useState<{ key: string; quality: BrowseTarget['quality']; releases: SourceRelease[] | null } | null>(null);
@@ -210,7 +211,10 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
       <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-nf-surface/10 to-transparent" />
       <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-transparent" />
       <div className="relative col-start-1 row-start-1 flex min-w-0 flex-col gap-5 px-6 pb-[4.5%] pt-16 md:px-12">
-        {detail?.logo && !logoFailed ? <><h1 className="sr-only">{detail.title}</h1><img src={detail.logo} alt={detail.title} onError={() => setLogoFailed(true)} draggable={false} className="max-h-[110px] max-w-[45%] self-start object-contain object-left drop-shadow-[0_2px_10px_rgba(0,0,0,0.6)]" /></>
+        {/* The title's logo, faded in once it has loaded. Until the details say whether there is
+            one, the space stays empty rather than flashing the plain title first. */}
+        {!detail && !detailError ? <><h1 className="sr-only">{item.title}</h1><div aria-hidden className="h-[72px] md:h-[110px]" /></>
+          : detail?.logo && !logoFailed ? <><h1 className="sr-only">{detail.title}</h1><div className="flex h-[72px] items-end md:h-[110px]"><img key={detail.logo} src={detail.logo} alt={detail.title} onLoad={() => setLogoShown(true)} onError={() => setLogoFailed(true)} draggable={false} className={`max-h-full max-w-[45%] self-start object-contain object-left drop-shadow-[0_2px_10px_rgba(0,0,0,0.6)] transition-opacity duration-300 ${logoShown ? 'opacity-100' : 'opacity-0'}`} /></div></>
           : <h1 className="text-shadow max-w-[85%] break-words text-3xl font-black uppercase leading-none tracking-tight md:max-w-[70%] md:text-5xl">{detail?.title || item.title}</h1>}
         {!!seasonOptions.length && <fieldset disabled={busy} className="flex flex-wrap gap-2.5">
           <Dropdown value={season} options={seasonOptions} onChange={(value) => { if (value !== season) { setSeasonError(''); setPickedSeason(value); setPickedEpisode(null); } }} ariaLabel="Choose season" />

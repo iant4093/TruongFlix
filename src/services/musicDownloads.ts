@@ -87,21 +87,49 @@ export const hasSoulseekAccount = () => {
   return !!soulseek_username.trim() && !!soulseek_password;
 };
 
-/** Logs in to Soulseek with the account from Settings (when not already online). */
+let connecting: Promise<SoulseekStatus> | null = null;
+
+/** Waits (up to `ms`) for the app's own reconnect after a dropped connection to finish. */
+function settled(ms: number): Promise<SoulseekStatus> {
+  return new Promise((resolve) => {
+    const done = (status: SoulseekStatus) => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(status);
+    };
+    const timer = setTimeout(() => done(useMusicDownloads.getState().status), ms);
+    const unsubscribe = useMusicDownloads.subscribe((s) => {
+      if (s.status.state !== 'connecting') done(s.status);
+    });
+  });
+}
+
+/**
+ * Logs in to Soulseek with the account from Settings (when not already online). Calls made at
+ * the same time share one login; while the app is reconnecting by itself, this waits for that.
+ */
 export async function connectSoulseek(force = false): Promise<SoulseekStatus> {
   await initMusicDownloads();
-  const current = useMusicDownloads.getState().status;
   const { settings } = useLibraryStore.getState();
+  let current = useMusicDownloads.getState().status;
+  if (!force && current.state === 'connecting' && !connecting) current = await settled(120_000);
   if (!force && current.state === 'online' && current.username === settings.soulseek_username.trim()) return current;
   if (!hasSoulseekAccount()) throw new Error('Add your Soulseek account in Settings → Music to download albums.');
-  const status = await invoke<SoulseekStatus>('slsk_connect', {
+  if (connecting) return connecting;
+  connecting = invoke<SoulseekStatus>('slsk_connect', {
     username: settings.soulseek_username.trim(),
     password: settings.soulseek_password,
     port: settings.soulseek_port,
     shared: settings.soulseek_share ? settings.music_directories : [],
-  });
-  useMusicDownloads.setState({ status });
-  return status;
+  })
+    .then((status) => {
+      useMusicDownloads.setState({ status });
+      return status;
+    })
+    .finally(() => {
+      connecting = null;
+    });
+  return connecting;
 }
 
 export async function disconnectSoulseek() {

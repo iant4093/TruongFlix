@@ -141,12 +141,17 @@ usePlaylistImports.subscribe((state) => {
 });
 
 const API = 'https://itunes.apple.com';
-/** Songs matched and searched for at once (the app also spaces Soulseek searches out). */
-const SEARCHING = 4;
+/** Songs matched and searched for at once (the app also spaces Soulseek searches out: the
+ *  server drops a connection that searches too fast). */
+const SEARCHING = 3;
 /** Songs in flight at once, downloads included. */
 const ACTIVE = 16;
 /** A song Soulseek didn't answer for waits this long before it's searched again. */
 const RETRY_AFTER = 20_000;
+/** After the connection drops, songs wait this long (while the app reconnects) before starting again. */
+const RECONNECT_PAUSE = 5_000;
+
+const notConnected = (message: string) => /not connected to soulseek|connection to soulseek|couldn.t reach soulseek|lost the connection/i.test(message);
 
 export const SOURCE_NAMES: Record<ImportSource, string> = { spotify: 'Spotify', apple: 'Apple Music', youtube: 'YouTube', list: 'Pasted list' };
 
@@ -501,9 +506,15 @@ function follow() {
       const p = getImport(job.group);
       const song = p?.songs.find((x) => x.jobId === job.id);
       if (!p || !song) continue;
+      const dropped = job.state === 'failed' && job.code === 'connection' && p.running;
       const retry = job.state === 'failed' && (job.code === 'no-answer' || job.code === 'not-shared') && (song.tries ?? 0) < 2 && p.running;
-      // Soulseek drops searches when it's busy: such a song waits a little and is searched again.
-      patchSong(p.id, song.key, retry ? { state: 'waiting', message: job.message, jobId: null, from: null, retryAt: Date.now() + RETRY_AFTER } : songFromJob(job));
+      if (dropped) {
+        // The connection dropped mid-song: it starts again once Soulseek is back, as if new.
+        patchSong(p.id, song.key, { state: 'waiting', message: '', jobId: null, from: null, progress: 0, tries: Math.max(0, (song.tries ?? 1) - 1), retryAt: Date.now() + RECONNECT_PAUSE });
+      } else {
+        // Soulseek drops searches when it's busy: such a song waits a little and is searched again.
+        patchSong(p.id, song.key, retry ? { state: 'waiting', message: job.message, jobId: null, from: null, retryAt: Date.now() + RETRY_AFTER } : songFromJob(job));
+      }
       if (['done', 'failed', 'cancelled'].includes(job.state)) void pump(p.id);
     }
   });
@@ -562,6 +573,20 @@ async function pump(id: string) {
     if (!p.songs.some((s) => isBusy(s.state))) void finish(id);
     return;
   }
+  // While Soulseek reconnects, nothing new starts; the import picks up once it's back.
+  const status = useMusicDownloads.getState().status.state;
+  if (status !== 'online') {
+    if (!wakeups.has(id)) {
+      wakeups.set(
+        id,
+        setTimeout(() => {
+          wakeups.delete(id);
+          void (status === 'connecting' ? Promise.resolve() : connectSoulseek().catch(() => {})).then(() => pump(id));
+        }, 3000),
+      );
+    }
+    return;
+  }
   const busy = p.songs.filter((s) => isBusy(s.state)).length;
   const searching = p.songs.filter((s) => s.state === 'matching' || s.state === 'searching').length;
   const room = Math.min(ACTIVE - busy, SEARCHING - searching);
@@ -609,7 +634,13 @@ async function startSong(id: string, key: string, copy?: { user: string } & Shar
     const job = await downloadSong(id, p.source, song, p.quality, copy);
     patchSong(id, key, { jobId: job.id, ...songFromJob(job) });
   } catch (e) {
-    patchSong(id, key, { state: 'failed', message: e instanceof Error ? e.message : String(e) });
+    const message = e instanceof Error ? e.message : String(e);
+    if (notConnected(message) && !copy && getImport(id)?.running) {
+      // Not this song's fault: it waits for Soulseek to be back.
+      patchSong(id, key, { state: 'waiting', message: '', tries: before.tries, retryAt: Date.now() + RECONNECT_PAUSE });
+    } else {
+      patchSong(id, key, { state: 'failed', message });
+    }
   } finally {
     void pump(id);
   }

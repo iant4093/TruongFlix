@@ -49,10 +49,9 @@ export default function MusicPlaylistImport({ openId, onOpen }: { openId: string
 }
 
 /** How to get each service's whole playlist into the box. */
-const HOW_TO: { name: string; dot: string; gets: string; steps: ReactNode[] }[] = [
+const HOW_TO: { name: string; gets: string; steps: ReactNode[] }[] = [
   {
     name: 'Spotify',
-    dot: 'bg-[#1ed760]',
     gets: 'Whole playlist',
     steps: [
       <>
@@ -63,19 +62,16 @@ const HOW_TO: { name: string; dot: string; gets: string; steps: ReactNode[] }[] 
   },
   {
     name: 'Apple Music',
-    dot: 'bg-[#fa2d48]',
     gets: 'Whole playlist',
     steps: [<>Share → Copy Link, then paste it here.</>, <>Playlists you made work too, once you’ve shared them.</>],
   },
   {
     name: 'YouTube and YouTube Music',
-    dot: 'bg-[#ff0033]',
     gets: 'Whole playlist',
     steps: [<>Share → Copy link, then paste it here.</>, <>Public and unlisted playlists work; private ones and mixes made for you don’t.</>],
   },
   {
     name: 'Tidal, Deezer, Amazon Music and others',
-    dot: 'bg-white/50',
     gets: 'Whole playlist',
     steps: [
       <>Export the playlist to a CSV file with a free tool such as TuneMyMusic or Soundiiz, then open the file here.</>,
@@ -125,7 +121,7 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
     void read(content);
   };
   return (
-    <div className="max-w-4xl">
+    <div className="mx-auto max-w-4xl">
       <h3 className="text-2xl font-bold tracking-tight">Import a playlist</h3>
       <p className="mt-1 max-w-2xl text-sm text-white/55">Every song is matched to the store, found on Soulseek and downloaded into your music folder, and the playlist is added to Music. Songs you already have are skipped.</p>
       <form
@@ -182,7 +178,6 @@ function ImportStart({ onOpen }: { onOpen: (id: string) => void }) {
           {HOW_TO.map((h) => (
             <div key={h.name} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
               <p className="flex items-center gap-2 text-sm font-semibold">
-                <span className={`h-2 w-2 shrink-0 rounded-full ${h.dot}`} aria-hidden />
                 <span className="flex-1">{h.name}</span>
                 <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-300">{h.gets}</span>
               </p>
@@ -260,7 +255,7 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
   const capped = playlist.source === 'spotify' && c.total === 100 && !playlist.id.startsWith('spotify-songs') ? 'Spotify’s link shows only the first 100 songs: copy the songs out of the Spotify app for all of them.' : playlist.total != null && playlist.total > c.total ? `The page listed ${c.total} of its ${playlist.total} songs.` : '';
 
   return (
-    <div>
+    <div className="mx-auto max-w-5xl">
       <button type="button" onClick={onBack} className="mb-5 inline-flex items-center gap-1 text-sm font-semibold text-white/60 hover:text-white">
         <ChevronLeft className="h-4 w-4" /> All imports
       </button>

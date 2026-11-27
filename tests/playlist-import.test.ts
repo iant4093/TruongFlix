@@ -222,3 +222,42 @@ it('a song Soulseek didn’t answer for is searched again a little later, once',
     vi.useRealTimers();
   }
 });
+
+it('when the connection to Soulseek drops, songs wait for it and carry on, instead of failing', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    useLibraryStore.setState((s) => ({ settings: { ...s.settings, music_directories: ['C:/Music'], soulseek_username: 'me', soulseek_password: 'pw' } }));
+    useMusicPlayer.setState({ api: {} as never, library: { tracks: [], albums: [], artists: [], playlists: [] } });
+    const requests: Record<string, unknown>[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      if (cmd === 'slsk_status' || cmd === 'slsk_connect') return { state: 'online', username: 'me', message: '' };
+      if (cmd === 'slsk_jobs') return [];
+      if (cmd === 'music_catalog') return { results: [] };
+      if (cmd === 'slsk_download_song') {
+        const request = a.request as Record<string, unknown>;
+        requests.push(request);
+        return { id: request.id, kind: 'song', group: request.group, releaseId: 'x', album: 'x', artist: 'x', cover: null, state: 'searching', message: '', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null };
+      }
+      return undefined;
+    });
+    const id = addImport({ source: 'list', id: 'l', name: 'L', owner: null, cover: null, total: null, songs: [{ title: 'Moonlight', artists: ['Kali Uchis'], album: null, lengthMs: null, appleId: null, cover: null, explicit: false }] }, 'any');
+    await startImport(id);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    // The server drops the connection mid-song; the app is reconnecting.
+    useMusicDownloads.setState({ status: { state: 'connecting', username: 'me', message: 'Reconnecting…' } });
+    emit('slsk-job', { id: requests[0].id, kind: 'song', group: id, releaseId: 'x', album: 'x', artist: 'x', cover: null, state: 'failed', code: 'connection', message: 'The connection to Soulseek dropped', bytes: 0, total: 0, filesDone: 0, filesTotal: 1, source: null, path: null });
+    const song = () => usePlaylistImports.getState().imports[id].songs[0];
+    expect(song()).toMatchObject({ state: 'waiting', message: '' });
+    await vi.advanceTimersByTimeAsync(10_000);
+    // Nothing starts while it's reconnecting…
+    expect(requests).toHaveLength(1);
+    // …and the song starts again once it's back.
+    emit('slsk-status', { state: 'online', username: 'me', message: '' });
+    await vi.advanceTimersByTimeAsync(4_000);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(song().state).toBe('searching');
+  } finally {
+    vi.useRealTimers();
+  }
+});

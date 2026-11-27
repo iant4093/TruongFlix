@@ -49,7 +49,7 @@ const SONG_QUEUE_PATIENCE: Duration = Duration::from_secs(45);
 /// How long a song's transfer may stall.
 const SONG_STALL_PATIENCE: Duration = Duration::from_secs(60);
 /// Searches are sent at least this far apart: Soulseek quietly drops searches that come too fast.
-const SEARCH_GAP: Duration = Duration::from_millis(700);
+const SEARCH_GAP: Duration = Duration::from_secs(2);
 /// When a song's first searches have found nothing by now, its other artists and its title alone
 /// are searched too.
 const SONG_FALLBACK_AFTER: Duration = Duration::from_secs(5);
@@ -112,6 +112,54 @@ pub fn slsk_status() -> Status {
     STATUS.lock().unwrap().clone().unwrap_or_else(Status::offline)
 }
 
+/// What the session logged in with, so a dropped connection can log in again by itself.
+#[derive(Clone)]
+struct Login {
+    username: String,
+    password: String,
+    port: u16,
+    shared: Vec<String>,
+}
+
+static LOGIN: Mutex<Option<Login>> = Mutex::new(None);
+
+/// Waits between automatic reconnects after the server drops the connection.
+const RECONNECT_WAITS: [u64; 6] = [3, 6, 12, 24, 45, 60];
+
+/// Connects and logs in; a listening port that's already in use (another Soulseek app) doesn't
+/// stop the login.
+fn log_in(login: &Login) -> Result<Client, String> {
+    let attempt = |listen: bool| -> Result<Client, String> {
+        let mut client = Client::with_settings(ClientSettings {
+            username: login.username.clone(),
+            password: login.password.clone(),
+            server_address: server_address(),
+            enable_listen: listen && login.port != 0,
+            listen_port: login.port,
+            shared_directories: login.shared.clone(),
+            accept_children: false,
+            version: ClientVersion::default(),
+        });
+        client.connect().map_err(|e| format!("Couldn’t reach Soulseek: {e}"))?;
+        match client.login() {
+            Ok(true) => Ok(client),
+            Ok(false) => Err("Soulseek didn’t accept that username and password.".into()),
+            Err(e) => Err(format!("Soulseek login failed: {e}")),
+        }
+    };
+    attempt(true).or_else(|e| if login.port != 0 && e.starts_with("Couldn’t reach") { attempt(false) } else { Err(e) })
+}
+
+/// Makes `client` the session and starts watching it.
+fn go_online(app: &AppHandle, client: Client) -> Status {
+    let client = Arc::new(client);
+    *SESSION.lock().unwrap() = Some(client.clone());
+    let online = Status { state: "online", username: client.username().to_string(), message: String::new() };
+    set_status(app, online.clone());
+    watch_session(app.clone(), client);
+    online
+}
+
 /// Logs in (replacing any session). `port` is where other users connect to us (0: don't listen;
 /// downloads then only work through the server's relayed connections). `shared` folders are
 /// offered to other users; empty shares nothing.
@@ -124,38 +172,15 @@ pub async fn slsk_connect(app: AppHandle, username: String, password: String, po
         return Err("Enter your Soulseek password.".into());
     }
     let shared: Vec<String> = shared.into_iter().filter(|d| Path::new(d).is_dir()).collect();
+    let login = Login { username: username.clone(), password, port, shared };
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         SESSION.lock().unwrap().take();
         set_status(&handle, Status { state: "connecting", username: username.clone(), message: String::new() });
-        let attempt = |listen: bool| -> Result<Client, String> {
-            let mut client = Client::with_settings(ClientSettings {
-                username: username.clone(),
-                password: password.clone(),
-                server_address: server_address(),
-                enable_listen: listen && port != 0,
-                listen_port: port,
-                shared_directories: shared.clone(),
-                accept_children: false,
-                version: ClientVersion::default(),
-            });
-            client.connect().map_err(|e| format!("Couldn’t reach Soulseek: {e}"))?;
-            match client.login() {
-                Ok(true) => Ok(client),
-                Ok(false) => Err("Soulseek didn’t accept that username and password.".into()),
-                Err(e) => Err(format!("Soulseek login failed: {e}")),
-            }
-        };
-        // A port that's already in use (another Soulseek app) must not stop the login.
-        let result = attempt(true).or_else(|e| if port != 0 && e.starts_with("Couldn’t reach") { attempt(false) } else { Err(e) });
-        match result {
+        match log_in(&login) {
             Ok(client) => {
-                let client = Arc::new(client);
-                *SESSION.lock().unwrap() = Some(client.clone());
-                let online = Status { state: "online", username: username.clone(), message: String::new() };
-                set_status(&handle, online.clone());
-                watch_session(handle, client);
-                Ok(online)
+                *LOGIN.lock().unwrap() = Some(login);
+                Ok(go_online(&handle, client))
             }
             Err(message) => {
                 set_status(&handle, Status { state: "error", username, message: message.clone() });
@@ -167,7 +192,8 @@ pub async fn slsk_connect(app: AppHandle, username: String, password: String, po
     .map_err(|e| e.to_string())?
 }
 
-/// Reports a lost session (logged in elsewhere, connection dropped) and forgets it.
+/// Watches the session. When the server drops the connection, the app logs in again by itself
+/// (a few times, waiting longer each time); when the account logs in somewhere else, it stops.
 fn watch_session(app: AppHandle, client: Arc<Client>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(3));
@@ -175,20 +201,36 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
         if !current {
             return;
         }
-        if let Some(loss) = client.session_loss() {
-            SESSION.lock().unwrap().take();
-            let message = match loss {
-                soulseek_rs::SessionLoss::Displaced => "Your Soulseek account logged in somewhere else.".to_string(),
-                other => format!("Lost the connection to Soulseek: {other}"),
-            };
-            set_status(&app, Status { state: "error", username: client.username().to_string(), message });
+        let Some(loss) = client.session_loss() else { continue };
+        SESSION.lock().unwrap().take();
+        let username = client.username().to_string();
+        if matches!(loss, soulseek_rs::SessionLoss::Displaced) {
+            set_status(&app, Status { state: "error", username, message: "Your Soulseek account logged in somewhere else.".into() });
             return;
         }
+        let login = LOGIN.lock().unwrap().clone().filter(|l| l.username == username);
+        if let Some(login) = login {
+            for wait in RECONNECT_WAITS {
+                set_status(&app, Status { state: "connecting", username: username.clone(), message: "The connection to Soulseek dropped. Reconnecting…".into() });
+                std::thread::sleep(Duration::from_secs(wait));
+                // Someone signed in again (or out) meanwhile: theirs wins.
+                if SESSION.lock().unwrap().is_some() || LOGIN.lock().unwrap().as_ref().is_none_or(|l| l.username != username) {
+                    return;
+                }
+                if let Ok(fresh) = log_in(&login) {
+                    go_online(&app, fresh);
+                    return;
+                }
+            }
+        }
+        set_status(&app, Status { state: "error", username, message: format!("Lost the connection to Soulseek: {loss}") });
+        return;
     });
 }
 
 #[tauri::command]
 pub fn slsk_disconnect(app: AppHandle) {
+    LOGIN.lock().unwrap().take();
     SESSION.lock().unwrap().take();
     set_status(&app, Status::offline());
 }
@@ -220,7 +262,8 @@ pub struct Job {
     pub state: String,
     pub message: String,
     /// Why a song wasn't found: "no-answer" (Soulseek didn't answer the search), "not-shared",
-    /// "quality", "no-match" or "blocked". Worth another try later for the first two.
+    /// "quality", "no-match", "blocked", or "connection" (the connection dropped meanwhile).
+    /// Worth another try later for "no-answer", "not-shared" and "connection".
     pub code: Option<String>,
     pub bytes: u64,
     pub total: u64,
@@ -940,6 +983,9 @@ fn find_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &Ato
     let mut widened = false;
     loop {
         wait(Duration::from_secs(1), cancel)?;
+        if client.session_loss().is_some() {
+            return Err(miss("connection", "The connection to Soulseek dropped".into()));
+        }
         let offers = search.offers();
         let found = matching::rank_song(&req.want, &offers, req.quality);
         let t = started.elapsed();
@@ -1042,7 +1088,12 @@ fn run_song(report: &Reporter, client: &Client, req: &SongRequest, cancel: &Atom
                 return file_song(req, &path, &extension(&offer.path)).map_err(Stop::Failed);
             }
             Err(Stop::Cancelled) => return Err(Stop::Cancelled),
-            Err(Stop::Failed(e)) => last_error = e,
+            Err(Stop::Failed(e)) => {
+                if client.session_loss().is_some() {
+                    return Err(Stop::Failed(e));
+                }
+                last_error = e;
+            }
         }
     }
     Err(Stop::Failed(format!("No copy of this song could be downloaded. Last problem: {last_error}")))
@@ -1169,6 +1220,10 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
         if cancel.load(Ordering::SeqCst) {
             cancel_live(&transfers);
             return Err(Stop::Cancelled);
+        }
+        if client.session_loss().is_some() {
+            report.set(|j| j.code = Some("connection".into()));
+            return Err(Stop::Failed("The connection to Soulseek dropped".into()));
         }
         for t in transfers.iter_mut().filter(|t| !t.done && t.dead.is_none()) {
             loop {
