@@ -45,8 +45,11 @@ const QUEUE_PATIENCE: Duration = Duration::from_secs(150);
 const STALL_PATIENCE: Duration = Duration::from_secs(90);
 /// How long a song's transfer may stall.
 const SONG_STALL_PATIENCE: Duration = Duration::from_secs(60);
-/// Searches are sent at least this far apart: Soulseek quietly drops searches that come too fast.
-const SEARCH_GAP: Duration = Duration::from_millis(2500);
+/// Searches are sent at least this far apart (at most 10 a minute). Soulseek's server cuts off an
+/// account that searches faster for a few minutes, and then ignores its sign-ins for a while:
+/// measured on 27 Nov 2026, two accounts were each cut off after 6–10 minutes at 18–19 searches a
+/// minute, and neither could sign in again afterwards.
+const SEARCH_GAP: Duration = Duration::from_millis(6000);
 /// Each person who answers a search connects to us on their own, and a home router remembers
 /// every connection for minutes after it closes: past a few thousand it stops working for the
 /// whole network. So after a widely answered search, the next one waits until those connections
@@ -178,6 +181,10 @@ const MAX_PEERS: usize = 256;
 /// Waits between automatic reconnects after the server drops the connection.
 const RECONNECT_WAITS: [u64; 6] = [3, 6, 12, 24, 45, 60];
 
+/// Why a sign-in wasn't answered: the server ignores an account's sign-ins for a while after
+/// cutting it off for searching too much.
+pub const PAUSED: &str = "Soulseek is pausing this account for a while (it does that after a lot of searching). TruongFlix carries on by itself once it’s let back in.";
+
 /// Connects and logs in; a listening port that's already in use (another Soulseek app) doesn't
 /// stop the login.
 fn log_in(login: &Login) -> Result<Client, String> {
@@ -199,6 +206,8 @@ fn log_in(login: &Login) -> Result<Client, String> {
                 Ok(client)
             }
             Ok(false) => Err("Soulseek didn’t accept that username and password.".into()),
+            // The server took the connection but never answered the sign-in.
+            Err(soulseek_rs::SoulseekRs::Timeout) => Err(PAUSED.into()),
             Err(e) => Err(format!("Soulseek login failed: {e}")),
         }
     };
@@ -287,8 +296,9 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
         // Someone signed in again (or out) since: theirs wins.
         let superseded = || GENERATION.load(Ordering::SeqCst) != generation || SESSION.lock().unwrap().is_some();
         if let Some(login) = login {
+            let mut message = "The connection to Soulseek dropped. Reconnecting…".to_string();
             for wait in RECONNECT_WAITS {
-                set_status(&app, Status { state: "connecting", username: username.clone(), message: "The connection to Soulseek dropped. Reconnecting…".into() });
+                set_status(&app, Status { state: "connecting", username: username.clone(), message: message.clone() });
                 std::thread::sleep(Duration::from_secs(wait));
                 if superseded() {
                     return;
@@ -303,8 +313,18 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
                         go_online(&app, fresh);
                         return;
                     }
-                    Err(e) => note(format!("Reconnect failed: {e}")),
+                    Err(e) => {
+                        note(format!("Reconnect failed: {e}"));
+                        message = e;
+                    }
                 }
+            }
+            if superseded() {
+                return;
+            }
+            if message == PAUSED {
+                set_status(&app, Status { state: "error", username, message });
+                return;
             }
         }
         if superseded() {

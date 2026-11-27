@@ -24,6 +24,7 @@ import Dropdown from '../../common/Dropdown';
 import SegmentedControl from '../../common/SegmentedControl';
 import { CoverArt } from './MusicArt';
 import SoulseekSearchDialog from './SoulseekSearchDialog';
+import { useMusicDownloads } from '../../../services/musicDownloads';
 
 const QUALITIES: { value: MusicQuality; label: string }[] = [
   { value: 'lossless', label: 'Lossless (FLAC)' },
@@ -174,6 +175,7 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
   const [error, setError] = useState('');
   const [finding, setFinding] = useState<ImportSong | null>(null);
   const settings = useLibraryStore((s) => s.settings);
+  const soulseek = useMusicDownloads((s) => s.status);
   const c = useMemo(() => importCounts(playlist), [playlist]);
   const retry = useCallback((key: string) => retrySong(playlist.id, key), [playlist.id]);
   const left = c.total - c.done - c.owned;
@@ -262,6 +264,13 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
               <Trash2 className="h-4 w-4" />
             </button>
           </div>
+          {/* Why nothing's moving: Soulseek reconnecting, or pausing the account. */}
+          {playlist.running && soulseek.state !== 'online' && soulseek.message && (
+            <p role="status" className="mt-3 flex items-start gap-2 text-sm text-white/65">
+              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+              {soulseek.message}
+            </p>
+          )}
           {!ready && <p className="mt-3 text-sm text-white/55">Add a music folder in Settings → Music to download songs.</p>}
           {error && (
             <p role="alert" className="mt-3 flex items-start gap-2 text-sm text-red-300">

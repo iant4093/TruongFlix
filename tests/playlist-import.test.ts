@@ -428,3 +428,47 @@ it('another playlist that only shares a name isn’t overwritten', async () => {
   await vi.waitFor(() => expect(createPlaylist).toHaveBeenCalledWith('Pasted songs', [12]));
   expect(setPlaylistTracks).not.toHaveBeenCalled();
 });
+
+it('while Soulseek pauses the account, sign-ins wait longer each time, and the import says why', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const paused = 'Soulseek is pausing this account for a while (it does that after a lot of searching). TruongFlix carries on by itself once it’s let back in.';
+    let signIns = 0;
+    let letIn = true;
+    const requests = songBackend((request) => songJob(request, {}));
+    const backend = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'slsk_connect') {
+        signIns++;
+        if (letIn) return { state: 'online', username: 'me', message: '' };
+        useMusicDownloads.setState({ status: { state: 'error', username: 'me', message: paused } });
+        throw paused;
+      }
+      return backend(cmd, args);
+    });
+    const id = addImport({ source: 'list', id: 'l', name: 'L', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+    await startImport(id);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    // Cut off; the app's own reconnects fail too.
+    letIn = false;
+    signIns = 0;
+    emit('slsk-status', { state: 'error', username: 'me', message: paused });
+    emit('slsk-job', songJob(requests[0], { state: 'failed', code: 'connection', message: 'The connection to Soulseek dropped' }));
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(signIns).toBe(1);
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(signIns).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(signIns).toBe(2);
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(signIns).toBe(2);
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(signIns).toBe(3);
+    // Let back in: the import carries on at once.
+    letIn = true;
+    emit('slsk-status', { state: 'online', username: 'me', message: '' });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+  } finally {
+    vi.useRealTimers();
+  }
+});

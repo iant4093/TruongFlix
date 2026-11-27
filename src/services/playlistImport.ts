@@ -192,7 +192,7 @@ const RETRY_BUSY_AFTER = 60_000;
 /** After the connection drops, songs wait this long (while the app reconnects) before starting again. */
 const RECONNECT_PAUSE = 5_000;
 
-const notConnected = (message: string) => /not connected to soulseek|connection to soulseek|couldn.t reach soulseek|lost the connection/i.test(message);
+const notConnected = (message: string) => /not connected to soulseek|connection to soulseek|couldn.t reach soulseek|lost the connection|pausing this account/i.test(message);
 
 export const SOURCE_NAMES: Record<ImportSource, string> = { spotify: 'Spotify', apple: 'Apple Music', youtube: 'YouTube', list: 'Pasted list' };
 
@@ -602,6 +602,16 @@ function follow() {
   if (following) return;
   following = true;
   useMusicDownloads.subscribe((s, before) => {
+    // Soulseek is back: imports waiting for it carry on now, not at their next check.
+    if (s.status.state === 'online' && before.status.state !== 'online') {
+      for (const p of Object.values(usePlaylistImports.getState().imports)) {
+        if (!p.running) continue;
+        clearTimeout(wakeups.get(p.id));
+        wakeups.delete(p.id);
+        wakeAt.delete(p.id);
+        void pump(p.id);
+      }
+    }
     if (s.jobs === before.jobs) return;
     for (const job of Object.values(s.jobs)) {
       if (job.kind !== 'song' || !job.group || before.jobs[job.id] === job) continue;
@@ -680,6 +690,11 @@ export function stopImport(id: string) {
   }
 }
 
+/** Waits (s) between an import's sign-in attempts while Soulseek won't have it, longer each time:
+ *  an account Soulseek has paused only gets paused longer by being tried every few seconds. */
+const SIGN_IN_WAITS = [3, 30, 60, 120, 300, 600];
+const signInTries = new Map<string, number>();
+
 /** Each import's next wake-up, and when it's for. */
 const wakeups = new Map<string, ReturnType<typeof setTimeout>>();
 const wakeAt = new Map<string, number>();
@@ -717,13 +732,20 @@ async function pump(id: string) {
       useLibraryStore.getState().toast(disconnectedByUser() ? `${p.name} stopped: Soulseek was disconnected.` : `${p.name} stopped: ${message}`, 'error');
       return;
     }
-    if (!wakeups.has(id))
-      wakeUp(id, Date.now() + 3000, () => {
+    if (!wakeups.has(id)) {
+      // While the app reconnects by itself, the import just checks back; only a failed sign-in
+      // makes it wait longer.
+      const tries = signInTries.get(id) ?? 0;
+      if (status === 'error') signInTries.set(id, tries + 1);
+      const wait = status === 'error' ? SIGN_IN_WAITS[Math.min(tries, SIGN_IN_WAITS.length - 1)] : 3;
+      wakeUp(id, Date.now() + wait * 1000, () => {
         if (useMusicDownloads.getState().status.state === 'connecting' || disconnectedByUser()) void pump(id);
         else void connectSoulseek().catch(() => {}).then(() => pump(id));
       });
+    }
     return;
   }
+  signInTries.delete(id);
   const busy = p.songs.filter((s) => isBusy(s.state)).length;
   const searching = p.songs.filter((s) => s.state === 'matching' || s.state === 'searching').length;
   const room = Math.min(ACTIVE - busy, SEARCHING - searching);
