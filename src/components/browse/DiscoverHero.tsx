@@ -63,6 +63,7 @@ function FeaturedSlide({ item, blocked, multiple, rotating, move, onSelect }: {
   const owned = useMemo(() => libraryItems.find((entry) => entry.kind === item.kind && entry.tmdbId === item.id), [libraryItems, item.kind, item.id]);
   const episodesBySeries = useLibraryStore((s) => s.episodesBySeries);
   const [detail, setDetail] = useState<CatalogDetail | null>(null);
+  const [detailFailed, setDetailFailed] = useState(false);
   const enabled = useLibraryStore((s) => s.settings.trailers_autoplay);
   const visible = useBannerVisibility(blocked);
   const trailer = useBannerTrailer({ key: `${item.kind}:${item.id}`, kind: item.kind, tmdbId: item.id, trailerKey: null }, enabled, visible);
@@ -82,7 +83,7 @@ function FeaturedSlide({ item, blocked, multiple, rotating, move, onSelect }: {
   useEffect(() => {
     if (owned || !tmdbKey) return;
     let alive = true;
-    void getCatalogDetail(item).then((data) => { if (alive) setDetail(data); }).catch(() => {});
+    void getCatalogDetail(item).then((data) => { if (alive) setDetail(data); }).catch(() => { if (alive) setDetailFailed(true); });
     return () => { alive = false; };
   }, [item, owned, tmdbKey]);
 
@@ -105,6 +106,8 @@ function FeaturedSlide({ item, blocked, multiple, rotating, move, onSelect }: {
         item={metadata}
         trailerActive={trailer.active}
         onInfo={() => onSelect(item)}
+        // Until the details say whether there's a logo, nothing shows (not the plain title first).
+        logoPending={!owned && !!tmdbKey && !detail && !detailFailed}
         play={owned && target ? { resume: target.startTime > 0, onClick: () => playItem(owned) } : undefined}
       />
       <BillboardControls controlsRef={trailerActions} trailer={trailer} certification={metadata.certification} />

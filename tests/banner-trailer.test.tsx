@@ -279,6 +279,31 @@ it('shows the catalog logo, ratings and maturity badge for the featured title an
   expect(screen.queryByRole('img', { name: 'Featured movie' })).toBeNull();
 });
 
+it('Browse’s banner never flashes the plain title before its logo', async () => {
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, tmdb_api_key: 'fixture', trailers_autoplay: false } }));
+  let answer: (detail: Awaited<ReturnType<typeof getCatalogDetail>>) => void = () => {};
+  vi.mocked(getCatalogDetail).mockImplementationOnce(() => new Promise((resolve) => (answer = resolve))).mockImplementation(() => Promise.reject(new Error('offline')));
+  vi.mocked(cachedTitleRating).mockResolvedValue(null);
+  vi.mocked(cachedCriticScores).mockResolvedValue(null);
+  const view = render(<DiscoverHero titles={featured} blocked={false} onSelect={vi.fn()} />);
+  // While the details load: the title is there for screen readers only.
+  expect(screen.getByRole('heading', { name: 'Featured movie' }).className).toContain('sr-only');
+  expect(view.container.querySelector('.nf-billboard-title')).toBeNull();
+  await act(async () => {
+    answer({ ...featured[0], logo: '/title.png', imdbId: 'tt1', certification: '', seasons: [], genres: [], runtime: 100, status: 'Released', nextSeason: null, lastSeason: null, lastEpisode: null });
+    await Promise.resolve();
+  });
+  // The logo fades in once it has loaded.
+  const logo = screen.getByRole('img', { name: 'Featured movie' });
+  expect(logo.className).toContain('opacity-0');
+  fireEvent.load(logo);
+  expect(logo.className).toContain('opacity-100');
+  // A title whose details can't be had shows its plain name.
+  fireEvent.click(screen.getByRole('button', { name: 'Next featured title' }));
+  await act(async () => { await Promise.resolve(); });
+  expect(view.container.querySelector('.nf-billboard-title')?.textContent).toBe('Featured show');
+});
+
 it('uses the Library metadata and playback action when the featured title is owned', () => {
   const owned = { ...item, logo: '/saved.png', imdbRating: 9.2 };
   useLibraryStore.setState({ items: [owned] });

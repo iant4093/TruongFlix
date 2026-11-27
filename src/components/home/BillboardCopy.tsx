@@ -11,14 +11,20 @@ import { billboardCopy } from '../../lib/motion';
 type BillboardDetails = Pick<MediaItem, 'title' | 'logo' | 'year' | 'kind' | 'seasonCount' | 'overview' | 'imdbRating' | 'rtScore' | 'metacritic'>
   & Partial<Pick<MediaItem, 'tech'>>;
 
-export default function BillboardCopy({ item, trailerActive, onInfo, play, copyRef }: {
+export default function BillboardCopy({ item, trailerActive, onInfo, play, copyRef, logoPending }: {
   item: BillboardDetails;
   trailerActive: boolean;
   onInfo: () => void;
   play?: { resume: boolean; onClick: () => void };
   copyRef?: Ref<HTMLDivElement>;
+  /** For titles whose logo is still being looked up: true while it is, so the space stays empty
+   *  instead of flashing the plain title first (and the logo's space is kept, so nothing jumps). */
+  logoPending?: boolean;
 }) {
   const [failedLogo, setFailedLogo] = useState<string | null>(null);
+  const [loadedLogo, setLoadedLogo] = useState<string | null>(null);
+  const logo = item.logo && item.logo !== failedLogo ? item.logo : null;
+  const reserve = logoPending !== undefined;
   const skipEntrance = useSkipEntrance();
   return (
     <motion.div
@@ -28,14 +34,22 @@ export default function BillboardCopy({ item, trailerActive, onInfo, play, copyR
       animate="animate"
       className="nf-billboard-copy"
     >
-      {item.logo && item.logo !== failedLogo ? (
-        <h1 className="max-w-full self-start">
+      {logoPending ? (
+        <>
+          <h1 className="sr-only">{item.title}</h1>
+          <div aria-hidden className="h-[130px]" />
+        </>
+      ) : logo ? (
+        <h1 className={`max-w-full self-start ${reserve ? 'flex h-[130px] items-end' : ''}`}>
+          {/* Faded in once it has loaded, rather than drawn in as it arrives. */}
           <img
-            src={item.logo}
+            key={logo}
+            src={logo}
             alt={item.title}
             draggable={false}
-            onError={() => setFailedLogo(item.logo)}
-            className="max-h-[130px] max-w-full object-contain object-left drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]"
+            onLoad={() => setLoadedLogo(logo)}
+            onError={() => setFailedLogo(logo)}
+            className={`max-h-[130px] max-w-full object-contain object-left drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)] transition-opacity duration-300 ${loadedLogo === logo ? 'opacity-100' : 'opacity-0'}`}
           />
         </h1>
       ) : (

@@ -159,6 +159,12 @@ fn new_key() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A spot past the right edge of every screen (and the window's width beyond it).
+fn off_screen(app: &AppHandle) -> tauri::PhysicalPosition<i32> {
+    let right = app.available_monitors().unwrap_or_default().iter().map(|m| m.position().x + m.size().width as i32).max().unwrap_or(4000);
+    tauri::PhysicalPosition::new(right + 3000, 0)
+}
+
 /// Closes the reader's window, if a playlist is being read (when the app's own window closes).
 pub fn close(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
@@ -188,14 +194,17 @@ pub async fn read_all(app: &AppHandle, page: Page) -> Result<(Vec<PlaylistSong>,
     let nav_app = app.clone();
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(target))
         .title("Reading playlist")
-        // A hidden window doesn't scroll or load the way a visible one does, so this one is
-        // "visible" but far off-screen, with no taskbar button, title bar or focus.
-        .visible(true)
-        .position(-32000.0, -32000.0)
+        // A hidden window doesn't scroll or load the way a visible one does, so this one is shown,
+        // but only once it's been moved past the edge of every screen (Windows doesn't honour an
+        // off-screen position given when a window is made), with no taskbar button, title bar or
+        // focus.
+        .visible(false)
         .inner_size(1100.0, 900.0)
         .skip_taskbar(true)
         .decorations(false)
         .focused(false)
+        // Never takes the keyboard from the app (or whatever else the user is typing in).
+        .focusable(false)
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
         .initialization_script(script)
         .on_navigation(move |url| {
@@ -223,12 +232,25 @@ pub async fn read_all(app: &AppHandle, page: Page) -> Result<(Vec<PlaylistSong>,
     // Its own browsing data, apart from the app's and the source browser's.
     #[cfg(target_os = "windows")]
     let builder = match app.path().app_cache_dir() {
-        Ok(dir) => builder.data_directory(dir.join("playlist-reader")),
+        Ok(dir) => {
+            // (Its browsing data moved when the browser's settings below changed: the browser
+            // refuses a data folder last used with other settings.)
+            let _ = std::fs::remove_dir_all(dir.join("playlist-reader"));
+            builder.data_directory(dir.join("playlist-reader-2"))
+        }
         Err(_) => builder,
     };
+    // Off every screen, Edge would count the page as hidden and stop drawing and loading it; these
+    // keep it working as if in view (the first three are what Tauri passes by default).
+    #[cfg(target_os = "windows")]
+    let builder = builder.additional_browser_args(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding",
+    );
     #[cfg(target_os = "macos")]
     let builder = builder.data_store_identifier(*b"TruongFlixPlayRd");
     let window = builder.build().map_err(|e| format!("Couldn’t open the playlist page: {e}"))?;
+    let _ = window.set_position(off_screen(app));
+    let _ = window.show();
 
     let started = std::time::Instant::now();
     let outcome = loop {
