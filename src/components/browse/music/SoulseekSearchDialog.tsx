@@ -35,6 +35,22 @@ export function albumQuery(release: CatalogRelease) {
   return `${artist} ${title}`.replace(/[^\p{L}\p{N}'&]+/gu, ' ').trim();
 }
 
+/**
+ * The same search without the artist's name: Soulseek's server silently ignores searches that
+ * name some big artists (The Weeknd, Frank Ocean, Lady Gaga…), while their albums and songs are
+ * found by name alone. Null when there's nothing to drop, or what's left is too short to search.
+ */
+export function withoutArtist(query: string, artists: string[]): string | null {
+  let rest = ` ${query} `;
+  for (const artist of artists) {
+    const name = artist.replace(/^the\s+/i, '').replace(/[^\p{L}\p{N}'&]+/gu, ' ').trim();
+    if (!name) continue;
+    rest = rest.replace(new RegExp(`\\s(?:the\\s+)?${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s`, 'i'), ' ');
+  }
+  rest = rest.trim();
+  return rest && rest !== query.trim() && rest.replace(/\s+/g, '').length >= 4 ? rest : null;
+}
+
 /** A playlist song being found by hand. */
 export interface SongTarget {
   importId: string;
@@ -69,6 +85,8 @@ export default function SoulseekSearchDialog({ release, song = null, onClose, on
   const [result, setResult] = useState<SoulseekSearchUpdate | null>(null);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState('');
+  /** What an empty search was retried as, without the artist's name. */
+  const [retried, setRetried] = useState<{ from: string; to: string } | null>(null);
   const [filter, setFilter] = useState<FormatFilter>('all');
   const [open, setOpen] = useState<string | null>(null);
   const [starting, setStarting] = useState<string | null>(null);
@@ -76,7 +94,8 @@ export default function SoulseekSearchDialog({ release, song = null, onClose, on
   const input = useRef<HTMLInputElement>(null);
   const total = release?.tracks.length ?? 0;
 
-  const run = async (text: string) => {
+  const artists = song ? song.artists : release ? [release.artist] : [];
+  const run = async (text: string, retry = true) => {
     stop.current?.();
     stop.current = null;
     if (!text.trim()) return;
@@ -84,11 +103,20 @@ export default function SoulseekSearchDialog({ release, song = null, onClose, on
     setResult(null);
     setOpen(null);
     setSearching(true);
+    if (retry) setRetried(null);
     try {
       stop.current = await searchSoulseek(
         text.trim(),
         release,
         (update) => {
+          // Nobody answered a search naming the artist: it's searched again without the name.
+          const fallback = retry && update.done && !update.blocked && update.people === 0 ? withoutArtist(text, artists) : null;
+          if (fallback) {
+            setRetried({ from: text.trim(), to: fallback });
+            setQuery(fallback);
+            void run(fallback, false);
+            return;
+          }
           setResult(update);
           if (update.done) setSearching(false);
         },
@@ -289,9 +317,18 @@ export default function SoulseekSearchDialog({ release, song = null, onClose, on
           );
         })}
       </ul>
+      {retried && (
+        <p className="mt-3 text-xs leading-relaxed text-white/50">
+          Nobody answered “{retried.from}”: Soulseek ignores searches that name some big artists, so this searched for “{retried.to}” instead.
+        </p>
+      )}
       {result?.done && !result.blocked && (song ? files.length === 0 : folders.length === 0) && (
-        <p className="py-10 text-center text-sm text-white/50">
-          {(song ? result.files.length : result.folders.length) ? `No ${song ? 'files' : 'folders'} in this format.` : 'Nobody is sharing anything that matches. Try fewer or different words.'}
+        <p className="mx-auto max-w-md py-10 text-center text-sm leading-relaxed text-white/50">
+          {(song ? result.files.length : result.folders.length)
+            ? `No ${song ? 'files' : 'folders'} in this format.`
+            : result.people === 0
+              ? 'Nobody answered. Soulseek ignores searches that name some big artists (like The Weeknd, Frank Ocean or Lady Gaga), so try just the album or song name.'
+              : 'Nobody is sharing anything that matches. Try fewer or different words.'}
         </p>
       )}
     </Dialog>

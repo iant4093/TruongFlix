@@ -284,3 +284,13 @@ it('searches for an album by its artist and plain title', () => {
   expect(albumQuery(release('SOS (Deluxe) - EP', 'SZA'))).toBe('SZA SOS');
   expect(albumQuery(release('Midnights (3am Edition)', 'Taylor Swift'))).toBe('Taylor Swift Midnights');
 });
+
+it('an empty search naming the artist can be tried again without the name', async () => {
+  const { withoutArtist } = await import('../src/components/browse/music/SoulseekSearchDialog');
+  expect(withoutArtist('The Weeknd Beauty Behind the Madness', ['The Weeknd'])).toBe('Beauty Behind the Madness');
+  expect(withoutArtist('Frank Ocean Nights', ['Frank Ocean'])).toBe('Nights');
+  expect(withoutArtist('Lady Gaga Poker Face', ['Lady Gaga', 'Colby O’Donis'])).toBe('Poker Face');
+  // Nothing to drop, or too little left to search.
+  expect(withoutArtist('Beauty Behind the Madness', ['The Weeknd'])).toBeNull();
+  expect(withoutArtist('SZA SOS', ['SZA'])).toBeNull();
+});
