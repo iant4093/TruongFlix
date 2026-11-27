@@ -82,6 +82,16 @@ export function initMusicDownloads(): Promise<void> {
   return started;
 }
 
+/** Made-up account names look like this ("tf" and ten letters and digits). */
+const MADE_UP = /^tf[a-z0-9]{10}$/;
+
+/** A new Soulseek name and password (Soulseek makes the account the first time it's used). */
+export function newSoulseekAccount(): { soulseek_username: string; soulseek_password: string } {
+  const pick = (alphabet: string, n: number) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => alphabet[b % alphabet.length]).join('');
+  const lower = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  return { soulseek_username: `tf${pick(lower, 10)}`, soulseek_password: pick(`${lower}ABCDEFGHIJKLMNOPQRSTUVWXYZ`, 24) };
+}
+
 export const hasSoulseekAccount = () => {
   const { soulseek_username, soulseek_password } = useLibraryStore.getState().settings;
   return !!soulseek_username.trim() && !!soulseek_password;
@@ -105,8 +115,10 @@ function settled(ms: number): Promise<SoulseekStatus> {
 }
 
 /**
- * Logs in to Soulseek with the account from Settings (when not already online). Calls made at
- * the same time share one login; while the app is reconnecting by itself, this waits for that.
+ * Logs in to Soulseek with the account from Settings (when not already online). With none, one is
+ * made up and kept in Settings (and the keychain) like one the user typed: nobody has to sign up
+ * for anything. Calls made at the same time share one login; while the app is reconnecting by
+ * itself, this waits for that.
  */
 export async function connectSoulseek(force = false): Promise<SoulseekStatus> {
   userDisconnected = false;
@@ -115,21 +127,35 @@ export async function connectSoulseek(force = false): Promise<SoulseekStatus> {
   let current = useMusicDownloads.getState().status;
   if (!force && current.state === 'connecting' && !connecting) current = await settled(120_000);
   if (!force && current.state === 'online' && current.username === settings.soulseek_username.trim()) return current;
-  if (!hasSoulseekAccount()) throw new Error('Add your Soulseek account in Settings → Music to download albums.');
   if (connecting) return connecting;
-  connecting = invoke<SoulseekStatus>('slsk_connect', {
-    username: settings.soulseek_username.trim(),
-    password: settings.soulseek_password,
-    port: settings.soulseek_port,
-    shared: settings.soulseek_share ? settings.music_directories : [],
-  })
-    .then((status) => {
-      useMusicDownloads.setState({ status });
-      return status;
-    })
-    .finally(() => {
-      connecting = null;
-    });
+  connecting = (async () => {
+    const { updateSettings } = useLibraryStore.getState();
+    if (!hasSoulseekAccount()) await updateSettings(newSoulseekAccount());
+    for (let attempt = 0; ; attempt++) {
+      const { settings: now } = useLibraryStore.getState();
+      try {
+        const status = await invoke<SoulseekStatus>('slsk_connect', {
+          username: now.soulseek_username.trim(),
+          password: now.soulseek_password,
+          port: now.soulseek_port,
+          shared: now.soulseek_share ? now.music_directories : [],
+        });
+        useMusicDownloads.setState({ status });
+        return status;
+      } catch (e) {
+        // A made-up name someone else has (or that Soulseek gave away after a month unused):
+        // another one is made up. An account the user typed in is theirs to fix.
+        const message = e instanceof Error ? e.message : String(e);
+        if (attempt < 2 && MADE_UP.test(now.soulseek_username.trim()) && /didn.t accept that username/i.test(message)) {
+          await updateSettings(newSoulseekAccount());
+          continue;
+        }
+        throw e;
+      }
+    }
+  })().finally(() => {
+    connecting = null;
+  });
   return connecting;
 }
 

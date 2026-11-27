@@ -104,6 +104,11 @@ function SoulseekSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => void initMusicDownloads().catch(() => {}), []);
+  // An account made for the user (at their first download) shows up here as it's made.
+  useEffect(() => {
+    setUsername(settings.soulseek_username);
+    setPassword(settings.soulseek_password);
+  }, [settings.soulseek_username, settings.soulseek_password]);
   const dirty = username.trim() !== settings.soulseek_username || password !== settings.soulseek_password;
   const saveAndConnect = async () => {
     setBusy(true);
@@ -128,10 +133,10 @@ function SoulseekSettings() {
   return (
     <Group
       title="Downloads · Soulseek"
-      description="Browse → Music downloads albums from the Soulseek network with your own Soulseek account."
-      footer="Soulseek creates the account the first time you sign in with a new name; there's no password reset, so keep it somewhere safe. Only audio files (FLAC, MP3, M4A, Ogg, Opus) are downloaded, every track is checked against the album's tracklist, and albums are tagged with the store's album details."
+      description="Browse → Music downloads from the Soulseek network. An account is made for you the first time you download; to use one of your own, enter it here."
+      footer="The account is kept in your system's keychain. Soulseek creates an account the first time a new name signs in, and has no password reset. Only audio files (FLAC, MP3, M4A, Ogg, Opus) are downloaded, every track is checked against the album's tracklist, and albums are tagged with the store's album details."
     >
-      <Row label="Account" description={<StatusText tone={tone}>{status.state === 'online' ? `Connected as ${status.username}` : status.state === 'connecting' ? 'Connecting…' : status.state === 'error' ? status.message : settings.soulseek_username ? 'Not connected (connects when you download)' : 'No account yet'}</StatusText>} stacked>
+      <Row label="Account" description={<StatusText tone={tone}>{status.state === 'online' ? `Connected as ${status.username}` : status.state === 'connecting' ? 'Connecting…' : status.state === 'error' ? status.message : settings.soulseek_username ? 'Not connected (connects when you download)' : 'Made for you at your first download'}</StatusText>} stacked>
         <div className="flex flex-wrap gap-2">
           <input className={`${INPUT} w-48`} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username" aria-label="Soulseek username" autoComplete="off" spellCheck={false} maxLength={30} />
           <input className={`${INPUT} w-48`} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" aria-label="Soulseek password" autoComplete="off" />
@@ -171,7 +176,7 @@ function SoulseekSettings() {
         checked={settings.soulseek_share}
         onChange={(soulseek_share) => void reconnectAfter({ soulseek_share })}
       />
-      <Row label="Listening port" description="Other users connect to you here; forwarding it on your router makes downloads start faster. 0 turns listening off.">
+      <Row label="Listening port" description="Other users connect to you here. 0 turns listening off.">
         <NumberField value={settings.soulseek_port} min={0} max={65535} empty={2234} label="Soulseek listening port" className={`${INPUT} w-24 text-right tabular-nums`} onCommit={(soulseek_port) => void reconnectAfter({ soulseek_port })} />
       </Row>
     </Group>

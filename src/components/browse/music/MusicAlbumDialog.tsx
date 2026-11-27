@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { AlertCircle, Download, Loader2, Music2, Play, RefreshCw, Search, Settings2, X } from 'lucide-react';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { albumDetail, albumKey, type CatalogAlbum, type CatalogArtist, type CatalogRelease } from '../../../services/musicCatalog';
-import { cancelAlbumJob, downloadAlbum, hasSoulseekAccount, isActive, jobLabel, useMusicDownloads } from '../../../services/musicDownloads';
+import { cancelAlbumJob, downloadAlbum, isActive, jobLabel, useMusicDownloads } from '../../../services/musicDownloads';
 import { openRoute, openTab } from '../../../music/nav';
 import { useMusicPlayer } from '../../../music/player';
 import useCatalogQuery from '../../../hooks/useCatalogQuery';
@@ -166,7 +166,7 @@ function AlbumActions({ release, onClose, onPick }: { release: CatalogRelease; o
         <span className="text-sm text-white/55">This album is in your library.</span>
       </div>
     );
-  if (!settings.music_directories.length || !hasSoulseekAccount())
+  if (!settings.music_directories.length)
     return (
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <button
@@ -180,7 +180,7 @@ function AlbumActions({ release, onClose, onPick }: { release: CatalogRelease; o
           <Settings2 className="h-4 w-4" /> Set up downloads
         </button>
         <span className="text-sm text-white/55">
-          {settings.music_directories.length ? 'Add your Soulseek account in Settings → Music to download albums.' : 'Add a music folder and your Soulseek account in Settings → Music.'}
+          Add a music folder in Settings → Music to download albums.
         </span>
       </div>
     );

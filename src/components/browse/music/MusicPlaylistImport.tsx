@@ -20,7 +20,6 @@ import {
   type ImportSong,
   type PlaylistImport,
 } from '../../../services/playlistImport';
-import { hasSoulseekAccount } from '../../../services/musicDownloads';
 import Dropdown from '../../common/Dropdown';
 import SegmentedControl from '../../common/SegmentedControl';
 import { CoverArt } from './MusicArt';
@@ -178,7 +177,7 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
   const c = useMemo(() => importCounts(playlist), [playlist]);
   const retry = useCallback((key: string) => retrySong(playlist.id, key), [playlist.id]);
   const left = c.total - c.done - c.owned;
-  const ready = !!settings.music_directories.length && hasSoulseekAccount();
+  const ready = !!settings.music_directories.length;
   const songs = useMemo(
     () =>
       playlist.songs.filter((s) =>
@@ -263,7 +262,7 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
               <Trash2 className="h-4 w-4" />
             </button>
           </div>
-          {!ready && <p className="mt-3 text-sm text-white/55">Add a music folder and your Soulseek account in Settings → Music to download songs.</p>}
+          {!ready && <p className="mt-3 text-sm text-white/55">Add a music folder in Settings → Music to download songs.</p>}
           {error && (
             <p role="alert" className="mt-3 flex items-start gap-2 text-sm text-red-300">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />

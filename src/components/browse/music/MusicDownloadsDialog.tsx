@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Check, ChevronDown, Copy, Download, FolderOpen, ListMusic, Loader2, Music2, X } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useLibraryStore } from '../../../store/useLibraryStore';
-import { cancelAlbumJob, connectSoulseek, dismissAlbumJob, hasSoulseekAccount, isActive, jobLabel, useMusicDownloads, type AlbumJob } from '../../../services/musicDownloads';
+import { cancelAlbumJob, connectSoulseek, dismissAlbumJob, isActive, jobLabel, useMusicDownloads, type AlbumJob } from '../../../services/musicDownloads';
 import { errorMessage } from '../../../lib/errors';
 import { SOURCE_NAMES, importCounts, usePlaylistImports } from '../../../services/playlistImport';
 import Dialog from '../../common/Dialog';
@@ -34,25 +34,11 @@ export default function MusicDownloadsDialog({ onClose }: { onClose: () => void 
               ? 'Connecting to Soulseek…'
               : status.state === 'error'
                 ? status.message || 'Soulseek isn’t connected'
-                : hasSoulseekAccount()
-                  ? 'Not connected. Soulseek connects when you start a download.'
-                  : 'No Soulseek account yet.'}
+                : 'Not connected. Soulseek connects when you start a download.'}
         </span>
-        {hasSoulseekAccount() ? (
-          status.state !== 'online' && status.state !== 'connecting' && (
-            <button className="nf-btn-ghost h-8 px-3 text-xs" onClick={reconnect}>
-              Connect
-            </button>
-          )
-        ) : (
-          <button
-            className="nf-btn-ghost h-8 px-3 text-xs"
-            onClick={() => {
-              onClose();
-              useLibraryStore.getState().setSettingsOpen(true, 'music');
-            }}
-          >
-            Add account
+        {status.state !== 'online' && status.state !== 'connecting' && (
+          <button className="nf-btn-ghost h-8 px-3 text-xs" onClick={reconnect}>
+            Connect
           </button>
         )}
       </div>
