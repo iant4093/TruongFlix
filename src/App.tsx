@@ -16,6 +16,7 @@ import PinPrompt from './components/profiles/PinPrompt';
 import LaunchIntro from './components/layout/LaunchIntro';
 import GamesUnavailable from './components/games/GamesUnavailable';
 import { autoPurgeTrash } from './services/files';
+import { finishRestore, restoredMessage } from './services/backup';
 import { basename } from './lib/path';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -105,9 +106,8 @@ export default function App() {
     init()
       .then(async () => {
         try {
-          if (await invoke<boolean>('backup_restore_result')) {
-            useLibraryStore.getState().toast('TruongFlix backup restored', 'success');
-          }
+          const restored = await finishRestore();
+          if (restored) useLibraryStore.getState().toast(restoredMessage(restored), restored.missing.length ? 'info' : 'success');
         } catch (error) {
           useLibraryStore.getState().toast(`Backup restore failed: ${String(error)}`, 'error');
         }

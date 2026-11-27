@@ -115,7 +115,7 @@ Screenshots use the development preview with sample metadata and artwork from [T
 - Mark a whole season or show as watched or unwatched in one go
 - Actor pages: click anyone in the cast to see everything of theirs in your library
 - Version picker when you have the same movie in, say, 1080p and 4K
-- Back up and restore profiles, watch history, library matches, Browse saves, Live TV playlists and settings, with folder remapping when you restore on another computer. API keys, passwords and the browser access code are left out of backups
+- Back up and restore your whole setup (Settings → About): profiles, watch history, library matches, Browse saves, Live TV playlists, music playlists, games and settings, with folder relinking when you restore on another computer. API keys, passwords and the Soulseek account are left out unless you tick “Include passwords and keys”
 
 **Home**
 

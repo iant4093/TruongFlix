@@ -7,6 +7,7 @@ import { engineStatus } from '../../services/player';
 import { formatBytes } from '../../lib/format';
 import { Block, BTN, BTN_PRIMARY, Group, Page, Row, StatusText, ToggleRow } from './ui';
 import { closeSettingsAnd } from './nav';
+import BackupSettings from './BackupSettings';
 import { errorMessage } from '../../lib/errors';
 
 export default function AboutPage() {
@@ -122,6 +123,8 @@ export default function AboutPage() {
           </button>
         </Row>
       </Group>
+
+      <BackupSettings />
     </Page>
   );
 }

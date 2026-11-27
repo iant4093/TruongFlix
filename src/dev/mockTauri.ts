@@ -1215,7 +1215,7 @@ export function installMocks() {
           keychain.delete(String(a.key));
           return null;
         case 'backup_restore_result':
-          return false;
+          return null;
         case 'backup_recovery_path':
           return null;
         case 'plugin:sql|load':
