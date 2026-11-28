@@ -289,7 +289,8 @@ export const DEFAULT_GAME_SETTINGS: GameSettings = {
   desktopShortcut: true,
 };
 
-const SETTING_KEYS: Record<keyof GameSettings, string> = {
+/** Where each game setting is stored (backups carry them: src/services/backupManifest.json). */
+export const SETTING_KEYS: Record<keyof GameSettings, string> = {
   sourceUrl: 'games_source_url',
   downloadDir: 'games_download_dir',
   installDir: 'games_install_dir',

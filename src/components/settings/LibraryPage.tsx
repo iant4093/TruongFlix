@@ -22,7 +22,6 @@ function scanAfterFolderChange(before: string[], after: string[]) {
   else removalScan = window.setTimeout(() => void runScan({ quiet: true }), 60_000);
 }
 import { closeSettingsAnd } from './nav';
-import BackupSettings from './BackupSettings';
 import Spinner from '../common/Spinner';
 
 export default function LibraryPage() {
@@ -116,8 +115,6 @@ export default function LibraryPage() {
           </button>
         </Row>
       </Group>
-
-      <BackupSettings />
 
       <Group title="Danger zone">
         <Row label="Clear library" description="Removes every title and all watch progress from TruongFlix. Your files stay on disk.">

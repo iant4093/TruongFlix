@@ -1,4 +1,12 @@
 //! Portable SQLite snapshots. Restore runs before the application's connection pool opens.
+//!
+//! What a backup carries is listed in `src/services/backupManifest.json` (shared with the UI and
+//! its tests): every setting key by kind, every table, and the few browser-storage preferences.
+//!
+//! Format versions (`PRAGMA user_version` of the backup file):
+//! - 1: the database tables, secrets left out.
+//! - 2: adds `backup_meta` (whether passwords and keys are inside), `backup_local` (preferences kept
+//!   in the window's storage) and `backup_files` (playlist covers). Version 1 backups still restore.
 use libsqlite3_sys::{
     sqlite3, sqlite3_api_routines, sqlite3_auto_extension, sqlite3_backup_finish, sqlite3_backup_init,
     sqlite3_backup_step, sqlite3_set_authorizer, SQLITE_ATTACH, SQLITE_DENY, SQLITE_DETACH, SQLITE_DONE,
@@ -9,10 +17,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection, Row, SqliteConnection};
 use std::{
+    collections::{BTreeMap, HashSet},
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 use tauri::{AppHandle, Manager, State, WebviewWindow};
@@ -22,73 +31,141 @@ const DB: &str = "truongflix.db";
 const PENDING: &str = "restore-pending.db";
 const RECOVERY: &str = "Before restore.truongflix-backup";
 const APPLICATION_ID: i64 = 0x5452_4658; // TRFX
-const VERSION: i64 = 1;
+/// The format this version writes.
+const VERSION: i64 = 2;
+/// The oldest format this version restores.
+const OLDEST: i64 = 1;
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
-// Keep file-operation history and transfer sessions local to their original installation.
-const PORTABLE_TABLES: &[&str] = &[
-    "settings",
-    "profiles",
-    "movies",
-    "tv_series",
-    "episodes",
-    "subtitles",
-    "profile_state",
-    "watch_log",
-    "browse_saved",
-    "collections",
-    "season_cache",
-    "live_data",
-    "live_viewing",
-    // Music (shared song index, then each profile's playlists, plays, favourites and pins).
-    "music_artists",
-    "music_albums",
-    "music_tracks",
-    "music_playlists",
-    "music_playlist_tracks",
-    "music_plays",
-    "music_favourites",
-    "music_pins",
-    "music_lyrics_cache",
+/// Largest picture or stored preference a backup carries.
+const MAX_ITEM_BYTES: u64 = 20 * 1024 * 1024;
+const ART_FOLDER: &str = "music-art";
+
+/// Pictures in the music-art folder that can't be made again from the songs: a playlist's own
+/// cover and the artwork of the playlist it was imported from. The columns may not exist yet.
+const ART_COLUMNS: &[(&str, &str)] = &[("music_playlists", "cover"), ("music_playlists", "import_cover")];
+
+/// Columns holding paths to files or folders, relinked with the media folders.
+const PATH_COLUMNS: &[(&str, &str)] = &[
+    ("movies", "file_path"),
+    ("episodes", "file_path"),
+    ("tv_series", "folder_path"),
+    ("subtitles", "file_path"),
+    ("music_tracks", "file_path"),
+    ("games_library", "installer_dir"),
+    ("games_library", "install_dir"),
+    ("games_library", "exe_path"),
 ];
 
-/// Tables a backup may not have (made before the feature existed) or this computer may not have yet
-/// (Music never opened): skipped instead of refusing the restore.
-const OPTIONAL_TABLES: &[&str] = &[
-    "music_artists",
-    "music_albums",
-    "music_tracks",
-    "music_playlists",
-    "music_playlist_tracks",
-    "music_plays",
-    "music_favourites",
-    "music_pins",
-    "music_lyrics_cache",
-];
+#[derive(Deserialize)]
+struct Manifest {
+    settings: SettingKinds,
+    tables: TableKinds,
+    #[serde(rename = "localStorage")]
+    local_storage: LocalKinds,
+}
 
-/// Account keys, passwords and the browser access code never leave this computer in a backup;
-/// restoring keeps the ones already set here. They normally live in the system keychain, but the
-/// settings table still holds them when the keychain is unavailable (or before migration).
-const SECRET_SETTINGS: &[&str] = crate::secrets::KEYS;
+/// Every setting key, by how a backup treats it.
+#[derive(Deserialize)]
+struct SettingKinds {
+    /// Carried as is.
+    plain: Vec<String>,
+    /// A file path: carried, relinked with the folders around it.
+    file: Vec<String>,
+    /// A JSON list of folders: carried, relinked, and checked on the new computer.
+    folders: Vec<String>,
+    /// One folder ('' = none): carried, relinked and checked.
+    folder: Vec<String>,
+    /// Network shares keyed by media folder.
+    shares: Vec<String>,
+    /// Kept in the keychain: only in a backup the user asked to include them in.
+    secret: Vec<String>,
+    /// Belongs with an account among the secrets: travels with them, else this computer's stays.
+    account: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct TableKinds {
+    /// A backup without one of these is refused.
+    required: Vec<String>,
+    /// Tables a backup may not have (made before the feature existed) or this computer may not have
+    /// yet (Music never opened): skipped instead of refusing the restore.
+    optional: Vec<String>,
+    /// File-operation history and transfer sessions stay with their installation.
+    local: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct LocalKinds {
+    carry: Vec<String>,
+}
+
+fn manifest() -> &'static Manifest {
+    static MANIFEST: OnceLock<Manifest> = OnceLock::new();
+    MANIFEST.get_or_init(|| {
+        serde_json::from_str(include_str!("../../src/services/backupManifest.json")).expect("the backup manifest is valid")
+    })
+}
+
+/// Tables a restore replaces, in order.
+fn portable_tables() -> Vec<&'static str> {
+    let tables = &manifest().tables;
+    tables.required.iter().chain(&tables.optional).map(String::as_str).collect()
+}
+
+fn is_optional(table: &str) -> bool {
+    manifest().tables.optional.iter().any(|t| t == table)
+}
+
+/// Folder settings checked on the new computer and offered for relinking.
+fn folder_keys() -> impl Iterator<Item = &'static str> {
+    let s = &manifest().settings;
+    s.folders.iter().chain(&s.folder).map(String::as_str)
+}
+
+/// Secret settings, and the settings that belong with them.
+fn carried_with_secrets() -> Vec<&'static str> {
+    let s = &manifest().settings;
+    s.secret.iter().chain(&s.account).map(String::as_str).collect()
+}
 
 fn sql_list<S: AsRef<str>>(keys: &[S]) -> String {
+    if keys.is_empty() {
+        return "NULL".into(); // `IN (NULL)` matches nothing
+    }
     keys.iter().map(|k| format!("'{}'", k.as_ref().replace('\'', "''"))).collect::<Vec<_>>().join(", ")
 }
 
 fn secret_list() -> String {
-    sql_list(SECRET_SETTINGS)
+    sql_list(crate::secrets::KEYS)
 }
 
 #[derive(Default)]
 pub struct BackupState {
     operation: tokio::sync::Mutex<()>,
-    result: Mutex<Option<Result<(), String>>>,
+    result: Mutex<Option<Result<Restored, String>>>,
     preview: tokio::sync::Mutex<Option<Preview>>,
+}
+
+/// A folder the backup's settings point to.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPath {
+    path: String,
+    /// The setting it comes from (the first one, when several share the folder).
+    key: String,
+    /// Found on this computer (only checked when a backup is reviewed).
+    exists: bool,
+    /// Behind a network share TruongFlix connects to itself.
+    share: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupInfo {
-    folders: Vec<String>,
+    version: i64,
+    /// Passwords and keys are inside.
+    secrets: bool,
+    paths: Vec<BackupPath>,
     profiles: i64,
     titles: i64,
 }
@@ -109,6 +186,27 @@ pub struct BackupPreview {
 pub struct FolderMapping {
     from: String,
     to: String,
+}
+
+/// What the UI finishes after a restore: preferences for the window's storage, and the folders
+/// that aren't on this computer.
+#[derive(Serialize, Default, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Restored {
+    local: BTreeMap<String, String>,
+    missing: Vec<String>,
+}
+
+/// What goes into a backup besides the database.
+#[derive(Default)]
+struct Extras {
+    /// Keychain values to put in (the user asked for passwords and keys). `None` leaves every
+    /// secret out.
+    secrets: Option<BTreeMap<String, String>>,
+    /// Preferences from the window's storage.
+    local: BTreeMap<String, String>,
+    /// Where playlist covers are; `None` carries none.
+    art_dir: Option<PathBuf>,
 }
 
 fn main_window(window: &WebviewWindow) -> Result<(), String> {
@@ -241,7 +339,51 @@ async fn copy_database(
     }
 }
 
-async fn snapshot(source: &Path, destination: &Path) -> Result<(), String> {
+fn sql_error(error: sqlx::Error) -> String {
+    error.to_string()
+}
+
+/// `schema.table` exists (`schema` is `main` or `incoming`).
+async fn has_table(db: &mut SqliteConnection, schema: &str, table: &str) -> Result<bool, sqlx::Error> {
+    let found: Option<String> = sqlx::query_scalar(&format!("SELECT name FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?"))
+        .bind(table)
+        .fetch_optional(db)
+        .await?;
+    Ok(found.is_some())
+}
+
+async fn has_column(db: &mut SqliteConnection, table: &str, column: &str) -> Result<bool, sqlx::Error> {
+    Ok(columns(db, table).await?.iter().any(|c| c == column))
+}
+
+/// Playlist covers named in the database that are in `art_dir`.
+async fn art_files(db: &mut SqliteConnection, art_dir: &Path) -> Result<Vec<(String, Vec<u8>)>, sqlx::Error> {
+    let mut names = std::collections::BTreeSet::new();
+    for (table, column) in ART_COLUMNS {
+        if !has_column(db, table, column).await? {
+            continue;
+        }
+        let found: Vec<String> = sqlx::query_scalar(&format!("SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL"))
+            .fetch_all(&mut *db)
+            .await?;
+        names.extend(found.into_iter().filter(|name| crate::music::valid_art_name(name)));
+    }
+    let mut out = Vec::new();
+    for name in names {
+        let path = art_dir.join(&name);
+        // A cover that's gone just isn't carried: the playlist shows its songs' covers.
+        let Ok(meta) = fs::metadata(&path) else { continue };
+        if !meta.is_file() || meta.len() > MAX_ITEM_BYTES {
+            continue;
+        }
+        if let Ok(data) = fs::read(&path) {
+            out.push((name, data));
+        }
+    }
+    Ok(out)
+}
+
+async fn snapshot(source: &Path, destination: &Path, extras: &Extras) -> Result<(), String> {
     let parent = destination.parent().ok_or("Choose a destination folder.")?;
     let temp = NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
     let mut input = connect(source, true, false)
@@ -251,30 +393,69 @@ async fn snapshot(source: &Path, destination: &Path) -> Result<(), String> {
         .await
         .map_err(|error| error.to_string())?;
     copy_database(&mut input, &mut output).await?;
-    sqlx::query("PRAGMA journal_mode = DELETE")
-        .execute(&mut output)
-        .await
-        .map_err(|error| error.to_string())?;
-    sqlx::query(&format!("PRAGMA application_id = {APPLICATION_ID}"))
-        .execute(&mut output)
-        .await
-        .map_err(|error| error.to_string())?;
-    sqlx::query(&format!("PRAGMA user_version = {VERSION}"))
-        .execute(&mut output)
-        .await
-        .map_err(|error| error.to_string())?;
-    let drop_secrets = format!("DELETE FROM settings WHERE key IN ({})", secret_list());
-    for statement in [
-        "PRAGMA secure_delete = ON",
-        "DELETE FROM trash",
-        "DELETE FROM rename_batches",
-        "DELETE FROM torrents",
-        &drop_secrets,
+    input.close().await.map_err(sql_error)?;
+    for pragma in [
+        "PRAGMA journal_mode = DELETE".to_string(),
+        format!("PRAGMA application_id = {APPLICATION_ID}"),
+        format!("PRAGMA user_version = {VERSION}"),
+        "PRAGMA secure_delete = ON".to_string(),
     ] {
-        sqlx::query(statement)
-            .execute(&mut output)
-            .await
-            .map_err(|error| error.to_string())?;
+        sqlx::query(&pragma).execute(&mut output).await.map_err(sql_error)?;
+    }
+    for table in &manifest().tables.local {
+        if has_table(&mut output, "main", table).await.map_err(sql_error)? {
+            sqlx::query(&format!("DELETE FROM \"{table}\"")).execute(&mut output).await.map_err(sql_error)?;
+        }
+    }
+    match &extras.secrets {
+        None => {
+            sqlx::query(&format!("DELETE FROM settings WHERE key IN ({})", secret_list()))
+                .execute(&mut output)
+                .await
+                .map_err(sql_error)?;
+        }
+        // A settings row wins over the keychain in the app, so it wins here too.
+        Some(values) => {
+            let values: Vec<(&String, &String)> = values.iter().filter(|(key, _)| crate::secrets::KEYS.contains(&key.as_str())).collect();
+            for (key, value) in values {
+                sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
+                    .bind(key)
+                    .bind(value)
+                    .execute(&mut output)
+                    .await
+                    .map_err(sql_error)?;
+            }
+        }
+    }
+    for table in [
+        "CREATE TABLE backup_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "CREATE TABLE backup_local (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "CREATE TABLE backup_files (folder TEXT NOT NULL, name TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (folder, name))",
+    ] {
+        sqlx::query(table).execute(&mut output).await.map_err(sql_error)?;
+    }
+    let made = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    for (key, value) in [
+        ("secrets", if extras.secrets.is_some() { "1" } else { "0" }.to_string()),
+        ("app_version", env!("CARGO_PKG_VERSION").to_string()),
+        ("made_at", made.to_string()),
+    ] {
+        sqlx::query("INSERT INTO backup_meta (key, value) VALUES (?, ?)").bind(key).bind(value).execute(&mut output).await.map_err(sql_error)?;
+    }
+    let local: Vec<(&String, &String)> = carried_local(&extras.local).collect();
+    for (key, value) in local {
+        sqlx::query("INSERT INTO backup_local (key, value) VALUES (?, ?)").bind(key).bind(value).execute(&mut output).await.map_err(sql_error)?;
+    }
+    if let Some(art_dir) = &extras.art_dir {
+        for (name, data) in art_files(&mut output, art_dir).await.map_err(sql_error)? {
+            sqlx::query("INSERT INTO backup_files (folder, name, data) VALUES (?, ?, ?)")
+                .bind(ART_FOLDER)
+                .bind(name)
+                .bind(data)
+                .execute(&mut output)
+                .await
+                .map_err(sql_error)?;
+        }
     }
     output.close().await.map_err(|error| error.to_string())?;
     check_file(temp.path())?;
@@ -284,6 +465,49 @@ async fn snapshot(source: &Path, destination: &Path) -> Result<(), String> {
     temp.persist(destination)
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// The window-storage preferences a backup carries (others, and oversized ones, are dropped).
+fn carried_local(local: &BTreeMap<String, String>) -> impl Iterator<Item = (&String, &String)> {
+    local
+        .iter()
+        .filter(|(key, value)| manifest().local_storage.carry.contains(key) && value.len() as u64 <= MAX_ITEM_BYTES)
+}
+
+/// Folders the settings point to (none for settings that are missing or damaged).
+async fn settings_paths(db: &mut SqliteConnection) -> Result<Vec<BackupPath>, sqlx::Error> {
+    let keys: Vec<&str> = folder_keys().chain(manifest().settings.shares.iter().map(String::as_str)).collect();
+    let rows: Vec<(String, String)> = sqlx::query_as(&format!("SELECT key, value FROM settings WHERE key IN ({})", sql_list(&keys)))
+        .fetch_all(db)
+        .await?;
+    let get = |key: &str| rows.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    let shared: HashSet<String> = manifest()
+        .settings
+        .shares
+        .iter()
+        .filter_map(|key| get(key))
+        .filter_map(|raw| serde_json::from_str::<serde_json::Map<String, Value>>(raw).ok())
+        .flat_map(|shares| shares.into_iter().map(|(folder, _)| folder))
+        .collect();
+    let mut out: Vec<BackupPath> = Vec::new();
+    for key in folder_keys() {
+        let Some(raw) = get(key) else { continue };
+        let paths = if manifest().settings.folders.iter().any(|k| k == key) {
+            serde_json::from_str::<Vec<Value>>(raw)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        } else {
+            vec![raw.to_owned()]
+        };
+        for path in paths.into_iter().filter(|p| !p.trim().is_empty()) {
+            if !out.iter().any(|p| p.path == path) {
+                out.push(BackupPath { share: shared.contains(&path), path, key: key.to_owned(), exists: false });
+            }
+        }
+    }
+    Ok(out)
 }
 
 async fn inspect(db: &mut SqliteConnection) -> Result<BackupInfo, String> {
@@ -298,7 +522,10 @@ async fn inspect(db: &mut SqliteConnection) -> Result<BackupInfo, String> {
         .fetch_one(&mut *db)
         .await
         .map_err(|_| "Could not read the backup version.")?;
-    if version != VERSION {
+    if version > VERSION {
+        return Err("This backup is from a newer TruongFlix. Update TruongFlix, then restore it.".into());
+    }
+    if version < OLDEST {
         return Err("This backup requires a compatible version of TruongFlix.".into());
     }
     let result: Vec<String> = sqlx::query_scalar("PRAGMA quick_check(1)")
@@ -321,21 +548,22 @@ async fn inspect(db: &mut SqliteConnection) -> Result<BackupInfo, String> {
     if unsafe_schema != 0 || triggers != 0 {
         return Err("The backup contains an unsupported database schema.".into());
     }
-    let raw: Option<String> =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'media_directories'")
+    let paths = settings_paths(db).await.map_err(|_| "The backup is missing its settings.")?;
+    let secrets = if has_table(db, "main", "backup_meta").await.map_err(sql_error)? {
+        let flag: Option<String> = sqlx::query_scalar("SELECT value FROM backup_meta WHERE key = 'secrets'")
             .fetch_optional(&mut *db)
             .await
-            .map_err(|_| "The backup is missing its settings.")?;
-    let folders = match raw {
-        Some(value) => {
-            serde_json::from_str(&value).map_err(|_| "The backup's media folders are invalid.")?
-        }
-        None => Vec::new(),
+            .map_err(sql_error)?;
+        flag.as_deref() == Some("1")
+    } else {
+        false
     };
     let (profiles, titles) = sqlx::query_as("SELECT (SELECT count(*) FROM profiles), (SELECT count(*) FROM movies) + (SELECT count(*) FROM tv_series)")
         .fetch_one(&mut *db).await.map_err(|_| "The backup is missing its library or profiles.")?;
     Ok(BackupInfo {
-        folders,
+        version,
+        secrets,
+        paths,
         profiles,
         titles,
     })
@@ -397,19 +625,9 @@ async fn remap_folders(
     mappings: &[FolderMapping],
 ) -> Result<(), sqlx::Error> {
     let mut tx = db.begin().await?;
-    for (table, column) in [
-        ("movies", "file_path"),
-        ("episodes", "file_path"),
-        ("tv_series", "folder_path"),
-        ("subtitles", "file_path"),
-        ("music_tracks", "file_path"),
-    ] {
-        // Music's tables only exist once Music has been opened.
-        let exists: Option<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-            .bind(table)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if exists.is_none() {
+    for (table, column) in PATH_COLUMNS {
+        // Music's and Games' tables only exist once they have been opened.
+        if !has_column(&mut tx, table, column).await? {
             continue;
         }
         let read = format!("SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL");
@@ -425,28 +643,30 @@ async fn remap_folders(
             }
         }
     }
-    let rows = sqlx::query("SELECT key, value FROM settings WHERE key IN ('media_directories', 'music_directories', 'network_shares', 'torrent_movies_dir', 'torrent_tv_dir')")
-        .fetch_all(&mut *tx).await?;
+    let s = &manifest().settings;
+    let keys: Vec<&String> = s.folders.iter().chain(&s.folder).chain(&s.file).chain(&s.shares).collect();
+    let rows = sqlx::query(&format!("SELECT key, value FROM settings WHERE key IN ({})", sql_list(&keys)))
+        .fetch_all(&mut *tx)
+        .await?;
     for row in rows {
         let key: String = row.get(0);
         let raw: String = row.get(1);
-        let next = match key.as_str() {
-            "media_directories" | "music_directories" => serde_json::from_str::<Vec<String>>(&raw)
-                .ok()
-                .map(|folders| {
-                    let folders: Vec<_> = folders
-                        .into_iter()
-                        .map(|folder| remap_path(&folder, mappings).unwrap_or(folder))
-                        .collect();
-                    serde_json::to_string(&folders).expect("strings serialize")
-                }),
-            "network_shares" => serde_json::from_str::<serde_json::Map<String, Value>>(&raw)
-                .ok()
-                .map(|mut shares| {
-                    shares.retain(|folder, _| remap_path(folder, mappings).is_none());
-                    Value::Object(shares).to_string()
-                }),
-            _ => remap_path(&raw, mappings),
+        let next = if s.folders.contains(&key) {
+            serde_json::from_str::<Vec<String>>(&raw).ok().map(|folders| {
+                let folders: Vec<_> = folders
+                    .into_iter()
+                    .map(|folder| remap_path(&folder, mappings).unwrap_or(folder))
+                    .collect();
+                serde_json::to_string(&folders).expect("strings serialize")
+            })
+        } else if s.shares.contains(&key) {
+            // A relinked folder is no longer behind the share it was on.
+            serde_json::from_str::<serde_json::Map<String, Value>>(&raw).ok().map(|mut shares| {
+                shares.retain(|folder, _| remap_path(folder, mappings).is_none());
+                Value::Object(shares).to_string()
+            })
+        } else {
+            remap_path(&raw, mappings)
         };
         if let Some(next) = next {
             sqlx::query("UPDATE settings SET value = ? WHERE key = ?")
@@ -465,6 +685,8 @@ pub async fn backup_export(
     app: AppHandle,
     state: State<'_, BackupState>,
     path: PathBuf,
+    include_secrets: Option<bool>,
+    local: Option<BTreeMap<String, String>>,
 ) -> Result<(), String> {
     main_window(&window)?;
     let _lock = state.operation.lock().await;
@@ -475,7 +697,18 @@ pub async fn backup_export(
     if path == dir.join(RECOVERY) {
         return Err("Choose a different location for this backup.".into());
     }
-    snapshot(&dir.join(DB), &path).await
+    let secrets = if include_secrets.unwrap_or(false) {
+        // macOS keeps them in the database (no keychain there), which the snapshot already has.
+        let values = tauri::async_runtime::spawn_blocking(crate::secrets::stored_values)
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("Couldn't read the passwords and keys: {error}"))?;
+        Some(values)
+    } else {
+        None
+    };
+    let extras = Extras { secrets, local: local.unwrap_or_default(), art_dir: Some(crate::music::art_dir(&app)) };
+    snapshot(&dir.join(DB), &path, &extras).await
 }
 
 async fn columns(db: &mut SqliteConnection, table: &str) -> Result<Vec<String>, sqlx::Error> {
@@ -494,21 +727,21 @@ async fn required_columns(db: &mut SqliteConnection, table: &str) -> Result<Vec<
 }
 
 /// For each portable table, the columns to copy: those both the backup and this computer have.
-/// Columns added by a later update just take their defaults (a backup used to be refused after any
-/// update that added a column). `None`: an optional table one side doesn't have, left as it is.
+/// Columns added by a later update just take their defaults, and columns this version doesn't
+/// know are left behind. `None`: an optional table one side doesn't have, left as it is.
 async fn check_schema(
     source: &mut SqliteConnection,
     destination: &mut SqliteConnection,
 ) -> Result<Vec<Option<Vec<String>>>, String> {
     let mut tables = Vec::new();
-    for table in PORTABLE_TABLES {
+    for table in portable_tables() {
         let source_cols = columns(source, table)
             .await
             .map_err(|error| error.to_string())?;
         let dest_cols = columns(destination, table)
             .await
             .map_err(|error| error.to_string())?;
-        if OPTIONAL_TABLES.contains(table) && (source_cols.is_empty() || dest_cols.is_empty()) {
+        if is_optional(table) && (source_cols.is_empty() || dest_cols.is_empty()) {
             tables.push(None);
             continue;
         }
@@ -556,12 +789,21 @@ pub async fn backup_inspect(
     let mut source = connect(file.path(), true, true)
         .await
         .map_err(|_| "Could not open the backup file.")?;
-    let info = inspect(&mut source).await?;
+    let mut info = inspect(&mut source).await?;
     let mut dest = connect(&dir.join(DB), true, false)
         .await
         .map_err(|error| error.to_string())?;
     check_schema(&mut source, &mut dest).await?;
     source.close().await.map_err(|error| error.to_string())?;
+    let mut paths = std::mem::take(&mut info.paths);
+    info.paths = tauri::async_runtime::spawn_blocking(move || {
+        for path in &mut paths {
+            path.exists = Path::new(&path.path).is_dir();
+        }
+        paths
+    })
+    .await
+    .map_err(|error| error.to_string())?;
     let mut nonce = [0; 16];
     getrandom::getrandom(&mut nonce).map_err(|error| error.to_string())?;
     let token: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -582,9 +824,9 @@ async fn stage(dir: &Path, path: &Path, mut mappings: Vec<FolderMapping>) -> Res
         .await
         .map_err(|_| "Could not open the backup file.")?;
     let info = inspect(&mut db).await?;
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     for mapping in &mappings {
-        if !info.folders.contains(&mapping.from) || !seen.insert(&mapping.from) {
+        if !info.paths.iter().any(|p| p.path == mapping.from) || !seen.insert(&mapping.from) {
             return Err("The folder list in the backup changed. Select the backup again.".into());
         }
         let to = Path::new(&mapping.to);
@@ -631,20 +873,72 @@ pub async fn backup_stage_restore(
     Ok(())
 }
 
-/// `local_secrets`: secret settings this computer keeps in its keychain. An older backup that
-/// still holds them must not override those (a settings row takes precedence over the keychain).
-async fn apply_restore(dir: &Path, pending: &Path, local_secrets: &[String]) -> Result<(), String> {
+/// Puts the backup's playlist covers in `art_dir` (names are made from the picture, so one
+/// that's already there is the same picture).
+async fn restore_art(db: &mut SqliteConnection, art_dir: &Path) -> Result<(), String> {
+    if !has_table(db, "incoming", "backup_files").await.map_err(sql_error)? {
+        return Ok(());
+    }
+    let files: Vec<(String, Vec<u8>)> = sqlx::query_as("SELECT name, data FROM incoming.backup_files WHERE folder = ?")
+        .bind(ART_FOLDER)
+        .fetch_all(&mut *db)
+        .await
+        .map_err(sql_error)?;
+    let files: Vec<_> = files
+        .into_iter()
+        .filter(|(name, data)| crate::music::valid_art_name(name) && data.len() as u64 <= MAX_ITEM_BYTES && !art_dir.join(name).is_file())
+        .collect();
+    if files.is_empty() {
+        return Ok(());
+    }
+    fs::create_dir_all(art_dir).map_err(|error| format!("Could not save the playlist covers: {error}"))?;
+    for (name, data) in files {
+        let mut temp = NamedTempFile::new_in(art_dir).map_err(|error| error.to_string())?;
+        temp.write_all(&data).map_err(|error| error.to_string())?;
+        temp.persist(art_dir.join(name)).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Songs whose cover isn't in this computer's cover folder are read again at the next scan
+/// (a cover is made when a song is read, and an unchanged song isn't read again).
+async fn rescan_missing_art(db: &mut SqliteConnection, art_dir: &Path) -> Result<(), sqlx::Error> {
+    if !has_column(db, "music_tracks", "art").await? || !has_column(db, "music_tracks", "file_mtime").await? {
+        return Ok(());
+    }
+    let names: Vec<String> = sqlx::query_scalar("SELECT DISTINCT art FROM main.music_tracks WHERE art IS NOT NULL")
+        .fetch_all(&mut *db)
+        .await?;
+    let missing: Vec<String> = names.into_iter().filter(|name| !art_dir.join(name).is_file()).collect();
+    for chunk in missing.chunks(400) {
+        let marks = vec!["?"; chunk.len()].join(", ");
+        let update = format!("UPDATE main.music_tracks SET art = NULL, file_mtime = 0 WHERE art IN ({marks})");
+        let mut query = sqlx::query(&update);
+        for name in chunk {
+            query = query.bind(name);
+        }
+        query.execute(&mut *db).await?;
+    }
+    Ok(())
+}
+
+/// `local_secrets`: secret settings this computer keeps in its keychain. A backup without passwords
+/// and keys (or an older one that still holds some) must not override those (a settings row takes
+/// precedence over the keychain). A backup made with them replaces the ones it has.
+///
+/// Everything in the database is replaced in one transaction: on any error nothing changes.
+async fn apply_restore(dir: &Path, pending: &Path, local_secrets: &[String], art_dir: Option<&Path>) -> Result<Restored, String> {
     let mut source = connect(pending, true, true)
         .await
         .map_err(|error| error.to_string())?;
-    inspect(&mut source).await?;
+    let info = inspect(&mut source).await?;
     let live = dir.join(DB);
     let mut dest = connect(&live, false, false)
         .await
         .map_err(|error| error.to_string())?;
     let column_sets = check_schema(&mut source, &mut dest).await?;
     source.close().await.map_err(|error| error.to_string())?;
-    snapshot(&live, &dir.join(RECOVERY))
+    snapshot(&live, &dir.join(RECOVERY), &Extras { art_dir: art_dir.map(Path::to_path_buf), ..Default::default() })
         .await
         .map_err(|error| format!("Could not save your current data before restoring. {error}"))?;
     let mut uri = tauri::Url::from_file_path(pending).map_err(|_| "Invalid backup file path.")?;
@@ -657,32 +951,59 @@ async fn apply_restore(dir: &Path, pending: &Path, local_secrets: &[String]) -> 
         .await
         .map_err(|error| error.to_string())?;
 
+    // Files first: a restore that fails later leaves only spare covers in the cache.
+    if let Some(art_dir) = art_dir {
+        restore_art(&mut dest, art_dir).await?;
+    }
+    let mut local = BTreeMap::new();
+    if has_table(&mut dest, "incoming", "backup_local").await.map_err(sql_error)? {
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM incoming.backup_local")
+            .fetch_all(&mut dest)
+            .await
+            .map_err(sql_error)?;
+        let rows: BTreeMap<String, String> = rows.into_iter().collect();
+        local = carried_local(&rows).map(|(k, v)| (k.clone(), v.clone())).collect();
+    }
+
     let mut tx = dest.begin().await.map_err(|error| error.to_string())?;
-    let secrets = secret_list();
-    for (table, columns) in PORTABLE_TABLES.iter().zip(&column_sets).rev() {
+    let tables = portable_tables();
+    let carried = sql_list(&carried_with_secrets());
+    for (table, columns) in tables.iter().zip(&column_sets).rev() {
         if columns.is_none() {
             continue; // an optional table one side doesn't have: what's here stays
         }
-        // Secrets set on this computer stay; older backups may still fill in missing ones.
-        let keep = if *table == "settings" { format!(" WHERE key NOT IN ({secrets})") } else { String::new() };
+        let keep = match *table {
+            // The backup's passwords and keys replace these; the ones it doesn't have stay.
+            "settings" if info.secrets => format!(" WHERE key NOT IN ({carried}) OR key IN (SELECT key FROM incoming.settings)"),
+            // Passwords, keys and their account settings set on this computer stay.
+            "settings" => format!(" WHERE key NOT IN ({carried})"),
+            _ => String::new(),
+        };
         sqlx::query(&format!("DELETE FROM main.{table}{keep}"))
             .execute(&mut *tx)
             .await
             .map_err(|error| error.to_string())?;
     }
-    for (table, columns) in PORTABLE_TABLES.iter().zip(column_sets) {
+    for (table, columns) in tables.iter().zip(column_sets.iter()) {
         let Some(columns) = columns else { continue };
+        if columns.is_empty() {
+            continue; // nothing in common (every column here has a default): left empty
+        }
         // The identifiers come from the live schema, not from the backup file.
         let columns = columns
             .iter()
             .map(|name| format!("\"{}\"", name.replace('"', "\"\"")))
             .collect::<Vec<_>>()
             .join(", ");
-        let insert = if *table == "settings" { "INSERT OR IGNORE" } else { "INSERT" };
-        let filter = if *table == "settings" && !local_secrets.is_empty() {
-            format!(" WHERE key NOT IN ({})", sql_list(local_secrets))
-        } else {
-            String::new()
+        let (insert, filter) = match *table {
+            "settings" if info.secrets => ("INSERT OR REPLACE", String::new()),
+            // An older backup may still fill in secrets this computer doesn't have.
+            "settings" => {
+                let mut kept: Vec<&str> = local_secrets.iter().map(String::as_str).collect();
+                kept.extend(manifest().settings.account.iter().map(String::as_str));
+                ("INSERT OR IGNORE", format!(" WHERE key NOT IN ({})", sql_list(&kept)))
+            }
+            _ => ("INSERT", String::new()),
         };
         sqlx::query(&format!(
             "{insert} INTO main.{table} ({columns}) SELECT {columns} FROM incoming.{table}{filter}"
@@ -691,8 +1012,22 @@ async fn apply_restore(dir: &Path, pending: &Path, local_secrets: &[String]) -> 
         .await
         .map_err(|error| format!("Could not restore {table}: {error}"))?;
     }
+    let songs_restored = tables.iter().zip(&column_sets).any(|(table, columns)| *table == "music_tracks" && columns.is_some());
+    if let Some(art_dir) = art_dir.filter(|_| songs_restored) {
+        rescan_missing_art(&mut tx, art_dir).await.map_err(|error| format!("Could not restore music_tracks: {error}"))?;
+    }
     tx.commit().await.map_err(|error| error.to_string())?;
-    Ok(())
+
+    // Kept as they are: shown so they can be relinked in Settings.
+    let missing = settings_paths(&mut dest)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| !p.share && !Path::new(&p.path).is_dir())
+        .map(|p| p.path)
+        .collect();
+    let _ = dest.close().await;
+    Ok(Restored { local, missing })
 }
 
 pub fn restore_at_startup(app: &AppHandle) {
@@ -707,8 +1042,9 @@ pub fn restore_at_startup(app: &AppHandle) {
         Ok(()) => {
             // If the keychain can't be read, keep every secret out of the restore to be safe.
             let local_secrets = crate::secrets::stored_keys()
-                .unwrap_or_else(|_| SECRET_SETTINGS.iter().map(|k| k.to_string()).collect());
-            let result = tauri::async_runtime::block_on(apply_restore(&dir, &claimed, &local_secrets));
+                .unwrap_or_else(|_| crate::secrets::KEYS.iter().map(|k| k.to_string()).collect());
+            let art_dir = crate::music::art_dir(app);
+            let result = tauri::async_runtime::block_on(apply_restore(&dir, &claimed, &local_secrets, Some(&art_dir)));
             let _ = fs::remove_file(claimed);
             result
         }
@@ -717,11 +1053,12 @@ pub fn restore_at_startup(app: &AppHandle) {
     *app.state::<BackupState>().result.lock().unwrap() = Some(result);
 }
 
+/// After a restart that restored a backup: what the UI finishes (`None` when nothing was restored).
 #[tauri::command]
 pub fn backup_restore_result(
     window: WebviewWindow,
     state: State<'_, BackupState>,
-) -> Result<bool, String> {
+) -> Result<Option<Restored>, String> {
     main_window(&window)?;
     state
         .result
@@ -729,7 +1066,6 @@ pub fn backup_restore_result(
         .unwrap()
         .take()
         .transpose()
-        .map(|result| result.is_some())
 }
 
 #[tauri::command]
@@ -743,264 +1079,4 @@ pub fn backup_recovery_path(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn fixture(dir: &Path) -> SqliteConnection {
-        let file = dir.join(DB);
-        fs::File::create(&file).unwrap();
-        let mut db = connect(&file, false, false).await.unwrap();
-        sqlx::raw_sql("
-            PRAGMA journal_mode = WAL;
-            PRAGMA wal_autocheckpoint = 0;
-            CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT);
-            INSERT INTO settings VALUES ('media_directories', '[\"/old/Movies\"]');
-            CREATE TABLE profiles(id INTEGER PRIMARY KEY, name TEXT);
-            INSERT INTO profiles VALUES (1, 'Saved profile');
-            CREATE TABLE movies(id INTEGER PRIMARY KEY, file_path TEXT UNIQUE NOT NULL);
-            INSERT INTO movies VALUES (42, '/old/Movies/Favorites/Film.mkv');
-            CREATE TABLE tv_series(id INTEGER PRIMARY KEY, folder_path TEXT);
-            CREATE TABLE episodes(id INTEGER PRIMARY KEY, file_path TEXT);
-            CREATE TABLE subtitles(id INTEGER PRIMARY KEY, file_path TEXT);
-            CREATE TABLE torrents(save_path TEXT, source TEXT, file_paths TEXT);
-            CREATE TABLE trash(entry_dir TEXT, items TEXT, snapshot TEXT);
-            CREATE TABLE rename_batches(moves TEXT, roots TEXT);
-            CREATE TABLE watch_log(profile_id INTEGER);
-            CREATE TABLE collections(id INTEGER);
-            CREATE TABLE season_cache(series_tmdb_id INTEGER);
-            CREATE TABLE live_data(key TEXT);
-            CREATE TABLE live_viewing(profile_id INTEGER);
-            CREATE TABLE profile_state(profile_id INTEGER, media_id INTEGER, progress_seconds INTEGER);
-            INSERT INTO profile_state VALUES (1, 42, 312);
-            CREATE TABLE browse_saved(profile_id INTEGER, kind TEXT, tmdb_id INTEGER);
-            INSERT INTO browse_saved VALUES (1, 'movie', 993);
-        ").execute(&mut db).await.unwrap();
-        db
-    }
-
-    #[tokio::test]
-    async fn restores_a_live_snapshot_with_relinked_paths_and_preserves_recovery() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        let mut db = fixture(path).await;
-        let file = path.join("saved.truongflix-backup");
-        snapshot(&path.join(DB), &file).await.unwrap();
-        sqlx::query("UPDATE profiles SET name = 'New profile'")
-            .execute(&mut db)
-            .await
-            .unwrap();
-        db.close().await.unwrap();
-
-        let target = path.join("Relinked");
-        fs::create_dir(&target).unwrap();
-        stage(
-            path,
-            &file,
-            vec![FolderMapping {
-                from: "/old/Movies".into(),
-                to: target.to_string_lossy().into_owned(),
-            }],
-        )
-        .await
-        .unwrap();
-        apply_restore(path, &path.join(PENDING), &[]).await.unwrap();
-        let mut restored = connect(&path.join(DB), true, false).await.unwrap();
-        let library: (i64, String, i64) = sqlx::query_as("SELECT id, file_path, progress_seconds FROM movies JOIN profile_state ON movies.id = media_id")
-            .fetch_one(&mut restored).await.unwrap();
-        assert_eq!(
-            library,
-            (
-                42,
-                target
-                    .join("Favorites")
-                    .join("Film.mkv")
-                    .to_string_lossy()
-                    .into_owned(),
-                312
-            )
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT tmdb_id FROM browse_saved")
-                .fetch_one(&mut restored)
-                .await
-                .unwrap(),
-            993
-        );
-
-        let mut recovery = connect(&path.join(RECOVERY), true, true).await.unwrap();
-        assert_eq!(inspect(&mut recovery).await.unwrap().profiles, 1);
-        assert_eq!(
-            sqlx::query_scalar::<_, String>("SELECT name FROM profiles")
-                .fetch_one(&mut recovery)
-                .await
-                .unwrap(),
-            "New profile"
-        );
-    }
-
-    #[tokio::test]
-    async fn ui_connections_cannot_reach_other_files() {
-        install_sql_guard();
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("app.db");
-        let other = dir.path().join("other.db");
-        let mut db = SqliteConnectOptions::new().filename(&file).create_if_missing(true).connect().await.unwrap();
-        sqlx::raw_sql("CREATE TABLE t(x); INSERT INTO t VALUES (1);").execute(&mut db).await.unwrap();
-        let other_uri = other.to_string_lossy().replace('\'', "''");
-        for sql in [
-            format!("ATTACH DATABASE '{other_uri}' AS x"),
-            format!("VACUUM INTO '{other_uri}'"),
-            "DETACH DATABASE main".to_string(),
-            "SELECT load_extension('evil')".to_string(),
-        ] {
-            assert!(sqlx::raw_sql(&sql).execute(&mut db).await.is_err(), "{sql}");
-        }
-        assert!(!other.exists());
-        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT x FROM t").fetch_one(&mut db).await.unwrap(), 1);
-        // Backups lift the guard on their own connections.
-        fs::File::create(&other).unwrap();
-        let mut trusted = connect(&file, false, false).await.unwrap();
-        sqlx::raw_sql(&format!("ATTACH DATABASE '{other_uri}' AS x; DETACH DATABASE x;")).execute(&mut trusted).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn backups_leave_secrets_out_and_restores_keep_local_ones() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        let mut db = fixture(path).await;
-        sqlx::raw_sql("INSERT INTO settings VALUES ('tmdb_api_key', 'old-key'), ('remote_code', '123456'), ('subtitle_language', 'fr');")
-            .execute(&mut db)
-            .await
-            .unwrap();
-        let file = path.join("saved.truongflix-backup");
-        snapshot(&path.join(DB), &file).await.unwrap();
-        let mut saved = connect(&file, true, true).await.unwrap();
-        let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM settings ORDER BY key").fetch_all(&mut saved).await.unwrap();
-        assert_eq!(keys, ["media_directories", "subtitle_language"]);
-        saved.close().await.unwrap();
-
-        sqlx::raw_sql("UPDATE settings SET value = 'new-key' WHERE key = 'tmdb_api_key'; UPDATE settings SET value = 'de' WHERE key = 'subtitle_language';")
-            .execute(&mut db)
-            .await
-            .unwrap();
-        db.close().await.unwrap();
-        stage(path, &file, Vec::new()).await.unwrap();
-        apply_restore(path, &path.join(PENDING), &[]).await.unwrap();
-        let mut restored = connect(&path.join(DB), true, false).await.unwrap();
-        let settings: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings ORDER BY key").fetch_all(&mut restored).await.unwrap();
-        let get = |k: &str| settings.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
-        assert_eq!(get("tmdb_api_key"), Some("new-key"));
-        assert_eq!(get("remote_code"), Some("123456"));
-        assert_eq!(get("subtitle_language"), Some("fr"));
-    }
-
-    #[tokio::test]
-    async fn old_backups_do_not_override_keychain_secrets() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        let db = fixture(path).await;
-        db.close().await.unwrap();
-        let file = path.join("old.truongflix-backup");
-        snapshot(&path.join(DB), &file).await.unwrap();
-        // Backups made before secrets were excluded still contain them.
-        let mut old = connect(&file, false, false).await.unwrap();
-        sqlx::raw_sql("INSERT INTO settings VALUES ('tmdb_api_key', 'stale-key'), ('omdb_api_key', 'omdb-from-backup');")
-            .execute(&mut old)
-            .await
-            .unwrap();
-        old.close().await.unwrap();
-
-        stage(path, &file, Vec::new()).await.unwrap();
-        apply_restore(path, &path.join(PENDING), &["tmdb_api_key".to_string()]).await.unwrap();
-        let mut restored = connect(&path.join(DB), true, false).await.unwrap();
-        let keys: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE '%api_key' ORDER BY key")
-            .fetch_all(&mut restored)
-            .await
-            .unwrap();
-        assert_eq!(keys, [("omdb_api_key".to_string(), "omdb-from-backup".to_string())]);
-    }
-
-    #[tokio::test]
-    async fn rejects_a_non_backup_before_staging_any_replacement() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = fixture(dir.path()).await;
-        let path = dir.path().join(DB);
-        assert!(stage(dir.path(), &path, Vec::new()).await.is_err());
-        assert!(!dir.path().join(PENDING).exists());
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT id FROM movies")
-                .fetch_one(&mut db)
-                .await
-                .unwrap(),
-            42
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_missing_columns_before_touching_the_library() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = fixture(dir.path()).await;
-        let backup = dir.path().join(PENDING);
-        snapshot(&dir.path().join(DB), &backup).await.unwrap();
-        let mut damaged = connect(&backup, false, false).await.unwrap();
-        sqlx::raw_sql("DROP TABLE movies; CREATE TABLE movies(id INTEGER PRIMARY KEY)")
-            .execute(&mut damaged)
-            .await
-            .unwrap();
-        damaged.close().await.unwrap();
-        assert!(apply_restore(dir.path(), &backup, &[])
-            .await
-            .unwrap_err()
-            .contains("movies"));
-        assert!(!dir.path().join(RECOVERY).exists());
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT id FROM movies")
-                .fetch_one(&mut db)
-                .await
-                .unwrap(),
-            42
-        );
-    }
-
-    #[tokio::test]
-    async fn restores_a_backup_made_before_a_column_was_added() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db = fixture(dir.path()).await;
-        let backup = dir.path().join(PENDING);
-        snapshot(&dir.path().join(DB), &backup).await.unwrap();
-        // This computer has since gained a column the backup doesn't have.
-        sqlx::raw_sql("ALTER TABLE movies ADD COLUMN stinger TEXT").execute(&mut db).await.unwrap();
-        db.close().await.unwrap();
-        apply_restore(dir.path(), &backup, &[]).await.unwrap();
-        let mut db = connect(&dir.path().join(DB), false, false).await.unwrap();
-        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT id FROM movies").fetch_one(&mut db).await.unwrap(), 42);
-    }
-
-    #[test]
-    fn relinks_windows_roots_without_matching_sibling_directories() {
-        let target = if cfg!(windows) {
-            "D:\\Media"
-        } else {
-            "/Volumes/Media"
-        };
-        let mappings = [FolderMapping {
-            from: "C:\\Library\\TV".into(),
-            to: target.into(),
-        }];
-        assert_eq!(
-            remap_path("c:\\LIBRARY\\tv\\Show\\S01E01.mkv", &mappings),
-            Some(
-                Path::new(target)
-                    .join("Show")
-                    .join("S01E01.mkv")
-                    .to_string_lossy()
-                    .into_owned()
-            )
-        );
-        assert_eq!(
-            remap_path("C:\\Library\\TV Archive\\File.mkv", &mappings),
-            None
-        );
-        assert_eq!(remap_path("C:\\Library\\TV\\..\\File.mkv", &mappings), None);
-    }
-}
+mod tests;

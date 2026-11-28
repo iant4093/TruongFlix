@@ -7,7 +7,8 @@ use tauri::WebviewWindow;
 const SERVICE: &str = "com.iantruong.truongflix";
 const ACCOUNT: &str = "settings";
 
-/// Settings that are kept in the keychain instead of the database. Backups leave them out too.
+/// Settings that are kept in the keychain instead of the database. Backups leave them out unless
+/// the user ticks "Include passwords and keys" when exporting (backup.rs).
 pub const KEYS: &[&str] = &[
     "tmdb_api_key",
     "omdb_api_key",
@@ -147,6 +148,11 @@ static VAULT: Vault<Keychain> = Vault::new(Keychain);
 
 pub(crate) fn stored_keys() -> Result<Vec<String>, String> {
     VAULT.stored_keys()
+}
+
+/// Every secret setting with a value in the keychain (for a backup the user asked to include them in).
+pub(crate) fn stored_values() -> Result<Map, String> {
+    VAULT.with(|_, cache| Ok(cache.clone().unwrap_or_default()))
 }
 
 fn main_window(window: &WebviewWindow) -> Result<(), String> {
