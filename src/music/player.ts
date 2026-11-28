@@ -642,6 +642,27 @@ export function stopMusic() {
   updateMediaSession();
 }
 
+/**
+ * Lets go of these songs' files before they're moved to Recently deleted: the song playing stops and
+ * a preloaded one is dropped (Windows can't move a folder while a file in it is open).
+ */
+export function releaseTracks(ids: ReadonlySet<number>) {
+  const { track } = get();
+  if (track && ids.has(track.id)) stopMusic();
+  if (slots) for (const s of slots) {
+    if (s.trackId == null || !ids.has(s.trackId)) continue;
+    s.key = null;
+    s.trackId = null;
+    s.url = null;
+    try {
+      s.el.removeAttribute('src');
+      s.el.load();
+    } catch {
+      /* not supported (tests) */
+    }
+  }
+}
+
 export function setFull(full: boolean) {
   set(full ? { full, barHidden: false } : { full });
 }

@@ -360,7 +360,7 @@ export async function removeMusicPaths(paths: string[], remember = false, now = 
   if (!paths.length) return;
   const db = await musicDb();
   for (const batch of chunks(paths)) {
-    const tracks = await db.select<{ id: number; file_path: string; file_size: number | null; album_id: number }[]>(
+    const tracks = await db.select<SongRef[]>(
       `SELECT id, file_path, file_size, album_id FROM music_tracks WHERE file_path IN (${placeholders(batch.length)})`,
       batch,
     );
@@ -374,7 +374,21 @@ export async function removeMusicPaths(paths: string[], remember = false, now = 
   await pruneMusic();
 }
 
-async function rememberMissing(db: Database, tracks: { id: number; file_path: string; file_size: number | null; album_id: number }[], list: string, ids: number[], now: number) {
+type SongRef = { id: number; file_path: string; file_size: number | null; album_id: number };
+
+async function rememberMissing(db: Database, tracks: SongRef[], list: string, ids: number[], now: number) {
+  const states = await songStates(db, tracks, list, ids);
+  for (const t of tracks) {
+    await db.execute(
+      `INSERT INTO music_missing (file_path, file_size, removed_at, state) VALUES ($1, $2, $3, $4)
+       ON CONFLICT(file_path) DO UPDATE SET file_size = excluded.file_size, removed_at = excluded.removed_at, state = excluded.state`,
+      [t.file_path, t.file_size, now, JSON.stringify(states.get(t.id))],
+    );
+  }
+}
+
+/** What each profile has of these songs (`list` holds placeholders for `ids`): plays, favourites, places in playlists, a pinned album. */
+async function songStates(db: Database, tracks: SongRef[], list: string, ids: number[]): Promise<Map<number, MissingSong>> {
   const [plays, favourites, playlists] = await Promise.all([
     db.select<{ track_id: number; profile_id: number; played_at: number; seconds: number | null }[]>(`SELECT track_id, profile_id, played_at, seconds FROM music_plays WHERE track_id IN (${list})`, ids),
     db.select<{ track_id: number; profile_id: number; added_at: number }[]>(`SELECT track_id, profile_id, added_at FROM music_favourites WHERE track_id IN (${list})`, ids),
@@ -385,18 +399,36 @@ async function rememberMissing(db: Database, tracks: { id: number; file_path: st
     `SELECT item_id, profile_id, pinned_at FROM music_pins WHERE kind = 'album' AND item_id IN (${placeholders(albumIds.length)})`,
     albumIds,
   );
-  for (const t of tracks) {
-    const state: MissingSong = {
-      plays: plays.filter((p) => p.track_id === t.id).map(({ profile_id, played_at, seconds }) => ({ profile_id, played_at, seconds })),
-      favourites: favourites.filter((f) => f.track_id === t.id).map(({ profile_id, added_at }) => ({ profile_id, added_at })),
-      playlists: playlists.filter((p) => p.track_id === t.id).map(({ playlist_id, position }) => ({ playlist_id, position })),
-      albumPins: pins.filter((p) => p.item_id === t.album_id).map(({ profile_id, pinned_at }) => ({ profile_id, pinned_at })),
-    };
-    await db.execute(
-      `INSERT INTO music_missing (file_path, file_size, removed_at, state) VALUES ($1, $2, $3, $4)
-       ON CONFLICT(file_path) DO UPDATE SET file_size = excluded.file_size, removed_at = excluded.removed_at, state = excluded.state`,
-      [t.file_path, t.file_size, now, JSON.stringify(state)],
-    );
+  return new Map(tracks.map((t) => [t.id, {
+    plays: plays.filter((p) => p.track_id === t.id).map(({ profile_id, played_at, seconds }) => ({ profile_id, played_at, seconds })),
+    favourites: favourites.filter((f) => f.track_id === t.id).map(({ profile_id, added_at }) => ({ profile_id, added_at })),
+    playlists: playlists.filter((p) => p.track_id === t.id).map(({ playlist_id, position }) => ({ playlist_id, position })),
+    albumPins: pins.filter((p) => p.item_id === t.album_id).map(({ profile_id, pinned_at }) => ({ profile_id, pinned_at })),
+  }]));
+}
+
+/**
+ * Gives a song back what it had (see `songStates`): plays, favourites, its places in playlists that
+ * still exist (at the end of one that changed meanwhile), and a pinned album.
+ */
+async function applySongState(db: Database, track: { id: number; album_id: number }, state: Partial<MissingSong>) {
+  for (const p of state.plays ?? []) {
+    await db.execute('INSERT INTO music_plays (profile_id, track_id, played_at, seconds) VALUES ($1, $2, $3, $4)', [p.profile_id, track.id, p.played_at, p.seconds]);
+  }
+  for (const fav of state.favourites ?? []) {
+    await db.execute('INSERT OR IGNORE INTO music_favourites (profile_id, track_id, added_at) VALUES ($1, $2, $3)', [fav.profile_id, track.id, fav.added_at]);
+  }
+  for (const { playlist_id, position } of state.playlists ?? []) {
+    if (!(await db.select<{ id: number }[]>('SELECT id FROM music_playlists WHERE id = $1', [playlist_id])).length) continue; // deleted meanwhile
+    // Already back (an import made the playlist again with it).
+    if ((await db.select<{ n: number }[]>('SELECT 1 AS n FROM music_playlist_tracks WHERE playlist_id = $1 AND track_id = $2', [playlist_id, track.id])).length) continue;
+    // Back in its place, unless another song took it meanwhile: then at the end.
+    const taken = (await db.select<{ n: number }[]>('SELECT 1 AS n FROM music_playlist_tracks WHERE playlist_id = $1 AND position = $2', [playlist_id, position])).length > 0;
+    const [last] = await db.select<{ max: number | null }[]>('SELECT MAX(position) AS max FROM music_playlist_tracks WHERE playlist_id = $1', [playlist_id]);
+    await db.execute('INSERT INTO music_playlist_tracks (playlist_id, position, track_id) VALUES ($1, $2, $3)', [playlist_id, taken ? (last?.max ?? -1) + 1 : position, track.id]);
+  }
+  for (const pin of state.albumPins ?? []) {
+    await db.execute("INSERT OR IGNORE INTO music_pins (profile_id, kind, item_id, pinned_at) VALUES ($1, 'album', $2, $3)", [pin.profile_id, track.album_id, pin.pinned_at]);
   }
 }
 
@@ -430,24 +462,7 @@ export async function restoreMissingMusic(added: { file_path: string; file_size:
     } catch {
       /* unreadable: the song comes back without its history */
     }
-    for (const p of state.plays ?? []) {
-      await db.execute('INSERT INTO music_plays (profile_id, track_id, played_at, seconds) VALUES ($1, $2, $3, $4)', [p.profile_id, track.id, p.played_at, p.seconds]);
-    }
-    for (const fav of state.favourites ?? []) {
-      await db.execute('INSERT OR IGNORE INTO music_favourites (profile_id, track_id, added_at) VALUES ($1, $2, $3)', [fav.profile_id, track.id, fav.added_at]);
-    }
-    for (const { playlist_id, position } of state.playlists ?? []) {
-      if (!(await db.select<{ id: number }[]>('SELECT id FROM music_playlists WHERE id = $1', [playlist_id])).length) continue; // deleted meanwhile
-      // Already back (an import made the playlist again with it).
-      if ((await db.select<{ n: number }[]>('SELECT 1 AS n FROM music_playlist_tracks WHERE playlist_id = $1 AND track_id = $2', [playlist_id, track.id])).length) continue;
-      // Back in its place, unless another song took it meanwhile: then at the end.
-      const taken = (await db.select<{ n: number }[]>('SELECT 1 AS n FROM music_playlist_tracks WHERE playlist_id = $1 AND position = $2', [playlist_id, position])).length > 0;
-      const [last] = await db.select<{ max: number | null }[]>('SELECT MAX(position) AS max FROM music_playlist_tracks WHERE playlist_id = $1', [playlist_id]);
-      await db.execute('INSERT INTO music_playlist_tracks (playlist_id, position, track_id) VALUES ($1, $2, $3)', [playlist_id, taken ? (last?.max ?? -1) + 1 : position, track.id]);
-    }
-    for (const pin of state.albumPins ?? []) {
-      await db.execute("INSERT OR IGNORE INTO music_pins (profile_id, kind, item_id, pinned_at) VALUES ($1, 'album', $2, $3)", [pin.profile_id, track.album_id, pin.pinned_at]);
-    }
+    await applySongState(db, track, state);
     await db.execute('DELETE FROM music_missing WHERE file_path = $1', [hit.file_path]);
     restored++;
   }
@@ -460,6 +475,74 @@ export async function pruneMusic() {
   await db.execute('DELETE FROM music_albums WHERE id NOT IN (SELECT DISTINCT album_id FROM music_tracks)');
   await db.execute('DELETE FROM music_artists WHERE id NOT IN (SELECT DISTINCT artist_id FROM music_tracks) AND id NOT IN (SELECT DISTINCT artist_id FROM music_albums)');
   await db.execute("DELETE FROM music_pins WHERE kind = 'album' AND item_id NOT IN (SELECT id FROM music_albums)");
+}
+
+// ---------------------------------------------------------------------------
+// Recently deleted (songs deleted in the app)
+// ---------------------------------------------------------------------------
+
+/** A song's row as it was, with the names its artist and album are found again by. */
+type DeletedSongRow = Record<string, unknown> & SongRef & { created_at: number; artist_name: string; album_title: string; album_artist_name: string };
+
+/** What a Recently deleted entry of songs keeps, to put them back as they were. */
+export interface MusicTrashSnapshot {
+  songs: { row: DeletedSongRow; state: MissingSong; lyrics: Record<string, unknown> | null }[];
+}
+
+export const isMusicSnapshot = (snap: unknown): snap is MusicTrashSnapshot =>
+  !!snap && typeof snap === 'object' && Array.isArray((snap as MusicTrashSnapshot).songs);
+
+/** These songs as they are now, with what every profile has of them (taken before their files move). */
+export async function musicTrashSnapshot(ids: number[]): Promise<MusicTrashSnapshot> {
+  const db = await musicDb();
+  const songs: MusicTrashSnapshot['songs'] = [];
+  for (const batch of chunks(ids.filter(Number.isInteger))) {
+    const list = placeholders(batch.length);
+    const rows = await db.select<DeletedSongRow[]>(
+      `SELECT t.*, ar.name AS artist_name, al.title AS album_title, aa.name AS album_artist_name
+       FROM music_tracks t JOIN music_artists ar ON ar.id = t.artist_id JOIN music_albums al ON al.id = t.album_id JOIN music_artists aa ON aa.id = al.artist_id
+       WHERE t.id IN (${list})`,
+      batch,
+    );
+    if (!rows.length) continue;
+    const found = rows.map((r) => r.id);
+    const lyrics = await db.select<(Record<string, unknown> & { track_id: number })[]>(`SELECT * FROM music_lyrics_cache WHERE track_id IN (${placeholders(found.length)})`, found);
+    const states = await songStates(db, rows, placeholders(found.length), found);
+    for (const row of rows) songs.push({ row, state: states.get(row.id)!, lyrics: lyrics.find((l) => l.track_id === row.id) ?? null });
+  }
+  return { songs };
+}
+
+/**
+ * Puts restored songs back as they were: on their album (made again if it went), with their tags,
+ * cover and lyrics, plays, favourites, places in playlists and a pinned album. A song a scan already
+ * found again keeps its row and gets its history back. Returns how many came back.
+ */
+export async function restoreMusicSnapshot(snap: MusicTrashSnapshot): Promise<number> {
+  const db = await musicDb();
+  const artists = new Map<string, number>();
+  const albums = new Map<string, number>();
+  let restored = 0;
+  for (const { row, state, lyrics } of snap.songs) {
+    const { id: _id, artist_name, album_title, album_artist_name, ...columns } = row;
+    const artistId = await ensureArtist(db, artists, artist_name);
+    const albumId = await ensureAlbum(db, albums, album_title, await ensureArtist(db, artists, album_artist_name), row.created_at);
+    const values: Record<string, unknown> = { ...columns, artist_id: artistId, album_id: albumId };
+    const cols = Object.keys(values);
+    await db.execute(`INSERT OR IGNORE INTO music_tracks (${cols.join(', ')}) VALUES (${placeholders(cols.length)})`, Object.values(values));
+    const [track] = await db.select<{ id: number; album_id: number }[]>('SELECT id, album_id FROM music_tracks WHERE file_path = $1', [row.file_path]);
+    if (!track) continue;
+    await applySongState(db, track, state ?? {});
+    if (lyrics) {
+      const cached: Record<string, unknown> = { ...lyrics, track_id: track.id };
+      const keys = Object.keys(cached);
+      await db.execute(`INSERT OR IGNORE INTO music_lyrics_cache (${keys.join(', ')}) VALUES (${placeholders(keys.length)})`, Object.values(cached));
+    }
+    // A scan that ran while the files were moving took them for deleted outside the app.
+    await db.execute('DELETE FROM music_missing WHERE file_path = $1', [row.file_path]);
+    restored++;
+  }
+  return restored;
 }
 
 // ---------------------------------------------------------------------------

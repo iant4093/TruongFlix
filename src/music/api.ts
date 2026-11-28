@@ -38,7 +38,20 @@ export interface MusicApi {
   setPinned(kind: MusicPinKind, id: number, value: boolean): Promise<void>;
   /** Image URL for a cached cover name. */
   artUrl(art: string | null | undefined): string | null;
+  /**
+   * Desktop only: asks, then moves a song's or album's files to Recently deleted and takes them out
+   * of the library. False when cancelled or it couldn't (the reason is shown).
+   */
+  deleteMusic?(target: MusicDeleteTarget): Promise<boolean>;
+  /** Desktop only: shows the first of these songs in File Explorer / Finder, selected. */
+  revealMusic?(trackIds: number[]): Promise<void>;
 }
+
+export type MusicDeleteTarget =
+  | { kind: 'song'; trackId: number }
+  | { kind: 'album'; albumId: number }
+  /** Several songs picked together. */
+  | { kind: 'songs'; trackIds: number[] };
 
 /** Codecs `audio` can decode here (the PC converts anything else to AAC). */
 /**

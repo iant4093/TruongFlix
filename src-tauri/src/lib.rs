@@ -214,6 +214,7 @@ pub fn run() {
             subtitles::delete_subtitle_file,
             files::organize_loose_files,
             files::trash_media,
+            files::trash_music,
             files::restore_trash,
             files::purge_trash,
             files::reveal_in_file_manager,

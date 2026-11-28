@@ -691,11 +691,13 @@ export interface FileMove {
 export interface TrashRow {
   id: number;
   label: string;
-  kind: 'movie' | 'tv' | 'episode';
+  /** Songs and albums deleted from Music come back through the same trash. */
+  kind: 'movie' | 'tv' | 'episode' | 'song' | 'album';
+  /** A TMDB poster, or for songs and albums a music-art cover name. */
   poster_path: string | null;
   entry_dir: string;
   items: string; // JSON FileMove[]
-  snapshot: string; // JSON TrashSnapshot
+  snapshot: string; // JSON TrashSnapshot (songs and albums: MusicTrashSnapshot)
   size_bytes: number;
   deleted_at: string;
 }

@@ -2,11 +2,12 @@ import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from '
 import { createPortal } from 'react-dom';
 import { leavingClass, useLeaving } from '../../lib/leaving';
 import { create } from 'zustand';
-import { ChevronLeft, Disc3, Heart, ListEnd, ListMusic, ListPlus, ListStart, MicVocal, MoreHorizontal, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
+import { ChevronLeft, Disc3, FolderOpen, Heart, ListEnd, ListMusic, ListPlus, ListStart, MicVocal, MoreHorizontal, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
 import { addToPlaylist, createPlaylist, setPinned, setPlaylistTracks } from '../actions';
 import { isPinned } from '../library';
-import { musicToast, openRoute } from '../nav';
+import { currentRoute, goBack, musicToast, openRoute, useMusicNav } from '../nav';
 import { addToQueue, playNext, setFull, toggleFavourite, useMusicPlayer } from '../player';
+import type { MusicDeleteTarget } from '../api';
 import type { MusicPin, MusicTrack } from '../types';
 import { askName } from './Overlays';
 import { useDismiss } from './ui';
@@ -37,6 +38,9 @@ export function TrackPointMenu() {
   if (!at) return null;
   return <Menu key={`${at.x}:${at.y}`} anchor={null} point={at} tracks={at.tracks} context={at.context} close={close} closing={closing} />;
 }
+
+/** Finder on a Mac, File Explorer elsewhere (the desktop app only runs on the two). */
+const REVEAL_LABEL = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent) ? 'Show in Finder' : 'Show in File Explorer';
 
 const ITEM = 'flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] hover:bg-white/10 focus-visible:bg-white/10 focus-visible:outline-none sm:py-2 sm:text-sm';
 
@@ -70,6 +74,7 @@ export default function TrackMenu({ tracks, context, className = '', label = 'Mo
 function Menu({ anchor, point, tracks, context, close, closing = false }: { anchor: HTMLElement | null; point?: { x: number; y: number }; tracks: MusicTrack[]; context?: MenuContext; close: () => void; closing?: boolean }) {
   const playlists = useMusicPlayer((s) => s.library?.playlists ?? []);
   const byId = useMusicPlayer((s) => s.byId);
+  const api = useMusicPlayer((s) => s.api);
   const pin = context?.pin;
   const pinned = useMusicPlayer((s) => !!pin && isPinned(s.library, pin.kind, pin.id));
   const [page, setPage] = useState<'main' | 'playlists'>('main');
@@ -105,6 +110,11 @@ function Menu({ anchor, point, tracks, context, close, closing = false }: { anch
     openRoute(route);
   });
   const count = tracks.length === 1 ? 'song' : `${tracks.length} songs`;
+  // Files (desktop only): a song, or an album's menu. Never a playlist's songs from its card.
+  const album = pin?.kind === 'album' ? pin.id : null;
+  const target: MusicDeleteTarget | null = album != null ? { kind: 'album', albumId: album } : single ? { kind: 'song', trackId: single.id } : null;
+  const reveal = api?.revealMusic && target ? api.revealMusic : null;
+  const remove = api?.deleteMusic && target ? api.deleteMusic : null;
 
   const body =
     page === 'main' ? (
@@ -164,6 +174,31 @@ function Menu({ anchor, point, tracks, context, close, closing = false }: { anch
             <button role="menuitem" className={ITEM} onClick={go({ page: 'artist', id: single.albumArtistId === single.artistId ? single.albumArtistId : single.artistId })}>
               <MicVocal className="h-4 w-4" /> Go to Artist
             </button>
+          </>
+        )}
+        {(reveal || remove) && target && (
+          <>
+            <div className="my-1 border-t border-white/10" />
+            {reveal && (
+              <button role="menuitem" className={ITEM} onClick={run(() => reveal(ids))}>
+                <FolderOpen className="h-4 w-4" /> {REVEAL_LABEL}
+              </button>
+            )}
+            {remove && (
+              <button
+                role="menuitem"
+                className={`${ITEM} text-[#ff6b7d]`}
+                onClick={run(async () => {
+                  // An album page whose album was deleted goes back to where it was opened from.
+                  if ((await remove(target)) && target.kind === 'album') {
+                    const route = currentRoute(useMusicNav.getState());
+                    if (route.page === 'album' && route.id === target.albumId) goBack();
+                  }
+                })}
+              >
+                <Trash2 className="h-4 w-4" /> {target.kind === 'album' ? 'Delete Album…' : 'Delete Song…'}
+              </button>
+            )}
           </>
         )}
       </>

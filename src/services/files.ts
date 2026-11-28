@@ -6,6 +6,8 @@ import * as db from './db';
 import { removeTorrent } from './torrents';
 import { IS_MAC, IS_WINDOWS } from '../lib/platform';
 import { errorMessage } from '../lib/errors';
+import { isMusicSnapshot, restoreMusicSnapshot } from './musicdb';
+import { loadMusicLibrary } from '../music/actions';
 
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -221,14 +223,18 @@ export async function restoreTrash(row: TrashRow) {
     store.toast(`“${row.label}” can’t be restored: its files are no longer in Recently deleted.`, 'error');
     return;
   }
-  await db.restoreSnapshot(JSON.parse(row.snapshot) as TrashSnapshot);
+  const snapshot = JSON.parse(row.snapshot) as unknown;
+  // Songs and albums go back into Music (with their plays, favourites and playlist places).
+  if (isMusicSnapshot(snapshot)) await restoreMusicSnapshot(snapshot);
+  else await db.restoreSnapshot(snapshot as TrashSnapshot);
   if (res.conflicts.length) {
     store.toast(`Some files couldn’t be restored because something already exists there: ${res.conflicts.join(', ')}`, 'error');
   } else {
     await db.deleteTrashRow(row.id);
     store.toast(`Restored “${row.label}”`, 'success');
   }
-  await store.reload();
+  if (isMusicSnapshot(snapshot)) await loadMusicLibrary(true);
+  else await store.reload();
 }
 
 export async function purgeTrash(row: TrashRow) {
