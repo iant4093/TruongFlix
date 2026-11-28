@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
 import { useReducedMotion } from 'framer-motion';
 import { activeIndex, lyricTimeline, parseLrc, progressOf, type LyricEntry } from '../lrc';
+import { FOLLOW_SPRING, FollowControl, handover, lineLook, NEAR_ABOVE, NEAR_BELOW, SETTLE_SPRING, staggerMs, stepSpring } from '../lyricsMotion';
 import { musicClock, useMusicPlayer } from '../player';
 import type { MusicLyrics } from '../types';
 
@@ -84,14 +84,16 @@ export function useLyrics(trackId: number | null) {
 
 /** Where the current line sits in the view (fraction of its height from the top). */
 const ANCHOR = 0.3;
-const MANUAL_IDLE_MS = 2600;
 
 /** Safari (and every iPhone/iPad browser) draws blurred, moving text with stray edges, so lines aren't blurred there. */
 const BLUR_OK = typeof navigator !== 'undefined' && !(/AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent));
 
-/** Apple Music's lyric scroll: a soft ease-out, each line below starting a beat later. */
+/** Lines melt into the edges (an eased fade, longer at the bottom) instead of being cut off. */
+const MASK =
+  'linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.12) 2%, rgba(0,0,0,0.45) 5.5%, rgba(0,0,0,0.82) 9.5%, #000 13%, #000 72%, rgba(0,0,0,0.82) 80%, rgba(0,0,0,0.45) 88%, rgba(0,0,0,0.12) 95%, transparent 100%)';
+
+/** The ease of a line's fade, blur and size change, close to the glide's spring. */
 const EASE = 'cubic-bezier(0.22, 0.9, 0.28, 1)';
-const MOVE_S = 0.8;
 
 interface Props {
   trackId: number;
@@ -149,32 +151,104 @@ function PlainLyrics({ lines, compact, className, source }: { lines: LyricEntry[
 
 function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries: LyricEntry[]; onSeek: (t: number) => void; compact: boolean; className: string; source?: string }) {
   const reduce = useReducedMotion() ?? false;
+  const reduceRef = useRef(reduce);
+  reduceRef.current = reduce;
   const viewport = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
-  const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // One element per row; the credit under the last line is the extra row at the end.
+  const rowEls = useRef<(HTMLDivElement | null)[]>([]);
   const wordRefs = useRef<Map<number, (HTMLSpanElement | null)[]>>(new Map());
   const dotRefs = useRef<Map<number, (HTMLSpanElement | null)[]>>(new Map());
   const [idx, setIdx] = useState(() => activeIndex(entries, musicClock()));
-  const [target, setTarget] = useState(0);
-  const targetRef = useRef(0);
-  targetRef.current = target;
-  // While following, the list sits at a fixed scroll position (`base`) and the rows glide by
-  // transforms on top of it. Touching it hands over to the browser's own scrolling (momentum,
-  // rubber-banding), which is what a phone's lists feel like.
-  const [manual, setManual] = useState(false);
-  const manualRef = useRef(false);
-  const [base, setBase] = useState(0);
-  const idleTimer = useRef<number | null>(null);
-  const idxRef = useRef(idx);
-  idxRef.current = idx;
+  // Drawn as scrolled by hand (every line readable). Set by a real scroll, not by a finger landing,
+  // so tapping a line to jump to it doesn't make the lines flicker.
+  const [browsing, setBrowsing] = useState(false);
+  // Which way the lyrics last moved: the lines trailing the move change a beat later too.
+  const [up, setUp] = useState(true);
   const blurOk = BLUR_OK && !compact && !reduce;
+
+  // The motion lives outside React: a spring per row, written to the row's transform every frame.
+  // While following, the list's own scroll position stays put (`base`) and the rows glide by
+  // transforms on top of it. A hand scroll hands over to the browser's scrolling (momentum,
+  // rubber-banding), which is what a phone's lists feel like, without anything moving.
+  const m = useMemo(() => {
+    const n = entries.length + 1;
+    return {
+      follow: new FollowControl(),
+      base: 0,
+      springs: Array.from({ length: n }, () => ({ y: 0, v: 0 })),
+      drawn: new Array<number>(n).fill(NaN),
+      /** A row's goal while it waits for its turn to set off. */
+      held: new Array<number>(n).fill(0),
+      releaseAt: new Array<number>(n).fill(0),
+      idx: activeIndex(entries, musicClock()),
+      /** Last frame's goal while following, to tell which way the next move goes. */
+      lastGoal: 0,
+      /** Set off again from wherever the rows are (following again after a hand scroll). */
+      restagger: false,
+      up: true,
+      last: 0,
+      fresh: true,
+      /** The scroll position we just set ourselves, so its scroll event isn't taken for the user's. */
+      ownScroll: NaN,
+    };
+  }, [entries]);
+
+  const draw = useCallback(
+    (r: number) => {
+      const el = rowEls.current[r];
+      const y = m.springs[r].y;
+      if (!el || Math.abs(y - m.drawn[r]) < 0.01) return;
+      m.drawn[r] = y;
+      el.style.transform = `translate3d(0, ${y.toFixed(2)}px, 0)`;
+    },
+    [m],
+  );
+
+  /** Back to following the song, gliding from wherever the list was scrolled to. */
+  const resume = useCallback(() => {
+    if (!m.follow.manual) return;
+    m.follow.resume();
+    m.base = viewport.current?.scrollTop ?? 0;
+    m.held.fill(0);
+    m.lastGoal = 0;
+    m.restagger = true;
+    setBrowsing(false);
+  }, [m]);
+
+  /** The user takes over: scroll the list to where the rows are drawn, so nothing moves. */
+  const takeOver = useCallback(() => {
+    const view = viewport.current;
+    if (!view) return;
+    const { scrollTop, shift } = handover(
+      m.springs.map((s) => s.y),
+      Math.max(0, m.idx),
+      view.scrollTop,
+      view.scrollHeight - view.clientHeight,
+    );
+    for (let r = 0; r < m.springs.length; r++) {
+      m.springs[r].y += shift;
+      draw(r);
+    }
+    if (Math.abs(view.scrollTop - scrollTop) >= 0.5) {
+      m.ownScroll = scrollTop;
+      view.scrollTop = scrollTop;
+    }
+    m.base = scrollTop;
+  }, [m, draw]);
 
   // One set of ref callbacks per row for the life of the song, so rows stay memoised between renders.
   const rowRefs = useMemo(
     () =>
-      entries.map((_, i) => ({
+      Array.from({ length: entries.length + 1 }, (_, i) => ({
         line: (el: HTMLDivElement | null) => {
-          lineRefs.current[i] = el;
+          rowEls.current[i] = el;
+          m.drawn[i] = NaN;
+          if (el) {
+            const y = m.springs[i].y;
+            el.style.transform = `translate3d(0, ${y.toFixed(2)}px, 0)`;
+            m.drawn[i] = y;
+          }
         },
         word: (k: number, el: HTMLSpanElement | null) => {
           const list = wordRefs.current.get(i) ?? [];
@@ -187,19 +261,56 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
           dotRefs.current.set(i, list);
         },
       })),
-    [entries],
+    [entries, m],
   );
 
-  // Per frame: which line is current, and how far through each word / break we are.
+  // Room above the first line and below the last, so either can sit at the anchor: the list never
+  // has to stop short, and the first lines don't sit under the faded top edge.
+  useLayoutEffect(() => {
+    const view = viewport.current;
+    const box = inner.current;
+    if (!view || !box) return;
+    const fit = () => {
+      const h = view.clientHeight;
+      if (!h) return;
+      box.style.paddingTop = `${Math.round(h * ANCHOR)}px`;
+      box.style.paddingBottom = `${Math.round(h * (1 - ANCHOR))}px`;
+    };
+    fit();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(view);
+    return () => ro.disconnect();
+  }, []);
+
+  // Per frame: which line is current, how far through each word / break we are, and every row's glide.
   useEffect(() => {
     let raf = 0;
-    const tick = () => {
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
       const t = musicClock();
       const i = activeIndex(entries, t);
-      if (i !== idxRef.current) {
-        idxRef.current = i;
-        setIdx(i);
+      if (m.follow.shouldResume(now)) resume();
+      const view = viewport.current;
+      const following = !m.follow.manual;
+      // Measured every frame, so a break opening or closing, a line wrapping differently after a
+      // resize or the panel changing size only moves the goal, and the springs follow it smoothly.
+      let goal = 0;
+      if (following && view) {
+        const el = rowEls.current[Math.max(0, i)];
+        if (el) goal = m.base - (el.offsetTop - view.clientHeight * ANCHOR);
       }
+      if (i !== m.idx || m.restagger) {
+        // A new line (or following again): each row sets off for it, the trailing ones a beat later.
+        if (following) {
+          const up = goal <= m.lastGoal;
+          for (let r = 0; r < m.springs.length; r++) m.releaseAt[r] = now + staggerMs(r - Math.max(0, i), reduceRef.current, up);
+          if (up !== m.up) setUp((m.up = up));
+        }
+        m.restagger = false;
+        if (i !== m.idx) setIdx((m.idx = i));
+      }
+      if (following) m.lastGoal = goal;
       const e = entries[i];
       if (e?.kind === 'line' && e.words) {
         const spans = wordRefs.current.get(i);
@@ -221,99 +332,119 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
           d.style.transform = `scale(${ending ? 0.4 : 0.85 + 0.15 * fill})`;
         });
       }
-      raf = requestAnimationFrame(tick);
+
+      if (!view) return;
+      const dt = m.last ? Math.min(0.1, (now - m.last) / 1000) : 0;
+      m.last = now;
+      const snap = m.fresh || reduceRef.current;
+      for (let r = 0; r < m.springs.length; r++) {
+        let g = goal;
+        if (following) {
+          if (now < m.releaseAt[r]) g = m.held[r];
+          else m.held[r] = goal;
+        }
+        const s = m.springs[r];
+        if (snap) {
+          s.y = g;
+          s.v = 0;
+        } else stepSpring(s, g, dt, following ? FOLLOW_SPRING : SETTLE_SPRING);
+        draw(r);
+      }
+      m.fresh = false;
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [entries]);
+  }, [entries, m, draw, resume]);
 
-  // Keep the current line about a third of the way down; recompute when breaks open or close.
-  const measure = useCallback(() => {
-    const view = viewport.current;
-    const el = lineRefs.current[Math.max(0, idxRef.current)];
-    if (!view || !el) return;
-    setTarget(Math.max(0, el.offsetTop - view.clientHeight * ANCHOR));
-  }, []);
-  useLayoutEffect(measure, [idx, measure]);
-  useEffect(() => {
-    const view = viewport.current;
-    const box = inner.current;
-    if (!view || !box || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => measure());
-    ro.observe(box);
-    ro.observe(view);
-    return () => ro.disconnect();
-  }, [measure]);
-
-  /** Back to following the song, gliding from wherever the list was scrolled to. */
-  const release = useCallback(() => {
-    if (idleTimer.current) window.clearTimeout(idleTimer.current);
-    idleTimer.current = null;
-    if (!manualRef.current) return;
-    manualRef.current = false;
-    setBase(viewport.current?.scrollTop ?? 0);
-    setManual(false);
-  }, []);
-  const keepManual = useCallback(() => {
-    if (idleTimer.current) window.clearTimeout(idleTimer.current);
-    idleTimer.current = window.setTimeout(release, MANUAL_IDLE_MS);
-  }, [release]);
   useEffect(() => {
     const view = viewport.current;
     if (!view) return;
-    /** The user takes over: the rows drop their transforms and the list is scrolled to where they were, so nothing moves. */
     const grab = () => {
-      if (!manualRef.current) {
-        manualRef.current = true;
-        flushSync(() => setManual(true));
-        view.scrollTop = targetRef.current;
+      if (m.follow.input(performance.now())) takeOver();
+      setBrowsing(true);
+    };
+    const touch = (e: TouchEvent) => {
+      if (m.follow.touch(performance.now(), e.touches.length)) takeOver();
+    };
+    const key = (e: KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) grab();
+    };
+    const focus = (e: FocusEvent) => {
+      const el = e.target as HTMLElement | null;
+      let keyboard = false;
+      try {
+        keyboard = !!el?.matches(':focus-visible');
+      } catch {
+        /* engines without :focus-visible */
       }
-      keepManual();
+      if (!keyboard || !el) return;
+      grab();
+      el.scrollIntoView({ block: 'nearest' });
     };
     const scrolled = () => {
-      if (manualRef.current) keepManual();
+      const own = Math.abs(view.scrollTop - m.ownScroll) < 0.5;
+      m.ownScroll = NaN;
+      if (own) return;
+      if (m.follow.manual) {
+        m.follow.input(performance.now());
+        setBrowsing(true);
+        return;
+      }
+      // Following, and the browser moved the list itself (it got shorter): keep every line where it is.
+      const d = view.scrollTop - m.base;
+      if (Math.abs(d) < 0.5) return;
+      m.base = view.scrollTop;
+      for (let r = 0; r < m.springs.length; r++) {
+        m.springs[r].y += d;
+        m.held[r] += d;
+        draw(r);
+      }
     };
-    view.addEventListener('touchstart', grab, { passive: true });
     view.addEventListener('wheel', grab, { passive: true });
+    view.addEventListener('touchstart', touch, { passive: true });
+    view.addEventListener('touchend', touch, { passive: true });
+    view.addEventListener('touchcancel', touch, { passive: true });
+    view.addEventListener('keydown', key);
+    view.addEventListener('focusin', focus);
     view.addEventListener('scroll', scrolled, { passive: true });
     return () => {
-      view.removeEventListener('touchstart', grab);
       view.removeEventListener('wheel', grab);
+      view.removeEventListener('touchstart', touch);
+      view.removeEventListener('touchend', touch);
+      view.removeEventListener('touchcancel', touch);
+      view.removeEventListener('keydown', key);
+      view.removeEventListener('focusin', focus);
       view.removeEventListener('scroll', scrolled);
     };
-  }, [keepManual]);
-  useEffect(() => () => {
-    if (idleTimer.current) window.clearTimeout(idleTimer.current);
-  }, []);
+  }, [m, takeOver, draw]);
 
   const onSeekRef = useRef(onSeek);
   onSeekRef.current = onSeek;
   const seekTo = useCallback(
     (t: number) => {
-      release();
+      resume();
       onSeekRef.current(t);
     },
-    [release],
+    [resume],
   );
 
-  const y = manual ? 0 : base - target;
   return (
     <div className={`relative ${className}`}>
       <div
         ref={viewport}
-        className="tfm-scroll h-full select-none overflow-y-auto overscroll-contain"
-        style={{ maskImage: 'linear-gradient(transparent 0, #000 9%, #000 82%, transparent 100%)', WebkitMaskImage: 'linear-gradient(transparent 0, #000 9%, #000 82%, transparent 100%)' }}
+        className="tfm-scroll h-full select-none overflow-y-auto overscroll-contain [overflow-anchor:none]"
+        style={{ maskImage: MASK, WebkitMaskImage: MASK }}
       >
-        <div ref={inner} className={`relative ${compact ? 'px-6' : 'px-8'} pb-[70vh] pt-[6vh]`}>
+        <div ref={inner} className={`relative ${compact ? 'px-6' : 'px-8'} pb-[70vh] pt-[25vh]`}>
           {entries.map((e, i) => (
             <LyricRow
               key={i}
               entry={e}
               distance={i - idx}
-              y={y}
               reduce={reduce}
               blurOk={blurOk}
-              manual={manual}
+              browsing={browsing}
+              up={up}
               compact={compact}
               onSeek={seekTo}
               lineRef={rowRefs[i].line}
@@ -321,7 +452,7 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
               dotRef={rowRefs[i].dot}
             />
           ))}
-          <div style={{ transform: `translate3d(0, ${y}px, 0)`, transition: reduce || manual ? 'none' : `transform ${MOVE_S}s ${EASE}` }}>
+          <div ref={rowRefs[entries.length].line}>
             <Credit source={source} />
           </div>
         </div>
@@ -333,10 +464,10 @@ function SyncedLyrics({ entries, onSeek, compact, className, source }: { entries
 interface RowProps {
   entry: LyricEntry;
   distance: number;
-  y: number;
   reduce: boolean;
   blurOk: boolean;
-  manual: boolean;
+  browsing: boolean;
+  up: boolean;
   compact: boolean;
   onSeek: (t: number) => void;
   lineRef: (el: HTMLDivElement | null) => void;
@@ -344,32 +475,33 @@ interface RowProps {
   dotRef: (k: number, el: HTMLSpanElement | null) => void;
 }
 
-/** Rows this far from the current line are out of view: they move without a transition and aren't blurred. */
-const NEAR_ABOVE = 8;
-const NEAR_BELOW = 16;
-
-/** Lines move with CSS transitions, which run on the compositor: smooth even on phones. */
-const LyricRow = memo(function LyricRow({ entry, distance, y, reduce, blurOk, manual, compact, onSeek, lineRef, wordRef, dotRef }: RowProps) {
+/**
+ * A line. Its glide (the row's transform) is written per frame by SyncedLyrics; React only sets how
+ * it looks, and the fade, blur and size change set off together with the glide.
+ */
+const LyricRow = memo(function LyricRow({ entry, distance, reduce, blurOk, browsing, up, compact, onSeek, lineRef, wordRef, dotRef }: RowProps) {
   const active = distance === 0;
-  const past = distance < 0;
   const near = distance >= -NEAR_ABOVE && distance <= NEAR_BELOW;
-  // Lines below the current one follow a beat later, which gives the scroll its ripple.
-  const delay = reduce || manual ? 0 : Math.max(0, Math.min(distance, 8)) * 0.045;
-  // While the list is being scrolled by hand the rows sit still (the scroll moves them).
-  const move = manual ? 'none' : reduce ? 'transform 0.15s linear' : near ? `transform ${MOVE_S}s ${EASE} ${delay}s` : 'transform 0s';
-  const blur = !blurOk || manual || active || Math.abs(distance) > NEAR_ABOVE ? 0 : Math.min(Math.abs(distance), 4) * 0.6;
-  const opacity = manual ? (active ? 1 : 0.55) : active ? 1 : past ? 0.28 : Math.abs(distance) === 1 ? 0.42 : 0.32;
-  const scale = active || reduce ? 1 : 0.965;
+  const look = lineLook(distance, { manual: browsing, blur: blurOk, reduce });
+  const delay = browsing ? 0 : staggerMs(distance, reduce, up);
+  const change = reduce
+    ? 'opacity 0.2s linear'
+    : `opacity 0.6s ${EASE} ${delay}ms, filter 0.6s ${EASE} ${delay}ms, transform 0.75s ${EASE} ${delay}ms`;
 
   if (entry.kind === 'gap') {
     return (
       <div
         ref={lineRef}
-        className="origin-left overflow-hidden"
-        style={{ transform: `translate3d(0, ${y}px, 0)`, maxHeight: active ? 80 : 0, opacity: active ? 1 : 0, transition: `${move}, max-height 0.45s ease, opacity 0.3s ease` }}
+        className="overflow-hidden"
+        style={{
+          maxHeight: active ? 80 : 0,
+          opacity: active ? 1 : 0,
+          transition: reduce ? 'opacity 0.2s linear' : `max-height 0.55s ${EASE}, opacity 0.35s ease`,
+          willChange: near ? 'transform' : undefined,
+        }}
         aria-hidden
       >
-        <div className={`py-3 ${compact ? 'text-[1.7rem]' : 'text-[2.4rem]'}`}>
+        <div className={`py-3 leading-none ${compact ? 'text-[1.7rem]' : 'text-[2.4rem]'}`}>
           <span className={`tfm-dots ${active ? 'tfm-dots-active' : ''}`}>
             {[0, 1, 2].map((k) => (
               <span key={k} ref={(el) => dotRef(k, el)} style={{ opacity: 0.3 }} />
@@ -381,17 +513,15 @@ const LyricRow = memo(function LyricRow({ entry, distance, y, reduce, blurOk, ma
   }
 
   return (
-    <div
-      ref={lineRef}
-      className="origin-left"
-      style={{ transform: `translate3d(0, ${y}px, 0) scale(${scale})`, transition: move, willChange: near ? 'transform' : undefined }}
-    >
+    <div ref={lineRef} style={{ willChange: near ? 'transform' : undefined }}>
       <button
         type="button"
         onClick={() => onSeek(entry.time)}
-        className={`block w-full rounded-xl py-2.5 text-left font-bold leading-[1.18] tracking-tight transition-[opacity,filter] duration-500 [-webkit-tap-highlight-color:transparent] focus-visible:bg-white/10 focus-visible:outline-none [@media(hover:hover)]:hover:bg-white/[0.06] ${compact ? '-mx-1.5 px-1.5 text-[1.65rem]' : '-mx-3 px-3 text-[2.35rem]'}`}
-        style={{ opacity, filter: blur ? `blur(${blur}px)` : undefined }}
+        className={`block w-full origin-left rounded-xl py-2.5 text-left font-bold leading-[1.18] tracking-tight [-webkit-tap-highlight-color:transparent] focus-visible:bg-white/10 focus-visible:outline-none [@media(hover:hover)]:hover:bg-white/[0.06] ${compact ? '-mx-1.5 px-1.5 text-[1.65rem]' : '-mx-3 px-3 text-[2.35rem]'}`}
+        style={{ opacity: look.opacity, filter: look.blur ? `blur(${look.blur}px)` : 'none', transform: `scale(${look.scale})`, transition: change }}
       >
+        {/* Split into words or not, the text is laid out the same, so a long line wraps at the same
+            places when it becomes the current one. */}
         {entry.words && active ? (
           entry.words.map((w, k) => (
             <span key={k} ref={(el) => wordRef(k, el)} className="tfm-word" style={{ ['--p' as string]: 0 }}>
