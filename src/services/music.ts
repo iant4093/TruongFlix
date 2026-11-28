@@ -8,6 +8,7 @@ import type { MusicLyrics, MusicStream } from '../music/types';
 import { registerStream, releaseStream, streamUrl } from './streaming';
 import * as mdb from './musicdb';
 import { pairMoved } from '../lib/relink';
+import { folderIds, heldRoots, knownFolderIds, rememberFolderIds, underRoot, type FolderId } from './libraryRoots';
 
 /**
  * The desktop side of Music: scanning the music folders, lyrics (from the files, or Kugou / NetEase / LRCLIB),
@@ -229,36 +230,41 @@ export interface MusicScanResult {
   unreadable?: string[];
 }
 
-const isUnder = (path: string, root: string) => {
-  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  const p = norm(path);
-  const r = norm(root);
-  return p === r || p.startsWith(`${r}/`);
-};
+const isUnder = underRoot;
 
-/** Files to drop: gone from a reachable folder, or in a folder no longer in the list. */
 /**
  * Songs to drop from the library: files no longer in a music folder, or not found in their folder.
- * Never songs in an offline folder or one that couldn't be read this time, and never when a folder
- * suddenly lost most of its songs (an empty mount point or a different disk on the same letter is
- * far likelier than a real clear-out): dropping a song also drops its playlists and favourites.
+ * Never songs in an offline folder or one that couldn't be read this time, and never all the songs
+ * of a folder at once unless it's still the folder they were in (`heldRoots`): an empty mount point
+ * or a different disk on the same letter isn't a clear-out. `ids` and `known` are which folder each
+ * music folder is now and was; `force` is a full rescan the user asked for.
  */
-export function goneMusicPaths(indexed: string[], seen: Set<string>, dirs: string[], offline: string[], unreadable: string[] = [], force = false): string[] {
+export function goneMusicPaths(
+  indexed: string[],
+  seen: Set<string>,
+  dirs: string[],
+  offline: string[],
+  unreadable: string[] = [],
+  force = false,
+  ids: Map<string, FolderId> = new Map(),
+  known: Map<string, string> = new Map(),
+): string[] {
   const missing = indexed.filter((p) => {
     if (!dirs.some((d) => isUnder(p, d))) return true;
     if (offline.some((d) => isUnder(p, d))) return false;
     if (unreadable.some((u) => p === u || isUnder(p, u))) return false;
     return !seen.has(p);
   });
-  // Only a folder where every one of many songs vanished at once (and not on a full rescan).
-  const suspicious = force
-    ? []
-    : dirs.filter((d) => {
-        const had = indexed.filter((p) => isUnder(p, d)).length;
-        const lost = missing.filter((p) => isUnder(p, d)).length;
-        return had >= 20 && lost === had;
-      });
-  return missing.filter((p) => !suspicious.some((d) => isUnder(p, d)));
+  const held = heldRoots(
+    dirs.filter((d) => !offline.includes(d)),
+    (d) => indexed.filter((p) => isUnder(p, d)).length,
+    (d) => missing.filter((p) => isUnder(p, d)).length,
+    ids,
+    known,
+    force,
+  );
+  if (held.length) console.warn('[music] not removing songs from', held);
+  return missing.filter((p) => !held.some((d) => isUnder(p, d)));
 }
 
 let scanning = false;
@@ -302,6 +308,8 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
     const reachable = dirs.length ? await invoke<boolean[]>('check_paths', { paths: dirs }) : [];
     const roots = dirs.filter((_, i) => reachable[i]);
     const offline = dirs.filter((_, i) => !reachable[i]);
+    // Which folder each music folder is, to tell deleted songs from a swapped or unmounted disk.
+    const [ids, knownIds] = await Promise.all([folderIds(roots), knownFolderIds()]);
     const known: Record<string, number> = {};
     for (const [path, rec] of index) known[path] = rec.mtime;
     // Songs imported before matching improved are matched again once, all together.
@@ -309,7 +317,8 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
     const force = !!opts.force || rematch;
     const res = roots.length ? await invoke<MusicScanResult>('music_scan', { paths: roots, known, force }) : { seen: [], changed: [], unreadable: [] };
     // Songs moved or renamed since the last scan keep their row (and history) at the new path.
-    const vanished = goneMusicPaths([...index.keys()], new Set(res.seen), dirs, offline, res.unreadable ?? [], !!opts.force);
+    const seen = new Set(res.seen);
+    const vanished = goneMusicPaths([...index.keys()], seen, dirs, offline, res.unreadable ?? [], !!opts.force, ids, knownIds);
     const moved = pairMoved(
       vanished.filter((p) => index.has(p)).map((p) => ({ path: p, size: index.get(p)!.size })),
       res.changed.filter((f) => !index.has(f.file_path)).map((f) => ({ path: f.file_path, size: f.file_size })),
@@ -321,13 +330,18 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
         index.delete(from);
       }
     }
-    const added = res.changed.filter((f) => !index.has(f.file_path)).length;
+    const newFiles = res.changed.filter((f) => !index.has(f.file_path));
+    const added = newFiles.length;
     await mdb.upsertMusicFiles(res.changed, Date.now(), dirs);
+    // Songs deleted before and now back get their plays, favourites and playlist places back.
+    const restored = await mdb.restoreMissingMusic(newFiles);
     if (roots.length && !offline.length) writeMatchVersion();
-    const gone = goneMusicPaths([...index.keys()], new Set(res.seen), dirs, offline, res.unreadable ?? [], !!opts.force);
-    await mdb.removeMusicPaths(gone);
+    const gone = goneMusicPaths([...index.keys()], seen, dirs, offline, res.unreadable ?? [], !!opts.force, ids, knownIds);
+    // Deleted outside the app: what each profile had of them is kept, in case they come back.
+    await mdb.removeMusicPaths(gone, true);
     if (!gone.length && res.changed.length) await mdb.pruneMusic();
-    if (res.changed.length || gone.length) await loadMusicLibrary(true);
+    await rememberFolderIds(roots, ids, (r) => res.seen.some((p) => isUnder(p, r))).catch((e) => console.warn('[music] folder ids', e));
+    if (res.changed.length || gone.length || restored) await loadMusicLibrary(true);
     // The one-off rematch after an update isn't news: only new and removed songs are reported then.
     const updated = rematch && !opts.force ? 0 : res.changed.length - added;
     if (!opts.quiet && (added || gone.length || updated)) {
@@ -344,4 +358,17 @@ export async function runMusicScan(opts: { force?: boolean; quiet?: boolean } = 
     queued = null;
     if (next) void runMusicScan(next);
   }
+}
+
+/**
+ * Whether a library song's file was deleted: its music folder is there but the file isn't. (One in
+ * an offline folder isn't: it's still there, just not reachable now.) The next scan drops it from
+ * the library; this tells right away.
+ */
+export async function songFileGone(trackId: number): Promise<boolean> {
+  const row = await mdb.musicTrackFile(trackId);
+  if (!row) return true;
+  const root = (useLibraryStore.getState().settings.music_directories ?? []).find((d) => isUnder(row.file_path, d));
+  const [file, folder] = await invoke<boolean[]>('check_paths', { paths: root ? [row.file_path, root] : [row.file_path] });
+  return !file && (root ? !!folder : true);
 }

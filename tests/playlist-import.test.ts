@@ -13,7 +13,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 const scan = vi.hoisted(() => ({ files: new Map<string, { id: number; mtime: number; size: number }>() }));
 vi.mock('../src/services/music', async () => {
   const { create } = await import('zustand');
-  return { runMusicScan: vi.fn(async () => {}), useMusicScan: create(() => ({ running: false })) };
+  return { runMusicScan: vi.fn(async () => {}), songFileGone: vi.fn(async () => false), useMusicScan: create(() => ({ running: false })) };
 });
 vi.mock('../src/services/musicdb', () => ({ musicFileIndex: async () => scan.files }));
 vi.mock('../src/music/actions', () => ({
