@@ -514,3 +514,28 @@ it('while Soulseek pauses the account, sign-ins wait longer each time, and the i
     vi.useRealTimers();
   }
 });
+
+it('changing the quality in Settings changes the imports that follow it, and tries their wrong-quality songs again', async () => {
+  // The first song has no lossless copy; the second is still being searched for (the import runs on).
+  const requests = songBackend((request) => {
+    if (request.quality === 'lossless' && String(JSON.stringify(request)).includes('Sh*t'))
+      emit('slsk-job', songJob(request, { state: 'failed', code: 'quality', message: 'There are copies of this song, but none in lossless (FLAC).' }));
+    return songJob(request, { state: 'searching' });
+  });
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_quality: 'lossless' } }));
+  const id = addImport({ source: 'list', id: 'q', name: 'Q', owner: null, cover: null, total: null, songs: [plainSong('My Sh*t', 'A Boogie wit da Hoodie'), plainSong('Nights', 'Frank Ocean')] }, 'lossless');
+  const own = addImport({ source: 'list', id: 'q2', name: 'Q2', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'mp3');
+  await startImport(id);
+  const song = () => usePlaylistImports.getState().imports[id].songs[0];
+  await vi.waitFor(() => expect(song()).toMatchObject({ state: 'failed', code: 'quality' }));
+
+  vi.mocked(invoke).mockClear();
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_quality: 'any' } }));
+  expect(usePlaylistImports.getState().imports[id].quality).toBe('any');
+  // An import given its own quality keeps it.
+  expect(usePlaylistImports.getState().imports[own].quality).toBe('mp3');
+  // The song is searched for again, now in any quality.
+  await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(3));
+  expect(requests.at(-1)).toMatchObject({ quality: 'any' });
+  expect(JSON.stringify(requests.at(-1))).toContain('Sh*t');
+});

@@ -81,6 +81,8 @@ export interface ImportSong extends PlaylistSong {
   tries?: number;
   /** Not before this time (ms) when it's waiting to be tried again. */
   retryAt?: number;
+  /** Why it failed, when it did ("quality": copies, but none in the quality asked for). */
+  code?: string | null;
 }
 
 export interface PlaylistImport {
@@ -593,7 +595,31 @@ export function removeImport(id: string) {
   });
 }
 
-export const setImportQuality = (id: string, quality: MusicQuality) => patchImport(id, () => ({ quality }));
+/** A song that failed only because no copy was in the import's quality. */
+const wrongQuality = (song: ImportSong) => song.state === 'failed' && (song.code === 'quality' || /^There are copies of this song, but none in /.test(song.message));
+
+/**
+ * Sets an import's quality. Songs that failed only for want of a copy in the old quality are
+ * tried again with the new one (right away when the import is running).
+ */
+export function setImportQuality(id: string, quality: MusicQuality) {
+  const p = getImport(id);
+  if (!p || p.quality === quality) return;
+  patchImport(id, (x) => ({
+    quality,
+    songs: x.songs.map((song) => (wrongQuality(song) ? { ...song, state: 'waiting' as const, message: '', code: null, jobId: null, tries: 0, retryAt: undefined } : song)),
+  }));
+  if (p.running) void pump(id);
+}
+
+// The quality in Settings is every import's, except one given its own: changing it there changes
+// the imports that were following it.
+useLibraryStore.subscribe((s, before) => {
+  const now = s.settings.soulseek_quality;
+  const was = before.settings.soulseek_quality;
+  if (now === was) return;
+  for (const p of Object.values(usePlaylistImports.getState().imports)) if (p.quality === was) setImportQuality(p.id, now);
+});
 
 let following = false;
 
@@ -648,6 +674,7 @@ function songFromJob(job: AlbumJob): Partial<ImportSong> {
     progress: job.total > 0 ? Math.min(1, job.bytes / job.total) : 0,
     path: job.path,
     from: job.source?.user ?? null,
+    code: job.state === 'failed' ? (job.code ?? null) : null,
   };
 }
 

@@ -136,6 +136,63 @@ fn clean(text: &str) -> String {
     out
 }
 
+/// Words stores print with asterisks in "clean" listings ("Sh*t", "P***y"). People's files spell
+/// them out, so a masked word is read as the word it hides.
+const MASKED: &[&str] = &[
+    "shit", "shitty", "bullshit", "fuck", "fucked", "fucking", "fuckin", "fucks", "motherfucker", "motherfuckers", "motherfuckin", "bitch", "bitches",
+    "pussy", "nigga", "niggas", "nigger", "ass", "asshole", "dick", "damn", "goddamn", "hoe", "hoes", "cock", "cunt", "bastard", "slut", "whore",
+    "piss", "tits", "titties", "crap", "hell", "sex", "weed", "cocaine",
+];
+
+/// A title with its masked words spelt out where the hidden word is known ("P***y" = "Pussy": same
+/// length, same letters showing); one that isn't known is left out (its letters would match
+/// nothing).
+pub fn unmask(text: &str) -> String {
+    if !text.contains('*') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if word.contains('*') && word.chars().any(char::is_alphanumeric) {
+            let shown: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+            let fits = |candidate: &&str| {
+                let c: Vec<char> = candidate.chars().collect();
+                c.len() == shown.len() && c.iter().zip(&shown).all(|(a, b)| *b == '*' || a == b)
+            };
+            // Masks don't always keep the length ("F**k" and "F***"): then the letters at each end decide.
+            let ends = |candidate: &&str| {
+                let head: String = shown.iter().take_while(|c| **c != '*').collect();
+                let tail: String = shown.iter().rev().take_while(|c| **c != '*').collect::<Vec<_>>().into_iter().rev().collect();
+                !head.is_empty() && candidate.len() > head.len() + tail.len() && candidate.starts_with(head.as_str()) && candidate.ends_with(tail.as_str())
+            };
+            if let Some(found) = MASKED.iter().find(|c| fits(c)).or_else(|| MASKED.iter().find(|c| ends(c))) {
+                // Keeps a capital first letter.
+                if word.chars().next().is_some_and(char::is_uppercase) {
+                    let mut c = found.chars();
+                    out.extend(c.next().map(|f| f.to_ascii_uppercase()));
+                    out.push_str(c.as_str());
+                } else {
+                    out.push_str(found);
+                }
+            }
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '*' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
 /// Every word of a text (for file names and paths).
 fn all_words(text: &str) -> Vec<String> {
     clean(text).split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect()
@@ -231,8 +288,9 @@ struct TrackInfo<'a> {
 
 impl<'a> TrackInfo<'a> {
     fn new(track: &'a WantTrack) -> Self {
-        let title = words(&track.title);
-        TrackInfo { re_recorded: re_recorded(&all_words(&track.title)), track, title }
+        let named = unmask(&track.title);
+        let title = words(&named);
+        TrackInfo { re_recorded: re_recorded(&all_words(&named)), track, title }
     }
 }
 
@@ -529,7 +587,8 @@ pub struct SongMatcher {
 
 impl SongMatcher {
     pub fn new(want: &WantSong) -> Self {
-        let (title, versions, naming) = song_parts(&want.title);
+        let named = unmask(&want.title);
+        let (title, versions, naming) = song_parts(&named);
         let squashed = want
             .artists
             .iter()
@@ -538,7 +597,7 @@ impl SongMatcher {
             .filter(|a| a.chars().count() >= 3)
             .collect();
         SongMatcher {
-            re_recorded: re_recorded(&all_words(&want.title)),
+            re_recorded: re_recorded(&all_words(&named)),
             artists: want.artists.iter().map(|a| artist_words(a)).filter(|w| !w.is_empty()).collect(),
             album: want.album.as_deref().map(|a| words(a.split(['(', '[']).next().unwrap_or(a))).unwrap_or_default(),
             length_ms: want.length_ms,
@@ -676,7 +735,7 @@ fn artist_search_words(artist: &str) -> Vec<String> {
 /// What to search Soulseek for to find a song: its main artist and title (the title alone when
 /// there's no artist).
 pub fn song_queries(want: &WantSong) -> Vec<String> {
-    let title = song_search_words(&want.title);
+    let title = song_search_words(&unmask(&want.title));
     let artist = want.artists.first().map(|a| artist_search_words(a)).unwrap_or_default();
     let mut out = Vec::new();
     if title.is_empty() {
@@ -703,7 +762,7 @@ pub fn song_queries(want: &WantSong) -> Vec<String> {
 /// album isn't in the store, is found no other way). Every file is still checked for the song's
 /// artist, title and length.
 pub fn song_fallback_queries(want: &WantSong) -> Vec<String> {
-    let title = song_search_words(&want.title);
+    let title = song_search_words(&unmask(&want.title));
     if title.is_empty() {
         return Vec::new();
     }
@@ -747,6 +806,23 @@ mod tests {
 
     fn album() -> Vec<WantTrack> {
         vec![track("Airbag", 1, 284), track("Paranoid Android", 2, 387), track("Subterranean Homesick Alien", 3, 267)]
+    }
+
+    #[test]
+    fn masked_words_are_read_as_the_words_they_hide() {
+        assert_eq!(unmask("P***y & Millions (feat. Travis Scott)"), "Pussy & Millions (feat. Travis Scott)");
+        assert_eq!(unmask("My Sh*t"), "My Shit");
+        assert_eq!(unmask("F**k Love"), "Fuck Love");
+        assert_eq!(unmask("b***h"), "bitch");
+        assert_eq!(unmask("Love Galore"), "Love Galore");
+        // A mask that hides an unknown word is left out rather than matched letter by letter.
+        assert_eq!(unmask("The Z**x Song"), "The  Song");
+        // Searched for spelt out, and files spelt out match.
+        let want = song("P***y & Millions (feat. Travis Scott)", "Drake", Some(242));
+        assert_eq!(song_queries(&want), ["drake pussy millions"]);
+        assert!(song_matches(&want, &offer("a", r"Music\Drake & 21 Savage\Her Loss\04 - Pussy & Millions.flac", Some(242), None)));
+        let mine = song("My Sh*t", "A Boogie wit da Hoodie", Some(128));
+        assert!(song_matches(&mine, &offer("a", r"Music\A Boogie Wit Da Hoodie\Artist\05 My Shit.mp3", Some(128), Some(320))));
     }
 
     #[test]
