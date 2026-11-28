@@ -190,9 +190,9 @@ if (typeof localStorage !== 'undefined') {
 }
 
 const API = 'https://itunes.apple.com';
-/** Songs matched and searched for at once (the app also spaces Soulseek searches out: the
- *  server drops a connection that searches too fast). */
-const SEARCHING = 2;
+/** Songs matched and searched for at once. The app spaces Soulseek searches out itself (at most
+ *  10 a minute), so this only keeps that allowance used: with 2, a big import used about 8. */
+const SEARCHING = 3;
 /** Songs in flight at once, downloads included (more only adds connections and splits the line). */
 const ACTIVE = 12;
 /** A song Soulseek didn't answer for waits this long before it's searched again. */
@@ -204,7 +204,7 @@ const RECONNECT_PAUSE = 5_000;
 /** Songs of one album waiting together are fetched together (one search for the album, one
  *  person's folder) once there are this many: Soulseek allows only so many searches a minute,
  *  and one person's queue for several songs beats a queue with each of several people. */
-export const ALBUM_GROUP_MIN = 3;
+export const ALBUM_GROUP_MIN = 2;
 /** Most songs fetched together in one album download. */
 const ALBUM_GROUP_MAX = 50;
 
@@ -1129,7 +1129,11 @@ async function finish(id: string) {
     const samePlaylist = (o: PlaylistImport) =>
       (o.source === now.source && !!o.sourceId && o.sourceId === now.sourceId && now.source !== 'list') || (!!o.partial && now.source === 'list' && o.name === now.name);
     const earlier = Object.values(usePlaylistImports.getState().imports).find((o) => o.id !== id && o.playlistId != null && playlists.some((x) => x.id === o.playlistId) && samePlaylist(o))?.playlistId;
-    const target = now.playlistId != null && playlists.some((x) => x.id === now.playlistId) ? now.playlistId : (earlier ?? null);
+    // An empty playlist of the same name is taken over too (an earlier import of it whose songs
+    // were deleted, or whose import was removed): there's nothing in it to lose, and a second
+    // playlist of the same name would only confuse.
+    const empty = playlists.find((x) => x.name === now.name && x.trackIds.length === 0)?.id;
+    const target = now.playlistId != null && playlists.some((x) => x.id === now.playlistId) ? now.playlistId : (earlier ?? empty ?? null);
     let playlistId: number | null = target;
     if (target != null) {
       await setPlaylistTracks(target, ids);

@@ -167,7 +167,14 @@ pub fn unmask(text: &str) -> String {
                 let tail: String = shown.iter().rev().take_while(|c| **c != '*').collect::<Vec<_>>().into_iter().rev().collect();
                 !head.is_empty() && candidate.len() > head.len() + tail.len() && candidate.starts_with(head.as_str()) && candidate.ends_with(tail.as_str())
             };
-            if let Some(found) = MASKED.iter().find(|c| fits(c)).or_else(|| MASKED.iter().find(|c| ends(c))) {
+            // A star only at the end (or start) of a real word is styling ("wokeuplikethis*"), not
+            // a mask: the word is kept without it.
+            let bare = word.trim_matches('*');
+            let styled = !bare.contains('*') && bare.chars().filter(|c| c.is_alphanumeric()).count() >= 3;
+            let known = MASKED.iter().find(|c| fits(c));
+            if known.is_none() && styled {
+                out.push_str(bare);
+            } else if let Some(found) = known.or_else(|| MASKED.iter().find(|c| ends(c))) {
                 // Keeps a capital first letter.
                 if word.chars().next().is_some_and(char::is_uppercase) {
                     let mut c = found.chars();
@@ -743,8 +750,10 @@ impl SongMatcher {
         let name = all_words(&unmask_name(stem));
         let path = all_words(&unmask_name(&offer.path));
         let title = &self.title;
-        let found = title.iter().filter(|w| name.contains(w)).count();
-        if found < title.len() && !(title.len() >= 4 && found + 1 >= title.len()) {
+        // "and" (often a title's "&") is left out of many file names ("MADONNA RIHANNA").
+        let needed: Vec<&String> = if title.iter().any(|w| w != "and") { title.iter().filter(|w| *w != "and").collect() } else { title.iter().collect() };
+        let found = needed.iter().filter(|w| name.contains(w)).count();
+        if found < needed.len() && !(needed.len() >= 4 && found + 1 >= needed.len()) {
             return None;
         }
         // The version asked for, by name ("Chromatics Remix", not any remix).
@@ -784,7 +793,7 @@ impl SongMatcher {
             Some(_) => 2.0,
             None => 4.0,
         };
-        if found == title.len() {
+        if found == needed.len() {
             score += 4.0;
         }
         // Words in the name that are neither the title, an artist nor a track number: likely another
@@ -966,6 +975,19 @@ mod tests {
         // The files found must still be this song.
         assert!(song_matches(&want, &offer("a", r"Music\Travis Scott\ESCAPE PLAN - MAFIA\02 MAFIA.flac", Some(160), None)));
         assert!(!song_matches(&want, &offer("a", r"Music\Travis Scott\ESCAPE PLAN - MAFIA\01 ESCAPE PLAN.flac", Some(160), None)));
+    }
+
+    #[test]
+    fn styled_stars_and_left_out_ands() {
+        // A star that only decorates a title isn't a mask.
+        assert_eq!(unmask("wokeuplikethis* (feat. Lil Uzi Vert)"), "wokeuplikethis (feat. Lil Uzi Vert)");
+        assert_eq!(song_queries(&song("wokeuplikethis*", "Playboi Carti", None)), ["playboi carti wokeuplikethis"]);
+        assert_eq!(unmask("F***"), "Fuck");
+        // A file that leaves out the title's "&".
+        let mut want = song("MADONNA & RIHANNA", "Rich Amiri", Some(122));
+        want.album = Some("OUT MY MIND".into());
+        let file = format!("Music{0}Rich Amiri{0}OUT MY MIND{0}07 MADONNA RIHANNA.flac", std::path::MAIN_SEPARATOR);
+        assert!(song_matches(&want, &offer("a", &file, Some(122), None)));
     }
 
     #[test]

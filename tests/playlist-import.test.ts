@@ -568,7 +568,7 @@ it('songs of one album waiting together go together; the rest, and too few of an
     { ...albumSong('Seven Rings', ['Future'], 'evol'), key: '3', store: null },
     // Searched for on its own already: its album's copies didn't have it.
     { ...albumSong('Maybach', ['Future'], 'EVOL'), key: '4', store: null, solo: true },
-    // Two of another album aren't worth an album search.
+    // Two of another album are fetched together too.
     { ...albumSong('Nights', ['Frank Ocean'], 'Blonde'), key: '5', store: null },
     { ...albumSong('Ivy', ['Frank Ocean'], 'Blonde'), key: '6', store: null },
     // Another album that only shares the name.
@@ -579,9 +579,9 @@ it('songs of one album waiting together go together; the rest, and too few of an
   ];
   expect(albumKey(songs[0])).toBe(albumKey(songs[2]));
   expect(albumKey(songs[9])).toBeNull();
-  expect(albumGroups(songs).map((unit) => unit.map((s) => s.key))).toEqual([['0', '2', '3', '8'], ['1'], ['4'], ['5'], ['6'], ['7'], ['9']]);
-  // Fewer than three of the album: each on its own.
-  expect(albumGroups(songs.slice(0, 3)).map((unit) => unit.map((s) => s.key))).toEqual([['0'], ['1'], ['2']]);
+  expect(albumGroups(songs).map((unit) => unit.map((s) => s.key))).toEqual([['0', '2', '3', '8'], ['1'], ['4'], ['5', '6'], ['7'], ['9']]);
+  // A song alone from its album is searched for on its own.
+  expect(albumGroups(songs.slice(0, 2)).map((unit) => unit.map((s) => s.key))).toEqual([['0'], ['1']]);
 });
 
 /** A backend where album downloads and song downloads are recorded (the store knows the album's songs). */
@@ -684,7 +684,19 @@ it('an album download that can’t start leaves its songs to be found one by one
   });
   const id = addImport({ source: 'spotify', id: 'evol3', name: 'Mix', owner: null, cover: null, total: null, songs: evol().slice(0, 3) }, 'lossless');
   await startImport(id);
-  await vi.waitFor(() => expect(calls.songs).toHaveLength(2));
+  await vi.waitFor(() => expect(calls.songs).toHaveLength(3));
   expect(calls.albums).toHaveLength(0);
   expect(usePlaylistImports.getState().imports[id].songs.every((s) => s.solo)).toBe(true);
+});
+
+it('importing a playlist again takes over an empty playlist of its name instead of making a second', async () => {
+  const requests = songBackend((request) => songJob(request, {}));
+  useMusicPlayer.setState({ api: {} as never, library: { tracks: [], albums: [], artists: [], playlists: [{ id: 77, name: 'Road trip', trackIds: [], updatedAt: 0 }] } });
+  const id = addImport({ source: 'list', id: 'again', name: 'Road trip', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'any');
+  await startImport(id);
+  await vi.waitFor(() => expect(requests).toHaveLength(1));
+  scan.files = new Map([['C:\\Music\\Kali Uchis\\Singles\\Moonlight.flac', { id: 12, mtime: 0, size: 1 }]]);
+  emit('slsk-job', songJob(requests[0], { state: 'done', path: 'C:/Music/Kali Uchis/Singles/Moonlight.flac' }));
+  await vi.waitFor(() => expect(setPlaylistTracks).toHaveBeenCalledWith(77, [12]));
+  expect(createPlaylist).not.toHaveBeenCalled();
 });
