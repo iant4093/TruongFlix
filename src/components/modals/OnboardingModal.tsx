@@ -99,10 +99,12 @@ export default function OnboardingModal() {
               </div>
             ) : (
               <div className="space-y-5 text-center">
-                <h1 className="text-[2.6rem] font-black leading-tight">Your movies. Your shows. One screen.</h1>
+                <h1 className="text-[2.6rem] font-black leading-tight">Unlimited entertainment. All yours.</h1>
                 <p className="text-lg text-nf-secondary">
-                  Organize the video files on your drives into a streaming-style library and watch them in the built-in
-                  player with support for 4K and HDR.
+                  {/* Games are on Windows only. */}
+                  {__GAMES__
+                    ? 'Stream your own movies and shows, tune in to live TV, play your music and launch your games, all from one app.'
+                    : 'Stream your own movies and shows, tune in to live TV and play your music, all from one app.'}
                 </p>
                 <button onClick={next} className="nf-btn-red mt-2 w-full py-3.5 text-xl">
                   Get Started <ChevronRight className="h-6 w-6" />
