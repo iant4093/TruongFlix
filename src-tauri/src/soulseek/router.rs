@@ -5,9 +5,16 @@
 //!
 //! The opening lasts an hour and is renewed while signed in, so it lapses by itself if the app
 //! is killed; it's closed on sign-out and when the app quits.
+//!
+//! Once reachable, everyone answering a search connects in at once (hundreds within seconds for a
+//! broad one), where before the app made those connections itself, paced. Some routers can't take
+//! that: on 28 Nov 2026 an ISP router stopped answering for minutes, twice, right after such
+//! bursts. So when the internet drops while the port is open, it's closed, and not opened on that
+//! router again for a week.
 
 use reqwest::Url;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -39,6 +46,11 @@ struct Open {
 }
 
 static OPEN: Mutex<Option<Open>> = Mutex::new(None);
+/// Where the routers not to open again are kept (the app's data folder).
+static STATE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// How long a router whose internet dropped while open is left alone.
+const LEAVE_ALONE: Duration = Duration::from_secs(7 * 24 * 3600);
+const OFF_FILE: &str = "router-off.json";
 /// The port being kept open (0: none). Bumping `TURN` stops the thread that keeps it open.
 static KEPT: Mutex<u16> = Mutex::new(0);
 static TURN: AtomicU64 = AtomicU64::new(0);
@@ -70,6 +82,11 @@ pub fn keep_open(port: u16) {
                     Some(g) => g.clone(),
                     None => find_gateway()?,
                 };
+                if let Some(dir) = STATE_DIR.lock().unwrap().clone() {
+                    if left_alone(&dir, found.control.as_str(), now_secs()) {
+                        return Err(LEFT_ALONE.into());
+                    }
+                }
                 gateway = Some(found.clone());
                 add(&found, port)?;
                 if current() {
@@ -81,6 +98,11 @@ pub fn keep_open(port: u16) {
                 Ok(()) if !told => {
                     told = true;
                     super::note(format!("Your router opened port {port}, so other people can connect to you"));
+                }
+                Err(e) if e == LEFT_ALONE => {
+                    super::note(format!("Not opening port {port} on your router: your internet dropped the last time it was open"));
+                    *KEPT.lock().unwrap() = 0;
+                    return;
                 }
                 Err(e) => {
                     // A router that's forgotten us (rebooted, new address) is looked for afresh.
@@ -98,6 +120,54 @@ pub fn keep_open(port: u16) {
             }
         }
     });
+}
+
+const LEFT_ALONE: &str = "left alone";
+
+/// Where to remember routers not to open again (set at sign-in).
+pub fn remember_in(dir: PathBuf) {
+    *STATE_DIR.lock().unwrap() = Some(dir);
+}
+
+/// Whether a port is open on the router right now.
+pub fn is_open() -> bool {
+    OPEN.lock().unwrap().is_some()
+}
+
+/// The internet dropped while the port was open: it's closed, and that router is left alone for a
+/// week (the next sign-ins don't open it).
+pub fn give_up() {
+    let router = OPEN.lock().unwrap().as_ref().map(|o| (o.port, o.gateway.control.to_string()));
+    let Some((port, control)) = router else { return };
+    if let Some(dir) = STATE_DIR.lock().unwrap().clone() {
+        leave_alone(&dir, &control, now_secs() + LEAVE_ALONE.as_secs());
+    }
+    super::note(format!("Your internet dropped while port {port} was open on your router, so it’s closed again (some routers can’t take everyone connecting in at once)"));
+    // The router may be down: closing is tried in the background, and the opening lapses within the
+    // hour anyway now that nothing renews it.
+    std::thread::spawn(close);
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Routers left alone, and until when (seconds since 1970).
+fn left_alone_list(dir: &Path) -> std::collections::HashMap<String, u64> {
+    std::fs::read_to_string(dir.join(OFF_FILE)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn leave_alone(dir: &Path, control: &str, until: u64) {
+    let mut list = left_alone_list(dir);
+    let now = now_secs();
+    list.retain(|_, t| *t > now);
+    list.insert(control.to_string(), until);
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(dir.join(OFF_FILE), serde_json::to_string(&list).unwrap_or_default());
+}
+
+fn left_alone(dir: &Path, control: &str, now: u64) -> bool {
+    left_alone_list(dir).get(control).is_some_and(|until| *until > now)
 }
 
 /// Closes the port (on sign-out and when the app quits).
@@ -229,6 +299,19 @@ fn http(request: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_router_whose_internet_dropped_is_left_alone_for_a_week() {
+        let dir = tempfile::tempdir().unwrap();
+        let control = "http://192.168.0.1:1900/ctl/IPConn";
+        assert!(!left_alone(dir.path(), control, 1000));
+        leave_alone(dir.path(), control, 1000 + LEAVE_ALONE.as_secs());
+        assert!(left_alone(dir.path(), control, 2000));
+        // Another router (another network) isn't.
+        assert!(!left_alone(dir.path(), "http://10.0.0.1:5000/ctl/IPConn", 2000));
+        // A week later it's tried again.
+        assert!(!left_alone(dir.path(), control, 1001 + LEAVE_ALONE.as_secs()));
+    }
 
     #[test]
     fn reads_where_the_router_describes_itself() {

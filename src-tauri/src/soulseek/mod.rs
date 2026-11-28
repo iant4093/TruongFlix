@@ -219,6 +219,12 @@ fn log_in(login: &Login) -> Result<(Client, bool), String> {
     }
 }
 
+/// Whether a failed login means the internet (or the router) is down, rather than Soulseek
+/// refusing or pausing the account.
+fn network_down(error: &str) -> bool {
+    error.starts_with("Couldn’t reach") || error.contains("Not connected to server")
+}
+
 /// Opens (or closes) our listening port on the home router to match a new session.
 fn open_port(login: &Login, listening: bool) {
     if listening {
@@ -259,6 +265,9 @@ pub async fn slsk_connect(app: AppHandle, username: String, password: String, po
         if std::fs::create_dir_all(&dir).is_ok() {
             *LOG_FILE.lock().unwrap() = Some(dir.join("soulseek.log"));
         }
+    }
+    if let Ok(dir) = tauri::Manager::path(&app).app_data_dir() {
+        router::remember_in(dir);
     }
     let login = Login { username: username.clone(), password, port, shared };
     let handle = app.clone();
@@ -336,6 +345,11 @@ fn watch_session(app: AppHandle, client: Arc<Client>) {
                     }
                     Err(e) => {
                         note(format!("Reconnect failed: {e}"));
+                        // The internet itself is gone, not just Soulseek: with the port open, that
+                        // may be the router choking on everyone connecting in.
+                        if router::is_open() && network_down(&e) {
+                            router::give_up();
+                        }
                         message = e;
                     }
                 }
