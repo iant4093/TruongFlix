@@ -1,5 +1,6 @@
 mod audio;
 mod backup;
+mod background;
 mod cast;
 mod files;
 #[cfg(windows)]
@@ -112,6 +113,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             torrent::handle_cli_args(app, &argv);
+            // Opening TruongFlix (or a link or file with it) while it runs in the background.
+            background::show_if_hidden(app);
         }))
         .plugin(tauri::plugin::Builder::<tauri::Wry>::new("backup-startup").setup(|app, _| {
             backup::restore_at_startup(app);
@@ -142,6 +145,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             startup_autoplay,
+            background::background_mode_set,
             backup::backup_export,
             backup::backup_inspect,
             backup::backup_stage_restore,
@@ -290,20 +294,37 @@ pub fn run() {
         .build(app_context())
         .expect("error while building TruongFlix")
         .run(|app, event| {
-            if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { .. }, .. } = &event {
-                if label == "main" {
-                    source_browser::close_with_library(app);
-                    // A playlist being read in its off-screen window would keep the app running.
-                    playlist_reader::close(app);
+            if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { api, .. }, .. } = &event {
+                match background::close_action_now(app, label) {
+                    background::CloseAction::Quit => {
+                        source_browser::close_with_library(app);
+                        // A playlist being read in its off-screen window would keep the app running.
+                        playlist_reader::close(app);
+                    }
+                    // Settings → Devices → Keep running when closed: the window hides and
+                    // everything carries on (a playlist being read finishes by itself; quitting
+                    // from the icon or Cmd+Q ends it with the app).
+                    background::CloseAction::Hide => {
+                        api.prevent_close();
+                        source_browser::close_for_hidden_library(app);
+                        background::hide_main(app);
+                    }
+                    background::CloseAction::NotMain => {}
                 }
             }
             if let tauri::RunEvent::Exit = &event {
                 vlc::close_on_exit(app);
                 soulseek::close_on_exit();
             }
+            // Clicking the Dock icon while the window is hidden.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = &event {
+                background::show_if_hidden(app);
+            }
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = event {
                 torrent::handle_opened_urls(app, urls.iter().map(|u| u.as_str()));
+                background::show_if_hidden(app);
             }
             #[cfg(not(any(target_os = "macos", target_os = "ios")))]
             let _ = (app, event);

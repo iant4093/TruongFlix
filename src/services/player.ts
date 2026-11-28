@@ -1193,26 +1193,33 @@ export async function initPlayerEvents() {
     }),
     // Screen locked, display asleep or the computer going to sleep (lid closed).
     listen<{ reason: 'lock' | 'display' | 'sleep' }>('system-pause', ({ payload }) => {
-      const store = useLibraryStore.getState();
-      if (!store.settings.pause_on_lock) return;
-      const why = payload.reason === 'lock' ? 'the screen locked' : payload.reason === 'sleep' ? 'the computer went to sleep' : 'the display went to sleep';
-      if (webSession()) {
-        // Web players are stopped; a native pane beside them is paused too.
-        const pauseNative = usesNativePlayer(store.playerSession) && !store.playerState?.paused;
-        if (pauseNative) void playerSet('pause', 'yes');
-        if (!useLiveStore.getState().webPaused || pauseNative) {
-          useLiveStore.setState({ webPaused: true });
-          store.toast(`Paused because ${why}`, 'info');
-        }
-      } else if (store.playerSession && ((store.playerState && !store.playerState.paused) ||
-          ('multiview' in store.playerSession && store.playerSession.multiview))) {
-        void playerSet('pause', 'yes');
-        store.toast(`Paused because ${why}`, 'info');
-      } else if (store.playback.active) {
-        void invoke('pause_vlc');
-      }
+      if (!useLibraryStore.getState().settings.pause_on_lock) return;
+      pauseUnseenVideo(payload.reason === 'lock' ? 'the screen locked' : payload.reason === 'sleep' ? 'the computer went to sleep' : 'the display went to sleep', true);
     }),
+    // The window was closed while TruongFlix keeps running in the background: a video in it
+    // would carry on unseen. VLC has its own window, so it plays on.
+    listen('window-hidden', () => pauseUnseenVideo('the window was closed', false)),
   ]);
+}
+
+/** Pauses the video being watched in TruongFlix (and VLC's, when `vlc`). */
+function pauseUnseenVideo(why: string, vlc: boolean) {
+  const store = useLibraryStore.getState();
+  if (webSession()) {
+    // Web players are stopped; a native pane beside them is paused too.
+    const pauseNative = usesNativePlayer(store.playerSession) && !store.playerState?.paused;
+    if (pauseNative) void playerSet('pause', 'yes');
+    if (!useLiveStore.getState().webPaused || pauseNative) {
+      useLiveStore.setState({ webPaused: true });
+      store.toast(`Paused because ${why}`, 'info');
+    }
+  } else if (store.playerSession && ((store.playerState && !store.playerState.paused) ||
+      ('multiview' in store.playerSession && store.playerSession.multiview))) {
+    void playerSet('pause', 'yes');
+    store.toast(`Paused because ${why}`, 'info');
+  } else if (vlc && store.playback.active) {
+    void invoke('pause_vlc');
+  }
 }
 
 export function disposePlayerEvents() {

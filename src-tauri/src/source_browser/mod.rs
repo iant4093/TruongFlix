@@ -510,6 +510,18 @@ mod tests {
     }
 }
 
+/// Closes the source view when the library window hides (TruongFlix keeps running in the
+/// background). Unlike `close_with_library` the library hears it closed, so it isn't left
+/// waiting on a view that's gone when the window comes back.
+pub fn close_for_hidden_library(app: &tauri::AppHandle) {
+    if let Some(browser) = app.get_webview_window(LABEL) {
+        tauri::async_runtime::spawn(async move {
+            let _ = pane::hide(&browser, true).await;
+            let _ = browser.destroy();
+        });
+    }
+}
+
 /// Do not leave the hidden source host alive after the library window closes.
 pub fn close_with_library(app: &tauri::AppHandle) {
     app.state::<SourceState>().0.lock().unwrap().take();

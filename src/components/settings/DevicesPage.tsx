@@ -140,6 +140,14 @@ export default function DevicesPage() {
       </Group>
       {settings.remote_access && info && <SignedInBrowsers />}
       {settings.remote_access && info && <AwayFromHome port={info.port} />}
+      <Group title="In the background">
+        <ToggleRow
+          label="Keep running when closed"
+          description={`Closing the window leaves TruongFlix in the ${IS_MAC ? 'menu bar' : 'notification area'}, so the media server, torrents and Soulseek keep going.`}
+          checked={settings.keep_running_in_background}
+          onChange={(v) => void updateSettings({ keep_running_in_background: v })}
+        />
+      </Group>
       <CastDevices />
     </Page>
   );

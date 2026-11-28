@@ -443,6 +443,13 @@ pub fn slsk_jobs() -> Vec<Job> {
     JOBS.lock().unwrap().as_ref().map(|j| j.values().map(|r| r.job.clone()).collect()).unwrap_or_default()
 }
 
+/// Album, folder and song downloads not finished yet (for the tray's status).
+pub fn running_downloads() -> usize {
+    JOBS.lock().unwrap().as_ref().map_or(0, |jobs| {
+        jobs.values().filter(|r| matches!(r.job.state.as_str(), "searching" | "queued" | "downloading" | "checking")).count()
+    })
+}
+
 #[tauri::command]
 pub fn slsk_cancel(id: String) {
     if let Some(running) = JOBS.lock().unwrap().as_ref().and_then(|j| j.get(&id)) {

@@ -1484,6 +1484,12 @@ export async function initTorrentService() {
   }).catch(() => null);
   if (u1) unlisteners.push(u1);
 
+  // Paused or resumed from the tray / menu bar icon.
+  const changed = await listen('torrents-changed', () => {
+    void pollTorrents().finally(scheduleAdaptivePoll);
+  }).catch(() => null);
+  if (changed) unlisteners.push(changed);
+
   const u2 = await listen<string>('torrent-open-link', ({ payload }) => {
     handleIncomingTorrentLink(payload);
   }).catch(() => null);

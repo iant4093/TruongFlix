@@ -342,6 +342,11 @@ pub struct TorrentManager {
 static MANAGER: OnceLock<Arc<TorrentManager>> = OnceLock::new();
 static PENDING_OPEN_LINKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// The torrent engine, if something has started it (the tray never starts it by itself).
+pub(crate) fn running_manager() -> Option<Arc<TorrentManager>> {
+    MANAGER.get().cloned()
+}
+
 /// The folder streamed torrents download into, if the torrent engine has been configured.
 pub(crate) async fn current_stream_cache_root() -> Option<PathBuf> {
     Some(MANAGER.get()?.stream_cache_root().await)

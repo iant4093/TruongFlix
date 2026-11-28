@@ -181,6 +181,16 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [ready]);
 
+  // Settings → Devices → Keep running when closed: the tray / menu bar icon, and what closing does.
+  const keepRunning = useLibraryStore((s) => s.settings.keep_running_in_background);
+  useEffect(() => {
+    if (!ready) return;
+    invoke('background_mode_set', { enabled: keepRunning }).catch((e) => {
+      if (keepRunning) useLibraryStore.getState().toast(errorMessage(e), 'error');
+      else console.warn('[background]', e);
+    });
+  }, [ready, keepRunning]);
+
   // Restart folder watching when the folders or the setting change.
   const dirsKey = useLibraryStore((s) => `${s.settings.watch_folders}|${s.settings.tmdb_api_key ? 1 : 0}|${s.settings.media_directories.join('|')}|${(s.settings.music_directories ?? []).join('|')}`);
   useEffect(() => {

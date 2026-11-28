@@ -18,7 +18,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
-    IsIconic, RegisterClassExW, SetCursorPos, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_HWNDPARENT, GWL_EXSTYLE, HTTRANSPARENT, MA_NOACTIVATE,
+    IsIconic, IsWindowVisible, RegisterClassExW, SetCursorPos, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_HWNDPARENT, GWL_EXSTYLE, HTTRANSPARENT, MA_NOACTIVATE,
     SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSEXW,
     WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
 };
@@ -221,7 +221,8 @@ pub fn set_layout(mini: Option<(f64, f64, f64, f64)>) {
     sync();
 }
 
-/// Keeps the popup glued to the main window (move/resize/fullscreen/minimize).
+/// Keeps the popup glued to the main window (move/resize/fullscreen/minimize, and hidden while
+/// TruongFlix runs in the background).
 pub fn sync() {
     let (video, main) = (VIDEO.load(Ordering::Acquire) as HWND, MAIN.load(Ordering::Acquire) as HWND);
     if video.is_null() || main.is_null() {
@@ -229,7 +230,7 @@ pub fn sync() {
     }
     unsafe {
         let secondary = SECONDARY.load(Ordering::Acquire) as HWND;
-        if IsIconic(main) != 0 {
+        if IsIconic(main) != 0 || IsWindowVisible(main) == 0 {
             ShowWindow(video, SW_HIDE);
             if !secondary.is_null() {
                 ShowWindow(secondary, SW_HIDE);

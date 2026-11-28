@@ -129,6 +129,13 @@ pub fn on_main_window_event(_event: &tauri::WindowEvent) {
     }
 }
 
+/// The main window was hidden (TruongFlix carries on in the background) or shown again: the
+/// Windows video window goes and comes back with it. Main thread only.
+pub fn on_main_window_visibility() {
+    #[cfg(windows)]
+    win32::sync();
+}
+
 fn current_handle() -> Result<*mut mpv::Handle, String> {
     match SESSION.lock().unwrap().as_ref() {
         Some(s) if !s.closing => Ok(s.handle as *mut mpv::Handle),

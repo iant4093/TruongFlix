@@ -1371,6 +1371,8 @@ export function installMocks() {
           return { port: Number(a.port) || 8732, addresses: ['192.168.1.20'], web_enabled: !!a.enabled, encoder: 'h264_videotoolbox' };
         case 'server_info':
           return { port: 8732, addresses: ['192.168.1.20'], web_enabled: false, encoder: 'h264_videotoolbox' };
+        case 'background_mode_set':
+          return null;
         case 'sidecar_subtitle_languages':
           return ((a.videoPaths as string[]) ?? []).map((p) => (p.includes('Severance/Season 1/') ? ['en'] : []));
         case 'detect_intros':

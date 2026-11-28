@@ -395,6 +395,9 @@ export interface Settings {
   audio_delays: Record<string, number>;
   /** Pause when the screen locks, the display sleeps or the computer sleeps. */
   pause_on_lock: boolean;
+  /** Closing the window hides it to the tray / menu bar and the app keeps running (media server,
+   *  torrents, Soulseek). Off: closing the window quits. */
+  keep_running_in_background: boolean;
   /** OMDb key for Rotten Tomatoes and Metacritic scores ("" = off). */
   omdb_api_key: string;
   /** Network shares behind media folders, keyed by media folder. */
