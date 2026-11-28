@@ -1,4 +1,4 @@
-import type { MediaInfo, Segment, TechInfo } from '../types/media';
+import type { MediaInfo, Segment, SegmentKind, TechInfo } from '../types/media';
 import { formatBytes } from '../lib/format';
 
 export function parseMediaInfo(json: string | null | undefined): MediaInfo | null {
@@ -63,22 +63,89 @@ const INTRO_RE = /\b(intro|opening|op|theme|main title|title sequence|opening cr
 const RECAP_RE = /\b(recap|previously|last time)\b/i;
 const CREDITS_RE = /\b(credits|ending|end credits|outro|ed|closing)\b/i;
 
-/** Intro/recap/credits segments from chapter titles (e.g. "Opening", "Previously On", "End Credits"). */
+function chapterKind(title: string): SegmentKind | null {
+  if (RECAP_RE.test(title)) return 'recap';
+  if (CREDITS_RE.test(title) && !/opening/i.test(title)) return 'credits';
+  return INTRO_RE.test(title) ? 'intro' : null;
+}
+
+/**
+ * Intro/recap/credits segments from chapter titles (e.g. "Opening", "Previously On", "End Credits").
+ * Back-to-back chapters of one kind count as one. Some releases name the "Previously on…" recap
+ * "Intro" as well: when two separate intro chapters open an episode, the last one is the intro and
+ * the first one the recap.
+ */
 export function segmentsFromChapters(info: MediaInfo): Segment[] {
-  const out: Segment[] = [];
-  const ch = info.chapters;
+  const ch = info.chapters ?? [];
+  const blocks: Segment[] = [];
+  let prev: SegmentKind | null = null;
   for (let i = 0; i < ch.length; i++) {
+    const kind = chapterKind(ch[i].title ?? '');
     const end = ch[i + 1]?.time ?? info.duration;
-    const title = ch[i].title ?? '';
-    const kind = RECAP_RE.test(title) ? 'recap' : CREDITS_RE.test(title) && !/opening/i.test(title) ? 'credits' : INTRO_RE.test(title) ? 'intro' : null;
-    if (!kind || end - ch[i].time < 5) continue;
-    // Credits only count near the end; intros/recaps only near the start.
-    if (kind === 'credits' && ch[i].time < info.duration * 0.6) continue;
-    if (kind !== 'credits' && ch[i].time > Math.min(900, info.duration * 0.4)) continue;
-    if (out.some((s) => s.kind === kind)) continue;
-    out.push({ kind, start: ch[i].time, end, source: 'chapter' });
+    if (kind && kind === prev) blocks[blocks.length - 1].end = end;
+    else if (kind) blocks.push({ kind, start: ch[i].time, end, source: 'chapter' });
+    prev = kind;
   }
-  return out;
+  // Credits only count near the end; intros/recaps only near the start.
+  const usable = blocks.filter(
+    (b) => b.end - b.start >= 5 && (b.kind === 'credits' ? b.start >= info.duration * 0.6 : b.start <= Math.min(900, info.duration * 0.4)),
+  );
+  const intros = usable.filter((b) => b.kind === 'intro');
+  const intro = intros[intros.length - 1];
+  const recap = usable.find((b) => b.kind === 'recap' && (!intro || b.start < intro.start))
+    ?? usable.find((b) => b.kind === 'recap')
+    ?? (intros.length > 1 ? { ...intros[0], kind: 'recap' as const } : undefined);
+  const credits = usable.find((b) => b.kind === 'credits');
+  return [recap, intro, credits].filter((s): s is Segment => !!s);
+}
+
+/** Whether two ranges are mostly the same stretch (they share over half of the shorter one). */
+function overlap(a: Segment, b: Segment): boolean {
+  return Math.min(a.end, b.end) - Math.max(a.start, b.start) > 0.5 * Math.min(a.end - a.start, b.end - b.start);
+}
+
+/** A recap ends where the intro starts. */
+function tidySegments(list: Segment[]): Segment[] {
+  const intro = list.find((s) => s.kind === 'intro');
+  return list.flatMap((s) => {
+    if (s.kind !== 'recap' || s.source === 'manual' || !intro || s.end <= intro.start || s.start >= intro.end) return [s];
+    const end = Math.min(s.end, intro.start);
+    return end - s.start >= 5 ? [{ ...s, end }] : [];
+  });
+}
+
+/**
+ * A title's markers once its chapters are read. Ones set by hand win, then chapters. An intro found
+ * from the audio (the stretch that repeats across the season) stays when there's no intro chapter,
+ * or when it matches the intro chapter: then it gives the exact edges, which chapters often miss.
+ */
+export function mergeChapterSegments(existing: Segment[], fromChapters: Segment[]): Segment[] {
+  const out: Segment[] = [];
+  for (const kind of ['recap', 'intro', 'credits'] as const) {
+    const manual = existing.find((s) => s.kind === kind && s.source === 'manual');
+    const chapter = fromChapters.find((s) => s.kind === kind);
+    const audio = existing.find((s) => s.kind === kind && s.source === 'audio');
+    const pick = manual ?? (audio && (!chapter || overlap(audio, chapter)) ? audio : chapter);
+    if (pick) out.push(pick);
+  }
+  return tidySegments(out);
+}
+
+/**
+ * Markers with the intro found from the audio, or null when the file's intro chapter is somewhere
+ * else (the audio then matched something other than the intro, such as clips two recaps share).
+ */
+export function withAudioIntro(existing: Segment[], range: [number, number]): Segment[] | null {
+  const intro: Segment = { kind: 'intro', start: range[0], end: range[1], source: 'audio' };
+  const chapter = existing.find((s) => s.kind === 'intro' && s.source === 'chapter');
+  if (chapter && !overlap(chapter, intro)) return null;
+  return tidySegments([...existing.filter((s) => s.kind !== 'intro'), intro]);
+}
+
+/** Same markers, in any order. */
+export function sameSegments(a: Segment[], b: Segment[]): boolean {
+  const key = (list: Segment[]) => list.map((s) => `${s.kind}:${s.source}:${s.start}:${s.end}`).sort().join('|');
+  return key(a) === key(b);
 }
 
 const AUDIO_NAMES: Record<string, string> = {

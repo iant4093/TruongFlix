@@ -228,16 +228,21 @@ function ControlButton({ label, onClick, children, active }: { label: string; on
 // Scrubber
 // ---------------------------------------------------------------------------
 
+const SEGMENT_NAMES: Record<Segment['kind'], string> = { recap: 'Recap', intro: 'Intro', credits: 'Credits' };
+
 function Scrubber({
   time,
   duration,
   onSeek,
   chapters,
+  segments,
 }: {
   time: number;
   duration: number;
   onSeek: (t: number) => void;
   chapters: { title: string; time: number }[];
+  /** Skip markers, shown as lighter stretches (the file's own chapter names can be wrong). */
+  segments: Segment[];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
@@ -254,6 +259,9 @@ function Scrubber({
   const previewTime = preview != null ? preview * duration : 0;
   const marks = duration > 0 ? chapters.filter((c) => c.time > 1 && c.time < duration - 1) : [];
   const chapter = preview != null && chapters.length > 1 ? [...chapters].reverse().find((c) => c.time <= previewTime + 0.5) : undefined;
+  const bands = duration > 0 ? segments.filter((s) => s.end > s.start && s.start < duration) : [];
+  const inSegment = preview != null ? bands.find((s) => previewTime >= s.start && previewTime < s.end) : undefined;
+  const label = inSegment ? SEGMENT_NAMES[inSegment.kind] : chapter?.title;
   const thumb = preview != null ? thumbAt(previewTime) : null;
   // Keep the preview inside the window.
   const width = ref.current?.getBoundingClientRect().width ?? 1;
@@ -285,6 +293,14 @@ function Scrubber({
       className="group/scrub relative flex h-6 flex-1 cursor-pointer items-center"
     >
       <div className="relative h-[5px] w-full rounded-full bg-white/30 transition-[height] group-hover/scrub:h-[7px]">
+        {bands.map((s) => (
+          <div
+            key={`${s.kind}:${s.start}`}
+            data-segment={s.kind}
+            className="absolute inset-y-0 bg-white/30"
+            style={{ left: `${(s.start / duration) * 100}%`, width: `${((Math.min(s.end, duration) - s.start) / duration) * 100}%` }}
+          />
+        ))}
         {hover != null && drag == null && (
           <div className="absolute inset-y-0 left-0 rounded-full bg-white/35" style={{ width: `${hover * 100}%` }} />
         )}
@@ -302,7 +318,7 @@ function Scrubber({
           {thumb && (
             <img src={thumb} alt="" className="aspect-video w-64 rounded-sm bg-black object-cover shadow-2xl ring-2 ring-white/90" />
           )}
-          {chapter?.title && <div className="max-w-64 truncate text-sm font-semibold text-white drop-shadow">{chapter.title}</div>}
+          {label && <div className="max-w-64 truncate text-sm font-semibold text-white drop-shadow">{label}</div>}
           <div className="rounded bg-black/85 px-2 py-1 text-sm font-semibold tabular-nums text-white">{formatClock(previewTime)}</div>
         </div>
       )}
@@ -1237,7 +1253,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="mb-2 flex items-center gap-4">
-            <Scrubber time={time} duration={duration} chapters={chapters} onSeek={(t) => void playerCommand('seek', t.toFixed(2), 'absolute')} />
+            <Scrubber time={time} duration={duration} chapters={chapters} segments={segments} onSeek={(t) => void playerCommand('seek', t.toFixed(2), 'absolute')} />
             <span className="w-20 text-right text-lg tabular-nums text-white/90">{state?.duration ? formatClock(remaining) : '--:--'}</span>
           </div>
 
