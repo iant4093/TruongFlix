@@ -230,6 +230,14 @@ const SCHEMA = [
     seeding_stopped INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`,
+  // Movies and episodes whose files were deleted outside the app, with their match, progress and
+  // My List (a Recently Deleted snapshot of the one file), so a file that comes back gets them back.
+  `CREATE TABLE IF NOT EXISTS missing_media (
+    file_path TEXT PRIMARY KEY,
+    file_size INTEGER,
+    removed_at INTEGER NOT NULL,
+    snapshot TEXT NOT NULL
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_movies_tmdb ON movies(tmdb_id)`,
   `CREATE INDEX IF NOT EXISTS idx_episodes_series ON episodes(series_id, season_number, episode_number)`,
 ];
@@ -1721,6 +1729,111 @@ export async function getIncompleteTorrentPaths(): Promise<Set<string>> {
     } catch {
       /* ignore */
     }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Files deleted outside the app
+// ---------------------------------------------------------------------------
+
+/** Movies and episodes that went missing are remembered this long. */
+const MISSING_KEEP_MS = 365 * 86400_000;
+
+async function saveMissing(path: string, size: number | null, snap: TrashSnapshot, now: number) {
+  await exec(
+    `INSERT INTO missing_media (file_path, file_size, removed_at, snapshot) VALUES ($1, $2, $3, $4)
+     ON CONFLICT(file_path) DO UPDATE SET file_size = excluded.file_size, removed_at = excluded.removed_at, snapshot = excluded.snapshot`,
+    [path, size, now, JSON.stringify(snap)],
+  );
+}
+
+/**
+ * Keeps a snapshot of each movie and episode whose file was deleted outside the app (its match,
+ * subtitles, and every profile's progress, watched mark and My List, the show's too), before the
+ * scan removes them, so a file that comes back gets them back (`restoreMissingMedia`).
+ */
+export async function rememberMissingMedia(moviePaths: string[], episodePaths: string[], now = Date.now()) {
+  const inList = (ids: number[]) => (ids.length ? ids.join(',') : '-1'); // ids are integers from our own rows
+  for (const batch of chunks(moviePaths)) {
+    const movies = await select<MovieRow[]>(`SELECT * FROM movies WHERE file_path IN (${placeholders(batch.length)})`, batch);
+    if (!movies.length) continue;
+    const ids = inList(movies.map((m) => m.id));
+    const [subs, state] = await Promise.all([
+      select<SubtitleRow[]>(`SELECT * FROM subtitles WHERE media_type = 'movie' AND media_id IN (${ids})`),
+      select<ProfileStateRow[]>(`SELECT * FROM profile_state WHERE media_type = 'movie' AND media_id IN (${ids})`),
+    ]);
+    for (const m of movies) {
+      const snap: TrashSnapshot = { movies: [m], series: null, episodes: [], subtitles: subs.filter((s) => s.media_id === m.id), state: state.filter((s) => s.media_id === m.id) };
+      await saveMissing(m.file_path, m.file_size ?? null, snap, now);
+    }
+  }
+  for (const batch of chunks(episodePaths)) {
+    const episodes = await select<EpisodeRow[]>(`SELECT * FROM episodes WHERE file_path IN (${placeholders(batch.length)})`, batch);
+    if (!episodes.length) continue;
+    const ids = inList(episodes.map((e) => e.id));
+    const seriesIds = inList([...new Set(episodes.map((e) => e.series_id))]);
+    const [series, subs, state, showState] = await Promise.all([
+      select<SeriesRow[]>(`SELECT * FROM tv_series WHERE id IN (${seriesIds})`),
+      select<SubtitleRow[]>(`SELECT * FROM subtitles WHERE media_type = 'episode' AND media_id IN (${ids})`),
+      select<ProfileStateRow[]>(`SELECT * FROM profile_state WHERE media_type = 'episode' AND media_id IN (${ids})`),
+      select<ProfileStateRow[]>(`SELECT * FROM profile_state WHERE media_type = 'tv' AND media_id IN (${seriesIds})`),
+    ]);
+    for (const e of episodes) {
+      const show = series.find((s) => s.id === e.series_id) ?? null;
+      if (!show) continue;
+      const snap: TrashSnapshot = {
+        movies: [],
+        series: show,
+        episodes: [e],
+        subtitles: subs.filter((s) => s.media_id === e.id),
+        state: [...state.filter((s) => s.media_id === e.id), ...showState.filter((s) => s.media_id === e.series_id)],
+      };
+      await saveMissing(e.file_path, e.file_size ?? null, snap, now);
+    }
+  }
+}
+
+const missingName = (path: string) => (path.split(/[\\/]/).pop() ?? '').toLowerCase();
+const missingKey = (path: string) => path.replace(/\\/g, '/').toLowerCase();
+
+/**
+ * Files that came back (at the same path, or with the same file name and size elsewhere) are put
+ * back as they were when they went missing: matched as before, with every profile's progress and My
+ * List, so they aren't matched again. Returns the rows put back.
+ */
+export async function restoreMissingMedia(
+  files: { file_path: string; file_size: number; mtime: number }[],
+  now = Date.now(),
+): Promise<{ path: string; type: 'movie' | 'episode'; id: number; mtime: number; size: number }[]> {
+  await exec('DELETE FROM missing_media WHERE removed_at < $1', [now - MISSING_KEEP_MS]);
+  if (!files.length) return [];
+  const missing = await select<{ file_path: string; file_size: number | null }[]>('SELECT file_path, file_size FROM missing_media');
+  if (!missing.length) return [];
+  const used = new Set<string>();
+  const out: { path: string; type: 'movie' | 'episode'; id: number; mtime: number; size: number }[] = [];
+  for (const f of files) {
+    const byPath = missing.find((m) => !used.has(m.file_path) && missingKey(m.file_path) === missingKey(f.file_path));
+    const byName = byPath ? [] : missing.filter((m) => !used.has(m.file_path) && m.file_size === f.file_size && missingName(m.file_path) === missingName(f.file_path));
+    const hit = byPath ?? (byName.length === 1 ? byName[0] : null);
+    if (!hit) continue;
+    used.add(hit.file_path);
+    const [row] = await select<{ snapshot: string }[]>('SELECT snapshot FROM missing_media WHERE file_path = $1', [hit.file_path]);
+    await exec('DELETE FROM missing_media WHERE file_path = $1', [hit.file_path]);
+    let snap: TrashSnapshot;
+    try {
+      snap = JSON.parse(row?.snapshot ?? '') as TrashSnapshot;
+    } catch {
+      continue; // unreadable: the file is matched as a new one
+    }
+    // At its path now, as it is now (a changed date would have it matched again).
+    const now_ = { file_path: f.file_path, file_size: f.file_size, file_mtime: f.mtime };
+    snap = { ...snap, movies: snap.movies.map((m) => ({ ...m, ...now_ })), episodes: snap.episodes.map((e) => ({ ...e, ...now_ })) };
+    if (snap.episodes.length && !snap.series) continue;
+    await restoreSnapshot(snap);
+    const type = snap.movies.length ? 'movie' : 'episode';
+    const id = await mediaIdByPath(type === 'movie' ? 'movies' : 'episodes', f.file_path);
+    if (id != null) out.push({ path: f.file_path, type, id, mtime: f.mtime, size: f.file_size });
   }
   return out;
 }

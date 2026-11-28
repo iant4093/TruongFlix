@@ -191,6 +191,7 @@ pub fn run() {
             nowplaying::media_session_clear,
             scanner::scan_media_folders,
             scanner::check_paths,
+            scanner::folder_ids,
             music::music_scan,
             music::music_art_dir,
             music::music_lyrics_fetch,

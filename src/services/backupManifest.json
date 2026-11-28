@@ -103,7 +103,7 @@
       "games_library",
       "games_play_sessions"
     ],
-    "local": ["torrents", "trash", "rename_batches"]
+    "local": ["torrents", "trash", "rename_batches", "library_folders", "missing_media", "music_missing"]
   },
   "localStorage": {
     "carry": ["tf-track-langs", "tf-music-volume", "tf-mini-corner", "truongflix:playlist-imports", "truongflix.games.libraryView"],

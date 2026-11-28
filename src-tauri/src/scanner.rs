@@ -268,3 +268,113 @@ pub async fn check_paths(paths: Vec<String>) -> Vec<bool> {
     }
     out
 }
+
+/// Who a library folder is: the disk it is on and the folder's own number on that disk.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct FolderId {
+    /// None when the folder is missing, unreachable, or its disk gives no stable numbers.
+    pub id: Option<String>,
+    /// On the same disk as TruongFlix's own data (the system disk, as a rule), which can't be
+    /// unplugged or swapped while the app runs.
+    pub home: bool,
+}
+
+/// The disk and the folder's number on it, from the file system.
+#[cfg(unix)]
+fn folder_identity(path: &Path) -> Option<(u64, u128)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    m.is_dir().then(|| (m.dev(), m.ino() as u128))
+}
+
+#[cfg(windows)]
+fn folder_identity(path: &Path) -> Option<(u64, u128)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES};
+    if !std::fs::metadata(path).ok()?.is_dir() {
+        return None;
+    }
+    // Folders open only with backup semantics; reading attributes is all that's needed.
+    let f = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle() as _, &mut info) } == 0 {
+        return None;
+    }
+    let file = ((info.nFileIndexHigh as u128) << 32) | info.nFileIndexLow as u128;
+    // Some network file systems give every folder 0.
+    (file != 0).then_some((info.dwVolumeSerialNumber as u64, file))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn folder_identity(_path: &Path) -> Option<(u64, u128)> {
+    None
+}
+
+fn folder_id(path: &Path, home_volume: Option<u64>) -> FolderId {
+    match folder_identity(path) {
+        Some((volume, file)) => FolderId { id: Some(format!("{volume:x}-{file:x}")), home: Some(volume) == home_volume },
+        None => FolderId { id: None, home: false },
+    }
+}
+
+/// Identifies each library folder, so a scan can tell a folder whose files were deleted (the same
+/// folder as before) from an empty mount point or another disk on the same letter (a different
+/// one). Like `check_paths`, an offline share that doesn't answer counts as unknown.
+#[tauri::command]
+pub async fn folder_ids(app: tauri::AppHandle, paths: Vec<String>) -> Vec<FolderId> {
+    use tauri::Manager;
+    let data = app.path().app_data_dir().ok();
+    let home = tauri::async_runtime::spawn_blocking(move || data.and_then(|d| folder_identity(&d)).map(|(v, _)| v)).await.ok().flatten();
+    let checks: Vec<_> = paths.into_iter().map(|p| tauri::async_runtime::spawn_blocking(move || folder_id(Path::new(&p), home))).collect();
+    let deadline = tokio::time::Instant::now() + PATH_CHECK_TIMEOUT;
+    let mut out = Vec::with_capacity(checks.len());
+    for check in checks {
+        out.push(match tokio::time::timeout_at(deadline, check).await {
+            Ok(Ok(id)) => id,
+            _ => FolderId { id: None, home: false },
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod folder_id_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn same_folder_keeps_its_id_and_a_new_one_gets_another() {
+        let root = std::env::temp_dir().join(format!("tf-folder-id-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Music")).unwrap();
+        let music = root.join("Music");
+        let first = folder_id(&music, None);
+        assert!(first.id.is_some());
+        assert!(!first.home);
+        // Emptying the folder keeps it the same folder.
+        fs::write(music.join("a.mp3"), b"x").unwrap();
+        fs::remove_file(music.join("a.mp3")).unwrap();
+        assert_eq!(folder_id(&music, None), first);
+        // The same disk as the app's data counts as home.
+        let volume = folder_identity(&music).unwrap().0;
+        assert!(folder_id(&music, Some(volume)).home);
+        // A folder made again at the same path is a different folder.
+        fs::remove_dir_all(&music).unwrap();
+        assert_eq!(folder_id(&music, None), FolderId { id: None, home: false });
+        fs::create_dir_all(&music).unwrap();
+        let again = folder_id(&music, None);
+        assert!(again.id.is_some());
+        // (NTFS and APFS never hand out the same number again; ext4 may.)
+        #[cfg(any(windows, target_os = "macos"))]
+        assert_ne!(again.id, first.id);
+        // A file is not a folder.
+        fs::write(root.join("f.txt"), b"x").unwrap();
+        assert_eq!(folder_id(&root.join("f.txt"), None).id, None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+}

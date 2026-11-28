@@ -8,7 +8,7 @@ import type { MusicTrack } from '../music/types';
 import type { MusicQuality } from '../types/media';
 import { catalog, chartCountry, sizedCover } from './musicCatalog';
 import { connectSoulseek, disconnectedByUser, downloadFolder, initMusicDownloads, loginRefused, useMusicDownloads, type AlbumJob, type SharedFile } from './musicDownloads';
-import { runMusicScan, useMusicScan } from './music';
+import { runMusicScan, songFileGone, useMusicScan } from './music';
 import * as mdb from './musicdb';
 
 /**
@@ -542,14 +542,32 @@ function tracksTitled(tracks: MusicTrack[]) {
   return index;
 }
 
-/** The library song this is, when it's already there. */
-export function inLibrary(song: Pick<ImportSong, 'title' | 'artists'>, store: StoreSong | null, tracks: MusicTrack[]): MusicTrack | null {
+/** The library song this is, when it's already there (`skip`: songs whose files were deleted). */
+export function inLibrary(song: Pick<ImportSong, 'title' | 'artists'>, store: StoreSong | null, tracks: MusicTrack[], skip?: ReadonlySet<number>): MusicTrack | null {
   const titles = new Set([coreTitle(song.title), store ? coreTitle(store.title) : ''].filter(Boolean));
   const artists = [...song.artists, ...(store ? [store.artist] : [])];
   const index = tracksTitled(tracks);
   for (const title of titles) {
-    const found = index.get(title)?.find((t) => !artists.length || artists.some((a) => sameArtist(a, t.artist) || sameArtist(a, t.albumArtist)));
+    const found = index.get(title)?.find((t) => !skip?.has(t.id) && (!artists.length || artists.some((a) => sameArtist(a, t.artist) || sameArtist(a, t.albumArtist))));
     if (found) return found;
+  }
+  return null;
+}
+
+/** Library songs found deleted while importing (the library may not have been scanned since). */
+const deletedSongs = new Set<number>();
+
+/**
+ * The library song this is, when it's there and its file wasn't deleted. A deleted one is passed
+ * over (and the library rescanned, so it drops out) rather than counted as owned.
+ */
+export async function ownedSong(song: Pick<ImportSong, 'title' | 'artists'>, store: StoreSong | null, tracks: MusicTrack[]): Promise<MusicTrack | null> {
+  for (let tries = 0; tries < 5; tries++) {
+    const found = inLibrary(song, store, tracks, deletedSongs);
+    if (!found) return null;
+    if (!(await songFileGone(found.id).catch(() => false))) return found;
+    deletedSongs.add(found.id);
+    void runMusicScan({ quiet: true });
   }
   return null;
 }
@@ -934,7 +952,8 @@ async function prepareSong(id: string, key: string, stopped: () => boolean, trie
     if (store) patchSong(id, key, { store });
     song = { ...song, store };
   }
-  const owned = inLibrary(song, song.store, useMusicPlayer.getState().library?.tracks ?? []);
+  const owned = await ownedSong(song, song.store, useMusicPlayer.getState().library?.tracks ?? []);
+  if (stopped()) return null;
   if (owned) {
     patchSong(id, key, { state: 'owned', trackId: owned.id, message: '', batch: null });
     return null;
@@ -1120,7 +1139,7 @@ async function finish(id: string) {
       if (wanted().every((w) => index.has(w))) break;
     }
     const now = getImport(id)!;
-    const ids = now.songs.flatMap((s) => (s.state === 'owned' && s.trackId != null ? [s.trackId] : s.state === 'done' && s.path && index.has(pathKey(s.path)) ? [index.get(pathKey(s.path))!] : []));
+    const ids = now.songs.flatMap((s) => (s.state === 'owned' && s.trackId != null && !deletedSongs.has(s.trackId) ? [s.trackId] : s.state === 'done' && s.path && index.has(pathKey(s.path)) ? [index.get(pathKey(s.path))!] : []));
     if (!ids.length || !useMusicPlayer.getState().api) return;
     const playlists = useMusicPlayer.getState().library?.playlists ?? [];
     // Importing the same playlist again (its link again, or its full CSV after the first part

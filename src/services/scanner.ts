@@ -8,6 +8,7 @@ import { startBackgroundAnalysis } from './enrich';
 import { reconnectOfflineShares, refreshShares } from './nas';
 import { createReloadThrottle } from './libraryReload';
 import { runMusicScan } from './music';
+import { folderIds, heldRoots, knownFolderIds, rememberFolderIds } from './libraryRoots';
 import { imdbSyncDue, syncImdbRatings } from './imdb';
 import { guessSeasonEpisode, parseVideoFile, toRawFile } from './parser';
 import * as tmdb from './tmdb';
@@ -241,6 +242,8 @@ export async function runScan(opts: ScanOptions = {}) {
     const walk = roots.length ? await invoke<{ files: RawVideoFile[]; unreadable: string[] }>('scan_media_folders', { paths: roots }) : { files: [], unreadable: [] };
     const files = walk.files.filter((f) => !inMusic(f.file_path));
     if (walk.unreadable.length) console.warn('[scan] could not read', walk.unreadable.slice(0, 20));
+    // Which folder each media folder is, to tell deleted files from a swapped or unmounted disk.
+    const [ids, knownIds] = await Promise.all([folderIds(roots), knownFolderIds()]);
 
     setScan({ phase: 'diffing', message: `Found ${files.length} videos` });
     const [index, hints, protectedTorrentPaths] = await Promise.all([
@@ -258,16 +261,17 @@ export async function runScan(opts: ScanOptions = {}) {
     const missing = [...index].filter(
       ([path]) => !onDisk.has(path) && !protectedTorrentPaths.has(path) && !offline.some((r) => isUnder(path, r)) && !walk.unreadable.some((u) => path === u || isUnder(path, u)),
     );
-    // A folder where every one of many titles vanished at once is far more likely an empty mount
-    // point or a different disk on the same letter than a real clear-out: leave it, unless this is a
-    // full rescan the user asked for.
-    const suspicious = opts.force
-      ? []
-      : roots.filter((r) => {
-          const had = [...index.keys()].filter((p) => isUnder(p, r)).length;
-          const lost = missing.filter(([p]) => isUnder(p, r)).length;
-          return had >= 20 && lost === had;
-        });
+    // A folder where every title vanished at once is emptied only when it's still the folder they
+    // were in: an empty mount point or a different disk on the same letter isn't a clear-out. A full
+    // rescan the user asked for empties it anyway.
+    const suspicious = heldRoots(
+      roots,
+      (r) => [...index.keys()].filter((p) => isUnder(p, r)).length,
+      (r) => missing.filter(([p]) => isUnder(p, r)).length,
+      ids,
+      knownIds,
+      !!opts.force,
+    );
     if (suspicious.length) console.warn('[scan] not removing titles from', suspicious);
     // Files moved or renamed since the last scan keep their entry (and watch history) at the new path.
     const moved = pairMoved(
@@ -288,7 +292,15 @@ export async function runScan(opts: ScanOptions = {}) {
       (rec.type === 'movie' ? goneMovies : goneEpisodes).push(path);
     }
     const removed = goneMovies.length + goneEpisodes.length;
-    if (removed) await db.deleteMediaPaths(goneMovies, goneEpisodes);
+    if (removed) {
+      // Deleted outside the app: kept as they were, in case the files come back.
+      await db.rememberMissingMedia(goneMovies, goneEpisodes);
+      await db.deleteMediaPaths(goneMovies, goneEpisodes);
+    }
+    await rememberFolderIds(roots, ids, (r) => files.some((f) => isUnder(f.file_path, r))).catch((e) => console.warn('[scan] folder ids', e));
+    // Files deleted before and now back are put back as they were (no matching again).
+    const back = await db.restoreMissingMedia(files.filter((f) => !index.has(f.file_path)));
+    for (const b of back) index.set(b.path, { type: b.type, id: b.id, mtime: b.mtime, size: b.size });
 
     // A moved file keeps its match (perhaps chosen with Fix Match) wherever it goes: another drive,
     // a genre folder, "Season 1" renamed "Season 01". Only a renamed show or movie folder ("The
@@ -310,7 +322,7 @@ export async function runScan(opts: ScanOptions = {}) {
       const rec = index.get(f.file_path);
       return opts.force || !rec || rec.mtime !== f.mtime || rematch.has(f.file_path);
     });
-    const added = todo.filter((f) => !index.has(f.file_path)).length;
+    const added = todo.filter((f) => !index.has(f.file_path)).length + back.length;
 
     setScan({ phase: 'matching', total: todo.length, current: 0, removed, message: todo.length ? 'Matching with TMDB…' : 'Up to date' });
     const ctx = new ScanContext();
@@ -343,7 +355,7 @@ export async function runScan(opts: ScanOptions = {}) {
 
     if (kindChanged) await db.pruneAfterDeletes();
     // Titles appear while matching (throttled), then one final reload — skipped when nothing changed.
-    if (todo.length || removed || organized) await reloads.flush();
+    if (todo.length || removed || organized || back.length) await reloads.flush();
     else reloads.cancel();
 
     // IMDb ratings: refreshed daily, or right away when new titles arrived. Failures never fail the scan.
