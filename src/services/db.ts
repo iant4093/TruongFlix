@@ -129,7 +129,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS trash (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL,
-    kind TEXT NOT NULL,               -- 'movie' | 'tv' | 'episode'
+    kind TEXT NOT NULL,               -- 'movie' | 'tv' | 'episode' | 'song' | 'album'
     poster_path TEXT,
     entry_dir TEXT NOT NULL,          -- <media root>/.truongflix-trash/<entry>
     items TEXT NOT NULL,              -- JSON [{from, to}] file moves to undo on restore

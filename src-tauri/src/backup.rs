@@ -302,6 +302,21 @@ pub(crate) async fn library_folders(app: &AppHandle) -> Vec<PathBuf> {
     out.into_iter().filter(|p| !p.trim().is_empty()).map(|p| crate::files::dir_path(&p)).filter(|p| p.is_absolute()).collect()
 }
 
+/// The music folders from Settings (songs can only be deleted from these).
+pub(crate) async fn music_folders(app: &AppHandle) -> Vec<PathBuf> {
+    let Ok(dir) = app_dir(app) else { return Vec::new() };
+    let Ok(mut db) = connect(&dir.join(DB), true, false).await else { return Vec::new() };
+    let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'music_directories'").fetch_optional(&mut db).await.ok().flatten();
+    let _ = db.close().await;
+    serde_json::from_str::<Vec<String>>(&value.unwrap_or_default())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| crate::files::dir_path(&p))
+        .filter(|p| p.is_absolute())
+        .collect()
+}
+
 async fn copy_database(
     source: &mut SqliteConnection,
     dest: &mut SqliteConnection,

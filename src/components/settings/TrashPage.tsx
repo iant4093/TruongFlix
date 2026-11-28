@@ -9,13 +9,16 @@ import Artwork from '../common/Artwork';
 import { BTN, BTN_DANGER, Group, Page, Row } from './ui';
 import Spinner from '../common/Spinner';
 import { errorMessage } from '../../lib/errors';
+import { useMusicPlayer } from '../../music/player';
 
-const KIND_LABEL: Record<TrashRow['kind'], string> = { movie: 'Movie', tv: 'TV show', episode: 'Episode' };
+const KIND_LABEL: Record<TrashRow['kind'], string> = { movie: 'Movie', tv: 'TV show', episode: 'Episode', song: 'Song', album: 'Album' };
+const isMusic = (row: TrashRow) => row.kind === 'song' || row.kind === 'album';
 
 export default function TrashPage() {
   const toast = useLibraryStore((s) => s.toast);
   const confirm = useLibraryStore((s) => s.confirm);
   const libraryVersion = useLibraryStore((s) => s.libraryVersion);
+  const musicApi = useMusicPlayer((s) => s.api);
   const [rows, setRows] = useState<TrashRow[] | null>(null);
   const [busy, setBusy] = useState<number | 'all' | null>(null);
 
@@ -62,19 +65,19 @@ export default function TrashPage() {
   };
 
   return (
-    <Page title="Recently deleted" description={`Deleted titles stay here for ${TRASH_RETENTION_DAYS} days, then they’re removed from disk for good.`}>
+    <Page title="Recently deleted" description={`Deleted titles and music stay here for ${TRASH_RETENTION_DAYS} days, then they’re removed from disk for good.`}>
       <Group>
         {!rows ? (
           <Row label="Loading…" />
         ) : !rows.length ? (
-          <Row label="Nothing here" description="Titles you delete show up here, ready to restore." />
+          <Row label="Nothing here" description="Titles, songs and albums you delete show up here, ready to restore." />
         ) : (
           rows.map((row) => {
             const left = daysLeft(row);
             return (
               <div key={row.id} className="flex items-center gap-3 px-4 py-3">
-                <div className="h-14 w-10 shrink-0 overflow-hidden rounded-sm">
-                  <Artwork src={resize(row.poster_path, 'w92')} alt={row.label} className="h-full w-full" />
+                <div className={`${isMusic(row) ? 'h-10 w-10' : 'h-14 w-10'} shrink-0 overflow-hidden rounded-sm`}>
+                  <Artwork src={isMusic(row) ? musicApi?.artUrl(row.poster_path) ?? null : resize(row.poster_path, 'w92')} alt={row.label} className="h-full w-full" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold" title={row.label}>

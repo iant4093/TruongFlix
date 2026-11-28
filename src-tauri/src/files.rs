@@ -427,19 +427,31 @@ fn owned_folder(dir: &Path, wanted: &HashSet<&PathBuf>) -> bool {
 /// otherwise just the video files plus their sidecars.
 fn plan_trash(videos: &[PathBuf], root: &Path, files_only: bool) -> Vec<PathBuf> {
     let wanted: HashSet<&PathBuf> = videos.iter().collect();
+    plan_trash_with(videos, root, files_only, |dir| owned_folder(dir, &wanted), |video| {
+        video.parent().and_then(|parent| sidecars_by_video(parent, Some(&wanted)).remove(video)).unwrap_or_default()
+    })
+}
+
+/// The highest folder below `root` that `owned` says holds nothing but these files, otherwise each
+/// file with its `sidecars`. Shared by videos and songs (which differ in what counts as an extra).
+fn plan_trash_with(
+    files: &[PathBuf],
+    root: &Path,
+    files_only: bool,
+    owned: impl Fn(&Path) -> bool,
+    sidecars: impl Fn(&PathBuf) -> Vec<PathBuf>,
+) -> Vec<PathBuf> {
     let mut owned_cache: HashMap<PathBuf, bool> = HashMap::new();
     let mut targets = Vec::new();
-    for video in videos {
+    for file in files {
         let mut best = None;
-        let mut cur = if files_only { None } else { video.parent() };
+        let mut cur = if files_only { None } else { file.parent() };
         while let Some(dir) = cur {
             if !strictly_inside(dir, root) {
                 break;
             }
-            let owned = *owned_cache
-                .entry(dir.to_path_buf())
-                .or_insert_with(|| owned_folder(dir, &wanted));
-            if !owned {
+            let is_owned = *owned_cache.entry(dir.to_path_buf()).or_insert_with(|| owned(dir));
+            if !is_owned {
                 break;
             }
             best = Some(dir.to_path_buf());
@@ -448,10 +460,8 @@ fn plan_trash(videos: &[PathBuf], root: &Path, files_only: bool) -> Vec<PathBuf>
         match best {
             Some(dir) => targets.push(dir),
             None => {
-                targets.push(video.clone());
-                if let Some(parent) = video.parent() {
-                    targets.extend(sidecars_by_video(parent, Some(&wanted)).remove(video).unwrap_or_default());
-                }
+                targets.push(file.clone());
+                targets.extend(sidecars(file));
             }
         }
     }
@@ -484,14 +494,25 @@ pub struct TrashResult {
     size_bytes: u64,
 }
 
-fn trash_paths(videos: &[PathBuf], root: &Path, files_only: bool) -> Result<TrashResult, String> {
-    let first = videos.first().ok_or("Nothing to delete")?;
-    // Keep the trash on the same volume as the files so deleting is a rename, never a copy.
+/// The folder whose trash takes these files: `root` when they're inside it, else the first file's
+/// own folder. The trash stays on the same volume as the files so deleting is a rename, never a copy.
+fn trash_root(files: &[PathBuf], root: &Path) -> Result<PathBuf, String> {
+    let first = files.first().ok_or("Nothing to delete")?;
     let root = if strictly_inside(first, root) { root.to_path_buf() } else { first.parent().ok_or("Invalid path")?.to_path_buf() };
     if !root.is_absolute() {
         return Err("Couldn’t find the folder this file is in.".into());
     }
+    Ok(root)
+}
+
+fn trash_paths(videos: &[PathBuf], root: &Path, files_only: bool) -> Result<TrashResult, String> {
+    let root = trash_root(videos, root)?;
     let targets = plan_trash(videos, &root, files_only);
+    move_to_trash(&root, &targets)
+}
+
+/// Moves `targets` into a new entry of `<root>/.truongflix-trash`, all or nothing.
+fn move_to_trash(root: &Path, targets: &[PathBuf]) -> Result<TrashResult, String> {
     let entry = root.join(TRASH_DIR).join(entry_name());
     let mut items = Vec::new();
     let mut size = 0;
@@ -545,6 +566,101 @@ pub async fn trash_media(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Songs and albums ("Recently Deleted" as for videos)
+// ---------------------------------------------------------------------------
+
+/// Files that only exist for the songs next to them: deleting an album takes them along (cover
+/// art, lyrics, rip logs and cue sheets, playlists of the album, a booklet).
+const SONG_EXTRAS: &[&str] = &[
+    "lrc", "txt", "cue", "log", "m3u", "m3u8", "nfo", "sfv", "md5", "ffp", "accurip", "pdf", "jpg", "jpeg", "png", "webp", "gif", "bmp",
+];
+
+fn is_song_extra(p: &Path) -> bool {
+    p.extension().is_some_and(|e| SONG_EXTRAS.contains(&e.to_string_lossy().to_ascii_lowercase().as_str()))
+}
+
+/// Whether a folder holds nothing but these songs and things that belong to them (cover art,
+/// lyrics, logs, Thumbs.db). Another song, a video or a document keeps it: then only the songs go.
+fn owned_music_folder(dir: &Path, wanted: &HashSet<&PathBuf>) -> bool {
+    WalkDir::new(dir).into_iter().filter_entry(|e| !crate::scanner::is_hidden_or_system(e)).all(|entry| {
+        let Ok(e) = entry else { return false };
+        if !e.file_type().is_file() {
+            return true;
+        }
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+        wanted.contains(&p.to_path_buf())
+            || is_song_extra(p)
+            || matches!(name.as_str(), "thumbs.db" | "desktop.ini" | ".ds_store")
+            || name.starts_with("._")
+    })
+}
+
+/// A song's own lyrics and notes ("Song.lrc", "Song.txt" next to "Song.flac").
+fn song_sidecars(song: &Path) -> Vec<PathBuf> {
+    let (Some(dir), Some(stem)) = (song.parent(), song.file_stem()) else { return Vec::new() };
+    let stem = stem.to_string_lossy().to_lowercase();
+    visible_files(dir)
+        .into_iter()
+        .filter(|p| p != song && is_song_extra(p) && p.file_stem().is_some_and(|s| s.to_string_lossy().to_lowercase() == stem))
+        .collect()
+}
+
+/// What deleting these songs moves: their album's folder (and the artist's, if it holds nothing
+/// else) when it holds only these songs and their art, else each song with its own lyrics. The
+/// music folder itself never goes.
+fn plan_music_trash(songs: &[PathBuf], root: &Path) -> Vec<PathBuf> {
+    let wanted: HashSet<&PathBuf> = songs.iter().collect();
+    plan_trash_with(songs, root, false, |dir| owned_music_folder(dir, &wanted), |song| song_sidecars(song))
+}
+
+/// The music folder (as configured) that holds every one of `songs`. Only audio files inside one
+/// of the music folders can be deleted; songs from two folders are deleted one folder at a time.
+fn music_root_for(songs: &[PathBuf], roots: &[PathBuf]) -> Result<PathBuf, String> {
+    const OUTSIDE: &str = "Only songs in your music folders can be deleted.";
+    if songs.is_empty() {
+        return Err("Nothing to delete".into());
+    }
+    if songs.iter().any(|p| !crate::music::has_audio_extension(p)) {
+        return Err(OUTSIDE.into());
+    }
+    let resolved: Vec<PathBuf> = songs.iter().map(|p| resolve(p).ok_or(OUTSIDE)).collect::<Result<_, _>>()?;
+    let mut best: Option<(&PathBuf, PathBuf)> = None;
+    for root in roots {
+        let Some(r) = resolve(root) else { continue };
+        if resolved.iter().all(|p| strictly_inside(p, &r)) && best.as_ref().is_none_or(|(_, b)| r.as_os_str().len() > b.as_os_str().len()) {
+            best = Some((root, r));
+        }
+    }
+    best.map(|(root, _)| root.clone()).ok_or_else(|| OUTSIDE.into())
+}
+
+fn trash_music_inner(songs: &[PathBuf], roots: &[PathBuf]) -> Result<TrashResult, String> {
+    let root = trash_root(songs, &music_root_for(songs, roots)?)?;
+    move_to_trash(&root, &plan_music_trash(songs, &root))
+}
+
+/// Moves songs (with their album's folder and art when nothing else is in it) into
+/// `<music folder>/.truongflix-trash/<entry>/`, restored and purged like a movie's.
+#[tauri::command]
+pub async fn trash_music(app: AppHandle, paths: Vec<String>) -> Result<TrashResult, String> {
+    let roots = crate::backup::music_folders(&app).await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let songs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        trash_music_inner(&songs, &roots)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Folders whose trash entries may be restored or purged: the library's and the music folders.
+async fn trash_roots(app: &AppHandle) -> Vec<PathBuf> {
+    let mut roots = managed_roots(app).await;
+    roots.extend(crate::backup::music_folders(app).await);
+    roots
 }
 
 #[derive(Debug, Serialize)]
@@ -633,7 +749,7 @@ fn restore_trash_inner(entry_dir: &str, items: &[FileMove], allowed: Option<&[Pa
 /// Moves trashed items back to where they came from (skipping anything that's been replaced).
 #[tauri::command]
 pub async fn restore_trash(app: AppHandle, entry_dir: String, items: Vec<FileMove>) -> Result<RestoreResult, String> {
-    let managed = managed_roots(&app).await;
+    let managed = trash_roots(&app).await;
     tauri::async_runtime::spawn_blocking(move || restore_trash_inner(&entry_dir, &items, Some(&resolve_roots(&managed))))
         .await
         .map_err(|e| e.to_string())?
@@ -661,7 +777,7 @@ fn purge_trash_inner(entry_dir: &str, allowed: Option<&[PathBuf]>) -> Result<(),
 /// Permanently deletes one trash entry.
 #[tauri::command]
 pub async fn purge_trash(app: AppHandle, entry_dir: String) -> Result<(), String> {
-    let managed = managed_roots(&app).await;
+    let managed = trash_roots(&app).await;
     tauri::async_runtime::spawn_blocking(move || purge_trash_inner(&entry_dir, Some(&resolve_roots(&managed))))
         .await
         .map_err(|e| e.to_string())?
@@ -974,6 +1090,93 @@ mod tests {
         assert_eq!(restore_trash_inner(&s(&vanished), &[], None).unwrap().restored, 0);
         assert!(purge_trash_inner(&s(&entry), Some(&allowed)).is_ok());
         assert!(!entry.exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn music_trash_takes_an_album_with_its_art_and_restores_it() {
+        let root = temp_root("music-trash");
+        let music = root.join("Music");
+        let neon = music.join("Luma/Neon");
+        let (one, two) = (neon.join("01 Glow.mp3"), neon.join("02 Haze.flac"));
+        touch(&one, 1000);
+        touch(&two, 2000);
+        touch(&neon.join("01 Glow.lrc"), 10);
+        touch(&neon.join("cover.jpg"), 50);
+        touch(&neon.join("Scans/back.png"), 5);
+        let other = music.join("Luma/Dusk/03 Dawn.mp3");
+        touch(&other, 1000);
+
+        // The whole album: its folder goes with the cover and lyrics (the artist's stays: another album is in it).
+        assert_eq!(plan_music_trash(&[one.clone(), two.clone()], &music), [neon.clone()]);
+        // One song of several: that song and its own lyrics only.
+        assert_eq!(plan_music_trash(&[one.clone()], &music), [neon.join("01 Glow.lrc"), one.clone()]);
+        // Every song of the artist: the artist's folder, so no empty folders are left behind.
+        assert_eq!(plan_music_trash(&[one.clone(), two.clone(), other.clone()], &music), [music.join("Luma")]);
+        // The last song left in an album folder: the folder too.
+        assert_eq!(plan_music_trash(&[other.clone()], &music), [music.join("Luma/Dusk")]);
+        // A song loose in the music folder: just the file (the music folder never goes).
+        let loose = music.join("Single.mp3");
+        touch(&loose, 1000);
+        assert_eq!(plan_music_trash(&[loose.clone()], &music), [loose.clone()]);
+        // A folder with something else in it (a video, a song in a format the library doesn't read) stays.
+        let mixed = music.join("Mixed/Track.mp3");
+        touch(&mixed, 1000);
+        touch(&music.join("Mixed/Live.mkv"), 1000);
+        touch(&music.join("Mixed/Bonus.wma"), 1000);
+        assert_eq!(plan_music_trash(&[mixed.clone()], &music), [mixed.clone()]);
+
+        let res = trash_music_inner(&[one.clone(), two.clone()], &[music.clone()]).unwrap();
+        assert!(!neon.exists() && other.exists());
+        assert!(Path::new(&res.entry_dir).starts_with(music.join(TRASH_DIR)));
+        assert_eq!(res.items, [FileMove { from: s(&neon), to: res.items[0].to.clone() }]);
+        assert_eq!(res.size_bytes, 1000 + 2000 + 10 + 50 + 5);
+
+        // Restored like a movie: the folder comes back with its art, and the entry is gone.
+        let restored = restore_trash_inner(&res.entry_dir, &res.items, Some(&resolve_roots(&[music.clone()]))).unwrap();
+        assert_eq!(restored.restored, 1);
+        assert!(one.exists() && two.exists() && neon.join("cover.jpg").exists() && neon.join("Scans/back.png").exists());
+        assert!(!Path::new(&res.entry_dir).exists());
+
+        // Deleted for good: only the entry, never the music folder.
+        let res = trash_music_inner(&[mixed.clone()], &[music.clone()]).unwrap();
+        assert!(!mixed.exists() && music.join("Mixed/Live.mkv").exists());
+        purge_trash_inner(&res.entry_dir, Some(&resolve_roots(&[music.clone()]))).unwrap();
+        assert!(!Path::new(&res.entry_dir).exists() && music.join("Mixed/Bonus.wma").exists() && one.exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn music_deletes_stay_inside_the_music_folders() {
+        let root = temp_root("music-guard");
+        let music = root.join("Music");
+        let song = music.join("Album/01.mp3");
+        touch(&song, 1000);
+        touch(&music.join("Album/notes.pdf"), 10);
+        let outside = root.join("Documents/voice memo.mp3");
+        touch(&outside, 1000);
+        let videos = root.join("Videos");
+        touch(&videos.join("Film/song.mp3"), 1000);
+        let roots = [music.clone()];
+        let refused = |paths: &[PathBuf]| trash_music_inner(paths, &roots).unwrap_err();
+
+        // Outside every music folder (another library folder too), or reached through "..".
+        assert!(refused(&[outside.clone()]).contains("music folders"));
+        assert!(refused(&[videos.join("Film/song.mp3")]).contains("music folders"));
+        assert!(refused(&[music.join("Album/../../Documents/voice memo.mp3")]).contains("music folders"));
+        // A song in the folder doesn't let another one outside it come along.
+        assert!(refused(&[song.clone(), outside.clone()]).contains("music folders"));
+        // Only songs: not a document, the music folder or a relative path.
+        assert!(refused(&[music.join("Album/notes.pdf")]).contains("music folders"));
+        assert!(refused(&[music.clone()]).contains("music folders"));
+        assert!(refused(&[PathBuf::from("Album/01.mp3")]).contains("music folders"));
+        assert!(refused(&[]).contains("Nothing"));
+        assert!(trash_music_inner(&[song.clone()], &[]).is_err());
+        assert!(outside.exists() && song.exists() && videos.join("Film/song.mp3").exists());
+        // Nested music folders: the trash goes in the innermost one holding the songs.
+        let inner = music.join("Album");
+        assert_eq!(music_root_for(&[song.clone()], &[music.clone(), inner.clone()]).unwrap(), inner);
+        assert_eq!(music_root_for(&[song.clone()], &[inner.clone(), music.clone()]).unwrap(), inner);
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -180,6 +180,9 @@ export function localApi(artDir: string): MusicApi {
       if (!(await mdb.setPinned(profileId(), kind, id, value))) throw new Error(kind === 'album' ? 'This album is no longer in your library' : 'This playlist was deleted');
     },
     artUrl: (art) => (art ? convertFileSrc(`${artDir}${sep}${art}`) : null),
+    // Loaded when first used: it brings in Recently deleted (and the library store's files).
+    deleteMusic: async (target) => (await import('./musicTrash')).deleteMusic(target),
+    revealMusic: async (ids) => (await import('./musicTrash')).revealMusic(ids),
   };
 }
 
