@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -292,8 +292,8 @@ fn grab_frame(core: &Core, video: &str, time: f64, tmp: &Path, dest: &Path) -> b
     }
 }
 
-/// Options for the seeking frame grabber (see `open_seeker`); `scale` is the `vf` scale filter.
-fn seeker_options(scale: &str) -> [(&str, &str); 10] {
+/// Options for the seeking frame grabber (see `open_seeker`); `vf` is the scale (and colour) filter.
+fn seeker_options(vf: &str) -> [(&str, &str); 10] {
     [
         ("vo", "null"),
         ("audio", "no"),
@@ -302,9 +302,24 @@ fn seeker_options(scale: &str) -> [(&str, &str); 10] {
         ("keep-open", "yes"),
         ("hr-seek", "no"),
         ("hwdec", "auto-copy-safe"),
-        ("vf", scale),
+        ("vf", vf),
         ("screenshot-format", "jpg"),
         ("screenshot-jpeg-quality", "72"),
+    ]
+}
+
+/// Options for the reopen-per-frame grabber (`grab_frame`).
+fn reopen_options(vf: &str) -> [(&str, &str); 9] {
+    [
+        ("vo", "image"),
+        ("vo-image-format", "jpg"),
+        ("vo-image-jpeg-quality", "72"),
+        ("audio", "no"),
+        ("sid", "no"),
+        ("frames", "1"),
+        ("hr-seek", "no"),
+        ("hwdec", "auto-copy-safe"),
+        ("vf", vf),
     ]
 }
 
@@ -334,6 +349,176 @@ fn seek_frame(core: &Core, time: f64, tmp: &Path, dest: &Path) -> bool {
         && std::fs::rename(&file, dest).or_else(|_| std::fs::copy(&file, dest).map(|_| ())).is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// Frame colours: HDR and Dolby Vision stills come out as normal SDR
+// ---------------------------------------------------------------------------
+
+/// What a file's pictures need to come out as normal-coloured SDR stills.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrameColour {
+    /// SDR: only scaled.
+    Sdr,
+    /// HDR10 / HLG, or Dolby Vision with an HDR10 base layer (profiles 7 and 8): tone-mapped.
+    Hdr,
+    /// Dolby Vision with no compatible base layer (profile 5). Decoded as it is, its pictures are
+    /// purple and green: the Dolby Vision reshaping has to be applied before tone mapping.
+    DolbyVision,
+}
+
+impl FrameColour {
+    fn marker(self) -> &'static str {
+        match self {
+            FrameColour::Sdr => "sdr",
+            FrameColour::Hdr => "hdr",
+            FrameColour::DolbyVision => "dovi",
+        }
+    }
+
+    fn from_marker(s: &str) -> Option<Self> {
+        match s.trim() {
+            "sdr" => Some(FrameColour::Sdr),
+            "hdr" => Some(FrameColour::Hdr),
+            "dovi" => Some(FrameColour::DolbyVision),
+            _ => None,
+        }
+    }
+}
+
+/// Classifies a video from what mpv reports once a frame is decoded: `video-params/gamma` (the
+/// transfer function), `video-params/colormatrix`, and the track's `dolby-vision-profile`.
+pub(crate) fn frame_colour(gamma: Option<&str>, colormatrix: Option<&str>, dv_profile: Option<i64>) -> FrameColour {
+    // Profile 5 only looks right reshaped. mpv calls every picture with Dolby Vision metadata
+    // "dolbyvision", also profiles 7 and 8, whose HDR10 base layer tone-maps fine without it; so
+    // the matrix only decides when the profile is unknown.
+    match dv_profile {
+        Some(5) => return FrameColour::DolbyVision,
+        None if colormatrix == Some("dolbyvision") => return FrameColour::DolbyVision,
+        _ => {}
+    }
+    match gamma {
+        Some("pq" | "hlg" | "st2084" | "arib-std-b67" | "v-log" | "s-log1" | "s-log2") => FrameColour::Hdr,
+        _ => FrameColour::Sdr,
+    }
+}
+
+/// One way of turning a decoded picture into an SDR still.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrameTone {
+    /// Scaled only.
+    Plain,
+    /// FFmpeg's libplacebo filter (on the GPU, through Vulkan): applies Dolby Vision reshaping, then
+    /// tone-maps HDR to SDR BT.709.
+    Placebo,
+    /// FFmpeg's zscale + tonemap filters on the CPU: HDR10 and HLG, but no Dolby Vision reshaping.
+    Zscale,
+}
+
+/// The ways to try, best first. HDR goes through FFmpeg's CPU tone mapping first: setting up
+/// libplacebo's Vulkan device costs a couple of seconds per request, too slow for hover stills.
+/// Profile 5 Dolby Vision needs libplacebo; without it there's no way at all, and no still beats a
+/// purple and green one. (`Placebo` is skipped where it isn't available: `placebo_available`.)
+pub(crate) fn frame_tones(colour: FrameColour) -> Vec<FrameTone> {
+    match colour {
+        FrameColour::Sdr => vec![FrameTone::Plain],
+        FrameColour::Hdr => vec![FrameTone::Zscale, FrameTone::Placebo, FrameTone::Plain],
+        FrameColour::DolbyVision => vec![FrameTone::Placebo],
+    }
+}
+
+/// The mpv `vf` for a still `width` pixels wide.
+pub(crate) fn frame_filter(tone: FrameTone, width: u32) -> String {
+    match tone {
+        FrameTone::Plain => format!("scale={width}:-2"),
+        FrameTone::Placebo => format!(
+            "lavfi=[libplacebo=w={width}:h=-2:apply_dolbyvision=1:tonemapping=auto:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p]"
+        ),
+        FrameTone::Zscale => format!(
+            "lavfi=[zscale=w={width}:h=-2:f=bilinear:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p]"
+        ),
+    }
+}
+
+/// Whether FFmpeg's libplacebo filter works here (it needs Vulkan). Tried once, on a test picture.
+fn placebo_available() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("truongflix-placebo-{}", std::process::id()));
+        let ok = (|| {
+            let core = Core::new(&seeker_options(&frame_filter(FrameTone::Placebo, 64))).ok()?;
+            if !open_seeker(&core, "av://lavfi:testsrc2=size=128x72:rate=5:duration=2") {
+                return None;
+            }
+            let dest = dir.join("test.jpg");
+            seek_frame(&core, 0.0, &dir.join("tmp"), &dest).then_some(())
+        })()
+        .is_some();
+        let _ = std::fs::remove_dir_all(&dir);
+        if !ok {
+            eprintln!("[frames] libplacebo unavailable: Dolby Vision stills are skipped, HDR ones tone-mapped on the CPU");
+        }
+        ok
+    })
+}
+
+/// Records which colour handling a frames folder's stills were made with. Folders without it hold
+/// stills from before HDR was tone-mapped (HDR grey, Dolby Vision purple and green).
+const COLOUR_FILE: &str = ".colour-v1";
+
+fn read_colour(dir: &Path) -> Option<FrameColour> {
+    std::fs::read_to_string(dir.join(COLOUR_FILE)).ok().and_then(|s| FrameColour::from_marker(&s))
+}
+
+/// Reads the colour of the file an opened core is showing.
+fn colour_of(core: &Core) -> FrameColour {
+    let tracks: Vec<Value> = core.get("track-list").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    let video = tracks.iter().find(|t| s(t, "type").as_deref() == Some("video") && t["selected"].as_bool().unwrap_or(true));
+    frame_colour(
+        core.get("video-params/gamma").as_deref(),
+        core.get("video-params/colormatrix").as_deref(),
+        video.and_then(|v| v["dolby-vision-profile"].as_i64()),
+    )
+}
+
+/// One check per frames folder at a time (lanes ask for the same file at once).
+fn folder_lock(dir: &Path) -> std::sync::Arc<Mutex<()>> {
+    static LOCKS: Mutex<Option<HashMap<PathBuf, std::sync::Arc<Mutex<()>>>>> = Mutex::new(None);
+    let mut map = LOCKS.lock().unwrap();
+    let map = map.get_or_insert_with(HashMap::new);
+    if map.len() > 256 {
+        map.retain(|_, lock| std::sync::Arc::strong_count(lock) > 1);
+    }
+    map.entry(dir.to_path_buf()).or_default().clone()
+}
+
+/// The colour of `path`'s pictures, recorded in `dir` the first time. A file first checked here may
+/// have stills cached by an older version: kept when SDR, removed (made again) when HDR. Returns
+/// the file already opened with the plain scale filter when it is SDR, to grab its frames with.
+fn check_colour(dir: &Path, path: &str, plain_vf: &str) -> (Option<FrameColour>, Option<Core>) {
+    if let Some(colour) = read_colour(dir) {
+        return (Some(colour), None);
+    }
+    let lock = folder_lock(dir);
+    let _held = lock.lock().unwrap();
+    if let Some(colour) = read_colour(dir) {
+        return (Some(colour), None);
+    }
+    let Some(core) = Core::new(&seeker_options(plain_vf)).ok().filter(|core| open_seeker(core, path)) else {
+        return (None, None);
+    };
+    let colour = colour_of(&core);
+    if colour != FrameColour::Sdr {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                if e.path().extension().is_some_and(|x| x == "jpg") {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
+    let _ = std::fs::write(dir.join(COLOUR_FILE), colour.marker());
+    (Some(colour), (colour == FrameColour::Sdr).then_some(core))
+}
+
 /// Extracts JPEG frames at `times` into the app cache (`frames/<key>/<width>_<ms>.jpg`), emitting
 /// `frame-ready` for each one as it lands. Cached frames are returned immediately.
 #[tauri::command]
@@ -353,27 +538,65 @@ pub async fn extract_frames(
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("frames").join(sanitize(&key));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let dests: Vec<PathBuf> = times.iter().map(|t| dir.join(format!("{width}_{}.jpg", (t * 1000.0).round() as i64))).collect();
-        let mut out: Vec<Option<String>> = dests.iter().map(|d| d.is_file().then(|| d.to_string_lossy().into_owned())).collect();
-        let missing: Vec<usize> = (0..dests.len()).filter(|&i| out[i].is_none()).collect();
-        for (i, p) in out.iter().enumerate() {
-            if let Some(p) = p {
-                let _ = app.emit("frame-ready", FrameReady { lane: lane.clone(), key: key.clone(), index: i, time: times[i], path: p.clone() });
-            }
+        let emit = |index: usize, p: &str| {
+            let _ = app.emit("frame-ready", FrameReady { lane: lane.clone(), key: key.clone(), index, time: times[index], path: p.to_owned() });
+        };
+        Ok(frames_into(&dir, &path, &times, width, || lane_is(&lane, generation), &lane, generation, emit))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The work of `extract_frames`, without the app (tests call it directly). `current` turns false
+/// once a newer request on the same lane replaced this one.
+#[allow(clippy::too_many_arguments)]
+fn frames_into(
+    dir: &Path,
+    path: &str,
+    times: &[f64],
+    width: u32,
+    current: impl Fn() -> bool,
+    lane: &str,
+    generation: u64,
+    emit: impl Fn(usize, &str),
+) -> Vec<Option<String>> {
+    let dests: Vec<PathBuf> = times.iter().map(|t| dir.join(format!("{width}_{}.jpg", (t * 1000.0).round() as i64))).collect();
+    let file_ok = Path::new(path).is_file();
+    let plain_vf = frame_filter(FrameTone::Plain, width);
+    // HDR and Dolby Vision files are tone-mapped (stills cached before that are made again).
+    let (colour, mut opened) = if file_ok { check_colour(dir, path, &plain_vf) } else { (read_colour(dir), None) };
+    let mut out: Vec<Option<String>> = dests.iter().map(|d| d.is_file().then(|| d.to_string_lossy().into_owned())).collect();
+    for (i, p) in out.iter().enumerate() {
+        if let Some(p) = p {
+            emit(i, p);
         }
-        if missing.is_empty() || !Path::new(&path).is_file() {
-            return Ok(out);
+    }
+    let mut missing: Vec<usize> = (0..dests.len()).filter(|&i| out[i].is_none()).collect();
+    if missing.is_empty() || !file_ok || !current() {
+        return out;
+    }
+    let colour = colour.unwrap_or(FrameColour::Sdr);
+    let tones = frame_tones(colour);
+    // Each request gets its own scratch folder: overlapping requests used to share one, and an
+    // older request could save a newer one's frame under its own (wrong) time, cached for good.
+    let tmp = dir.join(format!(".tmp-{lane}-{generation}"));
+    for (n, &tone) in tones.iter().enumerate() {
+        if tone == FrameTone::Placebo && !placebo_available() {
+            continue;
         }
-        let scale = format!("scale={width}:-2");
+        let vf = frame_filter(tone, width);
+        let last_way = n + 1 == tones.len();
         // Open the file once and seek between frames; if that doesn't work for this file, fall
         // back to reopening it for each frame.
-        let mut seeker = Core::new(&seeker_options(&scale)).ok().filter(|core| open_seeker(core, &path));
+        let mut seeker = match opened.take() {
+            Some(core) if tone == FrameTone::Plain => Some(core),
+            _ => Core::new(&seeker_options(&vf)).ok().filter(|core| open_seeker(core, path)),
+        };
         let mut reopen: Option<Core> = None;
-        // Each request gets its own scratch folder: overlapping requests used to share one, and an
-        // older request could save a newer one's frame under its own (wrong) time, cached for good.
-        let tmp = dir.join(format!(".tmp-{lane}-{generation}"));
-        for i in missing {
-            if !lane_is(&lane, generation) {
+        let mut made = 0;
+        let mut left = Vec::new();
+        for (k, &i) in missing.iter().enumerate() {
+            if !current() {
                 break; // superseded by a newer request
             }
             let mut saved = false;
@@ -385,31 +608,28 @@ pub async fn extract_frames(
             }
             if !saved {
                 if reopen.is_none() {
-                    reopen = Some(Core::new(&[
-                        ("vo", "image"),
-                        ("vo-image-format", "jpg"),
-                        ("vo-image-jpeg-quality", "72"),
-                        ("audio", "no"),
-                        ("sid", "no"),
-                        ("frames", "1"),
-                        ("hr-seek", "no"),
-                        ("hwdec", "auto-copy-safe"),
-                        ("vf", &scale),
-                    ])?);
+                    reopen = Core::new(&reopen_options(&vf)).ok();
                 }
-                saved = reopen.as_ref().is_some_and(|core| grab_frame(core, &path, times[i], &tmp, &dests[i]));
+                saved = reopen.as_ref().is_some_and(|core| grab_frame(core, path, times[i], &tmp, &dests[i]));
             }
             if saved {
+                made += 1;
                 let p = dests[i].to_string_lossy().into_owned();
-                let _ = app.emit("frame-ready", FrameReady { lane: lane.clone(), key: key.clone(), index: i, time: times[i], path: p.clone() });
+                emit(i, &p);
                 out[i] = Some(p);
+            } else if made == 0 && !last_way {
+                // Not one frame this way (a colour filter that won't run here): try the next.
+                left = missing[k..].to_vec();
+                break;
             }
         }
-        let _ = std::fs::remove_dir_all(&tmp);
-        Ok(out)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        if left.is_empty() {
+            break;
+        }
+        missing = left;
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    out
 }
 
 fn valid_lane(lane: &str) -> bool {
@@ -805,6 +1025,139 @@ mod tests {
         assert_eq!(shared_segment(&a, &b), None);
         let silence = vec![0i16; SAMPLE_RATE * 60];
         assert_eq!(shared_segment(&fingerprint(&silence), &fingerprint(&silence)), None);
+    }
+
+    #[test]
+    fn dolby_vision_and_hdr_are_told_apart() {
+        // Profile 5: no compatible base layer, so it needs reshaping (however mpv labels it).
+        assert_eq!(frame_colour(Some("pq"), Some("bt.2020-ncl"), Some(5)), FrameColour::DolbyVision);
+        assert_eq!(frame_colour(None, None, Some(5)), FrameColour::DolbyVision);
+        assert_eq!(frame_colour(Some("pq"), Some("dolbyvision"), None), FrameColour::DolbyVision);
+        // Profiles 7 and 8 carry an HDR10 base layer: tone mapping alone looks right.
+        assert_eq!(frame_colour(Some("pq"), Some("dolbyvision"), Some(8)), FrameColour::Hdr);
+        assert_eq!(frame_colour(Some("pq"), Some("bt.2020-ncl"), Some(8)), FrameColour::Hdr);
+        assert_eq!(frame_colour(Some("pq"), Some("bt.2020-ncl"), Some(7)), FrameColour::Hdr);
+        assert_eq!(frame_colour(Some("pq"), Some("bt.2020-ncl"), None), FrameColour::Hdr);
+        assert_eq!(frame_colour(Some("hlg"), Some("bt.2020-ncl"), None), FrameColour::Hdr);
+        // 8.2 (SDR base layer) and ordinary SDR.
+        assert_eq!(frame_colour(Some("bt.1886"), Some("bt.709"), Some(8)), FrameColour::Sdr);
+        assert_eq!(frame_colour(Some("bt.1886"), Some("bt.709"), None), FrameColour::Sdr);
+        assert_eq!(frame_colour(None, None, None), FrameColour::Sdr);
+        for c in [FrameColour::Sdr, FrameColour::Hdr, FrameColour::DolbyVision] {
+            assert_eq!(FrameColour::from_marker(c.marker()), Some(c));
+        }
+        assert_eq!(FrameColour::from_marker("purple"), None);
+    }
+
+    #[test]
+    fn hdr_stills_are_tone_mapped() {
+        use FrameTone::*;
+        assert_eq!(frame_tones(FrameColour::Sdr), vec![Plain]);
+        // HDR: CPU tone mapping first (quick), libplacebo if that won't run, washed out last.
+        assert_eq!(frame_tones(FrameColour::Hdr), vec![Zscale, Placebo, Plain]);
+        // Profile 5 only with the Dolby Vision reshaping: never decoded as-is (purple and green).
+        assert_eq!(frame_tones(FrameColour::DolbyVision), vec![Placebo]);
+
+        assert_eq!(frame_filter(Plain, 640), "scale=640:-2");
+        let placebo = frame_filter(Placebo, 640);
+        for part in ["libplacebo=w=640:h=-2", "apply_dolbyvision=1", "tonemapping=auto", "color_primaries=bt709", "color_trc=bt709", "format=yuv420p"] {
+            assert!(placebo.contains(part), "{placebo} lacks {part}");
+        }
+        let zscale = frame_filter(Zscale, 240);
+        assert!(zscale.starts_with("lavfi=[zscale=w=240:h=-2:") && zscale.contains("tonemap=tonemap=hable"), "{zscale}");
+    }
+
+    /// Average luma, chroma and saturation of a picture (FFmpeg's signalstats, through mpv).
+    fn picture_stats(path: &Path) -> HashMap<String, f64> {
+        let core = Core::new(&[("vo", "null"), ("ao", "null"), ("pause", "yes"), ("vf", "@stats:lavfi=[format=yuv444p,signalstats]")]).unwrap();
+        assert!(open_seeker(&core, &path.to_string_lossy()), "couldn't open {}", path.display());
+        let mut stats = HashMap::new();
+        for _ in 0..20 {
+            if let Some(json) = core.get("vf-metadata/stats") {
+                let map: HashMap<String, String> = serde_json::from_str(&json).unwrap_or_default();
+                for (k, v) in map {
+                    if let (Some(name), Ok(v)) = (k.strip_prefix("lavfi.signalstats."), v.parse::<f64>()) {
+                        stats.insert(name.to_owned(), v);
+                    }
+                }
+                if !stats.is_empty() {
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!stats.is_empty(), "no picture stats for {}", path.display());
+        stats
+    }
+
+    /// Stills of a real Dolby Vision (or HDR) file come out with normal colours, and stills cached
+    /// before (decoded as they were) are made again:
+    /// `TRUONGFLIX_DV_TEST="a.mkv|b.mkv" cargo test --lib -- --ignored real_hdr_stills --nocapture`
+    #[test]
+    #[ignore]
+    fn real_hdr_stills() {
+        let files = std::env::var("TRUONGFLIX_DV_TEST").expect("set TRUONGFLIX_DV_TEST");
+        let root = std::env::temp_dir().join("truongflix-dv-test");
+        let _ = std::fs::remove_dir_all(&root);
+        for (n, path) in files.split('|').enumerate() {
+            let dir = root.join(n.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            let times = [300.0, 600.0, 900.0];
+            // What an older version left in the cache: the same stills decoded as they are.
+            let old_dir = dir.join("old");
+            std::fs::create_dir_all(&old_dir).unwrap();
+            let plain = Core::new(&seeker_options(&frame_filter(FrameTone::Plain, 320))).unwrap();
+            assert!(open_seeker(&plain, path));
+            let colour = colour_of(&plain);
+            println!("{path}: {colour:?} (gamma {:?}, matrix {:?})", plain.get("video-params/gamma"), plain.get("video-params/colormatrix"));
+            for t in times {
+                assert!(seek_frame(&plain, t, &dir.join("tmp"), &dir.join(format!("320_{}.jpg", (t * 1000.0) as i64))));
+                std::fs::copy(dir.join(format!("320_{}.jpg", (t * 1000.0) as i64)), old_dir.join(format!("as-is_{}.jpg", (t * 1000.0) as i64))).unwrap();
+            }
+            drop(plain);
+            let _ = std::fs::remove_file(dir.join(COLOUR_FILE));
+
+            let t0 = Instant::now();
+            let emitted = Mutex::new(Vec::new());
+            let out = frames_into(&dir, path, &times, 320, || true, "test", 1, |i, p| emitted.lock().unwrap().push((i, p.to_owned())));
+            println!("  {} stills in {:?}; libplacebo {}", out.iter().flatten().count(), t0.elapsed(), placebo_available());
+            assert_eq!(read_colour(&dir), Some(colour), "colour not recorded");
+            if colour == FrameColour::DolbyVision && !placebo_available() {
+                // No Vulkan: no right-coloured way, so no stills, and the stale pink ones are gone.
+                assert!(out.iter().all(Option::is_none), "profile 5 stills without libplacebo: {out:?}");
+                continue;
+            }
+            assert!(out.iter().all(Option::is_some), "missing stills: {out:?}");
+            for t in times {
+                let ms = (t * 1000.0) as i64;
+                let new = picture_stats(&dir.join(format!("320_{ms}.jpg")));
+                let old = picture_stats(&old_dir.join(format!("as-is_{ms}.jpg")));
+                println!(
+                    "  {t:>5}s  as-is: Y {:>5.1} U {:>5.1} V {:>5.1} sat {:>5.1} | now: Y {:>5.1} U {:>5.1} V {:>5.1} sat {:>5.1}",
+                    old["YAVG"], old["UAVG"], old["VAVG"], old["SATAVG"], new["YAVG"], new["UAVG"], new["VAVG"], new["SATAVG"]
+                );
+                // The colours were converted (as-is, profile 5 is pink and green and HDR10 is grey);
+                // look at the stills too: the numbers alone can't tell a tint from a warm scene.
+                if colour != FrameColour::Sdr {
+                    let change = (new["YAVG"] - old["YAVG"]).abs() + (new["UAVG"] - old["UAVG"]).abs() + (new["VAVG"] - old["VAVG"]).abs();
+                    assert!(change > 4.0, "still at {t}s looks like the as-is one: {new:?}");
+                    assert!(new["YMAX"] > 25.0, "still at {t}s is black: {new:?}");
+                }
+            }
+            // HDR without libplacebo (no Vulkan): FFmpeg's CPU tone mapping must run too.
+            if colour == FrameColour::Hdr {
+                let cpu = Core::new(&seeker_options(&frame_filter(FrameTone::Zscale, 320))).unwrap();
+                assert!(open_seeker(&cpu, path), "zscale tone mapping didn't open");
+                let dest = dir.join("zscale_300000.jpg");
+                assert!(seek_frame(&cpu, 300.0, &dir.join("tmp"), &dest), "zscale tone mapping made no still");
+                let s = picture_stats(&dest);
+                println!("  zscale 300s: Y {:>5.1} U {:>5.1} V {:>5.1} sat {:>5.1}", s["YAVG"], s["UAVG"], s["VAVG"], s["SATAVG"]);
+            }
+            // Cached now: a second request makes nothing new.
+            let again = frames_into(&dir, path, &times, 320, || true, "test", 2, |_, _| {});
+            assert_eq!(again, out);
+            println!("  stills in {}", dir.display());
+        }
     }
 
     #[test]

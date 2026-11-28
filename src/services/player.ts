@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { resizeSettle } from './resizeSettle';
 import { episodeTarget, sameEpisode, playTargetFor } from '../store/selectors';
 import { IS_MAC } from '../lib/platform';
 import type {
@@ -498,11 +499,23 @@ export async function playBuiltin(target: PlayTarget) {
 }
 
 /**
- * The page turns transparent over the native video only once its surface exists: earlier, the
- * window showed the desktop (Windows) or the library behind it for a moment.
+ * The page turns transparent over the native video only once the video is showing in it: before
+ * that, the window showed the desktop (Windows), or a just-created video window showed whatever
+ * was on screen before (the library's cards) until mpv drew its first frame.
  */
 function setVideoSurface(ready: boolean) {
+  surfaceWaiting = null;
   document.documentElement.classList.toggle('player-surface', ready);
+}
+
+/** The load whose first frame the page waits for before turning transparent. */
+let surfaceWaiting: string | null = null;
+/** Turns the page transparent anyway if a frame never gets reported (the black page would stay). */
+const SURFACE_FALLBACK_MS = 8000;
+
+/** Whether `state` shows that its file's video is on screen. */
+export function videoShowing(state: Pick<BuiltinPlayerState, 'loaded' | 'rendered' | 'time'>): boolean {
+  return state.loaded && (!!state.rendered || state.time > 1);
 }
 
 let openGeneration = 0;
@@ -512,8 +525,17 @@ function queueOpen(generation: number, args: Record<string, unknown>) {
     .catch(() => {})
     .then(async () => {
       if (generation !== openGeneration) return;
+      const waiting = !document.documentElement.classList.contains('player-surface');
       await invoke('player_open', args);
-      if (generation === openGeneration) setVideoSurface(true);
+      if (generation !== openGeneration || !waiting) return;
+      // A first frame that came in before `player_open` returned already turned the page.
+      const state = useLibraryStore.getState().playerState;
+      if (state && state.load_id === args.loadId && videoShowing(state)) return setVideoSurface(true);
+      const loadId = String(args.loadId);
+      surfaceWaiting = loadId;
+      window.setTimeout(() => {
+        if (surfaceWaiting === loadId && generation === openGeneration) setVideoSurface(true);
+      }, SURFACE_FALLBACK_MS);
     });
   openQueue = next;
   return next;
@@ -772,6 +794,9 @@ let enteredFullscreen = false;
 export async function toggleFullscreen() {
   const win = getCurrentWindow();
   const fs = await win.isFullscreen();
+  // Hide the controls until the window has its final size, instead of them jumping with each step.
+  resizeSettle.begin();
+  await afterPaint(2, 100);
   await win.setFullscreen(!fs);
   enteredFullscreen = !fs;
   return !fs;
@@ -1216,6 +1241,7 @@ export async function initPlayerEvents() {
       if (!store.playerSession) return;
       if (payload.load_id && payload.load_id !== store.playerSession.loadId) return;
       store.setPlayerState(payload);
+      if (surfaceWaiting && surfaceWaiting === payload.load_id && videoShowing(payload)) setVideoSurface(true);
       if (store.playerSession.target.type === 'live') {
         if (playingLive(payload)) {
           if (payload.time > 1 && useLiveStore.getState().playbackError) useLiveStore.setState({ playbackError: '' });

@@ -57,6 +57,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isPlayerShortcut, playerControlTitles } from './shortcuts';
 import WatchTogetherButton from './WatchTogetherButton';
 import { usePictureDoubleClick } from './pictureDoubleClick';
+import { useResizeSettling } from '../../services/resizeSettle';
 
 const HIDE_AFTER_MS = 3000;
 const NEXT_EPISODE_WINDOW_S = 30;
@@ -75,12 +76,17 @@ export default function PlayerScreen() {
   const library = session && session.target.type !== 'live' ? (session as PlayerSession) : null;
   useAutoAdvance(library);
   useScrubThumbnails(library);
+  // Going full screen: the controls stay hidden until the window has its final size, then show
+  // once in place (they used to flash and jump with each step of the resize).
+  const settling = useResizeSettling();
   return (
-    <AnimatePresence>
-      {session && (library
-        ? !mini && <PlayerChrome key="player" session={library} />
-        : <LivePlayer key="live-player" session={session as LivePlayerSession} />)}
-    </AnimatePresence>
+    <div className="contents" style={settling ? { visibility: 'hidden' } : undefined}>
+      <AnimatePresence>
+        {session && (library
+          ? !mini && <PlayerChrome key="player" session={library} />
+          : <LivePlayer key="live-player" session={session as LivePlayerSession} />)}
+      </AnimatePresence>
+    </div>
   );
 }
 

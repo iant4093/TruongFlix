@@ -3,44 +3,58 @@ import { Music, Pause, Play } from 'lucide-react';
 import { setScrub, setVolume, useMusicPlayer } from '../player';
 import { createBarMeter, musicLevels } from '../analyser';
 import { formatTime } from '../library';
+import { addLayer, initialLayers, layerCovered, layerFailed, layerShown } from '../coverLayers';
 import '../music.css';
 
 /**
  * Album art, or a soft gradient with a note when the album has none. A new cover (the next song)
- * fades in over the old one instead of blinking through the placeholder.
+ * fades in over the old one once it has loaded; until then the old one stays, so skipping songs
+ * never blinks through the placeholder or another picture.
  */
 export function Cover({ art, alt = '', className = '', rounded = 'rounded-md', icon = 'h-1/3 w-1/3' }: { art: string | null | undefined; alt?: string; className?: string; rounded?: string; icon?: string }) {
   const url = useMusicPlayer((s) => s.api?.artUrl(art) ?? null);
-  const [failed, setFailed] = useState<string | null>(null);
-  // The cover on screen, and the one fading in over it.
-  const [shown, setShown] = useState<string | null>(url);
-  const [incoming, setIncoming] = useState(false);
-  useEffect(() => setIncoming(false), [url]);
-  const usable = url && failed !== url ? url : null;
-  const under = shown && failed !== shown ? shown : null;
+  const [failed, setFailed] = useState<string[]>([]);
+  const want = url && !failed.includes(url) ? url : null;
+  const [layers, setLayers] = useState(() => initialLayers(want));
+  const [prev, setPrev] = useState(want);
+  if (want !== prev) {
+    setPrev(want);
+    setLayers((list) => addLayer(list, want));
+  }
   return (
     <div className={`relative aspect-square overflow-hidden bg-gradient-to-br from-[#3a3a3c] to-[#1f1f21] ${rounded} ${className}`}>
-      {!usable && !under && (
+      {!layers.length && (
         <div className="absolute inset-0 flex items-center justify-center text-white/30">
           <Music className={icon} strokeWidth={1.5} />
         </div>
       )}
-      {under && <img src={under} alt={under === usable ? alt : ''} loading="lazy" draggable={false} onError={() => setFailed(under)} className="absolute inset-0 h-full w-full object-cover" />}
-      {usable && usable !== under && (
+      {layers.map((layer) => (
         <img
-          key={usable}
-          src={usable}
-          alt={alt}
+          key={layer.src}
+          src={layer.src}
+          alt={layer.src === want ? alt : ''}
+          loading="lazy"
           draggable={false}
-          onLoad={() => setIncoming(true)}
+          onLoad={
+            layer.shown
+              ? undefined
+              : (e) => {
+                  // Decoded before it shows, so it never fades in as an empty frame.
+                  const img = e.currentTarget;
+                  void Promise.resolve(img.decode?.())
+                    .catch(() => {})
+                    .then(() => setLayers((list) => layerShown(list, layer.src)));
+                }
+          }
           onError={() => {
-            setFailed(usable);
-            setShown(usable);
+            setFailed((list) => [...list.slice(-20), layer.src]);
+            // The current cover failed: the placeholder, not the last song's art.
+            setLayers((list) => (list.at(-1)?.src === layer.src ? [] : layerFailed(list, layer.src)));
           }}
-          onTransitionEnd={() => setShown(usable)}
-          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${incoming ? 'opacity-100' : 'opacity-0'}`}
+          onTransitionEnd={() => setLayers((list) => layerCovered(list, layer.src))}
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${layer.shown ? 'opacity-100' : 'opacity-0'}`}
         />
-      )}
+      ))}
     </div>
   );
 }

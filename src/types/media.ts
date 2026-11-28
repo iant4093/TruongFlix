@@ -633,6 +633,8 @@ export interface BuiltinPlayerState {
   audio_delay: number;
   gamma: string | null;
   loaded: boolean;
+  /** The file's first frame is on screen (see `videoShowing`). */
+  rendered?: boolean;
 }
 
 /** One entry of mpv's `track-list`. */
