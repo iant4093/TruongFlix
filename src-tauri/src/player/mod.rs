@@ -62,6 +62,9 @@ struct PlayerState {
     /// Transfer function of the current video (e.g. "pq"/"hlg" for HDR).
     gamma: Option<String>,
     loaded: bool,
+    /// mpv has shown this file's first frame (playback restarted). The page stays opaque until
+    /// then: a just-created video window shows whatever was on screen before it was painted.
+    rendered: bool,
     seekable_ranges: Vec<SeekRange>,
     cache_updated_at: f64,
 }
@@ -315,6 +318,7 @@ fn event_loop(app: AppHandle, handle_addr: usize, video_window: Option<isize>) {
             mpv::EVENT_SHUTDOWN => break,
             mpv::EVENT_START_FILE => {
                 state.loaded = false;
+                state.rendered = false;
                 state.eof = false;
                 state.time = 0.0;
                 state.duration = 0.0;
@@ -336,6 +340,11 @@ fn event_loop(app: AppHandle, handle_addr: usize, video_window: Option<isize>) {
                     }
                 }
                 dirty = true;
+            }
+            mpv::EVENT_PLAYBACK_RESTART if state.loaded && !state.rendered => {
+                state.rendered = true;
+                dirty = true;
+                last_emit = Instant::now() - Duration::from_secs(1);
             }
             mpv::EVENT_END_FILE if !ev.data.is_null() => {
                 let end = unsafe { &*(ev.data as *const mpv::EventEndFile) };
@@ -391,7 +400,7 @@ fn event_loop(app: AppHandle, handle_addr: usize, video_window: Option<isize>) {
             if let Some((id, path)) = expected {
                 state.load_id = id;
                 let mut payload = state.clone();
-                if !api.get_property(h, "path").is_some_and(|actual| source_matches(&actual, &path)) { payload.loaded = false; payload.eof = false; payload.seekable_ranges.clear(); }
+                if !api.get_property(h, "path").is_some_and(|actual| source_matches(&actual, &path)) { payload.loaded = false; payload.rendered = false; payload.eof = false; payload.seekable_ranges.clear(); }
                 let _ = app.emit("player-state", payload);
             }
             last_emit = Instant::now();
