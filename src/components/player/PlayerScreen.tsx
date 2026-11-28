@@ -56,6 +56,7 @@ import { cancelFrames, coarseToFine, extractFrames } from '../../services/frames
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isPlayerShortcut, playerControlTitles } from './shortcuts';
 import WatchTogetherButton from './WatchTogetherButton';
+import { usePictureDoubleClick } from './pictureDoubleClick';
 
 const HIDE_AFTER_MS = 3000;
 const NEXT_EPISODE_WINDOW_S = 30;
@@ -935,6 +936,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
     return () => cancelAnimationFrame(id);
   }, [panel]);
   const [fullscreen, setFullscreen] = useState(false);
+  const pictureDoubleClick = usePictureDoubleClick(() => void toggleFullscreen().then(setFullscreen));
   const [pausedIdle, setPausedIdle] = useState(false);
   const [nextDismissed, setNextDismissed] = useState(false);
   const [flash, setFlash] = useState<'play' | 'pause' | null>(null);
@@ -1138,7 +1140,7 @@ function PlayerChrome({ session }: { session: PlayerSession }) {
         if (panel) setPanel(null);
         else togglePause();
       }}
-      onDoubleClick={() => void toggleFullscreen().then(setFullscreen)}
+      {...pictureDoubleClick}
       className={`fixed inset-0 z-[200] select-none overflow-hidden text-white ${controlsShown || pausedIdle ? '' : 'cursor-none has-[:focus-visible]:cursor-auto'}`}
     >
       {/* Loading / buffering */}

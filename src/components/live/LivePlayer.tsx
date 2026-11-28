@@ -36,6 +36,7 @@ import { useLiveStore } from '../../services/live';
 import { languageName } from '../../services/subtitles';
 import Dropdown from '../common/Dropdown';
 import { isPlayerShortcut, playerControlTitles } from '../player/shortcuts';
+import { usePictureDoubleClick } from '../player/pictureDoubleClick';
 import LiveMultiview from './LiveMultiview';
 import LiveWebPlayer from './LiveWebPlayer';
 import MultiviewPicker from './LiveMultiviewPicker';
@@ -72,6 +73,9 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
   const fresh = !state?.cache_updated_at || now - state.cache_updated_at < 15_000;
   const interrupted = !!error || !!state?.eof;
   const blocked = !!prompt;
+  const pictureDoubleClick = usePictureDoubleClick(() => {
+    if (!blocked) void toggleFullscreen();
+  });
   const buffering = !state?.loaded || state.buffering;
   const reveal = () => {
     setVisible(true);
@@ -183,9 +187,7 @@ function SingleLivePlayer({ session }: { session: LivePlayerSession }) {
       onMouseMove={reveal}
       onClick={reveal}
       // Double-click the picture for full screen, like the movie player.
-      onDoubleClick={(event) => {
-        if (!blocked && !(event.target as Element).closest('button, input, select, [role="slider"], [role="dialog"], [role="menu"]')) void toggleFullscreen();
-      }}
+      {...pictureDoubleClick}
     >
       <div
         hidden={blocked}
