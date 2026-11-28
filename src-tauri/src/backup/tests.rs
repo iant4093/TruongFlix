@@ -19,6 +19,12 @@ async fn fixture(dir: &Path) -> SqliteConnection {
         CREATE TABLE torrents(save_path TEXT, source TEXT, file_paths TEXT);
         CREATE TABLE trash(entry_dir TEXT, items TEXT, snapshot TEXT);
         CREATE TABLE rename_batches(moves TEXT, roots TEXT);
+        CREATE TABLE library_folders(path TEXT PRIMARY KEY, folder_id TEXT NOT NULL, seen_at INTEGER NOT NULL);
+        INSERT INTO library_folders VALUES ('/old/movies', 'folder-1', 1);
+        CREATE TABLE missing_media(file_path TEXT PRIMARY KEY, file_size INTEGER, removed_at INTEGER NOT NULL, snapshot TEXT NOT NULL);
+        INSERT INTO missing_media VALUES ('/old/Movies/Gone.mkv', 1, 1, '{}');
+        CREATE TABLE music_missing(file_path TEXT PRIMARY KEY, file_size INTEGER, removed_at INTEGER NOT NULL, state TEXT NOT NULL);
+        INSERT INTO music_missing VALUES ('/old/Music/Gone.flac', 1, 1, '{}');
         CREATE TABLE watch_log(profile_id INTEGER);
         CREATE TABLE collections(id INTEGER);
         CREATE TABLE season_cache(series_tmdb_id INTEGER);
@@ -324,8 +330,9 @@ async fn full_fixture(dir: &Path, tag: Option<&str>) -> SqliteConnection {
         CREATE TABLE trash(entry_dir TEXT, items TEXT, snapshot TEXT);
         CREATE TABLE rename_batches(moves TEXT, roots TEXT);
     ").execute(&mut db).await.unwrap();
-    // The rest of the manifest's tables, whatever they hold.
-    for table in portable_tables() {
+    // The rest of the manifest's tables, whatever they hold (the ones that stay on this computer
+    // too, so the test sees they do).
+    for table in portable_tables().into_iter().chain(manifest().tables.local.iter().map(String::as_str)) {
         if !has_table(&mut db, "main", table).await.unwrap() {
             sqlx::query(&format!("CREATE TABLE {table}(id INTEGER PRIMARY KEY, note TEXT)")).execute(&mut db).await.unwrap();
             if let Some(tag) = tag {
