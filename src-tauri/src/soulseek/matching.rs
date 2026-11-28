@@ -126,6 +126,7 @@ fn clean(text: &str) -> String {
         match c {
             '\'' | '’' | 'ʼ' | '`' | '´' => {}
             '&' => out.push_str(" and "),
+            '$' => out.push('s'),
             'ß' => out.push_str("ss"),
             'æ' => out.push_str("ae"),
             'œ' => out.push_str("oe"),
@@ -193,6 +194,43 @@ pub fn unmask(text: &str) -> String {
     out
 }
 
+/// A file name or path with its masked words spelt out ("Sh_t", "P***y": "*" can't be in a Windows
+/// file name, so "_" stands in). Only a mask that fits a known word letter for letter is read;
+/// anything else ("Rich_Amiri_Ghetto") is left as it is.
+fn unmask_name(text: &str) -> String {
+    if !text.contains(['*', '_']) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        let chars: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+        let masked = |c: &char| *c == '*' || *c == '_';
+        let inner = chars.first().is_some_and(|c| c.is_alphanumeric()) && chars.iter().any(masked);
+        let found = inner.then(|| {
+            MASKED.iter().find(|candidate| {
+                let c: Vec<char> = candidate.chars().collect();
+                c.len() == chars.len() && c.iter().zip(&chars).all(|(a, b)| masked(b) || a == b)
+            })
+        });
+        match found.flatten() {
+            Some(found) => out.push_str(found),
+            None => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '*' || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
 /// Every word of a text (for file names and paths).
 fn all_words(text: &str) -> Vec<String> {
     clean(text).split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect()
@@ -206,7 +244,7 @@ pub fn words(text: &str) -> Vec<String> {
 /// Words to type into Soulseek's search, split the way people's clients split file names
 /// ("Don't" is "don" and "t"; "&" is left out), up to "feat." credits.
 fn search_words(text: &str) -> Vec<String> {
-    let lower: String = text.chars().flat_map(char::to_lowercase).filter(|c| !('\u{300}'..='\u{36f}').contains(c)).map(fold).collect();
+    let lower: String = text.chars().flat_map(char::to_lowercase).filter(|c| !('\u{300}'..='\u{36f}').contains(c)).map(|c| if c == '$' { 's' } else { fold(c) }).collect();
     lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).take_while(|w| !matches!(*w, "feat" | "ft" | "featuring")).map(str::to_string).collect()
 }
 
@@ -673,11 +711,18 @@ impl SongMatcher {
             .map(|a| clean(a).chars().filter(|c| c.is_alphanumeric()).collect::<String>())
             .filter(|a| a.chars().count() >= 3)
             .collect();
+        // A song from a DJ mix ("[Mixed]", "Rap, Vol. 2 (DJ Mix)") is cut to fit the mix: its
+        // length isn't the recording's people share.
+        let mixed = |text: &str| {
+            let w = all_words(text);
+            w.iter().any(|x| x == "mixed") || w.windows(2).any(|p| p[0] == "dj" && p[1] == "mix")
+        };
+        let mixed = mixed(&want.title) || want.album.as_deref().is_some_and(mixed);
         SongMatcher {
             re_recorded: re_recorded(&all_words(&named)),
             artists: want.artists.iter().map(|a| artist_words(a)).filter(|w| !w.is_empty()).collect(),
             album: want.album.as_deref().map(|a| words(a.split(['(', '[']).next().unwrap_or(a))).unwrap_or_default(),
-            length_ms: want.length_ms,
+            length_ms: if mixed { None } else { want.length_ms },
             title,
             versions,
             naming,
@@ -695,8 +740,8 @@ impl SongMatcher {
             return None;
         }
         let stem = stem_of(&offer.path);
-        let name = all_words(stem);
-        let path = all_words(&offer.path);
+        let name = all_words(&unmask_name(stem));
+        let path = all_words(&unmask_name(&offer.path));
         let title = &self.title;
         let found = title.iter().filter(|w| name.contains(w)).count();
         if found < title.len() && !(title.len() >= 4 && found + 1 >= title.len()) {
@@ -722,13 +767,14 @@ impl SongMatcher {
                 let squashed: String = clean(&offer.path).chars().filter(|c| c.is_alphanumeric()).collect();
                 self.squashed.iter().any(|a| squashed.contains(a.as_str()))
             });
-        if !artist_ok {
-            return None;
-        }
         let gap = match (self.length_ms, offer.duration) {
             (Some(ms), Some(s)) => Some((ms as f64 / 1000.0 - s as f64).abs()),
             _ => None,
         };
+        let album_ok = !self.album.is_empty() && self.album.iter().all(|w| path.contains(w)) && gap.is_some_and(|g| g <= 2.0);
+        if !artist_ok && !album_ok {
+            return None;
+        }
         if gap.is_some_and(|g| g > 6.0) {
             return None;
         }
@@ -860,10 +906,38 @@ pub fn song_fallback_queries(want: &WantSong) -> Vec<String> {
             }
         }
     }
+    // The main artist with the album: a song whose title has a word the server drops ("Black
+    // Beatles") is still in the album's folder ("rae sremmurd sremmlife").
+    let artist = want.artists.first().map(|a| artist_search_words(a)).unwrap_or_default();
+    if let Some(album) = &want.album {
+        let album = query_words(search_words(&plain_album(album)));
+        if !artist.is_empty() && !album.is_empty() && album != title {
+            out.push(artist.iter().chain(album.iter()).cloned().collect::<Vec<_>>().join(" "));
+        }
+    }
+    // The title without the words the server is known to drop, with the artist.
+    let kept: Vec<String> = title.iter().filter(|w| !DROPPED.contains(&w.as_str())).cloned().collect();
+    if !kept.is_empty() && kept.len() < title.len() && !artist.is_empty() {
+        out.push(artist.iter().chain(kept.iter()).cloned().collect::<Vec<_>>().join(" "));
+    }
     out.push(title.join(" "));
-    out.retain(|q| !first.contains(q));
-    out.dedup();
+    out.retain(|q| !first.contains(q) && !dropped(q));
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|q| seen.insert(q.clone()));
     out
+}
+
+/// Words Soulseek's server silently drops searches for: any search with one gets no answers
+/// (seen 27–28 Nov 2026: even "beatles", "madonna", "rihanna" or "mafia" alone).
+const DROPPED: &[&str] = &["beatles", "madonna", "rihanna", "mafia"];
+/// Names the server ignores too (see `song_fallback_queries`): backup searches with them are
+/// left out, as they'd only spend a search.
+const DROPPED_NAMES: &[&str] = &["frank ocean", "lady gaga", "weeknd", "kanye west"];
+
+/// Whether a search has a word or name the server drops.
+fn dropped(query: &str) -> bool {
+    let padded = format!(" {query} ");
+    DROPPED.iter().chain(DROPPED_NAMES).any(|d| padded.contains(&format!(" {d} ")))
 }
 
 #[cfg(test)]
@@ -892,6 +966,35 @@ mod tests {
         // The files found must still be this song.
         assert!(song_matches(&want, &offer("a", r"Music\Travis Scott\ESCAPE PLAN - MAFIA\02 MAFIA.flac", Some(160), None)));
         assert!(!song_matches(&want, &offer("a", r"Music\Travis Scott\ESCAPE PLAN - MAFIA\01 ESCAPE PLAN.flac", Some(160), None)));
+    }
+
+    #[test]
+    fn songs_that_failed_on_27_nov_are_found() {
+        // "$ign" is searched as "sign", and an album folder named for the duo ("¥$") still counts.
+        let mut fried = WantSong { title: "FRIED".into(), artists: vec!["Kanye West".into(), "Ty Dolla $ign".into()], album: Some("VULTURES 2".into()), length_ms: Some(188_000) };
+        assert!(song_fallback_queries(&fried).contains(&"ty dolla sign fried".to_string()));
+        assert!(song_matches(&fried, &offer("a", r"Music\¥$\VULTURES 2\07 - FRIED.flac", Some(188), None)));
+        // …but not a song of that name from another album.
+        assert!(!song_matches(&fried, &offer("a", r"Music\Someone\Other Album\FRIED.flac", Some(188), None)));
+        fried.length_ms = Some(240_000);
+        assert!(!song_matches(&fried, &offer("a", r"Music\¥$\VULTURES 2\07 - FRIED.flac", Some(188), None)));
+
+        // "Beatles" is dropped by the server: the artist with the album, and the title without it.
+        let mut beatles = song("Black Beatles (feat. Gucci Mane)", "Rae Sremmurd", Some(291));
+        beatles.album = Some("SremmLife 2 (Deluxe)".into());
+        let q = song_fallback_queries(&beatles);
+        assert!(q.contains(&"rae sremmurd sremmlife".to_string()), "{q:?}");
+        assert!(q.contains(&"rae sremmurd black".to_string()), "{q:?}");
+
+        // Windows file names mask with "_".
+        let fan = song("F****d A Fan", "Veeze", Some(150));
+        assert!(song_matches(&fan, &offer("a", r"Music\Veeze\Ganger\05 F____d A Fan.flac", Some(150), None)));
+        assert_eq!(unmask_name(r"Rich_Amiri_Ghetto_Fabulous_11.flac"), r"Rich_Amiri_Ghetto_Fabulous_11.flac");
+
+        // A DJ mix's cut isn't held to its length.
+        let mut mixed = song("She Want Some More (feat. Ken Carson) [Mixed]", "Lil Tecca", Some(121));
+        mixed.album = Some("Rap, Vol. 2 (DJ Mix)".into());
+        assert!(song_matches(&mixed, &offer("a", r"Music\Internet Money; Lil Tecca; Ken Carson - She Want Some More (feat. Ken Carson).mp3", Some(184), Some(320))));
     }
 
     #[test]
