@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react';
+import BackdropFade from './BackdropFade';
 
 /**
  * The app's loading placeholders. Each mirrors the real layout's footprint (same padding, aspect
@@ -37,7 +38,7 @@ export function BillboardSkeleton() {
           <Bone tone="soft" className="h-12 w-44 rounded" />
         </div>
       </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[45%]" style={{ background: 'linear-gradient(180deg, rgba(20,20,20,0) 0%, #141414 100%)' }} />
+      <BackdropFade to="page" side={0} height="55%" />
     </section>
   );
 }

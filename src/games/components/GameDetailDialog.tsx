@@ -10,6 +10,7 @@ import { formatEta, pauseTorrent, resumeTorrent } from '../../services/torrents'
 import { formatBytes, formatSpeed } from '../../lib/format';
 import { errorMessage } from '../../lib/errors';
 import Dialog from '../../components/common/Dialog';
+import BackdropFade from '../../components/common/BackdropFade';
 import IconButton from '../../components/common/IconButton';
 import ProgressBar from '../../components/common/ProgressBar';
 import Spinner from '../../components/common/Spinner';
@@ -236,8 +237,7 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
           {backdrop && <motion.img key={backdrop} src={backdrop} alt="" draggable={false} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }}
             className={`h-full w-full object-cover ${owned?.status === 'downloading' || job ? 'opacity-65 grayscale-[50%]' : ''}`} />}
           {cover && <img src={cover} alt="" draggable={false} className="absolute inset-0 h-full w-full scale-110 object-cover opacity-60 blur-2xl" />}
-          <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-nf-surface/10 to-transparent" />
-          <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-transparent" />
+          <BackdropFade />
 
           <IconButton onClick={onClose} aria-label="Close" variant="surface" className="absolute right-4 top-4 z-10">
             <X className="h-5 w-5" />

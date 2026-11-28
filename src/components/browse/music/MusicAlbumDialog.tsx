@@ -43,7 +43,7 @@ export default function MusicAlbumDialog({ album, onClose, onArtist, active = tr
       <Dialog label={album.title} onClose={onClose} open={active} active={!picking} priority={100} size="xl" align="top" chrome="floating" className="overflow-hidden">
         <div className="relative">
           {/* The cover, blurred, behind the header. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-80 opacity-60 [mask-image:linear-gradient(to_bottom,black,transparent)]">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-80 opacity-60 nf-fade-mask">
             <CoverArt url={cover} px={100} className="h-full w-full scale-125 blur-3xl" rounded="" eager />
           </div>
           <div className="relative flex flex-col gap-7 p-6 pt-10 sm:flex-row sm:items-end sm:p-9 sm:pt-12">

@@ -120,6 +120,39 @@ html.nf-scroll-locked [data-music-bar] { right: var(--nf-scroll-gap, 0px); }
   .nf-menu-enter, .nf-dialog-enter { animation: none; }
 }
 
+/* Backdrop fade (src/components/common/BackdropFade.tsx): a picture melts into the panel under it.
+   The stops follow an ease curve, so there's no band where a straight ramp bends; the last pixels
+   are solid panel colour and reach 1px past the picture, so no sliver of image shows at any width. */
+.nf-backdrop-fade {
+  --nf-fade-rgb: 24 24 24; /* nf-surface: dialog panels */
+  position: absolute;
+  inset-inline: 0;
+  bottom: -1px;
+  pointer-events: none;
+  background: linear-gradient(to top,
+    rgb(var(--nf-fade-rgb)) 0, rgb(var(--nf-fade-rgb)) 2px,
+    rgb(var(--nf-fade-rgb) / 0.987) 8.1%, rgb(var(--nf-fade-rgb) / 0.951) 15.5%,
+    rgb(var(--nf-fade-rgb) / 0.896) 22.5%, rgb(var(--nf-fade-rgb) / 0.825) 29%,
+    rgb(var(--nf-fade-rgb) / 0.741) 35.3%, rgb(var(--nf-fade-rgb) / 0.648) 41.2%,
+    rgb(var(--nf-fade-rgb) / 0.55) 47.1%, rgb(var(--nf-fade-rgb) / 0.45) 52.9%,
+    rgb(var(--nf-fade-rgb) / 0.352) 58.8%, rgb(var(--nf-fade-rgb) / 0.259) 64.7%,
+    rgb(var(--nf-fade-rgb) / 0.175) 71%, rgb(var(--nf-fade-rgb) / 0.104) 77.5%,
+    rgb(var(--nf-fade-rgb) / 0.049) 84.5%, rgb(var(--nf-fade-rgb) / 0.013) 91.9%,
+    rgb(var(--nf-fade-rgb) / 0) 100%);
+}
+.nf-backdrop-fade.nf-fade-page { --nf-fade-rgb: 20 20 20; /* nf-bg: the page behind billboards */ }
+/* The same curve as a mask, for a layer that should just thin out (a blurred cover). */
+.nf-fade-mask {
+  --nf-mask: linear-gradient(to bottom,
+    #000 0, rgb(0 0 0 / 0.987) 8.1%, rgb(0 0 0 / 0.951) 15.5%, rgb(0 0 0 / 0.896) 22.5%,
+    rgb(0 0 0 / 0.825) 29%, rgb(0 0 0 / 0.741) 35.3%, rgb(0 0 0 / 0.648) 41.2%,
+    rgb(0 0 0 / 0.55) 47.1%, rgb(0 0 0 / 0.45) 52.9%, rgb(0 0 0 / 0.352) 58.8%,
+    rgb(0 0 0 / 0.259) 64.7%, rgb(0 0 0 / 0.175) 71%, rgb(0 0 0 / 0.104) 77.5%,
+    rgb(0 0 0 / 0.049) 84.5%, rgb(0 0 0 / 0.013) 91.9%, transparent 100%);
+  -webkit-mask-image: var(--nf-mask);
+  mask-image: var(--nf-mask);
+}
+
 /* Hover-card stills: each frame fades in over the last (no dip to black) while slowly drifting closer. */
 @keyframes nf-still-in {
   from { opacity: 0; }
