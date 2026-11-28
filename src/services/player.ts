@@ -28,6 +28,7 @@ import { blockedMessage, formatLeft, limitStatus } from './limits';
 import { subtitlesEnabled } from './subtitles';
 import { canStreamTorrent, downloadBlockingPlayback, stillDownloadingMessage, torrentForFile } from './torrents';
 import { errorMessage } from '../lib/errors';
+import { clampToViewport, MINI, miniFramePosition, miniVideoRect, refreshMiniViewport, useMiniLayout, type MiniVideoRect, type Point } from './miniLayout';
 
 interface ProgressPayload {
   media_type: PlayableType;
@@ -969,13 +970,64 @@ export function startLimitWatch() {
 // Mini-player
 // ---------------------------------------------------------------------------
 
-export const MINI = { width: 400, margin: 24, bar: 64 };
+export { MINI };
 
-/** Where the mini video sits (CSS px): bottom-right, above its control bar. */
-export function miniRect() {
-  const w = Math.min(MINI.width, Math.round(window.innerWidth * 0.36));
-  const h = Math.round((w * 9) / 16);
-  return { x: window.innerWidth - MINI.margin - w, y: window.innerHeight - MINI.margin - MINI.bar - h, w, h, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight };
+/** Where the mini video sits (CSS px): in its corner (or wherever it's being dragged), above its control bar. */
+export function miniRect(): MiniVideoRect {
+  const state = useMiniLayout.getState();
+  return miniVideoRect(miniFramePosition(state), state.viewport);
+}
+
+/**
+ * Resolves once the page has painted what was just committed (or after `fallbackMs` when the
+ * window doesn't paint, e.g. minimized). The second animation frame runs after the first frame
+ * reached the screen; the third leaves the compositor one more to show it.
+ */
+export function afterPaint(frames = 3, fallbackMs = 150): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== 'function') return void setTimeout(resolve, 0);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    const step = (left: number) => (left <= 0 ? finish() : requestAnimationFrame(() => step(left - 1)));
+    step(frames);
+    setTimeout(finish, fallbackMs);
+  });
+}
+
+/**
+ * Moves the native mini video (one call in flight; newer spots replace older ones), so it can
+ * follow the frame every animation frame while it's dragged or snaps into its corner.
+ */
+let nativeMove: Promise<void> | null = null;
+let nativeNext: MiniVideoRect | null = null;
+/** Set while switching into or out of the mini player, which places the video itself. */
+let miniSwitching = false;
+function moveNativeMini(rect: MiniVideoRect) {
+  if (miniSwitching) return;
+  nativeNext = rect;
+  if (nativeMove) return;
+  nativeMove = (async () => {
+    while (nativeNext) {
+      const next = nativeNext;
+      nativeNext = null;
+      const { playerMini, playerSession } = useLibraryStore.getState();
+      if (miniSwitching || !playerMini || !usesNativePlayer(playerSession)) break;
+      await invoke('player_layout', { rect: next }).catch(() => {});
+    }
+    nativeNext = null;
+    nativeMove = null;
+  })();
+}
+
+/** Lets a drag or snap move the frame (top-left, CSS px), with the native video following. */
+export function placeMini(at: Point | null) {
+  const viewport = useMiniLayout.getState().viewport;
+  useMiniLayout.setState({ free: at && clampToViewport(at, viewport) });
+  moveNativeMini(miniRect());
 }
 
 /** Shrinks playback into a corner so you can keep browsing. */
@@ -989,23 +1041,49 @@ export async function enterMini() {
     await getCurrentWindow().setFullscreen(false);
     await new Promise((r) => setTimeout(r, 450)); // let the window settle before measuring
   }
+  refreshMiniViewport();
+  useMiniLayout.setState({ free: null });
+  const session = store.playerSession;
   store.setPlayerMini(true);
-  if (usesNativePlayer(store.playerSession))
+  if (!usesNativePlayer(session)) return;
+  // On Windows the page is see-through over the full-window video. Moving the video into the
+  // corner before the opaque library has reached the screen showed the desktop through the whole
+  // window for a moment, so the video stays full-size (hidden behind the page) until it has.
+  miniSwitching = true;
+  try {
+    await afterPaint();
+    const now = useLibraryStore.getState();
+    if (!now.playerMini || now.playerSession !== session) return;
     await invoke('player_layout', { rect: miniRect() }).catch((e) => console.warn('[player]', e));
+  } finally {
+    miniSwitching = false;
+  }
 }
 
 export async function exitMini() {
   const store = useLibraryStore.getState();
   if (!store.playerMini) return;
-  if (usesNativePlayer(store.playerSession))
-    await invoke('player_layout', { rect: null }).catch((e) => console.warn('[player]', e));
-  store.setPlayerMini(false);
+  // A drag or snap still moving the video must not land after it went back to full-window.
+  miniSwitching = true;
+  try {
+    nativeNext = null;
+    await nativeMove;
+    // The video goes full-size behind the (still opaque) page first; only then does the page turn
+    // see-through, so there is no moment where neither covers the window.
+    if (usesNativePlayer(store.playerSession))
+      await invoke('player_layout', { rect: null }).catch((e) => console.warn('[player]', e));
+    useMiniLayout.setState({ free: null });
+    store.setPlayerMini(false);
+  } finally {
+    miniSwitching = false;
+  }
 }
 
 /** Keeps the mini video aligned with its frame when the window resizes. */
 export function syncMiniLayout() {
+  refreshMiniViewport();
   const { playerMini, playerSession } = useLibraryStore.getState();
-  if (playerMini && usesNativePlayer(playerSession)) void invoke('player_layout', { rect: miniRect() }).catch(() => {});
+  if (playerMini && usesNativePlayer(playerSession)) moveNativeMini(miniRect());
 }
 
 /** Hands the current item to external VLC at the same position. */

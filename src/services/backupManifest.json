@@ -106,7 +106,7 @@
     "local": ["torrents", "trash", "rename_batches"]
   },
   "localStorage": {
-    "carry": ["tf-track-langs", "tf-music-volume", "truongflix:playlist-imports", "truongflix.games.libraryView"],
+    "carry": ["tf-track-langs", "tf-music-volume", "tf-mini-corner", "truongflix:playlist-imports", "truongflix.games.libraryView"],
     "local": ["tf-game-sessions", "tf-pin-lockouts", "tf-torrent-upload-readings", "tf-music-match"]
   }
 }

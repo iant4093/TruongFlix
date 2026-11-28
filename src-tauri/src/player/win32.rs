@@ -204,6 +204,10 @@ unsafe fn apply_ownership(mini: bool) {
         return;
     }
     if mini {
+        // Dragging the mini player moves it every frame: only flip ownership when it changes.
+        if GetWindowLongPtrW(video, GWLP_HWNDPARENT) == main as isize && GetWindowLongPtrW(main, GWLP_HWNDPARENT) == 0 {
+            return;
+        }
         SetWindowLongPtrW(main, GWLP_HWNDPARENT, 0);
         SetWindowLongPtrW(video, GWLP_HWNDPARENT, main as isize);
     } else {

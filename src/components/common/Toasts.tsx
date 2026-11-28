@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertCircle, CheckCircle2, Info, RefreshCw, X } from 'lucide-react';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { miniRect } from '../../services/player';
+import { cornerPosition, useMiniLayout } from '../../services/miniLayout';
 import ProgressBar from './ProgressBar';
 import { toast as toastMotion } from '../../lib/motion';
 
@@ -12,12 +12,15 @@ const enter = toastMotion;
 
 /**
  * Bottom offset of things stacked in the bottom-right corner (toasts, the back-to-top button):
- * above the mini video player, or above the cast and music bars.
+ * above the mini video player when it's in that corner, or above the cast and music bars.
  */
 export function useCornerBottom(): number | string {
   const mini = useLibraryStore((s) => s.playerMini);
   const casting = useLibraryStore((s) => !!s.cast);
-  if (mini) return window.innerHeight - miniRect().y + 16;
+  const corner = useMiniLayout((s) => s.corner);
+  const viewport = useMiniLayout((s) => s.viewport);
+  // Only when the mini player rests in this corner; dragged elsewhere, the corner is free again.
+  if (mini && corner === 'bottom-right') return viewport.height - cornerPosition(corner, viewport).y + 16;
   return `calc(${casting ? 150 : 24}px + var(--tf-music-bar, 0px))`;
 }
 
