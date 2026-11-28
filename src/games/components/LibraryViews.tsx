@@ -22,6 +22,7 @@ import GameCover from './GameCover';
 import { GamePoster, GameRowSkeleton, POSTER_GRID } from './GamePoster';
 import { GameBillboardSkeleton } from './GameBillboard';
 import { formatPlayTime, gameProgress, gameStatusLabel, isInstalled } from './status';
+import { shortPlayTime, useGameStats } from './GameStats';
 
 export const libraryCard = (game: LibraryGame): GameCard =>
   game.detail ?? { slug: game.slug, title: game.title, subtitle: game.subtitle, cover: game.cover, postId: null, date: null };
@@ -221,6 +222,7 @@ function ListRow({ game, openers }: { game: LibraryGame; openers: GameOpeners })
   const status = running ? 'Playing now' : gameStatusLabel(game, job, torrent);
   const tone = running || installed ? 'text-nf-green' : failed ? 'text-amber-300' : game.status === 'downloaded' && !job ? 'text-white' : job ? 'text-white' : 'text-nf-download-text';
   const open = () => openers.onOpen(libraryCard(game));
+  const stats = useGameStats(game);
 
   return (
     <motion.div
@@ -247,7 +249,10 @@ function ListRow({ game, openers }: { game: LibraryGame; openers: GameOpeners })
         {progress != null && <ProgressBar value={progress / 100} min={0.03} tone={job ? 'red' : 'download'} rounded animated className="mt-1.5 max-w-[180px]" />}
       </div>
       <div role="cell" className="tabular-nums text-nf-secondary">{game.sizeBytes ? formatBytes(game.sizeBytes) : '—'}</div>
-      <div role="cell" className="tabular-nums text-nf-secondary">{game.playSeconds > 0 ? formatPlayTime(game.playSeconds) : '—'}</div>
+      <div role="cell" className="tabular-nums text-nf-secondary">
+        {game.playSeconds > 0 ? formatPlayTime(game.playSeconds) : '—'}
+        {stats.weekSeconds >= 60 && <div className="mt-0.5 text-xs text-nf-muted">{shortPlayTime(stats.weekSeconds)} this week</div>}
+      </div>
       <div role="cell" className="text-nf-secondary">{game.lastPlayed ? shortDate(parseLibraryTime(game.lastPlayed)) : 'Never'}</div>
       <div role="cell" className="hidden text-nf-secondary xl:block">{shortDate(parseLibraryTime(game.createdAt))}</div>
       <div role="cell" className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>

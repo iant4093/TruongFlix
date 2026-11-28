@@ -47,8 +47,13 @@ describe('games sessions migration', () => {
   it('only adds tables and columns (never drops or rewrites the library)', async () => {
     const d = fakeDb();
     await migrateGamesDb(d);
-    expect(d.statements.some((st) => /^\s*(DROP|DELETE|UPDATE)\b/i.test(st.query))).toBe(false);
-    expect(d.statements.filter((st) => /^\s*ALTER\b/i.test(st.query)).map((st) => st.query)).toEqual(['ALTER TABLE games_play_sessions ADD COLUMN profile_id INTEGER']);
+    expect(d.statements.some((st) => /^\s*(DROP|DELETE)\b/i.test(st.query))).toBe(false);
+    // The only rewrite: older sessions get their game's key.
+    expect(d.statements.filter((st) => /^\s*UPDATE\b/i.test(st.query) && !st.query.startsWith('UPDATE games_play_sessions SET game_key ='))).toEqual([]);
+    expect(d.statements.filter((st) => /^\s*ALTER\b/i.test(st.query)).map((st) => st.query)).toEqual([
+      'ALTER TABLE games_play_sessions ADD COLUMN profile_id INTEGER',
+      'ALTER TABLE games_play_sessions ADD COLUMN game_key TEXT',
+    ]);
     expect(d.tables).toEqual(new Set(['games_library', 'games_play_sessions']));
   });
 });
@@ -59,7 +64,7 @@ describe('recordPlaySession', () => {
   it('stores when the session started, from its end time and length', async () => {
     const ended = new Date('2026-11-07T20:00:00.000Z');
     await recordPlaySession({ id: 3, slug: 'trees', title: 'Trees', cover: 'c.jpg' }, 5400.4, ended);
-    expect(db.sessions).toEqual([[3, 'trees', 'Trees', 'c.jpg', '2026-11-07T18:30:00.000Z', 5400, null]]);
+    expect(db.sessions).toEqual([[3, 'trees', 'Trees', 'c.jpg', '2026-11-07T18:30:00.000Z', 5400, null, 'trees']]);
   });
 
   it('notes which profile played', async () => {

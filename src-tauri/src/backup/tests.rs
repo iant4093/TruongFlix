@@ -632,3 +632,58 @@ async fn a_restore_that_fails_part_way_changes_nothing() {
         assert_eq!(dump(&mut db, table).await, tables[table], "{table} changed");
     }
 }
+
+/// The games play history table as the app makes it (src/games/library.ts).
+const GAME_SESSIONS: &str = "CREATE TABLE games_play_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, game_id INTEGER, slug TEXT NOT NULL,
+    title TEXT NOT NULL, cover TEXT, started_at TEXT NOT NULL, seconds INTEGER NOT NULL, estimated INTEGER NOT NULL DEFAULT 0,
+    profile_id INTEGER, game_key TEXT)";
+
+async fn replace_game_sessions(db: &mut SqliteConnection, schema: &str, rows: &str) {
+    sqlx::raw_sql(&format!("DROP TABLE games_play_sessions; {schema}; {rows}")).execute(db).await.unwrap();
+}
+
+#[tokio::test]
+async fn game_play_stats_move_to_a_new_computer() {
+    let (old, mut db) = Computer::new(Some("a")).await;
+    replace_game_sessions(&mut db, GAME_SESSIONS, "
+        INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated, profile_id, game_key) VALUES
+            (4, 'trees-v1', 'Trees', NULL, '2026-11-01T10:00:00.000Z', 3600, 0, 1, 'trees'),
+            (NULL, 'rocks', 'Rocks', 'c.jpg', '2026-01-01T00:00:00.000Z', 700, 1, NULL, 'rocks');
+    ").await;
+    // Uninstalled games keep their history: a session whose game left the library comes along too.
+    let before = dump(&mut db, "games_play_sessions").await;
+    assert!(before.contains("'rocks'"));
+    db.close().await.unwrap();
+    let file = old.path().join("Setup.truongflix-backup");
+    snapshot(&old.path().join(DB), &file, &no_extras()).await.unwrap();
+
+    let (new, mut db) = Computer::new(None).await;
+    replace_game_sessions(&mut db, GAME_SESSIONS, "").await;
+    db.close().await.unwrap();
+    new.restore(&file, Vec::new(), &[]).await.unwrap();
+    let mut db = new.db().await;
+    assert_eq!(dump(&mut db, "games_play_sessions").await, before);
+}
+
+#[tokio::test]
+async fn game_play_stats_come_back_from_a_backup_made_before_sessions_noted_the_game() {
+    let (old, mut db) = Computer::new(Some("a")).await;
+    replace_game_sessions(&mut db, "CREATE TABLE games_play_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, game_id INTEGER,
+        slug TEXT NOT NULL, title TEXT NOT NULL, cover TEXT, started_at TEXT NOT NULL, seconds INTEGER NOT NULL, estimated INTEGER NOT NULL DEFAULT 0)", "
+        INSERT INTO games_play_sessions (game_id, slug, title, started_at, seconds) VALUES (4, 'trees', 'Trees', '2026-11-01T10:00:00.000Z', 3600);
+    ").await;
+    db.close().await.unwrap();
+    let file = old.path().join("Old.truongflix-backup");
+    snapshot(&old.path().join(DB), &file, &no_extras()).await.unwrap();
+
+    let (new, mut db) = Computer::new(None).await;
+    replace_game_sessions(&mut db, GAME_SESSIONS, "").await;
+    db.close().await.unwrap();
+    new.restore(&file, Vec::new(), &[]).await.unwrap();
+    let mut db = new.db().await;
+    // The app keys these sessions on its next start (migrateGamesDb).
+    assert_eq!(
+        dump(&mut db, "games_play_sessions").await,
+        "1,4,'trees','Trees',NULL,'2026-11-01T10:00:00.000Z',3600,0,NULL,NULL"
+    );
+}

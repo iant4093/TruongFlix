@@ -279,6 +279,8 @@ pub fn run() {
             #[cfg(windows)]
             games::games_is_running,
             #[cfg(windows)]
+            games::games_running_since,
+            #[cfg(windows)]
             games::games_find_executables,
             #[cfg(windows)]
             games::games_disk_free,

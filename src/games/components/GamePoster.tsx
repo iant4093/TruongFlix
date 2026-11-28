@@ -16,7 +16,8 @@ import { GenreDots, HoverButton, HoverCardFrame, HoverCardLayer, HoverTitleOverl
 import GameCover, { useCachedImage, useCachedImages } from './GameCover';
 import StillCycler from '../../components/common/StillCycler';
 import { useLibraryStore } from '../../store/useLibraryStore';
-import { formatPlayTime, gameProgress, gameStatusLabel, isInstalled } from './status';
+import { gameProgress, gameStatusLabel, isInstalled } from './status';
+import { compactStats, useGameStats } from './GameStats';
 
 const isDetail = (game: GameCard): game is GameDetail => 'magnet' in game && Array.isArray((game as GameDetail).screenshots);
 
@@ -114,6 +115,7 @@ export function GamePoster({ game, openers, caption = false }: { game: GameCard;
 function GameHoverCard({ game, rect, onClose, openers }: { game: GameCard; rect: HoverRect; onClose: () => void; openers: Openers }) {
   const { owned, job, running, torrent } = useOwnedGame(game.slug);
   const detail = useGameDetail(game);
+  const stats = useGameStats(owned ?? game);
   // Hover stills: the game's screenshots, cycled like the library's (when hover stills are on).
   const stillsOn = useLibraryStore((s) => s.settings.hover_stills);
   const shots = useMemo(() => (detail?.screenshots ?? []).map((s) => s.thumb || s.full).filter(Boolean), [detail]);
@@ -184,7 +186,7 @@ function GameHoverCard({ game, rect, onClose, openers }: { game: GameCard; rect:
           {!job && torrent && !torrent.paused && torrent.downloadSpeedBps > 0 ? ` · ↓ ${formatSpeed(torrent.downloadSpeedBps)}` : ''}
         </div>
       )}
-      {installed && owned && <div className="truncate text-xs font-semibold text-nf-green">{owned.lastPlayed ? `Played ${formatPlayTime(owned.playSeconds)}` : 'Ready to play'}</div>}
+      {installed && owned && <div className="truncate text-xs font-semibold text-nf-green">{compactStats(stats) || 'Ready to play'}</div>}
       {game.subtitle && <div className="truncate text-xs font-semibold text-white">{game.subtitle}</div>}
       <div className="flex min-h-4 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium">
         {year && <span className="text-nf-secondary">{year}</span>}

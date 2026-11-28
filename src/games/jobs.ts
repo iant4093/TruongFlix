@@ -7,6 +7,8 @@ import { useLibraryStore } from '../store/useLibraryStore';
 import type { TorrentItem, TorrentStatus } from '../types/media';
 import { buildInstallJob, buildOptions, chooseLanguage, defaultChoices, resolvePath } from './installerOptions';
 import * as lib from './library';
+import { createSessionTracker, POLL_MS, type OpenSessions, type WatchedGame } from './sessions';
+import type { StatSession } from './stats';
 import type { GameDetail, GameSettings, InstallChoices, InstallerInfo, KnownFolders, LibraryGame } from './types';
 import { errorMessage } from '../lib/errors';
 
@@ -39,6 +41,8 @@ interface GamesState {
   running: Record<number, boolean>;
   /** Files that failed verification, per game. */
   verifyFailures: Record<number, string[]>;
+  /** Every play session, of games in the library or not (stats.statsFor). */
+  history: StatSession[];
 }
 
 export const useGamesStore = create<GamesState>(() => ({
@@ -48,12 +52,14 @@ export const useGamesStore = create<GamesState>(() => ({
   jobs: {},
   running: {},
   verifyFailures: {},
+  history: [],
 }));
 
 const toast = (message: string, kind: 'info' | 'success' | 'error' = 'info') => useLibraryStore.getState().toast(message, kind);
 
 async function refresh() {
-  useGamesStore.setState({ games: await lib.listGames() });
+  const history = await lib.listStatSessions();
+  useGamesStore.setState({ games: await lib.listGames(history), history });
 }
 
 function setJob(gameId: number, job: JobState | null) {
@@ -94,8 +100,9 @@ let initialized: Promise<void> | null = null;
 
 export function initGames(): Promise<void> {
   initialized ??= (async () => {
-    const [settings, games] = await Promise.all([lib.loadGameSettings(), lib.listGames()]);
-    useGamesStore.setState({ settings, games, ready: true });
+    const [settings, history] = await Promise.all([lib.loadGameSettings(), lib.listStatSessions()]);
+    const games = await lib.listGames(history);
+    useGamesStore.setState({ settings, games, history, ready: true });
 
     // Jobs can't survive an app restart; the installer was closed with the app.
     for (const g of games) {
@@ -111,8 +118,9 @@ export function initGames(): Promise<void> {
     await listen<{ jobId: string; event: HelperEvent }>('games-job', (e) => onHelperEvent(e.payload.jobId, e.payload.event));
     await listen<{ jobId: string; progress: VerifyProgress }>('games-verify', (e) => onVerifyProgress(e.payload.jobId, e.payload.progress));
     await listen<{ gameId: string; seconds: number; error: string | null }>('games-session', (e) => void onSessionEnded(e.payload));
-    await settleOpenSessions();
-    window.setInterval(markStillPlaying, 60_000);
+    // Sessions open when TruongFlix last closed, and games started outside it, from now on.
+    await tracker.poll(watchedGames());
+    window.setInterval(() => void tracker.poll(watchedGames()), POLL_MS);
 
     // Downloads that finished while this screen wasn't loaded yet.
     const torrents = useLibraryStore.getState().torrents;
@@ -392,22 +400,22 @@ export async function launchGame(gameId: number) {
   const game = gameById(gameId);
   if (!game?.exePath || !game.installDir) throw new Error('Choose the game’s program file first.');
   if (useGamesStore.getState().running[gameId]) return;
-  await invoke('games_launch', { gameId });
-  useGamesStore.setState((s) => ({ running: { ...s.running, [gameId]: true } }));
-  const now = Date.now();
-  writeOpen({ ...readOpen(), [gameId]: { start: now, seen: now, profile: useLibraryStore.getState().activeProfile?.id ?? null } });
+  tracker.launching(gameId);
+  try {
+    await invoke('games_launch', { gameId });
+  } catch (e) {
+    tracker.launchFailed(gameId);
+    throw e;
+  }
 }
 
-// Play time is measured until the game exits. Closing TruongFlix while a game runs used to lose
-// the whole session, so each one is noted when it starts (and checked in on every minute), and
-// settled on the next start: still running → watched until it ends; ended → counted up to the
-// last check-in.
+// Play sessions (see sessions.ts): open ones are noted in window storage so closing TruongFlix
+// mid-game doesn't lose them.
 const OPEN_SESSIONS = 'tf-game-sessions';
-/** `profile`: who started the game, so its play time shows in that profile's Wrapped. */
-type OpenSessions = Record<string, { start: number; seen: number; profile?: number | null }>;
 const readOpen = (): OpenSessions => {
   try {
-    return JSON.parse(localStorage.getItem(OPEN_SESSIONS) ?? '{}') as OpenSessions;
+    const parsed = JSON.parse(localStorage.getItem(OPEN_SESSIONS) ?? '{}') as OpenSessions;
+    return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
   }
@@ -419,74 +427,60 @@ const writeOpen = (v: OpenSessions) => {
     /* storage unavailable: only a closed-app session can be lost */
   }
 };
-function markStillPlaying() {
-  const open = readOpen();
-  const running = useGamesStore.getState().running;
-  let changed = false;
-  for (const id of Object.keys(open)) {
-    if (running[Number(id)]) {
-      open[id].seen = Date.now();
-      changed = true;
-    }
-  }
-  if (changed) writeOpen(open);
+
+function setRunning(id: number, running: boolean) {
+  if (!!useGamesStore.getState().running[id] === running) return;
+  useGamesStore.setState((s) => {
+    const next = { ...s.running };
+    if (running) next[id] = true;
+    else delete next[id];
+    return { running: next };
+  });
 }
-async function creditPlayTime(id: number, seconds: number, profile: number | null = null, endedAt = new Date()) {
+
+async function creditPlayTime(id: number, seconds: number, profile: number | null, endedAt: Date) {
   if (seconds <= 0) return;
   const game = gameById(id);
   await lib.addPlayTime(id, seconds);
   if (game) await lib.recordPlaySession(game, seconds, endedAt, profile).catch(() => {});
-}
-async function settleOpenSessions() {
-  const open = readOpen();
-  for (const [key, s] of Object.entries(open)) {
-    const id = Number(key);
-    const game = gameById(id);
-    const stillRunning = game?.installDir ? await invoke<boolean>('games_is_running', { installDir: game.installDir }).catch(() => false) : false;
-    if (stillRunning) {
-      // Shown as running (Play and Uninstall stay disabled) and counted once it exits.
-      useGamesStore.setState((st) => ({ running: { ...st.running, [id]: true } }));
-      const watch = window.setInterval(async () => {
-        if (await invoke<boolean>('games_is_running', { installDir: game!.installDir }).catch(() => false)) {
-          markStillPlaying();
-          return;
-        }
-        window.clearInterval(watch);
-        const cur = readOpen();
-        const entry = cur[key];
-        delete cur[key];
-        writeOpen(cur);
-        useGamesStore.setState((st) => {
-          const running = { ...st.running };
-          delete running[id];
-          return { running };
-        });
-        if (entry) await creditPlayTime(id, Math.round((Date.now() - entry.start) / 1000), entry.profile ?? null);
-        await refresh();
-      }, 30_000);
-      continue;
-    }
-    delete open[key];
-    writeOpen(open);
-    if (game) await creditPlayTime(id, Math.round((s.seen - s.start) / 1000), s.profile ?? null, new Date(s.seen));
-  }
   await refresh();
 }
 
+const tracker = createSessionTracker({
+  read: readOpen,
+  write: writeOpen,
+  runningSince: (dirs) => invoke<(number | null)[]>('games_running_since', { dirs }),
+  credit: creditPlayTime,
+  setRunning,
+  now: () => Date.now(),
+  profile: () => useLibraryStore.getState().activeProfile?.id ?? null,
+});
+
+/** Installed games, for noticing ones started outside TruongFlix (not while a job runs in their folder). */
+function watchedGames(): WatchedGame[] {
+  const { games, jobs } = useGamesStore.getState();
+  return games.map((g) => ({ id: g.id, installDir: g.installDir, playable: isPlayable(g.status) && !jobs[g.id] }));
+}
+const isPlayable = (status: LibraryGame['status']) => status === 'installed' || status === 'verify_failed';
+
 async function onSessionEnded(e: { gameId: string; seconds: number; error: string | null }) {
-  const id = Number(e.gameId);
-  const open = readOpen();
-  const profile = open[e.gameId]?.profile ?? null;
-  delete open[e.gameId];
-  writeOpen(open);
-  useGamesStore.setState((s) => {
-    const running = { ...s.running };
-    delete running[id];
-    return { running };
-  });
   if (e.error) toast(e.error, 'error');
-  if (e.seconds > 0) await creditPlayTime(id, e.seconds, profile);
+  await tracker.ended(Number(e.gameId), e.seconds);
   await refresh();
+}
+
+/** Deletes a game's play history and stats (every install of it). */
+export async function forgetGameStats(game: { slug: string; title: string }) {
+  await lib.forgetPlayStats(game);
+  await refresh();
+}
+
+/** Measures the game's folder again (it changes when a game updates itself). */
+export async function remeasureGame(gameId: number) {
+  const game = gameById(gameId);
+  if (!game?.installDir || !isPlayable(game.status)) return;
+  const sizeBytes = await invoke<number>('games_folder_size', { dir: game.installDir }).catch(() => null);
+  if (sizeBytes && sizeBytes !== game.sizeBytes) await patchGame(gameId, { sizeBytes });
 }
 
 export async function setGameExe(gameId: number, exePath: string) {

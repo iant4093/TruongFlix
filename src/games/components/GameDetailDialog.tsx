@@ -15,7 +15,7 @@ import ProgressBar from '../../components/common/ProgressBar';
 import Spinner from '../../components/common/Spinner';
 import { revealInFileManager } from '../../services/files';
 import { BTN, BTN_DANGER } from '../../components/settings/ui';
-import { deleteInstallerNow, removeGame, setGameExe, uninstallGame, useGamesStore } from '../jobs';
+import { deleteInstallerNow, remeasureGame, removeGame, setGameExe, uninstallGame, useGamesStore } from '../jobs';
 import { fetchGame } from '../source';
 import type { GameCard, GameDetail, LibraryGame } from '../types';
 import { hasInstaller, PrimaryAction, toastError, useBusy, useOwnedGame } from './actions';
@@ -23,6 +23,7 @@ import { MetaLine } from './GameBillboard';
 import { useCachedImage } from './GameCover';
 import DownloadDialog from './DownloadDialog';
 import InstallDialog from './InstallDialog';
+import { GameStatsPanel, useGameStats } from './GameStats';
 import { formatPlayTime, gameProgress, gameStatusLabel, isInstalled } from './status';
 
 type Shot = { thumb: string; full: string };
@@ -199,6 +200,13 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
   const description = detail?.description ?? '';
   const longText = description.length > 420;
   const loading = !detail && !error && !!origin;
+  const stats = useGameStats(owned ?? game);
+
+  // Games that update themselves change size: measure again when the details open.
+  const ownedId = installed ? owned?.id : undefined;
+  useEffect(() => {
+    if (ownedId != null && !running) void remeasureGame(ownedId);
+  }, [ownedId, running]);
 
   const status = owned && (
     running ? <span className="inline-flex items-center gap-1.5 font-semibold text-nf-green"><Play className="h-4 w-4 fill-current" strokeWidth={0} />Playing now</span>
@@ -214,7 +222,6 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
   if (detail?.originalSize) about.push(['Original size', detail.originalSize]);
   if (detail?.repackSize) about.push(['Download size', detail.repackSize + (detail.selective ? ' · some files optional' : '')]);
   if (owned && installed) {
-    if (owned.sizeBytes) about.push(['Size on disk', formatBytes(owned.sizeBytes)]);
     if (owned.installedAt) about.push(['Installed', longDate(owned.installedAt)]);
     if (owned.installDir) about.push(['Location', <span className="selectable break-all">{owned.installDir}</span>]);
   }
@@ -268,9 +275,9 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
               <MetaLine detail={detail} genres={false} />
               {detail?.selective && <span className="rounded-[3px] border border-white/40 px-1.5 py-px text-xs text-nf-secondary">Selective download</span>}
             </div>
-            {owned && installed && (
+            {((owned && installed) || stats.totalSeconds > 0) && (
               <p className="text-sm text-nf-secondary">
-                {formatPlayTime(owned.playSeconds)}{owned.lastPlayed ? ` · Last played ${longDate(owned.lastPlayed)}` : ''}
+                {formatPlayTime(stats.totalSeconds)}{stats.lastPlayed ? ` · Last played ${longDate(stats.lastPlayed)}` : ''}
               </p>
             )}
             {loading && <p role="status" className="flex items-center gap-2 text-sm text-nf-secondary"><Spinner tone="inherit" className="h-4 w-4" />Loading details…</p>}
@@ -291,6 +298,8 @@ export default function GameDetailDialog({ origin, game, onClose, onOpenLibrary 
             {owned?.sizeBytes && installed ? <Fact label="Size on disk">{formatBytes(owned.sizeBytes)}</Fact> : null}
           </div>
         </div>
+
+        <GameStatsPanel game={owned ?? game} sizeBytes={owned && installed ? owned.sizeBytes : null} running={running} />
 
         {shots.length > 0 && (
           <section className="px-12 pb-8">
