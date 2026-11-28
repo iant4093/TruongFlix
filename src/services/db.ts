@@ -280,7 +280,7 @@ const ADDED_COLUMNS: Record<string, [string, string][]> = {
     ['media_info', 'TEXT'],
     ['segments', 'TEXT'],
     ['probed_mtime', 'INTEGER'],
-    ['intro_checked', 'INTEGER'], // audio intro detection done
+    ['intro_checked', 'INTEGER'], // INTRO_CHECK_VERSION once audio intro detection ran
     ['probe_error', 'TEXT'],
     ['subs_auto_at', 'DATETIME'],
     ['subs_auto_result', 'TEXT'],
@@ -1256,9 +1256,15 @@ export async function markProbeFailed(table: 'movies' | 'episodes', id: number, 
   ]);
 }
 
+/**
+ * Stored in `episodes.intro_checked` once audio intro detection ran. Raised when detection changes,
+ * so every episode is checked again (2: intros after a recap; files with chapters are checked too).
+ */
+export const INTRO_CHECK_VERSION = 2;
+
 /** Replaces a title's skip markers (e.g. after fixing the intro by hand). */
 export async function setSegments(table: 'movies' | 'episodes', id: number, segments: Segment[]) {
-  const extra = table === 'episodes' ? ', intro_checked = 1' : '';
+  const extra = table === 'episodes' ? `, intro_checked = ${INTRO_CHECK_VERSION}` : '';
   await exec(`UPDATE ${table} SET segments = $2${extra} WHERE id = $1`, [id, JSON.stringify(segments)]);
 }
 
@@ -1282,11 +1288,18 @@ export async function currentSegments(table: 'movies' | 'episodes', id: number):
 }
 
 export async function saveSegments(id: number, segments: Segment[]) {
-  await exec('UPDATE episodes SET segments = $2, intro_checked = 1 WHERE id = $1', [id, JSON.stringify(segments)]);
+  await exec('UPDATE episodes SET segments = $2, intro_checked = $3 WHERE id = $1', [id, JSON.stringify(segments), INTRO_CHECK_VERSION]);
+}
+
+/** Chapter markers worked out again from the stored chapters; leaves the intro check as it is. */
+export async function saveChapterSegments(table: 'movies' | 'episodes', id: number, segments: Segment[]) {
+  await exec(`UPDATE ${table} SET segments = $2 WHERE id = $1`, [id, JSON.stringify(segments)]);
 }
 
 export async function markIntroChecked(ids: number[]) {
-  for (const part of chunks(ids)) await exec(`UPDATE episodes SET intro_checked = 1 WHERE id IN (${placeholders(part.length)})`, part);
+  for (const part of chunks(ids)) {
+    await exec(`UPDATE episodes SET intro_checked = ${INTRO_CHECK_VERSION} WHERE id IN (${placeholders(part.length)})`, part);
+  }
 }
 
 export async function saveMovieExtras(tmdbId: number, x: MovieExtras) {

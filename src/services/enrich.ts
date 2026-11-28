@@ -1,16 +1,16 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useLibraryStore } from '../store/useLibraryStore';
-import type { EpisodeRow, MediaInfo, MovieRow, Segment } from '../types/media';
+import type { EpisodeRow, MediaInfo, MovieRow } from '../types/media';
 import * as db from './db';
-import { parseSegments, segmentsFromChapters, techFromInfo } from './mediainfo';
+import { mergeChapterSegments, parseMediaInfo, parseSegments, sameSegments, segmentsFromChapters, techFromInfo, withAudioIntro } from './mediainfo';
 import * as tmdb from './tmdb';
 import { fetchCriticScores, OmdbError } from './omdb';
 import { runAutoSubtitles } from './autosubs';
 
 const PROBE_CHUNK = 6;
-/** How much of each episode's audio is compared when looking for the intro. */
-const INTRO_WINDOW_SECONDS = 420;
+/** How much of each episode's audio is compared when looking for the intro (room for a recap and a cold open first). */
+const INTRO_WINDOW_SECONDS = 600;
 const SERIES_REFRESH_DAYS = 3;
 const AIRING_REFRESH_DAYS = 0.5;
 const COLLECTION_REFRESH_DAYS = 30;
@@ -45,7 +45,8 @@ async function reloadIfChanged(final = false) {
 
 /**
  * Background library analysis, run after scans and at launch:
- *  1. read real stream info (badges, chapters, Dolby Vision) for new/changed files
+ *  1. read real stream info (badges, chapters, Dolby Vision) for new/changed files, and work out
+ *     the markers again from chapters read before (once per launch)
  *  2. TMDB extras: age ratings, trailers, collections, series status / next episode
  *  3. detect intros from audio for seasons with new episodes
  * Each step only touches what's missing, so repeat runs are cheap.
@@ -60,6 +61,7 @@ export async function startBackgroundAnalysis() {
     do {
       again = false;
       await probeFiles();
+      await refreshChapterMarkers();
       await fetchExtras();
       await fetchCollections();
       await fetchCriticRatings();
@@ -107,14 +109,39 @@ async function probeFiles() {
       }
       const now = await db.currentSegments(table, row.id).catch(() => undefined);
       const existing = parseSegments(now === undefined ? row.segments : now);
-      // Markers set by hand always win; audio-detected ones stay unless the chapters now cover them.
-      const manual = existing.filter((s) => s.source === 'manual');
-      const fromChapters = segmentsFromChapters(info).filter((c) => !manual.some((m) => m.kind === c.kind));
-      const audio = existing.filter((s) => s.source === 'audio' && ![...manual, ...fromChapters].some((c) => c.kind === s.kind));
-      touched(await db.saveMediaInfo(table, row.id, row.file_mtime, info, techFromInfo(info, row), [...manual, ...fromChapters, ...audio]));
+      const segments = mergeChapterSegments(existing, segmentsFromChapters(info));
+      touched(await db.saveMediaInfo(table, row.id, row.file_mtime, info, techFromInfo(info, row), segments));
     }
     if ((i / PROBE_CHUNK) % 5 === 4) await reloadIfChanged();
   }
+  await reloadIfChanged();
+}
+
+let chaptersRefreshed = false;
+
+/**
+ * Markers from chapters are worked out from the stored chapters again, so files read by an
+ * earlier version get today's rules (e.g. a recap also named "Intro") without being read again.
+ */
+async function refreshChapterMarkers() {
+  if (chaptersRefreshed) return;
+  chaptersRefreshed = true;
+  const { movies, episodes } = useLibraryStore.getState();
+  const refresh = async (table: 'movies' | 'episodes', row: MovieRow | EpisodeRow) => {
+    if (row.probed_mtime !== row.file_mtime) return; // read again anyway
+    const info = parseMediaInfo(row.media_info);
+    if (!info?.chapters?.length) return;
+    const fromChapters = segmentsFromChapters(info);
+    const stored = parseSegments(row.segments);
+    if (sameSegments(stored, mergeChapterSegments(stored, fromChapters))) return;
+    const now = await db.currentSegments(table, row.id).catch(() => undefined);
+    if (now === undefined) return;
+    const existing = parseSegments(now);
+    const next = mergeChapterSegments(existing, fromChapters);
+    if (!sameSegments(existing, next)) touched(await db.saveChapterSegments(table, row.id, next));
+  };
+  for (const row of movies) await refresh('movies', row);
+  for (const row of episodes) await refresh('episodes', row);
   await reloadIfChanged();
 }
 
@@ -226,8 +253,8 @@ async function detectIntros() {
       const seasons = new Map<number, EpisodeRow[]>();
       for (const e of eps) seasons.set(e.season_number, [...(seasons.get(e.season_number) ?? []), e]);
       for (const [season, list] of seasons) {
-        const hasChapterIntro = (e: EpisodeRow) => parseSegments(e.segments).some((s) => s.kind === 'intro' && s.source === 'chapter');
-        const pending = list.filter((e) => e.intro_checked !== 1 && !hasChapterIntro(e));
+        // Files with an intro chapter are checked too: the audio gives its exact edges.
+        const pending = list.filter((e) => (e.intro_checked ?? 0) < db.INTRO_CHECK_VERSION);
         if (!pending.length) continue;
         // Each pending episode is compared with its neighbours in the season.
         const include = new Set<number>();
@@ -256,11 +283,11 @@ async function detectIntros() {
           const now = await db.currentSegments('episodes', e.id).catch(() => undefined);
           const existing = parseSegments(now === undefined ? e.segments : now);
           const isPending = pending.includes(e);
-          if (existing.some((s) => s.kind === 'intro' && s.source === 'manual')) {
-            if (isPending) touched(await db.markIntroChecked([e.id])); // never replace an intro set by hand
-          } else if (seg && (isPending || !existing.some((s) => s.kind === 'intro'))) {
-            const intro: Segment = { kind: 'intro', start: seg[0], end: seg[1], source: 'audio' };
-            touched(await db.saveSegments(e.id, [...existing.filter((s) => s.kind !== 'intro'), intro]));
+          // Never replace an intro set by hand; an intro chapter elsewhere in the file also wins.
+          const manual = existing.some((s) => s.kind === 'intro' && s.source === 'manual');
+          const next = seg && !manual && (isPending || !existing.some((s) => s.kind === 'intro')) ? withAudioIntro(existing, seg) : null;
+          if (next) {
+            touched(await db.saveSegments(e.id, next));
           } else if (isPending) {
             touched(await db.markIntroChecked([e.id]));
           }

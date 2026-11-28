@@ -542,13 +542,25 @@ fn trim_run(hits: &[isize]) -> Option<(isize, isize, isize)> {
     Some((hits[first], hits[last], (last - first + 1) as isize))
 }
 
-/// Longest stretch of audio shared by two fingerprints: (a_start, a_end, b_start, b_end) seconds.
-pub fn shared_segment(a: &[u32], b: &[u32]) -> Option<(f64, f64, f64, f64)> {
+/// A stretch of audio two episodes share: (a_start, a_end, b_start, b_end) seconds.
+pub type Shared = (f64, f64, f64, f64);
+
+/// How many shared stretches are kept per pair of episodes.
+const MAX_SHARED: usize = 4;
+
+/// Longest stretch of audio shared by two fingerprints.
+pub fn shared_segment(a: &[u32], b: &[u32]) -> Option<Shared> {
+    shared_segments(a, b).into_iter().next()
+}
+
+/// Stretches of audio shared by two fingerprints, longest first, none overlapping another in
+/// either episode. Besides the intro, two episodes can share a recap's clips.
+pub fn shared_segments(a: &[u32], b: &[u32]) -> Vec<Shared> {
     let gap_allowed = (FPS * 1.5) as isize;
     let min_len = (FPS * MIN_INTRO_S) as isize;
     let max_len = (FPS * MAX_INTRO_S) as isize;
     let (na, nb) = (a.len() as isize, b.len() as isize);
-    let mut best: Option<(isize, isize, isize)> = None; // (start_a, end_a, shift)
+    let mut runs: Vec<(isize, isize, isize)> = Vec::new(); // (start_a, end_a, shift)
     for shift in -(nb - 1)..na {
         let (lo, hi) = (shift.max(0), na.min(nb + shift));
         if hi - lo < min_len {
@@ -569,18 +581,74 @@ pub fn shared_segment(a: &[u32], b: &[u32]) -> Option<(f64, f64, f64, f64)> {
             if k == hits.len() || hits[k] - hits[k - 1] > gap_allowed {
                 if let Some((s, e, n)) = trim_run(&hits[start..k]) {
                     let len = e - s + 1;
-                    if len >= min_len && len <= max_len && n * 10 >= len * 4 && best.is_none_or(|(bs, be, _)| len > be - bs + 1) {
-                        best = Some((s, e, shift));
+                    if len >= min_len && len <= max_len && n * 10 >= len * 4 {
+                        runs.push((s, e, shift));
                     }
                 }
                 start = k;
             }
         }
     }
-    best.map(|(s, e, shift)| {
-        let t = |f: isize| f as f64 / FPS;
-        (t(s), t(e + 1), t(s - shift), t(e + 1 - shift))
-    })
+    // Longest first (the earliest shift wins a tie); a near-miss shift of a stretch already taken
+    // overlaps it and is dropped.
+    runs.sort_by_key(|&(s, e, _)| std::cmp::Reverse(e - s));
+    let mut picked: Vec<(isize, isize, isize)> = Vec::new();
+    for (s, e, shift) in runs {
+        if picked.len() == MAX_SHARED {
+            break;
+        }
+        let apart = |&(ps, pe, pshift): &(isize, isize, isize)| (e < ps || s > pe) && (e - shift < ps - pshift || s - shift > pe - pshift);
+        if picked.iter().all(apart) {
+            picked.push((s, e, shift));
+        }
+    }
+    let t = |f: isize| f as f64 / FPS;
+    picked.into_iter().map(|(s, e, shift)| (t(s), t(e + 1), t(s - shift), t(e + 1 - shift))).collect()
+}
+
+/// A stretch one episode shares with another: its range here and the matching range there.
+struct Match {
+    pair: usize,
+    here: [f64; 2],
+    other: usize,
+    there: [f64; 2],
+}
+
+fn overlaps(x: [f64; 2], y: [f64; 2]) -> bool {
+    let common = x[1].min(y[1]) - x[0].max(y[0]);
+    common > 0.5 * (x[1] - x[0]).min(y[1] - y[0])
+}
+
+/// Each episode's intro from the stretches it shares with its neighbours (`shared[i]` is between
+/// episode i and i + 1). The intro repeats in every episode, while a recap's clips turn up in one
+/// or two, and a recap can run for any length before the intro. So a stretch is scored by how many
+/// pairs share it, here and in the episode it matched, and only then by length.
+pub fn pick_intros(shared: &[Vec<Shared>], episodes: usize) -> Vec<Option<[f64; 2]>> {
+    let mut found: Vec<Vec<Match>> = (0..episodes).map(|_| Vec::new()).collect();
+    for (pair, list) in shared.iter().enumerate().take(episodes.saturating_sub(1)) {
+        for &(a0, a1, b0, b1) in list {
+            found[pair].push(Match { pair, here: [a0, a1], other: pair + 1, there: [b0, b1] });
+            found[pair + 1].push(Match { pair, here: [b0, b1], other: pair, there: [a0, a1] });
+        }
+    }
+    let support = |ep: usize, range: [f64; 2]| {
+        let mut pairs: Vec<usize> = found[ep].iter().filter(|m| overlaps(m.here, range)).map(|m| m.pair).collect();
+        pairs.dedup();
+        pairs.len()
+    };
+    let len = |r: [f64; 2]| r[1] - r[0];
+    (0..episodes)
+        .map(|ep| {
+            let mut best: Option<(usize, [f64; 2])> = None;
+            for m in &found[ep] {
+                let score = support(ep, m.here) + support(m.other, m.there);
+                if best.is_none_or(|(bs, br)| score > bs || (score == bs && len(m.here) > len(br))) {
+                    best = Some((score, m.here));
+                }
+            }
+            best.map(|(_, r)| r)
+        })
+        .collect()
 }
 
 /// Decodes the first `seconds` of audio to mono 16-bit PCM at `SAMPLE_RATE`.
@@ -619,7 +687,7 @@ struct IntroProgress {
 }
 
 /// For a season's episodes (in order), returns each episode's intro as [start, end] seconds.
-/// Each episode is compared with its neighbours; the longest shared segment wins.
+/// Each episode is compared with its neighbours; see `pick_intros`.
 #[tauri::command]
 pub async fn detect_intros(app: AppHandle, paths: Vec<String>, window_seconds: f64) -> Result<Vec<Option<[f64; 2]>>, String> {
     let tmp_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("intro-analysis");
@@ -635,17 +703,8 @@ pub async fn detect_intros(app: AppHandle, paths: Vec<String>, window_seconds: f
                 fp
             })
             .collect();
-        let mut result: Vec<Option<[f64; 2]>> = vec![None; total];
-        for i in 0..total.saturating_sub(1) {
-            if let Some((a0, a1, b0, b1)) = shared_segment(&prints[i], &prints[i + 1]) {
-                for (idx, seg) in [(i, [a0, a1]), (i + 1, [b0, b1])] {
-                    if result[idx].is_none_or(|r| seg[1] - seg[0] > r[1] - r[0]) {
-                        result[idx] = Some(seg);
-                    }
-                }
-            }
-        }
-        Ok(result)
+        let shared: Vec<Vec<Shared>> = prints.windows(2).map(|w| shared_segments(&w[0], &w[1])).collect();
+        Ok(pick_intros(&shared, total))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -694,6 +753,49 @@ mod tests {
         let (a0, a1, b0, b1) = shared_segment(&a, &b).expect("intro not found");
         assert!((a0 - 25.0).abs() < 1.5 && (a1 - 65.0).abs() < 1.5, "a: {a0:.1}–{a1:.1}");
         assert!((b0 - 70.0).abs() < 1.5 && (b1 - 110.0).abs() < 1.5, "b: {b0:.1}–{b1:.1}");
+    }
+
+    fn intros_of(episodes: &[Vec<i16>]) -> Vec<Option<[f64; 2]>> {
+        let prints: Vec<Vec<u32>> = episodes.iter().map(|e| fingerprint(e)).collect();
+        let shared: Vec<Vec<Shared>> = prints.windows(2).map(|w| shared_segments(&w[0], &w[1])).collect();
+        pick_intros(&shared, prints.len())
+    }
+
+    fn assert_near(found: Option<[f64; 2]>, start: f64, end: f64, what: &str) {
+        let [s, e] = found.unwrap_or_else(|| panic!("{what}: no intro"));
+        assert!((s - start).abs() < 1.5 && (e - end).abs() < 1.5, "{what}: {s:.1}–{e:.1}, expected {start}–{end}");
+    }
+
+    fn concat(parts: &[&[i16]]) -> Vec<i16> {
+        parts.concat()
+    }
+
+    #[test]
+    fn intro_at_the_start_is_unchanged() {
+        let intro = melody(30.0, 7);
+        let eps: Vec<Vec<i16>> = (0..3).map(|k| concat(&[&intro, &melody(90.0, 20 + k)])).collect();
+        for (k, found) in intros_of(&eps).into_iter().enumerate() {
+            assert_near(found, 0.0, 30.0, &format!("episode {}", k + 1));
+        }
+    }
+
+    /// "Previously on…" recaps of different lengths before the intro. Episodes 1 and 2 also share
+    /// a scene longer than the intro (2's recap replays it), which used to win as the "intro".
+    #[test]
+    fn finds_intro_after_recaps_of_varying_length() {
+        let intro = melody(30.0, 7);
+        let scene = melody(45.0, 50);
+        let eps = vec![
+            concat(&[&melody(20.0, 1), &scene, &melody(10.0, 2), &intro, &melody(60.0, 3)]),
+            concat(&[&melody(15.0, 4), &scene, &melody(40.0, 5), &intro, &melody(60.0, 6)]),
+            concat(&[&melody(80.0, 8), &intro, &melody(60.0, 9)]),
+            concat(&[&melody(35.0, 10), &intro, &melody(60.0, 11)]),
+        ];
+        let found = intros_of(&eps);
+        assert_near(found[0], 75.0, 105.0, "episode 1");
+        assert_near(found[1], 100.0, 130.0, "episode 2");
+        assert_near(found[2], 80.0, 110.0, "episode 3");
+        assert_near(found[3], 35.0, 65.0, "episode 4");
     }
 
     #[test]
@@ -754,10 +856,12 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         let t = Instant::now();
         let prints: Vec<Vec<u32>> =
-            paths.iter().enumerate().map(|(i, p)| fingerprint(&decode_audio(p, 420.0, &tmp.join(format!("{i}.pcm"))).unwrap())).collect();
+            paths.iter().enumerate().map(|(i, p)| fingerprint(&decode_audio(p, 600.0, &tmp.join(format!("{i}.pcm"))).unwrap())).collect();
         println!("decoded + fingerprinted {} files in {:?}", paths.len(), t.elapsed());
-        for w in prints.windows(2) {
-            println!("shared: {:?}", shared_segment(&w[0], &w[1]).map(|(a, b, c, d)| format!("{a:.1}–{b:.1} / {c:.1}–{d:.1}")));
+        let shared: Vec<Vec<Shared>> = prints.windows(2).map(|w| shared_segments(&w[0], &w[1])).collect();
+        for list in &shared {
+            println!("shared: {:?}", list.iter().map(|(a, b, c, d)| format!("{a:.1}–{b:.1} / {c:.1}–{d:.1}")).collect::<Vec<_>>());
         }
+        println!("intros: {:?}", pick_intros(&shared, prints.len()));
     }
 }
