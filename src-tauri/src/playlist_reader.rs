@@ -165,6 +165,62 @@ fn off_screen(app: &AppHandle) -> tauri::PhysicalPosition<i32> {
     tauri::PhysicalPosition::new(right + 3000, 0)
 }
 
+/// Shows the reader's window without activating it: `show()` always activates a window on Windows,
+/// whatever its focusable setting, and the app then visibly loses focus while a playlist is read.
+fn show_quietly(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+        unsafe { ShowWindow(hwnd.0 as _, SW_SHOWNOACTIVATE) };
+        return;
+    }
+    let _ = window.show();
+}
+
+/// Which window had the focus before the reader opened, to give it back if the reader takes it.
+struct Focus {
+    #[cfg(target_os = "windows")]
+    foreground: isize,
+    /// The app's own window was in front (macOS and others: only that one is given back).
+    #[cfg(not(target_os = "windows"))]
+    main: Option<tauri::WebviewWindow>,
+}
+
+impl Focus {
+    fn before(app: &AppHandle) -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = app;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+            Focus { foreground: unsafe { GetForegroundWindow() } as isize }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let main = app.get_webview_window("main").filter(|w| w.is_focused().unwrap_or(false));
+            Focus { main }
+        }
+    }
+
+    /// Gives the focus back if the reader's window has it.
+    fn keep(&self, reader: &tauri::WebviewWindow) {
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
+            let Ok(hwnd) = reader.hwnd() else { return };
+            let now = unsafe { GetForegroundWindow() } as isize;
+            if self.foreground != 0 && now == hwnd.0 as isize && now != self.foreground {
+                unsafe { SetForegroundWindow(self.foreground as _) };
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        if let Some(main) = &self.main {
+            if reader.is_focused().unwrap_or(false) {
+                let _ = main.set_focus();
+            }
+        }
+    }
+}
+
 /// Closes the reader's window, if a playlist is being read (when the app's own window closes).
 pub fn close(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
@@ -250,11 +306,15 @@ pub async fn read_all(app: &AppHandle, page: Page) -> Result<(Vec<PlaylistSong>,
     let builder = builder.data_store_identifier(*b"TruongFlixPlayRd");
     let window = builder.build().map_err(|e| format!("Couldn’t open the playlist page: {e}"))?;
     let _ = window.set_position(off_screen(app));
-    let _ = window.show();
+    let focus = Focus::before(app);
+    show_quietly(&window);
 
     let started = std::time::Instant::now();
     let outcome = loop {
         tokio::time::sleep(Duration::from_millis(250)).await;
+        // The page loading can still pull the focus to its window (Edge does when a page
+        // finishes loading): it goes straight back to what the user was in.
+        focus.keep(&window);
         if let Some(done) = reading.lock().unwrap().finished.take() {
             break done;
         }
