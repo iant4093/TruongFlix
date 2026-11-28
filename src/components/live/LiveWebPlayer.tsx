@@ -5,7 +5,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { LivePlayerSession } from '../../types/live';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { useLiveStore } from '../../services/live';
-import { closeBuiltin, dismissPrompt, enterMini, miniRect, retuneLive, tickWebLive, toggleFullscreen } from '../../services/player';
+import { closeBuiltin, dismissPrompt, enterMini, retuneLive, tickWebLive, toggleFullscreen } from '../../services/player';
+import { useMiniVideoRect } from '../../services/miniLayout';
 import { isPlayerShortcut } from '../player/shortcuts';
 import Spinner from '../common/Spinner';
 import LiveWebFrame, { type WebFrameStatus } from './LiveWebFrame';
@@ -27,20 +28,13 @@ export default function LiveWebPlayer({ session }: { session: LivePlayerSession 
   const [status, setStatus] = useState<WebFrameStatus>('loading');
   const [attempt, setAttempt] = useState(0);
   const [picking, setPicking] = useState(false);
-  const [rect, setRect] = useState(miniRect);
+  const rect = useMiniVideoRect();
   const { active: visible, wake: reveal } = useIdle();
   const blocked = !!prompt;
   const showFrame = !blocked && !paused;
   const failed = status === 'failed';
   const reload = () => setAttempt((n) => n + 1);
   useEffect(reveal, [session.loadId]);
-  useEffect(() => {
-    if (!mini) return;
-    setRect(miniRect());
-    const onResize = () => setRect(miniRect());
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [mini]);
   useEffect(() => {
     const clock = window.setInterval(() => tickWebLive(showFrame && status === 'ready'), 1000);
     return () => window.clearInterval(clock);
