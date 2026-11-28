@@ -51,6 +51,7 @@
       "soulseek_port",
       "soulseek_quality",
       "soulseek_share",
+      "keep_running_in_background",
       "games_source_url",
       "games_auto_install",
       "games_delete_installer",
