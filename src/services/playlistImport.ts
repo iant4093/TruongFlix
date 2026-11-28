@@ -96,7 +96,10 @@ export interface PlaylistImport {
   total: number | null;
   partial?: boolean;
   songs: ImportSong[];
+  /** The quality picked for this import; it's only used when `qualityOwn` (see `importQuality`). */
   quality: MusicQuality;
+  /** The user picked a quality for this import itself; otherwise it follows Settings. */
+  qualityOwn?: boolean;
   running: boolean;
   /** The playlist made in the music library. */
   playlistId: number | null;
@@ -595,30 +598,43 @@ export function removeImport(id: string) {
   });
 }
 
-/** A song that failed only because no copy was in the import's quality. */
-const wrongQuality = (song: ImportSong) => song.state === 'failed' && (song.code === 'quality' || /^There are copies of this song, but none in /.test(song.message));
+/** The quality an import downloads in: its own when the user picked one for it, else Settings'. */
+export const importQuality = (p: Pick<PlaylistImport, 'quality' | 'qualityOwn'>): MusicQuality =>
+  p.qualityOwn ? p.quality : useLibraryStore.getState().settings.soulseek_quality;
 
-/**
- * Sets an import's quality. Songs that failed only for want of a copy in the old quality are
- * tried again with the new one (right away when the import is running).
- */
-export function setImportQuality(id: string, quality: MusicQuality) {
+/** The quality a song failed for, when it failed only because no copy was in that quality. */
+function failedQuality(song: ImportSong): MusicQuality | null {
+  if (song.state !== 'failed' || !(song.code === 'quality' || /^There are copies of this song, but none in /.test(song.message))) return null;
+  return /MP3/.test(song.message) ? 'mp3' : 'lossless';
+}
+
+/** Songs that failed only for want of a copy in another quality than the import's now are tried
+ *  again (right away when the import is running). */
+function retryOtherQuality(id: string) {
   const p = getImport(id);
-  if (!p || p.quality === quality) return;
-  patchImport(id, (x) => ({
-    quality,
-    songs: x.songs.map((song) => (wrongQuality(song) ? { ...song, state: 'waiting' as const, message: '', code: null, jobId: null, tries: 0, retryAt: undefined } : song)),
-  }));
+  if (!p) return;
+  const quality = importQuality(p);
+  const again = (song: ImportSong) => {
+    const was = failedQuality(song);
+    return was !== null && was !== quality;
+  };
+  if (!p.songs.some(again)) return;
+  patchImport(id, (x) => ({ songs: x.songs.map((song) => (again(song) ? { ...song, state: 'waiting' as const, message: '', code: null, jobId: null, tries: 0, retryAt: undefined } : song)) }));
   if (p.running) void pump(id);
 }
 
-// The quality in Settings is every import's, except one given its own: changing it there changes
-// the imports that were following it.
+/** Picks a quality for one import (it then no longer follows Settings). */
+export function setImportQuality(id: string, quality: MusicQuality) {
+  if (!getImport(id)) return;
+  patchImport(id, () => ({ quality, qualityOwn: true }));
+  retryOtherQuality(id);
+}
+
+// Imports follow the quality in Settings unless given their own: changing it there tries their
+// wrong-quality songs again.
 useLibraryStore.subscribe((s, before) => {
-  const now = s.settings.soulseek_quality;
-  const was = before.settings.soulseek_quality;
-  if (now === was) return;
-  for (const p of Object.values(usePlaylistImports.getState().imports)) if (p.quality === was) setImportQuality(p.id, now);
+  if (s.settings.soulseek_quality === before.settings.soulseek_quality) return;
+  for (const p of Object.values(usePlaylistImports.getState().imports)) if (!p.qualityOwn) retryOtherQuality(p.id);
 });
 
 let following = false;
@@ -833,7 +849,7 @@ async function startSong(id: string, key: string, copy?: { user: string } & Shar
     jobId = crypto.randomUUID();
     patchSong(id, key, { jobId });
     const p = getImport(id)!;
-    const request = await songRequest(jobId, id, p.source, song, p.quality, copy);
+    const request = await songRequest(jobId, id, p.source, song, importQuality(p), copy);
     if (stopped() || current()?.jobId !== jobId) return;
     const job = await invoke<AlbumJob>('slsk_download_song', { request });
     if (current()?.jobId !== job.id) {

@@ -784,6 +784,18 @@ pub fn song_fallback_queries(want: &WantSong) -> Vec<String> {
             if album.len() >= 2 {
                 out.push(album.join(" "));
             }
+            // The album without the title's words: Soulseek's server silently drops searches with
+            // some words in them ("mafia"), so a two-song single ("ESCAPE PLAN / MAFIA") is found
+            // by its other song's name. The file still has to be named for this one.
+            let rest: Vec<String> = album.iter().filter(|w| !title.contains(w)).cloned().collect();
+            if !rest.is_empty() && rest.len() < album.len() {
+                if let Some(artist) = want.artists.first().map(|a| artist_search_words(a)).filter(|a| !a.is_empty()) {
+                    out.push(artist.iter().chain(rest.iter()).cloned().collect::<Vec<_>>().join(" "));
+                }
+                if rest.len() >= 2 {
+                    out.push(rest.join(" "));
+                }
+            }
         }
     }
     out.push(title.join(" "));
@@ -806,6 +818,18 @@ mod tests {
 
     fn album() -> Vec<WantTrack> {
         vec![track("Airbag", 1, 284), track("Paranoid Android", 2, 387), track("Subterranean Homesick Alien", 3, 267)]
+    }
+
+    #[test]
+    fn a_song_whose_word_soulseek_drops_is_searched_by_its_albums_other_words() {
+        let mut want = song("MAFIA", "Travis Scott", Some(160));
+        want.album = Some("ESCAPE PLAN / MAFIA - Single".into());
+        let fallbacks = song_fallback_queries(&want);
+        assert!(fallbacks.contains(&"travis scott escape plan".to_string()), "{fallbacks:?}");
+        assert!(fallbacks.contains(&"escape plan".to_string()), "{fallbacks:?}");
+        // The files found must still be this song.
+        assert!(song_matches(&want, &offer("a", r"Music\Travis Scott\ESCAPE PLAN - MAFIA\02 MAFIA.flac", Some(160), None)));
+        assert!(!song_matches(&want, &offer("a", r"Music\Travis Scott\ESCAPE PLAN - MAFIA\01 ESCAPE PLAN.flac", Some(160), None)));
     }
 
     #[test]

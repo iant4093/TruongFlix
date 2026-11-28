@@ -13,6 +13,7 @@ import {
   removeImport,
   retrySong,
   setImportQuality,
+  importQuality,
   songArtists,
   startImport,
   stopImport,
@@ -241,7 +242,7 @@ function ImportDetail({ playlist, onBack }: { playlist: PlaylistImport; onBack: 
                 </button>
               )
             )}
-            {!playlist.running && <Dropdown value={playlist.quality} options={QUALITIES} onChange={(q) => setImportQuality(playlist.id, q)} ariaLabel="Download quality" />}
+            {!playlist.running && <Dropdown value={importQuality(playlist)} options={QUALITIES} onChange={(q) => setImportQuality(playlist.id, q)} ariaLabel="Download quality" />}
             {playlist.finishing && (
               <span className="flex items-center gap-2 text-sm text-white/60">
                 <Loader2 className="h-4 w-4 animate-spin" /> Adding to your library…

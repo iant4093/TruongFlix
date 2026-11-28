@@ -38,6 +38,8 @@ import {
   startImport,
   stopImport,
   usePlaylistImports,
+  setImportQuality,
+  importQuality,
   type ImportSong,
 } from '../src/services/playlistImport';
 import { useLibraryStore } from '../src/store/useLibraryStore';
@@ -524,18 +526,31 @@ it('changing the quality in Settings changes the imports that follow it, and tri
   });
   useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_quality: 'lossless' } }));
   const id = addImport({ source: 'list', id: 'q', name: 'Q', owner: null, cover: null, total: null, songs: [plainSong('My Sh*t', 'A Boogie wit da Hoodie'), plainSong('Nights', 'Frank Ocean')] }, 'lossless');
-  const own = addImport({ source: 'list', id: 'q2', name: 'Q2', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'mp3');
+  const own = addImport({ source: 'list', id: 'q2', name: 'Q2', owner: null, cover: null, total: null, songs: [plainSong('Moonlight', 'Kali Uchis')] }, 'lossless');
+  setImportQuality(own, 'mp3');
   await startImport(id);
   const song = () => usePlaylistImports.getState().imports[id].songs[0];
   await vi.waitFor(() => expect(song()).toMatchObject({ state: 'failed', code: 'quality' }));
 
   vi.mocked(invoke).mockClear();
   useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_quality: 'any' } }));
-  expect(usePlaylistImports.getState().imports[id].quality).toBe('any');
+  expect(importQuality(usePlaylistImports.getState().imports[id])).toBe('any');
   // An import given its own quality keeps it.
-  expect(usePlaylistImports.getState().imports[own].quality).toBe('mp3');
+  expect(importQuality(usePlaylistImports.getState().imports[own])).toBe('mp3');
   // The song is searched for again, now in any quality.
   await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(3));
   expect(requests.at(-1)).toMatchObject({ quality: 'any' });
   expect(JSON.stringify(requests.at(-1))).toContain('Sh*t');
+});
+
+it('an import made before Settings was switched to Best downloads in Best when started again', async () => {
+  const requests = songBackend((request) => songJob(request, {}));
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_quality: 'lossless' } }));
+  const id = addImport({ source: 'list', id: 'old', name: 'Old', owner: null, cover: null, total: null, songs: [plainSong('She Want Some More', 'Lil Tecca')] }, 'lossless');
+  // Switched while the app wasn't running (or before imports followed Settings).
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, soulseek_quality: 'any' } }), false);
+  usePlaylistImports.setState((s) => ({ imports: { ...s.imports, [id]: { ...s.imports[id], songs: s.imports[id].songs.map((x) => ({ ...x, state: 'failed' as const, message: 'There are copies of this song, but none in lossless (FLAC).' })) } } }));
+  await startImport(id);
+  await vi.waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toMatchObject({ quality: 'any' });
 });
