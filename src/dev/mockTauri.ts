@@ -1568,6 +1568,8 @@ export function installMocks() {
           });
         case 'slsk_download_song':
           return previewSong(a.request as PreviewSongRequest);
+        case 'slsk_download_album_songs':
+          return Promise.all((a.request as { songs: PreviewSongRequest[] }).songs.map(previewSong));
         case 'slsk_download_folder': {
           const req = a.request as { id: string; copy: { user: string; folder: string; files: unknown[] } };
           const name = req.copy.folder.split(/[\\/]/).pop() ?? req.copy.folder;

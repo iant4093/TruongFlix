@@ -320,14 +320,16 @@ impl FileInfo {
 }
 
 /// How well a file plays `track` (0 = not at all). Needs the title in the name, or the track
-/// number with a matching length; never another version of it.
-fn pair_score(track: &TrackInfo, file: &FileInfo, multi_disc: bool, album: &[String]) -> f64 {
+/// number with a matching length; never another version of it. `strict` (a few songs of an
+/// album, with no whole tracklist to check the folder against): the title must be in the name,
+/// and the length closer.
+fn pair_score(track: &TrackInfo, file: &FileInfo, multi_disc: bool, album: &[String], strict: bool) -> f64 {
     // A clearly different length is never the same recording.
     let length_gap = match (track.track.length_ms, file.duration) {
         (Some(ms), Some(s)) => Some((ms as f64 / 1000.0 - s as f64).abs()),
         _ => None,
     };
-    if length_gap.is_some_and(|gap| gap > 12.0) {
+    if length_gap.is_some_and(|gap| gap > if strict { 7.0 } else { 12.0 }) {
         return 0.0;
     }
     // "(Instrumental)", "(Live)": not this track, unless its own title (or the album) says so.
@@ -340,25 +342,25 @@ fn pair_score(track: &TrackInfo, file: &FileInfo, multi_disc: bool, album: &[Str
     } else {
         title.iter().filter(|w| file.name.contains(w)).count() as f64 / title.len() as f64
     };
-    let number_hit = file.number.is_some_and(|(disc, n)| {
+    let number_hit = track.track.position > 0 && file.number.is_some_and(|(disc, n)| {
         n == track.track.position && (!multi_disc || disc.or(file.folder_disc).is_none_or(|d| d == track.track.disc))
     });
     let length_hit = length_gap.map(|gap| if gap <= 3.0 { 1.0 } else if gap <= 7.0 { 0.5 } else { 0.0 });
     let title_ok = title_hit >= 0.99 || (title.len() >= 3 && title_hit >= 0.75);
     let number_ok = number_hit && length_hit.unwrap_or(0.0) >= 0.5;
-    if !title_ok && !number_ok {
+    if !title_ok && (strict || !number_ok) {
         return 0.0;
     }
     title_hit + if number_hit { 0.5 } else { 0.0 } + length_hit.unwrap_or(0.25)
 }
 
 /// Pairs each track with its own file (best pairs first): the file for each track, if any.
-fn pairs(tracks: &[TrackInfo], files: &[FileInfo], album: &[String]) -> (Vec<Option<usize>>, f64) {
+fn pairs(tracks: &[TrackInfo], files: &[FileInfo], album: &[String], strict: bool) -> (Vec<Option<usize>>, f64) {
     let multi_disc = tracks.iter().any(|t| t.track.disc > 1);
     let mut pairs = Vec::new();
     for (t, track) in tracks.iter().enumerate() {
         for (f, file) in files.iter().enumerate() {
-            let score = pair_score(track, file, multi_disc, album);
+            let score = pair_score(track, file, multi_disc, album, strict);
             if score > 0.0 {
                 pairs.push((score, t, f));
             }
@@ -380,7 +382,7 @@ fn pairs(tracks: &[TrackInfo], files: &[FileInfo], album: &[String]) -> (Vec<Opt
 
 /// Pairs every track with its own file; None unless every track has one.
 fn assign(tracks: &[TrackInfo], files: &[FileInfo], album: &[String]) -> Option<(Vec<usize>, f64)> {
-    let (chosen, fit) = pairs(tracks, files, album);
+    let (chosen, fit) = pairs(tracks, files, album, false);
     chosen.into_iter().collect::<Option<Vec<_>>>().map(|c| (c, fit))
 }
 
@@ -394,15 +396,28 @@ pub fn coverage(tracks: &[WantTrack], files: &[Offer]) -> usize {
             by_ext.entry(ext).or_default().push(FileInfo::new(f));
         }
     }
-    by_ext.values().map(|group| pairs(&infos, group, &[]).0.iter().flatten().count()).max().unwrap_or(0)
+    by_ext.values().map(|group| pairs(&infos, group, &[], false).0.iter().flatten().count()).max().unwrap_or(0)
 }
 
-/// Every folder that holds the whole album in an allowed format, best first.
-pub fn rank(tracks: &[WantTrack], album: &str, offers: &[Offer], quality: Quality) -> Vec<Candidate> {
-    if tracks.is_empty() {
-        return Vec::new();
-    }
-    // (user, folder, extension) → files. Formats are never mixed within one album.
+/// How good a copy is to download, from one of its files: its quality, and how soon and how fast
+/// its sharer is likely to send it.
+fn copy_score(ext: &str, sample: &Offer) -> f64 {
+    let quality = match ext {
+        "flac" => 30.0 + if sample.bit_depth.is_some_and(|d| d >= 24) { 3.0 } else { 0.0 },
+        "mp3" => match sample.bitrate {
+            Some(b) if b >= 320 => 22.0,
+            Some(b) if b >= 240 => 15.0,
+            Some(_) => 5.0,
+            None => 12.0,
+        },
+        _ => 10.0,
+    };
+    quality + if sample.free_slot { 20.0 } else { 0.0 } + (sample.speed as f64 / 1_000_000.0).clamp(0.0, 1.0) * 12.0
+}
+
+/// Search results by folder: (user, album folder, extension) → its files in an allowed format.
+/// Formats are never mixed within one copy.
+fn folders(offers: &[Offer], quality: Quality) -> HashMap<(&str, &str, String), Vec<&Offer>> {
     let mut groups: HashMap<(&str, &str, String), Vec<&Offer>> = HashMap::new();
     for offer in offers {
         let ext = extension(&offer.path);
@@ -411,6 +426,15 @@ pub fn rank(tracks: &[WantTrack], album: &str, offers: &[Offer], quality: Qualit
         }
         groups.entry((offer.user.as_str(), album_folder(&offer.path), ext)).or_default().push(offer);
     }
+    groups
+}
+
+/// Every folder that holds the whole album in an allowed format, best first.
+pub fn rank(tracks: &[WantTrack], album: &str, offers: &[Offer], quality: Quality) -> Vec<Candidate> {
+    if tracks.is_empty() {
+        return Vec::new();
+    }
+    let groups = folders(offers, quality);
     let album_words = words(album);
     let all_album_words = all_words(album);
     let track_infos: Vec<TrackInfo> = tracks.iter().map(TrackInfo::new).collect();
@@ -429,21 +453,7 @@ pub fn rank(tracks: &[WantTrack], album: &str, offers: &[Offer], quality: Qualit
         let infos: Vec<FileInfo> = files.iter().map(|f| FileInfo::new(f)).collect();
         let Some((chosen, fit)) = assign(&track_infos, &infos, &all_album_words) else { continue };
         let sample = files[chosen[0]];
-        let mut score = fit * 40.0;
-        score += match ext.as_str() {
-            "flac" => 30.0 + if sample.bit_depth.is_some_and(|d| d >= 24) { 3.0 } else { 0.0 },
-            "mp3" => match sample.bitrate {
-                Some(b) if b >= 320 => 22.0,
-                Some(b) if b >= 240 => 15.0,
-                Some(_) => 5.0,
-                None => 12.0,
-            },
-            _ => 10.0,
-        };
-        if sample.free_slot {
-            score += 20.0;
-        }
-        score += (sample.speed as f64 / 1_000_000.0).clamp(0.0, 1.0) * 12.0;
+        let mut score = fit * 40.0 + copy_score(&ext, sample);
         if !album_words.is_empty() && album_words.iter().all(|w| folder_words.contains(w)) {
             score += 8.0;
         }
@@ -458,6 +468,73 @@ pub fn rank(tracks: &[WantTrack], album: &str, offers: &[Offer], quality: Qualit
         });
     }
     out.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.user.cmp(&b.user)));
+    out
+}
+
+/// A folder holding some of the songs wanted from one album (the few of it a playlist has).
+#[derive(Debug, Clone)]
+pub struct PartialCandidate {
+    pub user: String,
+    pub folder: String,
+    pub format: String,
+    pub score: f64,
+    /// The file that plays each wanted song, in the order asked (None where the folder lacks it).
+    pub files: Vec<Option<Offer>>,
+}
+
+impl PartialCandidate {
+    /// How many of the wanted songs it has.
+    pub fn count(&self) -> usize {
+        self.files.iter().flatten().count()
+    }
+}
+
+/// Most files in one format an album's folder holds (a deluxe edition's, a box set's discs); a
+/// folder with more is someone's whole collection, not the album.
+const ALBUM_FOLDER_MAX: usize = 80;
+
+/// Every folder holding at least `min` of `tracks` (songs of one album, not necessarily all of
+/// it) in an allowed format: the most songs first, then the best copy. A song is only paired
+/// with a file named for it and of its length.
+pub fn rank_some(tracks: &[WantTrack], album: &str, offers: &[Offer], quality: Quality, min: usize) -> Vec<PartialCandidate> {
+    if tracks.is_empty() {
+        return Vec::new();
+    }
+    let album_words = words(album);
+    let all_album_words = all_words(album);
+    let track_infos: Vec<TrackInfo> = tracks.iter().map(TrackInfo::new).collect();
+    let mut out = Vec::new();
+    for ((user, folder, ext), mut files) in folders(offers, quality) {
+        if files.len() > ALBUM_FOLDER_MAX.max(tracks.len() * 2 + 4) {
+            continue;
+        }
+        // "EVOL (Instrumentals)", "… Live at …": another album, unless this one's name says so.
+        let folder_words = all_words(basename(folder));
+        if folder_words.iter().any(|w| is_version(w) && !all_album_words.contains(w)) {
+            continue;
+        }
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let infos: Vec<FileInfo> = files.iter().map(|f| FileInfo::new(f)).collect();
+        let (chosen, fit) = pairs(&track_infos, &infos, &all_album_words, true);
+        let count = chosen.iter().flatten().count();
+        let Some(&first) = chosen.iter().flatten().next() else { continue };
+        if count < min.max(1) {
+            continue;
+        }
+        // How well the songs it has fit, on average (`fit` averages over every song wanted).
+        let mut score = fit * tracks.len() as f64 / count as f64 * 40.0 + copy_score(&ext, files[first]);
+        if !album_words.is_empty() && album_words.iter().all(|w| folder_words.contains(w)) {
+            score += 8.0;
+        }
+        out.push(PartialCandidate {
+            user: user.to_string(),
+            folder: folder.to_string(),
+            format: ext,
+            score,
+            files: chosen.into_iter().map(|f| f.map(|f| files[f].clone())).collect(),
+        });
+    }
+    out.sort_by(|a, b| b.count().cmp(&a.count()).then_with(|| b.score.total_cmp(&a.score)).then_with(|| a.user.cmp(&b.user)));
     out
 }
 
@@ -689,22 +766,7 @@ pub fn rank_song(want: &WantSong, offers: &[Offer], quality: Quality) -> Vec<Off
         .iter()
         .filter(|o| format_allowed(&extension(&o.path), o, quality))
         .filter_map(|o| {
-            let mut score = matcher.fit(o)?;
-            score += match extension(&o.path).as_str() {
-                "flac" => 30.0 + if o.bit_depth.is_some_and(|d| d >= 24) { 3.0 } else { 0.0 },
-                "mp3" => match o.bitrate {
-                    Some(b) if b >= 320 => 22.0,
-                    Some(b) if b >= 240 => 15.0,
-                    Some(_) => 5.0,
-                    None => 12.0,
-                },
-                _ => 10.0,
-            };
-            if o.free_slot {
-                score += 20.0;
-            }
-            score += (o.speed as f64 / 1_000_000.0).clamp(0.0, 1.0) * 12.0;
-            Some((score, o))
+            Some((matcher.fit(o)? + copy_score(&extension(&o.path), o), o))
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.user.cmp(&b.1.user)));

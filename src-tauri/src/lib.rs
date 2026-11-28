@@ -237,6 +237,7 @@ pub fn run() {
             soulseek::slsk_dismiss,
             soulseek::slsk_download_folder,
             soulseek::slsk_download_song,
+            soulseek::slsk_download_album_songs,
             soulseek::slsk_activity,
             soulseek::slsk_search,
             soulseek::slsk_search_stop,

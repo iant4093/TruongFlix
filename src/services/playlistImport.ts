@@ -14,8 +14,9 @@ import * as mdb from './musicdb';
 /**
  * Importing a playlist from a streaming service: its songs are read from the playlist's public
  * page (or a pasted list), each is matched to the store for its exact title, album, cover and
- * length, songs already in the library are skipped, and the rest are found one by one on Soulseek
- * and downloaded. What couldn't be found stays listed, to be found by hand. At the end the
+ * length, songs already in the library are skipped, and the rest are found on Soulseek and
+ * downloaded: several songs of one album together (one search for the album, one person's folder),
+ * the others one by one. What couldn't be found stays listed, to be found by hand. At the end the
  * playlist is made in the music library, in its original order.
  */
 
@@ -83,6 +84,10 @@ export interface ImportSong extends PlaylistSong {
   retryAt?: number;
   /** Why it failed, when it did ("quality": copies, but none in the quality asked for). */
   code?: string | null;
+  /** The album download it's part of, while it's fetched with other songs of its album. */
+  batch?: string | null;
+  /** Searched for on its own, not with its album (the album's copies didn't give it). */
+  solo?: boolean;
 }
 
 export interface PlaylistImport {
@@ -134,7 +139,7 @@ function loadSaved(): ImportsState {
     if (!p || typeof p !== 'object' || typeof p.name !== 'string' || !Array.isArray(p.songs) || imports[id]) continue;
     const songs = p.songs.filter((s) => s && typeof s === 'object' && typeof s.key === 'string' && typeof s.title === 'string' && Array.isArray(s.artists));
     // Nothing is in flight after a restart: those songs wait to be started again.
-    imports[id] = { ...p, running: false, finishing: false, songs: songs.map((s) => (isBusy(s.state) ? { ...s, state: 'waiting', jobId: null, progress: 0 } : s)) };
+    imports[id] = { ...p, running: false, finishing: false, songs: songs.map((s) => (isBusy(s.state) ? { ...s, state: 'waiting', jobId: null, progress: 0, batch: null } : s)) };
     order.push(id);
   }
   return { imports, order };
@@ -196,6 +201,12 @@ const RETRY_AFTER = 20_000;
 const RETRY_BUSY_AFTER = 60_000;
 /** After the connection drops, songs wait this long (while the app reconnects) before starting again. */
 const RECONNECT_PAUSE = 5_000;
+/** Songs of one album waiting together are fetched together (one search for the album, one
+ *  person's folder) once there are this many: Soulseek allows only so many searches a minute,
+ *  and one person's queue for several songs beats a queue with each of several people. */
+export const ALBUM_GROUP_MIN = 3;
+/** Most songs fetched together in one album download. */
+const ALBUM_GROUP_MAX = 50;
 
 const notConnected = (message: string) => /not connected to soulseek|connection to soulseek|couldn.t reach soulseek|lost the connection|pausing this account/i.test(message);
 
@@ -546,6 +557,46 @@ export function inLibrary(song: Pick<ImportSong, 'title' | 'artists'>, store: St
 /** The same song twice in one playlist (by its store details when it has them). */
 const songIdentity = (s: Pick<ImportSong, 'title' | 'artists' | 'store'>) => `${coreTitle(s.store?.title ?? s.title)}\n${norm(s.store?.artist ?? s.artists[0] ?? '')}`;
 
+/** The album a song is fetched with, and who it's by, as the store (else the playlist) names
+ *  them. None for a song with no album, or a video album's. */
+export function albumOf(song: Pick<ImportSong, 'album' | 'artists' | 'store'>): { album: string; artist: string } | null {
+  const album = (song.store ? song.store.album : song.album)?.trim();
+  const artist = (song.store ? (song.store.albumArtist ?? song.store.artist) : song.artists[0])?.trim();
+  return album && artist && !isVideoAlbum(album) ? { album, artist } : null;
+}
+
+/** Songs are of the same album when its name and its main artist read the same. */
+export function albumKey(song: Pick<ImportSong, 'album' | 'artists' | 'store'>): string | null {
+  const of = albumOf(song);
+  if (!of) return null;
+  const album = norm(of.album);
+  const artist = norm(splitArtists(of.artist)[0] ?? of.artist).replace(/^the /, '');
+  return album && artist ? `${album}\n${artist}` : null;
+}
+
+/**
+ * The songs to start, in playlist order, as units: songs of one album (at least `min` of them,
+ * none to be searched for on its own) go together, each other song on its own.
+ */
+export function albumGroups<S extends Pick<ImportSong, 'key' | 'album' | 'artists' | 'store' | 'solo'>>(songs: S[], min = ALBUM_GROUP_MIN): S[][] {
+  const byAlbum = new Map<string, S[]>();
+  for (const s of songs) {
+    const key = s.solo ? null : albumKey(s);
+    if (key) byAlbum.set(key, [...(byAlbum.get(key) ?? []), s]);
+  }
+  const units: S[][] = [];
+  const placed = new Set<string>();
+  for (const s of songs) {
+    if (placed.has(s.key)) continue;
+    const key = s.solo ? null : albumKey(s);
+    const rest = key ? byAlbum.get(key)!.filter((u) => !placed.has(u.key)) : [];
+    const unit = rest.length >= min ? rest.slice(0, ALBUM_GROUP_MAX) : [s];
+    for (const u of unit) placed.add(u.key);
+    units.push(unit);
+  }
+  return units;
+}
+
 // ---------------------------------------------------------------------------
 // Running an import
 // ---------------------------------------------------------------------------
@@ -662,20 +713,23 @@ function follow() {
       if (!p || !song) continue;
       const dropped = job.state === 'failed' && job.code === 'connection' && p.running;
       const retry = job.state === 'failed' && (job.code === 'no-answer' || job.code === 'not-shared' || job.code === 'download') && (song.tries ?? 0) < 2 && p.running;
-      if (dropped) {
+      if (job.state === 'failed' && job.code === 'alone') {
+        // Its album's copies didn't give it: it's searched for on its own, as soon as there's room.
+        patchSong(p.id, song.key, { state: 'waiting', message: '', jobId: null, from: null, progress: 0, batch: null, solo: true, retryAt: undefined });
+      } else if (dropped) {
         // The connection dropped mid-song: it starts again once Soulseek is back, as if new.
-        patchSong(p.id, song.key, { state: 'waiting', message: '', jobId: null, from: null, progress: 0, tries: Math.max(0, (song.tries ?? 1) - 1), retryAt: Date.now() + RECONNECT_PAUSE });
+        patchSong(p.id, song.key, { state: 'waiting', message: '', jobId: null, from: null, progress: 0, batch: null, tries: Math.max(0, (song.tries ?? 1) - 1), retryAt: Date.now() + RECONNECT_PAUSE });
       } else if (retry) {
         // Soulseek drops searches when it's busy, and people's queues clear: such a song waits a
         // little (a minute when copies were found but all busy) and is tried again.
         const wait = job.code === 'download' ? RETRY_BUSY_AFTER : RETRY_AFTER;
-        patchSong(p.id, song.key, { state: 'waiting', message: job.message, jobId: null, from: null, retryAt: Date.now() + wait });
+        patchSong(p.id, song.key, { state: 'waiting', message: job.message, jobId: null, from: null, batch: null, retryAt: Date.now() + wait });
       } else {
         const change = songFromJob(job);
         // Progress comes several times a second: an update that changes nothing shown is skipped.
         const same =
           change.state === song.state && change.message === song.message && change.from === (song.from ?? null) && change.path === song.path && Math.round(change.progress! * 100) === Math.round(song.progress * 100);
-        if (!same) patchSong(p.id, song.key, change);
+        if (!same) patchSong(p.id, song.key, isSettled(change.state!) ? { ...change, batch: null } : change);
       }
       if (['done', 'failed', 'cancelled'].includes(job.state)) void pump(p.id);
     }
@@ -707,8 +761,11 @@ export async function startImport(id: string) {
   await ready();
   const p = getImport(id);
   if (!p) return;
-  // Failed and cancelled songs are tried again.
-  patchImport(id, (x) => ({ running: true, songs: x.songs.map((s) => (s.state === 'failed' || s.state === 'cancelled' ? { ...s, state: 'waiting', message: '', tries: 0, retryAt: undefined } : s)) }));
+  // Failed and cancelled songs are tried again (with their album again, where it has others waiting).
+  patchImport(id, (x) => ({
+    running: true,
+    songs: x.songs.map((s) => (s.state === 'failed' || s.state === 'cancelled' ? { ...s, state: 'waiting', message: '', tries: 0, retryAt: undefined, solo: false } : s.state === 'waiting' ? { ...s, solo: false } : s)),
+  }));
   // Apple Music songs are looked up together, by their store ids.
   const ids = p.songs.filter((s) => s.appleId && !s.store).map((s) => s.appleId!);
   if (ids.length) {
@@ -727,9 +784,10 @@ export function stopImport(id: string) {
   wakeAt.delete(id);
   patchImport(id, () => ({ running: false }));
   for (const s of p.songs) {
+    // (Cancelling one song of an album download cancels the whole download.)
     if (s.jobId && isBusy(s.state)) void invoke('slsk_cancel', { id: s.jobId }).catch(() => {});
     // A song still being matched is let go of: its start sees that and doesn't download it.
-    if (s.state === 'matching') patchSong(id, s.key, { state: 'waiting', jobId: null });
+    if (s.state === 'matching') patchSong(id, s.key, { state: 'waiting', jobId: null, batch: null });
   }
 }
 
@@ -789,12 +847,14 @@ async function pump(id: string) {
     return;
   }
   signInTries.delete(id);
-  const busy = p.songs.filter((s) => isBusy(s.state)).length;
-  const searching = p.songs.filter((s) => s.state === 'matching' || s.state === 'searching').length;
+  // Songs fetched together with their album count once: one search, one person.
+  const units = (songs: ImportSong[]) => new Set(songs.map((s) => s.batch ?? s.key)).size;
+  const busy = units(p.songs.filter((s) => isBusy(s.state)));
+  const searching = units(p.songs.filter((s) => s.state === 'matching' || s.state === 'searching'));
   const room = Math.min(ACTIVE - busy, SEARCHING - searching);
   const now = Date.now();
   const waiting = p.songs.filter((s) => s.state === 'waiting');
-  const next = waiting.filter((s) => !s.retryAt || s.retryAt <= now).slice(0, Math.max(0, room));
+  const next = albumGroups(waiting.filter((s) => !s.retryAt || s.retryAt <= now)).slice(0, Math.max(0, room));
   const later = waiting.filter((s) => s.retryAt && s.retryAt > now);
   // Songs waiting to be searched again start once their wait is over.
   if (later.length) wakeUp(id, Math.min(...later.map((s) => s.retryAt!)) + 50);
@@ -805,7 +865,7 @@ async function pump(id: string) {
     }
     return;
   }
-  for (const song of next) void startSong(id, song.key);
+  for (const unit of next) void (unit.length > 1 ? startAlbum(id, unit.map((s) => s.key)) : startSong(id, unit[0].key));
 }
 
 async function startSong(id: string, key: string, copy?: { user: string } & SharedFile) {
@@ -817,39 +877,20 @@ async function startSong(id: string, key: string, copy?: { user: string } & Shar
   const stopped = () => current()?.state !== 'matching';
   let jobId: string | null = null;
   try {
-    let song = current()!;
-    if ((!song.store || isVideoAlbum(song.store.album)) && !copy) {
-      const store = (await searchStore(song)) ?? song.store;
-      if (stopped()) return;
-      if (store) patchSong(id, key, { store });
-      song = { ...song, store };
-    }
-    const owned = copy ? null : inLibrary(song, song.store, useMusicPlayer.getState().library?.tracks ?? []);
-    if (owned) {
-      patchSong(id, key, { state: 'owned', trackId: owned.id, message: '' });
-      return;
-    }
-    // The same song listed twice: it's downloaded once (a song being matched counts once it has
-    // claimed its job).
-    const twin = copy
-      ? null
-      : getImport(id)!.songs.find(
-          (o) => o.key !== key && (o.state === 'matching' ? !!o.jobId : isBusy(o.state) || o.state === 'done' || o.state === 'owned') && songIdentity(o) === songIdentity(song),
-        );
-    if (twin && (twin.state === 'done' || twin.state === 'owned')) {
-      patchSong(id, key, { state: twin.state, path: twin.path, trackId: twin.trackId, message: '' });
-      return;
-    }
-    if (twin) {
-      patchSong(id, key, { state: 'waiting', message: '', tries: before.tries, retryAt: Date.now() + RETRY_AFTER });
-      return;
-    }
     // The job's id is the song's before the job starts, so its first updates (even a quick
     // failure) are followed.
-    jobId = crypto.randomUUID();
-    patchSong(id, key, { jobId });
+    const claim = () => {
+      jobId = crypto.randomUUID();
+      patchSong(id, key, { jobId });
+    };
+    const song = copy ? current()! : await prepareSong(id, key, stopped, before.tries, claim);
+    if (!song) return;
+    if (copy) claim();
+    // (Set by `claim`, which the compiler can't follow.)
+    const claimed = jobId as string | null;
+    if (!claimed) return;
     const p = getImport(id)!;
-    const request = await songRequest(jobId, id, p.source, song, importQuality(p), copy);
+    const request = await songRequest(claimed, id, p.source, song, importQuality(p), copy);
     if (stopped() || current()?.jobId !== jobId) return;
     const job = await invoke<AlbumJob>('slsk_download_song', { request });
     if (current()?.jobId !== job.id) {
@@ -873,6 +914,132 @@ async function startSong(id: string, key: string, copy?: { user: string } & Shar
     } else {
       patchSong(id, key, { state: 'failed', message, jobId: null });
     }
+  } finally {
+    void pump(id);
+  }
+}
+
+/**
+ * Matches a song (being started) to the store, and settles it when it needs no download: it's in
+ * the library already, or it's listed twice and the other is fetched (it then waits for that one).
+ * The song to download, or null when there's none (or it was `stopped` meanwhile). A song to
+ * download is `claim`ed (given its job id) straight away, so a twin started meanwhile waits for it.
+ */
+async function prepareSong(id: string, key: string, stopped: () => boolean, tries: number | undefined, claim: () => void): Promise<ImportSong | null> {
+  let song = getImport(id)?.songs.find((s) => s.key === key);
+  if (!song) return null;
+  if (!song.store || isVideoAlbum(song.store.album)) {
+    const store = (await searchStore(song)) ?? song.store;
+    if (stopped()) return null;
+    if (store) patchSong(id, key, { store });
+    song = { ...song, store };
+  }
+  const owned = inLibrary(song, song.store, useMusicPlayer.getState().library?.tracks ?? []);
+  if (owned) {
+    patchSong(id, key, { state: 'owned', trackId: owned.id, message: '', batch: null });
+    return null;
+  }
+  // The same song listed twice: it's downloaded once (a song being matched counts once it has
+  // claimed its job).
+  const identity = songIdentity(song);
+  const twin = getImport(id)!.songs.find(
+    (o) => o.key !== key && (o.state === 'matching' ? !!o.jobId : isBusy(o.state) || o.state === 'done' || o.state === 'owned') && songIdentity(o) === identity,
+  );
+  if (twin && (twin.state === 'done' || twin.state === 'owned')) {
+    patchSong(id, key, { state: twin.state, path: twin.path, trackId: twin.trackId, message: '', batch: null });
+    return null;
+  }
+  if (twin) {
+    patchSong(id, key, { state: 'waiting', message: '', tries, retryAt: Date.now() + RETRY_AFTER, batch: null });
+    return null;
+  }
+  claim();
+  return song;
+}
+
+/**
+ * Starts songs of one album together: each is matched as a song started on its own is; the ones
+ * still of the album are then fetched with one search for the album, from one person's folder.
+ * Songs that turn out to be of another album, and the songs of a download that can't start, are
+ * started on their own instead.
+ */
+async function startAlbum(id: string, keys: string[]) {
+  const batch = crypto.randomUUID();
+  const current = (key: string) => getImport(id)?.songs.find((s) => s.key === key);
+  const tries = new Map(keys.map((k) => [k, current(k)?.tries]));
+  patchImport(id, (p) => ({ songs: p.songs.map((s) => (keys.includes(s.key) ? { ...s, state: 'matching' as const, message: '', jobId: null, retryAt: undefined, batch } : s)) }));
+  // Stopped meanwhile (it's no longer this download's song being matched).
+  const mine = (key: string) => {
+    const s = current(key);
+    return s?.state === 'matching' && s.batch === batch;
+  };
+  const alone = (key: string, change: Partial<ImportSong> = {}) => {
+    if (mine(key)) patchSong(id, key, { state: 'waiting', message: '', jobId: null, batch: null, solo: true, tries: tries.get(key), ...change });
+  };
+  let members: ImportSong[] = [];
+  // Each song's job id is its own before the download starts, so its first updates are followed.
+  const jobIds = new Map<string, string>();
+  const claim = (key: string) => () => {
+    jobIds.set(key, crypto.randomUUID());
+    patchSong(id, key, { jobId: jobIds.get(key)! });
+  };
+  try {
+    const prepared = await Promise.all(keys.map((key) => (mine(key) ? prepareSong(id, key, () => !mine(key), tries.get(key), claim(key)) : null)));
+    members = prepared.filter((s): s is ImportSong => !!s && mine(s.key));
+    // Matched to the store, a song may be of another album (or the same song twice): the album
+    // most of them are of is fetched, and the others on their own.
+    const count = new Map<string, number>();
+    for (const s of members) {
+      const k = albumKey(s);
+      if (k) count.set(k, (count.get(k) ?? 0) + 1);
+    }
+    const [album] = [...count.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
+    const seen = new Set<string>();
+    const together = members.filter((s) => {
+      if (albumKey(s) !== album || seen.has(songIdentity(s))) return false;
+      seen.add(songIdentity(s));
+      return true;
+    });
+    for (const s of members) if (!together.includes(s)) alone(s.key);
+    members = together;
+    if (members.length < 2) {
+      for (const s of members) alone(s.key);
+      return;
+    }
+    const p = getImport(id)!;
+    if (!p.running || !members.every((s) => mine(s.key))) {
+      for (const s of members) alone(s.key, { solo: false });
+      return;
+    }
+    const quality = importQuality(p);
+    const songs = await Promise.all(members.map((s) => songRequest(jobIds.get(s.key)!, id, p.source, s, quality)));
+    const of = albumOf(members[0])!;
+    const ours = (key: string) => mine(key) && current(key)?.jobId === jobIds.get(key);
+    if (!getImport(id)?.running || !members.every((s) => ours(s.key))) {
+      for (const s of members) alone(s.key, { solo: false });
+      return;
+    }
+    const jobs = await invoke<AlbumJob[]>('slsk_download_album_songs', {
+      request: { id: batch, group: id, album: of.album, albumArtist: of.artist, quality, destination: songs[0].destination, songs },
+    });
+    if (!Array.isArray(jobs)) throw new Error('The album download didn’t start.');
+    // (A song may have ended already: its update came in first.)
+    if (!getImport(id)?.running) {
+      // Stopped while it was starting: the whole download is cancelled.
+      void invoke('slsk_cancel', { id: jobs[0]?.id }).catch(() => {});
+      return;
+    }
+    // Their updates may have come in first: the newest are kept.
+    for (const job of jobs) {
+      const song = members.find((s) => jobIds.get(s.key) === job.id);
+      if (song && current(song.key)?.state === 'matching') patchSong(id, song.key, songFromJob(useMusicDownloads.getState().jobs[job.id] ?? job));
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    // Not these songs' fault: they wait for Soulseek to be back, still together. Otherwise
+    // they're each searched for on their own.
+    const later = notConnected(message) && getImport(id)?.running;
+    for (const key of keys) alone(key, later ? { solo: false, retryAt: Date.now() + RECONNECT_PAUSE } : {});
   } finally {
     void pump(id);
   }
@@ -910,7 +1077,7 @@ async function songRequest(jobId: string, group: string, source: ImportSource, s
 
 /** Tries a song again (searching for it anew): just that song when the import isn't running. */
 export function retrySong(id: string, key: string) {
-  patchSong(id, key, { state: 'waiting', message: '', jobId: null, tries: 0, retryAt: undefined });
+  patchSong(id, key, { state: 'waiting', message: '', jobId: null, tries: 0, retryAt: undefined, batch: null, solo: true });
   const p = getImport(id);
   if (p?.running) void pump(id);
   else

@@ -554,3 +554,137 @@ it('an import made before Settings was switched to Best downloads in Best when s
   await vi.waitFor(() => expect(requests).toHaveLength(1));
   expect(requests[0]).toMatchObject({ quality: 'any' });
 });
+
+const albumSong = (title: string, artists: string[], album: string | null) => ({ title, artists, album, lengthMs: null, appleId: null, cover: null, explicit: false });
+
+it('songs of one album waiting together go together; the rest, and too few of an album, go one by one', async () => {
+  const { albumGroups, albumKey } = await import('../src/services/playlistImport');
+  const store = (album: string, albumArtist: string) => ({ title: 'x', artist: albumArtist, album, albumArtist, track: 1, disc: 1, date: null, genre: null, cover: null, lengthMs: null });
+  const songs = [
+    { ...albumSong('Ain’t No Time', ['Future'], 'EVOL'), key: '0', store: null },
+    { ...albumSong('Housewife', ['Tate McRae'], null), key: '1', store: null },
+    // Its store details name the album too (and its main artist, credited with a guest).
+    { ...albumSong('Low Life', ['Future', 'The Weeknd'], null), key: '2', store: store('EVOL', 'Future & The Weeknd') },
+    { ...albumSong('Seven Rings', ['Future'], 'evol'), key: '3', store: null },
+    // Searched for on its own already: its album's copies didn't have it.
+    { ...albumSong('Maybach', ['Future'], 'EVOL'), key: '4', store: null, solo: true },
+    // Two of another album aren't worth an album search.
+    { ...albumSong('Nights', ['Frank Ocean'], 'Blonde'), key: '5', store: null },
+    { ...albumSong('Ivy', ['Frank Ocean'], 'Blonde'), key: '6', store: null },
+    // Another album that only shares the name.
+    { ...albumSong('EVOL', ['Someone Else'], 'EVOL'), key: '7', store: null },
+    { ...albumSong('Program', ['Future'], 'EVOL'), key: '8', store: null },
+    // A video album's songs are filed under their real albums.
+    { ...albumSong('Clip', ['Future'], 'EVOL (Video)'), key: '9', store: null },
+  ];
+  expect(albumKey(songs[0])).toBe(albumKey(songs[2]));
+  expect(albumKey(songs[9])).toBeNull();
+  expect(albumGroups(songs).map((unit) => unit.map((s) => s.key))).toEqual([['0', '2', '3', '8'], ['1'], ['4'], ['5'], ['6'], ['7'], ['9']]);
+  // Fewer than three of the album: each on its own.
+  expect(albumGroups(songs.slice(0, 3)).map((unit) => unit.map((s) => s.key))).toEqual([['0'], ['1'], ['2']]);
+});
+
+/** A backend where album downloads and song downloads are recorded (the store knows the album's songs). */
+function albumBackend() {
+  useLibraryStore.setState((s) => ({ settings: { ...s.settings, music_directories: ['C:/Music'], soulseek_username: 'me', soulseek_password: 'pw', soulseek_quality: 'mp3' } }));
+  useMusicPlayer.setState({ api: {} as never, library: { tracks: [], albums: [], artists: [], playlists: [] } });
+  const tracks: Record<string, [string, number]> = { 'Ain’t No Time': ['Future', 1], 'In Her Mouth': ['Future', 2], 'Low Life': ['Future & The Weeknd', 6], Program: ['Future', 9] };
+  const calls = { albums: [] as Record<string, unknown>[], songs: [] as Record<string, unknown>[], cancelled: [] as string[] };
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (cmd === 'slsk_status' || cmd === 'slsk_connect') return { state: 'online', username: 'me', message: '' };
+    if (cmd === 'slsk_jobs') return [];
+    if (cmd === 'live_artwork') return 'C:/cache/evol.img';
+    if (cmd === 'music_catalog') {
+      const url = decodeURIComponent(String(a.url));
+      const title = Object.keys(tracks).find((t) => url.includes(t));
+      if (!title) return { results: [] };
+      const [artist, trackNumber] = tracks[title];
+      return { results: [row(title, artist, 200000, { collectionName: 'EVOL', collectionArtistName: 'Future', trackNumber, releaseDate: '2016-02-06T08:00:00Z' })] };
+    }
+    if (cmd === 'slsk_download_album_songs') {
+      const request = a.request as { songs: Record<string, unknown>[] };
+      calls.albums.push(request);
+      return request.songs.map((s) => songJob(s, {}));
+    }
+    if (cmd === 'slsk_download_song') {
+      const request = a.request as Record<string, unknown>;
+      calls.songs.push(request);
+      return songJob(request, {});
+    }
+    if (cmd === 'slsk_cancel') calls.cancelled.push(String(a.id));
+    return undefined;
+  });
+  return calls;
+}
+
+const evol = () => [
+  albumSong('Ain’t No Time', ['Future'], 'EVOL'),
+  albumSong('In Her Mouth', ['Future'], 'EVOL'),
+  albumSong('Low Life', ['Future', 'The Weeknd'], 'EVOL'),
+  albumSong('Program', ['Future'], 'EVOL'),
+];
+
+it('songs of one album are fetched together: one album search instead of one per song, each song still filed on its own', async () => {
+  const calls = albumBackend();
+  const id = addImport({ source: 'spotify', id: 'evol', name: 'Mix', owner: null, cover: null, total: null, songs: [...evol(), plainSong('Housewife', 'Tate McRae')] }, 'lossless');
+  await startImport(id);
+  await vi.waitFor(() => expect(calls.albums).toHaveLength(1));
+  await vi.waitFor(() => expect(calls.songs).toHaveLength(1));
+  const songs = () => usePlaylistImports.getState().imports[id].songs;
+  // One download for the album's four songs, in the quality Settings asks for; one for the other song.
+  const album = calls.albums[0] as { group: string; album: string; albumArtist: string; quality: string; songs: Record<string, unknown>[] };
+  expect(album).toMatchObject({ group: id, album: 'EVOL', albumArtist: 'Future', quality: 'mp3', destination: 'C:/Music' });
+  expect(album.songs.map((s) => [s.title, s.track])).toEqual([['Ain’t No Time', 1], ['In Her Mouth', 2], ['Low Life', 6], ['Program', 9]]);
+  // Each is tagged with its own store details, as a song fetched on its own would be.
+  expect(album.songs[2]).toMatchObject({ group: id, artist: 'Future & The Weeknd', album: 'EVOL', albumArtist: 'Future', date: '2016-02-06', quality: 'mp3', coverPath: 'C:/cache/evol.img' });
+  expect(calls.songs[0]).toMatchObject({ title: 'Housewife' });
+  await vi.waitFor(() => expect(songs().slice(0, 4).map((s) => s.state)).toEqual(['searching', 'searching', 'searching', 'searching']));
+
+  // Each song shows its own state.
+  const [a, b, c, d] = album.songs;
+  emit('slsk-job', songJob(a, { state: 'downloading', bytes: 5, total: 10, source: { user: 'evol_fan', format: 'mp3' } }));
+  emit('slsk-job', songJob(b, { state: 'queued', source: { user: 'evol_fan', format: 'mp3' } }));
+  expect(songs()[0]).toMatchObject({ state: 'downloading', progress: 0.5, from: 'evol_fan' });
+  expect(songs()[1]).toMatchObject({ state: 'queued', from: 'evol_fan' });
+  emit('slsk-job', songJob(a, { state: 'done', path: 'C:/Music/Future/EVOL (2016)/01 - Ain’t No Time.mp3' }));
+  emit('slsk-job', songJob(b, { state: 'done', path: 'C:/Music/Future/EVOL (2016)/02 - In Her Mouth.mp3' }));
+  emit('slsk-job', songJob(c, { state: 'done', path: 'C:/Music/Future/EVOL (2016)/06 - Low Life.mp3' }));
+  // The one the album's copies didn't have is searched for on its own.
+  emit('slsk-job', songJob(d, { state: 'failed', code: 'alone', message: 'The album’s copies on Soulseek don’t have it' }));
+  expect(songs().map((s) => s.state).slice(0, 3)).toEqual(['done', 'done', 'done']);
+  await vi.waitFor(() => expect(calls.songs).toHaveLength(2));
+  expect(calls.songs[1]).toMatchObject({ title: 'Program', track: 9, album: 'EVOL', quality: 'mp3' });
+  await vi.waitFor(() => expect(songs()[3]).toMatchObject({ state: 'searching', solo: true, message: '' }));
+  expect(calls.albums).toHaveLength(1);
+});
+
+it('Stop cancels an album download and every song in it', async () => {
+  const calls = albumBackend();
+  const id = addImport({ source: 'spotify', id: 'evol2', name: 'Mix', owner: null, cover: null, total: null, songs: evol().slice(0, 3) }, 'lossless');
+  await startImport(id);
+  await vi.waitFor(() => expect(calls.albums).toHaveLength(1));
+  const songs = () => usePlaylistImports.getState().imports[id].songs;
+  await vi.waitFor(() => expect(songs().every((s) => s.state === 'searching')).toBe(true));
+  const jobs = (calls.albums[0] as { songs: Record<string, unknown>[] }).songs;
+  emit('slsk-job', songJob(jobs[0], { state: 'queued', source: { user: 'evol_fan', format: 'mp3' } }));
+  stopImport(id);
+  expect(calls.cancelled.sort()).toEqual(jobs.map((j) => String(j.id)).sort());
+  for (const job of jobs) emit('slsk-job', songJob(job, { state: 'cancelled' }));
+  expect(songs().map((s) => s.state)).toEqual(['cancelled', 'cancelled', 'cancelled']);
+  expect(calls.songs).toHaveLength(0);
+});
+
+it('an album download that can’t start leaves its songs to be found one by one', async () => {
+  const calls = albumBackend();
+  const backend = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+    if (cmd === 'slsk_download_album_songs') throw new Error('This song is already downloading.');
+    return backend(cmd, args as never);
+  });
+  const id = addImport({ source: 'spotify', id: 'evol3', name: 'Mix', owner: null, cover: null, total: null, songs: evol().slice(0, 3) }, 'lossless');
+  await startImport(id);
+  await vi.waitFor(() => expect(calls.songs).toHaveLength(2));
+  expect(calls.albums).toHaveLength(0);
+  expect(usePlaylistImports.getState().imports[id].songs.every((s) => s.solo)).toBe(true);
+});

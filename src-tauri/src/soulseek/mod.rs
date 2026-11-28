@@ -10,13 +10,16 @@
 //!
 //! People can also search Soulseek themselves and pick a folder: for an album page it's checked
 //! against the tracklist and filed as that album; otherwise its audio is kept as it is.
+//!
+//! Playlist imports fetch songs one by one, or several songs of one album together: one search
+//! for the album, and the songs from the folder that has the most of them, each filed as a song.
 
 pub mod library;
 pub mod matching;
 mod router;
 
-use library::{AlbumRequest, PickedCopy, SongRequest};
-use matching::{basename, extension, Candidate, Offer, WantSong, WantTrack};
+use library::{AlbumRequest, AlbumSongsRequest, PickedCopy, SongRequest};
+use matching::{basename, extension, Candidate, Offer, PartialCandidate, WantSong, WantTrack};
 use serde::{Deserialize, Serialize};
 use soulseek_rs::{Client, ClientSettings, ClientVersion, DownloadStatus, PeerAddress};
 use std::collections::HashMap;
@@ -493,34 +496,67 @@ fn spawn_job(
     destination: String,
     work: impl FnOnce(&Reporter, &Arc<Client>, &AtomicBool, &Path) -> Result<PathBuf, Stop> + Send + 'static,
 ) -> Result<Job, String> {
+    let staging = job.id.clone();
+    let mut jobs = spawn_jobs(app, vec![job], destination, staging, None, move |reports, client, cancel, staging| {
+        let outcome = work(&reports[0], client, cancel, staging);
+        finish(&reports[0], outcome);
+    })?;
+    Ok(jobs.remove(0))
+}
+
+fn settled(id: &str) -> bool {
+    JOBS.lock().unwrap().as_ref().and_then(|j| j.get(id)).is_none_or(|r| matches!(r.job.state.as_str(), "done" | "failed" | "cancelled"))
+}
+
+/// Registers jobs that one thread works on together (they share one cancel: cancelling any
+/// cancels them all) and runs `work`, which ends each job. One it leaves unfinished (it panicked:
+/// a malformed file can make the tag reader do that) fails with `leftover_code`, never stays
+/// stuck and blocked as "already downloading". Files arrive in `<destination>/STAGING/<staging>`.
+fn spawn_jobs(
+    app: AppHandle,
+    jobs: Vec<Job>,
+    destination: String,
+    staging: String,
+    leftover_code: Option<&'static str>,
+    work: impl FnOnce(&[Reporter], &Arc<Client>, &AtomicBool, &Path) + Send + 'static,
+) -> Result<Vec<Job>, String> {
     let client = session()?;
     let cancel = Arc::new(AtomicBool::new(false));
     {
-        let mut jobs = JOBS.lock().unwrap();
-        let map = jobs.get_or_insert_with(HashMap::new);
-        if map.values().any(|r| r.job.release_id == job.release_id && !matches!(r.job.state.as_str(), "done" | "failed" | "cancelled")) {
-            return Err(if job.kind == "song" { "This song is already downloading." } else { "This album is already downloading." }.into());
+        let mut running = JOBS.lock().unwrap();
+        let map = running.get_or_insert_with(HashMap::new);
+        for (i, job) in jobs.iter().enumerate() {
+            let busy = map.values().any(|r| r.job.release_id == job.release_id && !matches!(r.job.state.as_str(), "done" | "failed" | "cancelled"));
+            if busy || jobs[..i].iter().any(|j| j.release_id == job.release_id) {
+                return Err(if job.kind == "song" { "This song is already downloading." } else { "This album is already downloading." }.into());
+            }
         }
-        map.insert(job.id.clone(), Running { job: job.clone(), cancel: cancel.clone() });
+        for job in &jobs {
+            map.insert(job.id.clone(), Running { job: job.clone(), cancel: cancel.clone() });
+        }
     }
-    let _ = app.emit("slsk-job", job.clone());
-    let id = job.id.clone();
+    for job in &jobs {
+        let _ = app.emit("slsk-job", job.clone());
+    }
+    let ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
     std::thread::Builder::new()
         .name("slsk-album".into())
         .spawn(move || {
-            let staging = Path::new(&destination).join(STAGING).join(&id);
-            let report = Reporter { app: Some(&app), id: &id };
-            // A malformed file can make the tag reader panic: that fails this job, never leaves it
-            // stuck (and its album or song blocked as "already downloading").
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&report, &client, &cancel, &staging)))
-                .unwrap_or_else(|_| Err(Stop::Failed("Something went wrong reading a downloaded file".into())));
+            let staging = Path::new(&destination).join(STAGING).join(&staging);
+            let reports: Vec<Reporter> = ids.iter().map(|id| Reporter { app: Some(&app), id }).collect();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&reports, &client, &cancel, &staging)));
             let _ = std::fs::remove_dir_all(&staging);
             // Leave no empty staging folder behind.
             let _ = std::fs::remove_dir(Path::new(&destination).join(STAGING));
-            finish(&report, outcome);
+            for report in reports.iter().filter(|r| !settled(r.id)) {
+                if let Some(code) = leftover_code {
+                    report.set(|j| j.code = Some(code.into()));
+                }
+                finish(report, Err(Stop::Failed("Something went wrong reading a downloaded file".into())));
+            }
         })
         .map_err(|e| e.to_string())?;
-    Ok(job)
+    Ok(jobs)
 }
 
 fn finish(report: &Reporter, outcome: Result<PathBuf, Stop>) {
@@ -612,16 +648,27 @@ pub fn slsk_download_folder(app: AppHandle, request: FolderRequest) -> Result<Jo
 /// Starts downloading one song (from an imported playlist); progress arrives as `slsk-job` events.
 #[tauri::command]
 pub fn slsk_download_song(app: AppHandle, request: SongRequest) -> Result<Job, String> {
+    check_song(&request)?;
+    if !Path::new(&request.destination).is_dir() {
+        return Err("Choose a music folder in Settings → Music first.".into());
+    }
+    let job = song_job(&request);
+    let destination = request.destination.clone();
+    spawn_job(app, job, destination, move |report, client, cancel, staging| run_song(report, client, &request, cancel, staging))
+}
+
+fn check_song(request: &SongRequest) -> Result<(), String> {
     if !valid_id(&request.id) || request.group.as_ref().is_some_and(|g| !valid_id(g)) {
         return Err("Invalid download id".into());
     }
     if request.want.title.trim().is_empty() || request.want.title.len() > 300 || request.want.artists.len() > 20 {
         return Err("This song has no title to search for.".into());
     }
-    if !Path::new(&request.destination).is_dir() {
-        return Err("Choose a music folder in Settings → Music first.".into());
-    }
-    let job = Job {
+    Ok(())
+}
+
+fn song_job(request: &SongRequest) -> Job {
+    Job {
         id: request.id.clone(),
         kind: "song".into(),
         group: request.group.clone(),
@@ -633,9 +680,39 @@ pub fn slsk_download_song(app: AppHandle, request: SongRequest) -> Result<Job, S
         files_total: 1,
         source: request.copy.as_ref().map(|c| Source { user: c.user.clone(), format: extension(&c.file.path) }),
         ..Default::default()
-    };
-    let destination = request.destination.clone();
-    spawn_job(app, job, destination, move |report, client, cancel, staging| run_song(report, client, &request, cancel, staging))
+    }
+}
+
+/// Why a song of an album download wasn't fetched with the others (see `slsk_download_album_songs`):
+/// it's worth searching for on its own.
+const ON_ITS_OWN: &str = "alone";
+
+/// Starts downloading several songs of one album together (from an imported playlist): one search
+/// for the album, the songs from one person's folder. Each song is its own job, with its own
+/// `slsk-job` events; a song the album's copies don't give ends failed with the code "alone".
+#[tauri::command]
+pub fn slsk_download_album_songs(app: AppHandle, request: AlbumSongsRequest) -> Result<Vec<Job>, String> {
+    if !valid_id(&request.id) || request.group.as_ref().is_some_and(|g| !valid_id(g)) {
+        return Err("Invalid download id".into());
+    }
+    if request.songs.len() < 2 || request.songs.len() > 100 {
+        return Err("An album download takes 2 to 100 songs.".into());
+    }
+    if request.album.trim().is_empty() || request.album.len() > 300 || request.album_artist.len() > 300 {
+        return Err("This album has no name to search for.".into());
+    }
+    for (i, song) in request.songs.iter().enumerate() {
+        check_song(song)?;
+        if song.copy.is_some() || song.destination != request.destination || request.songs[..i].iter().any(|s| s.id == song.id) || song.id == request.id {
+            return Err("Invalid download id".into());
+        }
+    }
+    if !Path::new(&request.destination).is_dir() {
+        return Err("Choose a music folder in Settings → Music first.".into());
+    }
+    let jobs = request.songs.iter().map(song_job).collect();
+    let (destination, staging) = (request.destination.clone(), request.id.clone());
+    spawn_jobs(app, jobs, destination, staging, Some(ON_ITS_OWN), move |reports, client, cancel, staging| run_album_songs(reports, client, &request, cancel, staging))
 }
 
 enum Stop {
@@ -1183,7 +1260,7 @@ fn run_job(report: &Reporter, client: &Client, req: &AlbumRequest, cancel: &Atom
             j.files_done = have;
             j.source = Some(Source { user: candidate.user.clone(), format: candidate.format.clone() });
         });
-        let result = fetch(report, client, &candidate.user, &items, &staging.join(k.to_string()), cancel, &mut got, base, ALBUM_PATIENCE);
+        let result = fetch(report, client, &candidate.user, &items, &staging.join(k.to_string()), cancel, &mut got, base, ALBUM_PATIENCE, &mut |_| {});
         if got.iter().any(Option::is_some) {
             format = Some(candidate.format.clone());
         }
@@ -1622,6 +1699,180 @@ fn file_song(req: &SongRequest, path: &Path, ext: &str) -> Result<PathBuf, Strin
     Ok(target)
 }
 
+// ---------------------------------------------------------------------------
+// Songs of one album, together (playlist imports)
+// ---------------------------------------------------------------------------
+
+/// Fewest of the wanted songs a folder must have to be fetched for them (fewer is no saving).
+const ALBUM_SONGS_MIN: usize = 2;
+/// Copies of the album tried for its songs; what they don't give is searched for song by song.
+const ALBUM_SONGS_SOURCES: usize = 4;
+/// A song's patience, not an album's: whatever this person doesn't send soon is found elsewhere.
+const ALBUM_SONGS_PATIENCE: Patience = Patience { queue: SONG_QUEUE_PATIENCE, stall: SONG_STALL_PATIENCE };
+
+/// The songs as tracks of their album, for matching folders against.
+fn album_song_wants(req: &AlbumSongsRequest) -> Vec<WantTrack> {
+    req.songs
+        .iter()
+        .map(|s| WantTrack { title: s.want.title.clone(), position: s.track.unwrap_or(0), disc: s.disc.unwrap_or(1), length_ms: s.want.length_ms })
+        .collect()
+}
+
+/// The folders to fetch the songs from, in the order to try them: the most songs first, but
+/// people who can't connect back to us, or who just kept us queued, last of all; among the rest,
+/// people who've already sent us songs first, then the best copy.
+fn album_song_sources(wants: &[WantTrack], album: &str, offers: &[Offer], quality: matching::Quality) -> Vec<PartialCandidate> {
+    let mut found = matching::rank_some(wants, album, offers, quality, ALBUM_SONGS_MIN.min(wants.len()));
+    // `rank_some` puts the most songs and the best copy first: the sort keeps that order otherwise.
+    found.sort_by_key(|c| (known(&CANT_REACH_US, &c.user), kept_us_queued(&c.user), std::cmp::Reverse(c.count()), load_of(&c.user) >= 2, !known(&SENT_US, &c.user)));
+    found
+}
+
+/// Searches for the album until a ready-to-send folder has every song, or the search has run its
+/// course; the folders that have some of them, in the order to try them.
+fn find_album_songs(client: &Client, req: &AlbumSongsRequest, wants: &[WantTrack], cancel: &AtomicBool) -> Result<Vec<PartialCandidate>, Stop> {
+    let album = matching::unmask(&req.album);
+    if let Some(phrase) = blocked_phrase(client, &format!("{} {album}", req.album_artist)) {
+        return Err(Stop::Failed(format!("Soulseek blocks searches for “{phrase}”.")));
+    }
+    let queries = matching::queries(&req.album_artist, &album);
+    if queries.is_empty() {
+        return Err(Stop::Failed("This album’s name has nothing to search for.".into()));
+    }
+    let search = Searching::start(client, queries.clone(), Some(cancel)).map_err(search_error)?;
+    let started = Instant::now();
+    let (mut seen, mut found) = (usize::MAX, Vec::new());
+    loop {
+        wait(Duration::from_secs(1), cancel)?;
+        if client.session_loss().is_some() {
+            return Err(Stop::Failed("The connection to Soulseek dropped".into()));
+        }
+        let answers = search.answers();
+        if answers != seen {
+            seen = answers;
+            found = album_song_sources(wants, &album, &search.offers(), req.quality);
+        }
+        let t = started.elapsed();
+        let whole = found.iter().any(|c| c.count() == wants.len() && c.files.iter().flatten().any(|f| f.free_slot));
+        if !((t >= SEARCH_MIN && whole) || (t >= SEARCH_TIME && !found.is_empty()) || t >= SEARCH_MAX) {
+            continue;
+        }
+        if found.is_empty() {
+            return Err(Stop::Failed(format!("No copy of the album on Soulseek has these songs (searched for “{}”)", queries[0])));
+        }
+        return Ok(found);
+    }
+}
+
+/// Ends every song not ended yet: cancelled, or failed with `code`.
+fn end_songs(reports: &[Reporter], ended: &mut [bool], outcome: &Stop, code: Option<&str>) {
+    for (report, ended) in reports.iter().zip(ended.iter_mut()) {
+        if std::mem::replace(ended, true) {
+            continue;
+        }
+        if let Some(code) = code {
+            report.set(|j| j.code = Some(code.to_string()));
+        }
+        finish(report, Err(match outcome {
+            Stop::Cancelled => Stop::Cancelled,
+            Stop::Failed(e) => Stop::Failed(e.clone()),
+        }));
+    }
+}
+
+/// Fetches songs of one album together: one search for the album, then the songs from the folder
+/// that has the most of them (and from the next ones, in the same format, for what it lacks).
+/// Each song is checked, tagged and filed as it arrives, like a song fetched on its own. Songs no
+/// folder gives end with the code "alone" (they're searched for one by one instead).
+fn run_album_songs(reports: &[Reporter], client: &Client, req: &AlbumSongsRequest, cancel: &AtomicBool, staging: &Path) {
+    let mut ended = vec![false; req.songs.len()];
+    let dropped = || client.session_loss().is_some();
+    let wants = album_song_wants(req);
+    let candidates = match find_album_songs(client, req, &wants, cancel) {
+        Ok(found) => found,
+        Err(Stop::Cancelled) => return end_songs(reports, &mut ended, &Stop::Cancelled, None),
+        Err(stop) => return end_songs(reports, &mut ended, &stop, Some(if dropped() { "connection" } else { ON_ITS_OWN })),
+    };
+    let mut format: Option<String> = None;
+    let mut last_error = String::new();
+    let mut tried = 0;
+    for (k, candidate) in candidates.iter().enumerate() {
+        // The songs of one album come in one format: once some have, only copies in it can add to them.
+        if tried == ALBUM_SONGS_SOURCES || format.as_deref().is_some_and(|f| f != candidate.format) {
+            continue;
+        }
+        let items: Vec<Item> = candidate
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !ended[*i])
+            .filter_map(|(index, offer)| offer.clone().map(|offer| Item { index, offer, length_ms: wants[index].length_ms }))
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        tried += 1;
+        note(format!("Asking {} for {} songs of {} from {}", candidate.user, items.len(), req.album, candidate.folder));
+        let source = Source { user: candidate.user.clone(), format: candidate.format.clone() };
+        for item in &items {
+            reports[item.index].set(|j| {
+                j.state = "queued".into();
+                j.message = String::new();
+                j.bytes = 0;
+                j.total = item.offer.size;
+                j.source = Some(source.clone());
+            });
+        }
+        let mut got = vec![None; req.songs.len()];
+        // The album's own progress isn't shown anywhere: each song shows its own.
+        let quiet = Reporter { app: None, id: "" };
+        let result = fetch(&quiet, client, &candidate.user, &items, &staging.join(k.to_string()), cancel, &mut got, 0, ALBUM_SONGS_PATIENCE, &mut |event| match event {
+            FileEvent::Progress { index, sending, bytes } => reports[index].set(|j| {
+                j.state = if sending { "downloading" } else { "queued" }.into();
+                j.bytes = bytes;
+            }),
+            FileEvent::Got { index, path } => {
+                ended[index] = true;
+                format = Some(candidate.format.clone());
+                let report = &reports[index];
+                report.set(|j| {
+                    j.state = "checking".into();
+                    j.bytes = j.total;
+                });
+                let filed = file_song(&req.songs[index], path, &candidate.format);
+                if filed.is_err() {
+                    report.set(|j| j.code = Some(ON_ITS_OWN.into()));
+                }
+                finish(report, filed.map_err(Stop::Failed));
+            }
+        });
+        match result {
+            Ok(()) => {}
+            Err(Stop::Cancelled) => return end_songs(reports, &mut ended, &Stop::Cancelled, None),
+            Err(stop @ Stop::Failed(_)) if dropped() => return end_songs(reports, &mut ended, &stop, Some("connection")),
+            Err(Stop::Failed(e)) => {
+                if e.contains("kept the files queued") {
+                    remember_queued(&candidate.user);
+                }
+                last_error = e;
+            }
+        }
+        if ended.iter().all(|e| *e) {
+            return;
+        }
+        // What this person didn't send waits for the next copy.
+        for item in items.iter().filter(|i| !ended[i.index]) {
+            reports[item.index].set(|j| {
+                j.state = "searching".into();
+                j.bytes = 0;
+                j.source = None;
+            });
+        }
+    }
+    let why = if last_error.is_empty() { "The album’s copies on Soulseek don’t have it".to_string() } else { format!("The album’s copies couldn’t send it ({last_error})") };
+    end_songs(reports, &mut ended, &Stop::Failed(why), Some(ON_ITS_OWN));
+}
+
 /// Downloads a picked folder as it is into `<music folder>/Soulseek/<folder>/`.
 fn run_folder(report: &Reporter, client: &Client, req: &FolderRequest, cancel: &AtomicBool, staging: &Path) -> Result<PathBuf, Stop> {
     let items: Vec<Item> = picked_offers(&req.copy)?.into_iter().enumerate().map(|(index, offer)| Item { index, offer, length_ms: None }).collect();
@@ -1630,7 +1881,7 @@ fn run_folder(report: &Reporter, client: &Client, req: &FolderRequest, cancel: &
         j.total = items.iter().map(|i| i.offer.size).sum();
         j.source = Some(Source { user: req.copy.user.clone(), format: items.first().map(|i| extension(&i.offer.path)).unwrap_or_default() });
     });
-    fetch(report, client, &req.copy.user, &items, &staging.join("0"), cancel, &mut got, 0, ALBUM_PATIENCE)?;
+    fetch(report, client, &req.copy.user, &items, &staging.join("0"), cancel, &mut got, 0, ALBUM_PATIENCE, &mut |_| {})?;
     report.set(|j| j.state = "checking".into());
     let base = Path::new(&req.destination).join("Soulseek");
     let name = library::safe_name(basename(&req.copy.folder));
@@ -1706,8 +1957,27 @@ fn forget_downloads<'a>(client: &Client, files: impl Iterator<Item = &'a Offer>)
     }
 }
 
+/// What `fetch` tells about each of its files as it goes.
+enum FileEvent<'a> {
+    /// Where a file stands, every few hundred milliseconds while it's on its way.
+    Progress { index: usize, sending: bool, bytes: u64 },
+    /// A file arrived and was checked (it's also in `got`).
+    Got { index: usize, path: &'a Path },
+}
+
 #[allow(clippy::too_many_arguments)]
-fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &Path, cancel: &AtomicBool, got: &mut [Option<(PathBuf, u64)>], base: u64, patience: Patience) -> Result<(), Stop> {
+fn fetch(
+    report: &Reporter,
+    client: &Client,
+    user: &str,
+    items: &[Item],
+    dir: &Path,
+    cancel: &AtomicBool,
+    got: &mut [Option<(PathBuf, u64)>],
+    base: u64,
+    patience: Patience,
+    on_file: &mut dyn FnMut(FileEvent),
+) -> Result<(), Stop> {
     let _busy = Busy::new(user);
     let mut transfers: Vec<Transfer> = Vec::new();
     let cancel_live = |transfers: &[Transfer]| {
@@ -1764,6 +2034,7 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
                         note(format!("Got {name} from {user}"));
                         remember(&SENT_US, user);
                         got[t.item.index] = Some((t.path.clone(), t.item.offer.size));
+                        on_file(FileEvent::Got { index: t.item.index, path: &t.path });
                         continue;
                     }
                     Err(e) => e,
@@ -1837,6 +2108,10 @@ fn fetch(report: &Reporter, client: &Client, user: &str, items: &[Item], dir: &P
                 j.bytes = base + sent;
                 j.files_done = files_done;
             });
+            for t in transfers.iter().filter(|t| !t.done && t.dead.is_none()) {
+                let sending = t.bytes > 0 || matches!(t.last, DownloadStatus::InProgress { .. });
+                on_file(FileEvent::Progress { index: t.item.index, sending, bytes: t.bytes });
+            }
         }
         std::thread::sleep(Duration::from_millis(250));
     };
@@ -1953,6 +2228,48 @@ mod tests {
         assert_eq!(race_step(5, 12, 12, s(60)), RaceStep::Wait);
         assert_eq!(race_step(5, 12, 12, s(90)), RaceStep::GiveUp);
         assert_eq!(race_step(0, 12, 12, s(1)), RaceStep::GiveUp);
+    }
+
+    #[test]
+    fn songs_of_an_album_come_from_the_one_folder_that_has_most_of_them() {
+        let titles = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota", "Kappa", "Lambda", "Mu", "Omega"];
+        let secs = |n: usize| 200 + n as u32 * 10;
+        let want = |n: usize| WantTrack { title: titles[n].into(), position: n as u32 + 1, disc: 1, length_ms: Some(secs(n) * 1000) };
+        // Four songs of the album in a playlist; the album has thirteen.
+        let wants = vec![want(0), want(2), want(9), want(12)];
+        let folder = |user: &str, root: &str, songs: &[usize]| -> Vec<Offer> {
+            songs.iter().map(|&n| offer(user, &format!("{root}/{:02} - {}.flac", n + 1, titles[n]), secs(n))).collect()
+        };
+        let mut offers = Vec::new();
+        // Twelve of the album's songs: three of the four wanted.
+        offers.extend(folder("tf_most", r"Music\Test Artist\Test Album (2016)", &(0..12).collect::<Vec<_>>()));
+        // Two of them.
+        offers.extend(folder("tf_two", "share/Test Album", &[0, 2]));
+        // Only one: no saving over searching for it on its own.
+        offers.extend(folder("tf_one", "share/Test Album", &[9]));
+        // All four, from someone who can't connect back to us: tried last.
+        offers.extend(folder("tf_unreachable", "Test Artist - Test Album", &(0..13).collect::<Vec<_>>()));
+        remember(&CANT_REACH_US, "tf_unreachable");
+        // Not the songs: another length, a live take, a track number alone.
+        offers.push(offer("tf_wrong", "x/Test Album/01 - Alpha.flac", 260));
+        offers.push(offer("tf_wrong", "x/Test Album/03 - Gamma (Live).flac", secs(2)));
+        offers.push(offer("tf_wrong", "x/Test Album/10 - Track 10.flac", secs(9)));
+        // Someone's whole collection in one folder.
+        offers.extend((0..200).map(|n| offer("tf_dump", &format!("all/{n:03} - {}.flac", titles[n % 13]), secs(n % 13))));
+
+        let found = album_song_sources(&wants, "Test Album", &offers, Quality::Lossless);
+        let order: Vec<(&str, usize)> = found.iter().map(|c| (c.user.as_str(), c.count())).collect();
+        assert_eq!(order, [("tf_most", 3), ("tf_two", 2), ("tf_unreachable", 4)]);
+        // One folder, one file for each song it has.
+        let files: Vec<Option<&str>> = found[0].files.iter().map(|f| f.as_ref().map(|f| basename(&f.path))).collect();
+        assert_eq!(files, [Some("01 - Alpha.flac"), Some("03 - Gamma.flac"), Some("10 - Kappa.flac"), None]);
+        assert_eq!((found[0].folder.as_str(), found[0].format.as_str()), (r"Music\Test Artist\Test Album (2016)", "flac"));
+        // Masked titles are read as the words they hide.
+        let masked = vec![WantTrack { title: "Sh*t".into(), position: 1, disc: 1, length_ms: Some(200_000) }, want(2)];
+        let shared = [offer("tf_masked", "m/Test Album/01 - Shit.flac", 200), offer("tf_masked", "m/Test Album/03 - Gamma.flac", secs(2))];
+        assert_eq!(album_song_sources(&masked, "Test Album", &shared, Quality::Lossless).first().map(|c| c.count()), Some(2));
+        // Only the quality asked for.
+        assert!(album_song_sources(&wants, "Test Album", &offers, Quality::Mp3).is_empty());
     }
 
     #[test]

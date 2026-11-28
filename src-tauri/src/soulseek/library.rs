@@ -113,6 +113,24 @@ pub struct SongRequest {
     pub copy: Option<PickedSong>,
 }
 
+/// Several songs of one album (from an imported playlist) to fetch together: one search for the
+/// album, and the songs from one person's folder of it. Each song is still its own job, tagged
+/// and filed the way a song fetched on its own is.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumSongsRequest {
+    /// This download's own id (its staging folder).
+    pub id: String,
+    /// The playlist import the songs belong to.
+    #[serde(default)]
+    pub group: Option<String>,
+    pub album: String,
+    pub album_artist: String,
+    pub quality: super::matching::Quality,
+    pub destination: String,
+    pub songs: Vec<SongRequest>,
+}
+
 /// A shared file the user picked for a song.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
