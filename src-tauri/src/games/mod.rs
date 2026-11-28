@@ -241,6 +241,17 @@ pub async fn games_is_running(install_dir: String) -> bool {
     blocking(move || launch::is_running(Path::new(&install_dir))).await.unwrap_or(false)
 }
 
+/// For each install folder, when the game running from it started (ms since 1970), or null:
+/// how play started outside TruongFlix (shortcuts, the game's own launcher) is noticed and timed.
+#[tauri::command]
+pub async fn games_running_since(dirs: Vec<String>) -> Result<Vec<Option<u64>>, String> {
+    if dirs.len() > 2_000 {
+        return Err("Too many folders".into());
+    }
+    let dirs: Vec<PathBuf> = dirs.into_iter().map(PathBuf::from).collect();
+    blocking(move || launch::running_since(&dirs)).await
+}
+
 #[tauri::command]
 pub async fn games_find_executables(install_dir: String) -> Vec<launch::ExeCandidate> {
     blocking(move || launch::find_executables(Path::new(&install_dir))).await.unwrap_or_default()

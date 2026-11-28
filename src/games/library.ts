@@ -1,4 +1,5 @@
 import { getDb } from '../services/db';
+import { belongsTo, gameKey, statsFor, type StatSession } from './stats';
 import type { GameDetail, GameSettings, GameStatus, InstallChoices, LibraryGame } from './types';
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS games_library (
@@ -34,7 +35,8 @@ const SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS games_play_sessions (
   started_at TEXT NOT NULL,          -- ISO time the session started
   seconds INTEGER NOT NULL,
   estimated INTEGER NOT NULL DEFAULT 0, -- 1 = rebuilt from a game's total play time
-  profile_id INTEGER                 -- profile that started the game (NULL: recorded before profiles were noted)
+  profile_id INTEGER,                -- profile that started the game (NULL: recorded before profiles were noted)
+  game_key TEXT                      -- the game's normalised title (stats.gameKey): same game across installs
 )`;
 
 type SqlDb = {
@@ -46,22 +48,58 @@ type SqlDb = {
  * Creates the library tables. The sessions table was added later: when it is first created, play
  * time recorded before it existed becomes one estimated session per game (dated its last play),
  * so it still counts towards that year's totals.
+ *
+ * Sessions are the game's history, kept through uninstalls, removals and reinstalls; each notes
+ * the game's stable key (sessions recorded before that, or restored from an older backup, get it
+ * here). A library total that its sessions don't cover (a session lost to a crash) is added as an
+ * estimated session, so the history never shows less than the library did.
  */
 export async function migrateGamesDb(database: SqlDb) {
   await database.execute(SCHEMA);
   const existing = await database.select<{ name: string }[]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'games_play_sessions'");
   await database.execute(SESSIONS_SCHEMA);
   await database.execute('CREATE INDEX IF NOT EXISTS idx_games_play_sessions_started ON games_play_sessions(started_at)');
-  // Sessions note which profile played (added later; older sessions keep NULL).
+  // Columns added later: older sessions keep NULL until filled in below.
   const columns = await database.select<{ name: string }[]>('PRAGMA table_info(games_play_sessions)');
   if (!columns.some((c) => c.name === 'profile_id')) await database.execute('ALTER TABLE games_play_sessions ADD COLUMN profile_id INTEGER');
-  if (existing.length) return;
-  await database.execute(
-    `INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated)
-     SELECT id, slug, title, cover, last_played, play_seconds, 1 FROM games_library
-     WHERE play_seconds > 0 AND last_played IS NOT NULL`,
-  );
+  if (!columns.some((c) => c.name === 'game_key')) await database.execute('ALTER TABLE games_play_sessions ADD COLUMN game_key TEXT');
+  await database.execute('CREATE INDEX IF NOT EXISTS idx_games_play_sessions_key ON games_play_sessions(game_key)');
+  if (!existing.length) {
+    await database.execute(
+      `INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated)
+       SELECT id, slug, title, cover, last_played, play_seconds, 1 FROM games_library
+       WHERE play_seconds > 0 AND last_played IS NOT NULL`,
+    );
+  }
+  const unkeyed = await database.select<{ title: string }[]>('SELECT DISTINCT title FROM games_play_sessions WHERE game_key IS NULL');
+  for (const { title } of unkeyed) {
+    await database.execute('UPDATE games_play_sessions SET game_key = $1 WHERE game_key IS NULL AND title = $2', [gameKey(title), title]);
+  }
+  await coverLibraryTotals(database);
 }
+
+/** Adds an estimated session for play time a library row has that its sessions don't. */
+async function coverLibraryTotals(database: SqlDb) {
+  const rows = await database.select<{ id: number; slug: string; title: string; cover: string | null; play_seconds: number; when: string | null }[]>(
+    'SELECT id, slug, title, cover, play_seconds, COALESCE(last_played, installed_at, created_at) AS "when" FROM games_library WHERE play_seconds > 0',
+  );
+  if (!rows.length) return;
+  const sessions = await database.select<{ slug: string; game_key: string | null; title: string; seconds: number }[]>(
+    'SELECT slug, game_key, title, seconds FROM games_play_sessions',
+  );
+  for (const row of rows) {
+    const covered = sessions.filter((s) => belongsTo({ slug: s.slug, gameKey: s.game_key, title: s.title }, row)).reduce((n, s) => n + s.seconds, 0);
+    const missing = row.play_seconds - covered;
+    if (missing < 60 || !row.when) continue;
+    await database.execute(
+      'INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated, game_key) VALUES ($1,$2,$3,$4,$5,$6,1,$7)',
+      [row.id, row.slug, row.title, row.cover, toIso(row.when), missing, gameKey(row.title)],
+    );
+  }
+}
+
+/** SQLite's CURRENT_TIMESTAMP ("2026-11-27 10:00:00", UTC) or an ISO time, as ISO. */
+const toIso = (value: string) => (/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(value) ? `${value.replace(' ', 'T')}.000Z` : value);
 
 let ready: Promise<void> | null = null;
 
@@ -132,9 +170,21 @@ function fromRow(r: GameRowDb): LibraryGame {
   };
 }
 
-export async function listGames(): Promise<LibraryGame[]> {
+const libraryTime = (value: string | null) => (value ? Date.parse(toIso(value)) || 0 : 0);
+
+/** A library game's play time and last play from the game's whole history (every install of it). */
+export function withHistory(game: LibraryGame, sessions: StatSession[]): LibraryGame {
+  const stats = statsFor(game, sessions);
+  const lastPlayed = libraryTime(stats.lastPlayed) > libraryTime(game.lastPlayed) ? stats.lastPlayed : game.lastPlayed;
+  return { ...game, playSeconds: Math.max(game.playSeconds, stats.totalSeconds), lastPlayed };
+}
+
+/** `sessions`: the play history, when already loaded (listStatSessions). */
+export async function listGames(sessions?: StatSession[]): Promise<LibraryGame[]> {
   const rows = await (await db()).select<GameRowDb[]>('SELECT * FROM games_library ORDER BY COALESCE(last_played, installed_at, created_at) DESC');
-  return rows.map(fromRow);
+  const history = sessions ?? (await listStatSessions());
+  const when = (g: LibraryGame) => libraryTime(g.lastPlayed ?? g.installedAt ?? g.createdAt);
+  return rows.map((r) => withHistory(fromRow(r), history)).sort((a, b) => when(b) - when(a));
 }
 
 export async function insertGame(game: {
@@ -237,15 +287,50 @@ interface SessionRowDb {
   seconds: number;
   estimated: number;
   profile_id?: number | null;
+  game_key?: string | null;
 }
 
 export async function recordPlaySession(game: Pick<LibraryGame, 'id' | 'slug' | 'title' | 'cover'>, seconds: number, endedAt = new Date(), profileId: number | null = null) {
   const secs = Math.max(0, Math.round(seconds));
   if (!secs) return;
   await (await db()).execute(
-    'INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated, profile_id) VALUES ($1,$2,$3,$4,$5,$6,0,$7)',
-    [game.id, game.slug, game.title, game.cover, new Date(endedAt.getTime() - secs * 1000).toISOString(), secs, profileId],
+    'INSERT INTO games_play_sessions (game_id, slug, title, cover, started_at, seconds, estimated, profile_id, game_key) VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8)',
+    [game.id, game.slug, game.title, game.cover, new Date(endedAt.getTime() - secs * 1000).toISOString(), secs, profileId, gameKey(game.title)],
   );
+}
+
+/** Every play session, for the stats (stats.statsFor). */
+export async function listStatSessions(): Promise<StatSession[]> {
+  const rows = await (await db()).select<SessionRowDb[]>('SELECT * FROM games_play_sessions ORDER BY started_at');
+  return rows.map((r) => ({
+    slug: r.slug,
+    gameKey: r.game_key ?? null,
+    title: r.title,
+    startedAt: r.started_at,
+    seconds: r.seconds,
+    estimated: r.estimated === 1,
+  }));
+}
+
+/**
+ * Deletes a game's play history (every install of it), only when asked: uninstalling or removing
+ * a game keeps it. Its library entries start again from nothing. Returns how many sessions went.
+ */
+export async function forgetPlayStats(game: { slug: string; title: string }): Promise<number> {
+  const database = await db();
+  const rows = await database.select<{ id: number; slug: string; game_key: string | null; title: string }[]>('SELECT id, slug, game_key, title FROM games_play_sessions');
+  const ids = rows.filter((r) => belongsTo({ slug: r.slug, gameKey: r.game_key, title: r.title }, game)).map((r) => r.id);
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    await database.execute(`DELETE FROM games_play_sessions WHERE id IN (${chunk.map((_, j) => `$${j + 1}`).join(',')})`, chunk);
+  }
+  const library = await database.select<{ id: number; slug: string; title: string }[]>('SELECT id, slug, title FROM games_library');
+  for (const row of library) {
+    if (row.slug === game.slug || gameKey(row.title) === gameKey(game.title)) {
+      await database.execute('UPDATE games_library SET play_seconds = 0, last_played = NULL WHERE id = $1', [row.id]);
+    }
+  }
+  return ids.length;
 }
 
 function genresOf(detail: string | null): string[] {

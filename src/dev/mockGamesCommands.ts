@@ -91,6 +91,8 @@ export function handleGamesCommand(cmd: string, a: Record<string, unknown>): unk
       return null;
     case 'games_is_running':
       return false;
+    case 'games_running_since':
+      return ((a.dirs as string[] | undefined) ?? []).map(() => null);
     case 'games_disk_free':
       return 412_000_000_000;
     case 'games_total_memory_gb':

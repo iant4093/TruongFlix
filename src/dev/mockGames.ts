@@ -120,11 +120,23 @@ export function handleGamesSql(q: string, values: unknown[]): unknown | undefine
   }
   if (q.includes('games_play_sessions')) {
     if (q.includes('sqlite_master')) return [{ name: 'games_play_sessions' }];
-    if (q.startsWith('PRAGMA')) return ['id', 'game_id', 'slug', 'title', 'cover', 'started_at', 'seconds', 'estimated', 'profile_id'].map((name) => ({ name }));
-    if (q.startsWith('SELECT * FROM games_play_sessions')) return [...sessions].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+    sessions.forEach((r, i) => { r.id ??= i + 1; r.game_key ??= null; });
+    if (q.startsWith('SELECT DISTINCT title')) return [...new Set(sessions.filter((r) => r.game_key == null).map((r) => r.title))].map((title) => ({ title }));
+    if (q.startsWith('UPDATE games_play_sessions SET game_key')) {
+      for (const r of sessions) if (r.game_key == null && r.title === values[1]) r.game_key = values[0];
+      return [1, 0];
+    }
+    if (q.startsWith('DELETE FROM games_play_sessions')) {
+      for (let i = sessions.length - 1; i >= 0; i--) if (values.includes(sessions[i].id)) sessions.splice(i, 1);
+      return [1, 0];
+    }
+    if (q.startsWith('PRAGMA')) return ['id', 'game_id', 'slug', 'title', 'cover', 'started_at', 'seconds', 'estimated', 'profile_id', 'game_key'].map((name) => ({ name }));
+    if (q.startsWith('SELECT')) return [...sessions].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
     if (q.startsWith('INSERT INTO games_play_sessions') && q.includes('VALUES')) {
-      const [game_id, slug, title, cover, started_at, seconds, profile_id] = values;
-      sessions.push({ game_id, slug, title, cover, started_at, seconds, estimated: 0, profile_id: profile_id ?? null });
+      const [game_id, slug, title, cover, started_at, seconds, a, b] = values;
+      // Recorded sessions end with (profile, key); estimated ones with (key).
+      const estimated = q.includes(',1,$7)');
+      sessions.push({ id: sessions.length + 1e6, game_id, slug, title, cover, started_at, seconds, estimated: estimated ? 1 : 0, profile_id: estimated ? null : (a ?? null), game_key: estimated ? a : b });
     }
     return q.startsWith('SELECT') ? [] : [1, 0];
   }
@@ -137,6 +149,10 @@ export function handleGamesSql(q: string, values: unknown[]): unknown | undefine
   if (q.startsWith('CREATE')) return [0, 0];
   if (q.startsWith('SELECT * FROM games_library WHERE slug')) return library.filter((r) => r.slug === values[0]);
   if (q.startsWith('SELECT * FROM games_library')) return [...library].reverse();
+  if (q.startsWith('SELECT id, slug, title, cover, play_seconds')) {
+    return library.filter((r) => Number(r.play_seconds) > 0).map((r) => ({ ...r, when: r.last_played ?? r.installed_at ?? r.created_at }));
+  }
+  if (q.startsWith('SELECT id, slug, title FROM games_library')) return library.map((r) => ({ id: r.id, slug: r.slug, title: r.title }));
   if (q.startsWith('INSERT INTO games_library')) {
     const data = Object.fromEntries(LIBRARY_COLUMNS.map((c, i) => [c, values[i] ?? null]));
     const existing = library.find((r) => r.slug === data.slug);
@@ -145,7 +161,7 @@ export function handleGamesSql(q: string, values: unknown[]): unknown | undefine
     return [1, 0];
   }
   const row = library.find((r) => r.id === values[0]);
-  if (q.startsWith('UPDATE games_library SET play_seconds')) {
+  if (q.startsWith('UPDATE games_library SET play_seconds = play_seconds + $2')) {
     if (row) Object.assign(row, { play_seconds: Number(row.play_seconds) + Number(values[1]), last_played: values[2] });
   } else if (q.startsWith('UPDATE games_library SET')) {
     const sets = q.slice('UPDATE games_library SET '.length, q.indexOf(' WHERE')).split(', ');

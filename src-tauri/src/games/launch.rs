@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, INFINITE, PROCESS_NAME_WIN32,
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, INFINITE, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
@@ -20,8 +20,15 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Paths of running processes whose executable lives inside `dir`.
-fn processes_in(dir: &Path) -> Vec<u32> {
+/// A running process: its executable and when it started (ms since 1970), when Windows says.
+struct Running {
+    image: PathBuf,
+    started_ms: Option<u64>,
+}
+
+/// Every process whose executable path can be read (elevated games included: limited query
+/// rights are enough).
+fn running_processes() -> Vec<Running> {
     let mut out = Vec::new();
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -38,9 +45,14 @@ fn processes_in(dir: &Path) -> Vec<u32> {
                     let mut len = buf.len() as u32;
                     if QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
                         let image = PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
-                        if super::guard::strictly_inside(&image, dir) {
-                            out.push(entry.th32ProcessID);
-                        }
+                        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+                        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+                        let started_ms = if GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0 {
+                            filetime_ms(created)
+                        } else {
+                            None
+                        };
+                        out.push(Running { image, started_ms });
                     }
                     CloseHandle(handle);
                 }
@@ -54,8 +66,46 @@ fn processes_in(dir: &Path) -> Vec<u32> {
     out
 }
 
+/// A FILETIME (100 ns ticks since 1601) as ms since 1970.
+fn filetime_ms(t: FILETIME) -> Option<u64> {
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let ticks = ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
+    ticks.checked_sub(UNIX_EPOCH_TICKS).map(|t| t / 10_000)
+}
+
 pub fn is_running(dir: &Path) -> bool {
-    !processes_in(dir).is_empty()
+    running_processes().iter().any(|p| super::guard::strictly_inside(&p.image, dir))
+}
+
+/// Whether a program in a game's folder is the game (or its launcher) rather than its
+/// uninstaller, installer, redistributable or crash reporter.
+fn is_game_program(image: &Path) -> bool {
+    let name = image.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    !NOT_THE_GAME.iter().any(|w| name.contains(w)) || name.contains("launcher")
+}
+
+/// For each game folder, when the earliest game program running from it started (ms since
+/// 1970), or `None` when none runs. A program whose start time can't be read counts as just
+/// started.
+fn earliest_in(processes: &[Running], dirs: &[PathBuf], now_ms: u64) -> Vec<Option<u64>> {
+    dirs.iter()
+        .map(|dir| {
+            processes
+                .iter()
+                .filter(|p| super::guard::strictly_inside(&p.image, dir) && is_game_program(&p.image))
+                .map(|p| p.started_ms.unwrap_or(now_ms).min(now_ms))
+                .min()
+        })
+        .collect()
+}
+
+/// When a game started from each folder has been running (one look at the process list for all).
+pub fn running_since(dirs: &[PathBuf]) -> Vec<Option<u64>> {
+    if dirs.is_empty() {
+        return Vec::new();
+    }
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    earliest_in(&running_processes(), dirs, now_ms)
 }
 
 /// Starts the game through the shell (so games that require administrator rights get their UAC
@@ -156,5 +206,43 @@ mod tests {
             .map(|c| Path::new(&c.path).file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["Trees.exe", "Trees-Shipping.exe"]);
+    }
+
+    fn process(image: &str, started_ms: Option<u64>) -> Running {
+        Running { image: PathBuf::from(image), started_ms }
+    }
+
+    #[test]
+    fn a_game_runs_from_when_its_first_program_started() {
+        let processes = vec![
+            process(r"C:\Windows\explorer.exe", Some(1)),
+            process(r"C:\Games\Trees\Launcher.exe", Some(5_000)),
+            process(r"C:\Games\Trees\Bin\Trees.exe", Some(9_000)),
+            process(r"C:\Games\Rocks\Rocks.exe", None),
+        ];
+        let dirs = [r"C:\Games\Trees", r"c:\games\rocks\", r"C:\Games\Water", r"C:\Games"].map(PathBuf::from);
+        // Matched by folder (any case), never by name; no start time: counted from now.
+        assert_eq!(earliest_in(&processes, &dirs, 20_000), vec![Some(5_000), Some(20_000), None, Some(5_000)]);
+    }
+
+    #[test]
+    fn uninstallers_installers_and_crash_reporters_are_not_play() {
+        let processes = vec![
+            process(r"C:\Games\Trees\unins000.exe", Some(1_000)),
+            process(r"C:\Games\Trees\_Redist\vc_redist.x64.exe", Some(2_000)),
+            process(r"C:\Games\Trees\CrashReporter.exe", Some(3_000)),
+            process(r"C:\Games\Trees\Trees_Launcher_Update.exe", Some(7_000)),
+        ];
+        let dirs = [PathBuf::from(r"C:\Games\Trees")];
+        assert_eq!(earliest_in(&processes[..3], &dirs, 10_000), vec![None]);
+        // A launcher counts even when its name has a skipped word.
+        assert_eq!(earliest_in(&processes, &dirs, 10_000), vec![Some(7_000)]);
+    }
+
+    #[test]
+    fn filetimes_become_unix_milliseconds() {
+        let t = 116_444_736_000_000_000u64 + 12_345 * 10_000;
+        assert_eq!(filetime_ms(FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 }), Some(12_345));
+        assert_eq!(filetime_ms(FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }), None);
     }
 }
