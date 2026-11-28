@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import type { useBannerTrailer } from './useBannerTrailer';
 import { backdropSrcSet } from '../../lib/images';
+import BackdropFade from '../common/BackdropFade';
 
 type Trailer = ReturnType<typeof useBannerTrailer>;
 
@@ -39,8 +40,7 @@ export function BillboardMedia({ title, backdrop, trailer }: { title: string; ba
       {trailer && <TrailerLayer title={title} trailer={trailer} />}
       <div className="pointer-events-none absolute inset-0"
         style={{ background: 'linear-gradient(77deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 85%)' }} />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[45%]"
-        style={{ background: 'linear-gradient(180deg, rgba(20,20,20,0) 0%, rgba(20,20,20,0.6) 60%, #141414 100%)' }} />
+      <BackdropFade to="page" side={0} height="55%" />
     </>
   );
 }

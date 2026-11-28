@@ -10,6 +10,17 @@ const SCAN_RESULT_MS = 4000;
 
 const enter = toastMotion;
 
+/**
+ * Bottom offset of things stacked in the bottom-right corner (toasts, the back-to-top button):
+ * above the mini video player, or above the cast and music bars.
+ */
+export function useCornerBottom(): number | string {
+  const mini = useLibraryStore((s) => s.playerMini);
+  const casting = useLibraryStore((s) => !!s.cast);
+  if (mini) return window.innerHeight - miniRect().y + 16;
+  return `calc(${casting ? 150 : 24}px + var(--tf-music-bar, 0px))`;
+}
+
 /** Notification stack + the scan-progress card (bottom-right). */
 export default function Toasts() {
   const toasts = useLibraryStore((s) => s.toasts);
@@ -36,11 +47,7 @@ export default function Toasts() {
   const failed = finished && scan.phase === 'error';
   // Folder-watcher scans stay silent unless something was actually added or removed.
   const scanVisible = showScan && (!scan.quiet || scan.phase === 'matching' || (finished && !failed && (scan.added > 0 || scan.removed > 0)));
-  const mini = useLibraryStore((s) => s.playerMini);
-  const casting = useLibraryStore((s) => !!s.cast);
-  const lift = casting ? 150 : 24;
-  // Above the music bar (when it shows) as well as the cast bar.
-  const bottom = mini ? window.innerHeight - miniRect().y + 16 : `calc(${lift}px + var(--tf-music-bar, 0px))`;
+  const bottom = useCornerBottom();
   const title = scan.running
     ? scan.phase === 'ratings'
       ? 'Updating IMDb ratings'
@@ -54,7 +61,7 @@ export default function Toasts() {
         : 'Library is up to date';
 
   return (
-    <div data-nav-skip="" className="pointer-events-none fixed right-6 z-[180] flex w-[360px] flex-col items-end gap-2 transition-[bottom]" style={{ bottom }}>
+    <div data-nav-skip="" data-toast-stack="" className="pointer-events-none fixed right-6 z-[180] flex w-[360px] flex-col items-end gap-2 transition-[bottom]" style={{ bottom }}>
       {/* popLayout removes exiting items from the flow immediately, so the stack never jumps. */}
       <AnimatePresence initial={false} mode="popLayout">
         {toasts.map((t) => (

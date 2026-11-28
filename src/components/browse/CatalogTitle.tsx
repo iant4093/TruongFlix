@@ -13,6 +13,7 @@ import SourceBrowser from './SourceBrowser';
 import ReleasePicker from './ReleasePicker';
 import Dropdown from '../common/Dropdown';
 import Artwork from '../common/Artwork';
+import BackdropFade from '../common/BackdropFade';
 import CriticScores from '../common/CriticScores';
 import ImdbRating from '../common/ImdbRating';
 import MaturityRating from '../common/MaturityRating';
@@ -208,8 +209,7 @@ export default function CatalogTitle({ item, initialEpisode, autoRun, onClose, o
   return <><CatalogDialog title={item.title} onClose={onClose} active={!suspended && !browsing}>
     <div className="relative grid items-end overflow-hidden rounded-t-xl bg-nf-surface before:col-start-1 before:row-start-1 before:aspect-video before:min-h-[280px] before:w-full">
       <Artwork key={detail?.backdrop || item.backdrop || item.poster} src={detail?.backdrop || item.backdrop || item.poster} alt="" eager className="absolute inset-0 h-full w-full" />
-      <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-nf-surface/10 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-transparent" />
+      <BackdropFade />
       <div className="relative col-start-1 row-start-1 flex min-w-0 flex-col gap-5 px-6 pb-[4.5%] pt-16 md:px-12">
         {/* The title's logo, faded in once it has loaded. Until the details say whether there is
             one, the space stays empty rather than flashing the plain title first. */}

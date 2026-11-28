@@ -69,6 +69,7 @@ import {
 import { play, playEpisode } from '../../services/player';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
+import BackdropFade from '../common/BackdropFade';
 import ProgressBar from '../common/ProgressBar';
 import TechBadges from '../common/TechBadges';
 import { backdropSrcSet } from '../../lib/images';
@@ -208,8 +209,7 @@ function DetailContent({ item, season, onSeasonChange }: ContentProps) {
           className={`h-full w-full ${isDownloading ? 'opacity-65 grayscale-[50%]' : ''}`}
           eager
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-nf-surface/10 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-transparent" />
+        <BackdropFade />
 
         {expiry && (
           <div

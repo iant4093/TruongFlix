@@ -7,6 +7,7 @@ import Navbar, { Wordmark } from './components/layout/Navbar';
 import { BrowseView, MyListView, SearchView } from './components/home/Browse';
 import HoverPreview from './components/home/HoverPreview';
 import Toasts from './components/common/Toasts';
+import BackToTop from './components/common/BackToTop';
 import TvNavigation from './components/common/TvNavigation';
 import ContextMenu, { initContextMenu } from './components/common/ContextMenu';
 import ConfirmDialog from './components/common/ConfirmDialog';
@@ -340,6 +341,7 @@ export default function App() {
         <Suspense fallback={null}><PlayerScreen /></Suspense>
         <ProfileGate />
         <PinPrompt />
+        <BackToTop />
         <Toasts />
         <ConfirmDialog />
         <TvNavigation />

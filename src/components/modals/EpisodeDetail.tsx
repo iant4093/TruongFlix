@@ -30,6 +30,7 @@ import { play } from '../../services/player';
 import { setWatched } from '../../services/db';
 import { resize } from '../../services/tmdb';
 import Artwork from '../common/Artwork';
+import BackdropFade from '../common/BackdropFade';
 import ProgressBar from '../common/ProgressBar';
 import IconButton from '../common/IconButton';
 import { formatClock, formatPercent, formatSpeed } from '../../lib/format';
@@ -108,8 +109,7 @@ export default function EpisodeDetail({ series, episode: ep, episodes }: Props) 
     <>
       <div className="relative aspect-video w-full">
         <Artwork src={heroImage} srcSet={backdropSrcSet(heroImage)} sizes="min(100vw, 1100px)" alt={ep.title} fallbackTitle={ep.title} className="h-full w-full" eager />
-        <div className="absolute inset-0 bg-gradient-to-t from-nf-surface via-nf-surface/20 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-r from-black/50 via-transparent to-transparent" />
+        <BackdropFade side={0.5} height="80%" />
 
         <button
           onClick={() => openEpisode(null)}
